@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use rgb::Rgba;
 use walkdir::WalkDir;
 
@@ -25,7 +25,8 @@ pub fn optimize_images() -> Result<()> {
         match ext.as_str() {
             "png" => {
                 eprintln!("Optimizing PNG: {:?}", path);
-                optimize_png(path)?;
+                optimize_png(path)
+                    .with_context(|| format!("Failed to optimize PNG: {:?}", path))?;
             }
             _ => {}
         }
@@ -102,8 +103,6 @@ fn optimize_png(path: &Path) -> Result<()> {
     let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
 
     std::fs::write(path, optimized_buffer)?;
-
-    println!("Optimized PNG saved to: {:?}", path);
 
     Ok(())
 }
