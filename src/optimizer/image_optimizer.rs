@@ -20,8 +20,10 @@ pub fn optimize_images() -> Result<()> {
             .and_then(|s| s.to_str())
             .unwrap_or("")
             .to_lowercase();
+
         match ext.as_str() {
             "png" => {
+                eprintln!("Optimizing PNG: {:?}", path);
                 optimize_png(path)?;
             }
             _ => {}
@@ -67,7 +69,6 @@ fn optimize_png(path: &Path) -> Result<()> {
     let mut encoder = lodepng::Encoder::new();
 
     // Configure encoder for Palette output
-    // Configure encoder for Palette output
     {
         let info = encoder.info_png_mut();
         info.color.colortype = lodepng::ColorType::PALETTE;
@@ -88,8 +89,18 @@ fn optimize_png(path: &Path) -> Result<()> {
         encoder.info_raw_mut().palette_add(c)?;
     }
 
-    // Save as an indexed 8-bit PNG
-    encoder.encode_file(path, &pixels, image.width, image.height)?;
+    // Generate PNG bytes in memory
+    let buffer = encoder.encode(&pixels, image.width, image.height)?;
+
+    // 8. Optimize with oxipng
+    // Level 6 is a good balance for compression/speed, but we want minimal size so we can go higher (max is 6 in oxipng API for "default" presets usually,
+    // or we can manually configure). `oxipng::Options::from_preset(6)` is robust.
+    let mut options = oxipng::Options::from_preset(6);
+    options.strip = oxipng::StripChunks::All;
+
+    let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
+
+    std::fs::write(path, optimized_buffer)?;
 
     println!("Optimized PNG saved to: {:?}", path);
 
