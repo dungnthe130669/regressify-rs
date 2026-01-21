@@ -13,6 +13,7 @@ use crate::{
 mod cli;
 mod common;
 mod helpers;
+mod optimizer;
 mod snapshot;
 mod types;
 
@@ -50,6 +51,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::Report => snapshot::snapshots(vec![]),
+        Command::Optimize => optimizer::optimize(),
     }
 }
 

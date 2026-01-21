@@ -4,4 +4,7 @@ use clap::Subcommand;
 pub enum Command {
     /// Report command
     Report,
+
+    /// Optimize images command
+    Optimize,
 }

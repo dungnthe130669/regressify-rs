@@ -3,25 +3,6 @@ use std::path::PathBuf;
 use reqwest::Method;
 
 #[derive(clap::Args)]
-pub struct BuildArgs {
-    /// Use release profile
-    #[clap(long, default_value = "true")]
-    pub release: Option<bool>,
-
-    /// No default features
-    #[clap(long, visible_alias = "ndf", default_value = "false")]
-    pub no_default_features: bool,
-
-    /// Cleanup the project before building
-    #[clap(short = 'c', long, default_value = "false")]
-    pub clean: bool,
-
-    /// Update dependencies before building
-    #[clap(long, default_value = "false")]
-    pub update: bool,
-}
-
-#[derive(clap::Args)]
 pub struct PublishArgs {
     /// Cleanup the project before building
     #[clap(short = 'c', long, default_value = "false")]
