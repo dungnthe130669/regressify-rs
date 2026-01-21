@@ -8,7 +8,7 @@ fn generate_pe_header() {
     if cfg!(unix) {
         res.set_windres_path("x86_64-w64-mingw32-windres");
     }
-    res.set_icon("favicon.ico");
+    // res.set_icon("favicon.ico");
     res.set("LegalCopyright", &copyright);
     res.compile().expect("Failed to compile Windows resources!");
 }
