@@ -1,0 +1,173 @@
+name: Release
+on:
+  workflow_dispatch:
+    inputs:
+      linuxGnuX86_64:
+        type: boolean
+        description: Build for Linux GNU x86_64
+        required: true
+        default: true
+      macosX86_64:
+        type: boolean
+        description: Build for MacOS x86_64
+        required: true
+        default: false
+      macosAarch64:
+        type: boolean
+        description: Build for MacOS aarch64
+        required: true
+        default: false
+      windowsX86_64:
+        type: boolean
+        description: Build for Windows x86_64
+        required: true
+        default: false
+      linuxMuslX86_64:
+        type: boolean
+        description: ⚠️ Build for Linux Musl x86_64
+        required: true
+        default: false
+      linuxMuslAarch64:
+        type: boolean
+        description: ⚠️ Build for Linux Musl aarch64
+        required: true
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release:
+    needs: set-matrix
+    timeout-minutes: ${{ matrix.timeout }}
+    name: Release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
+        include: ${{ fromJson(needs.set-matrix.outputs.include) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: release
+          submodules: recursive
+
+      - name: ⚡ Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Rust
+        run: ci/install-rust.sh
+        env:
+          TOOLCHAIN: stable
+          TARGET: ${{ matrix.target }}
+        shell: bash
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+        if: ${{ contains(matrix.os, 'windows') }}
+
+      - name: Build artifacts
+        run: ci/make-release.sh
+        env:
+          FILE_NAME: regressify
+          PACKAGE_NAME: regressify-cli
+          OS: ${{ matrix.os }}
+          TARGET: ${{ matrix.target }}
+          REPO: ${{ secrets.TUYEN_GITHUB_ACTION_DEV_TOOLS_REPO }}
+          TOKEN: ${{ secrets.TUYEN_GITHUB_ACTION_PAT_TOKEN }}
+          NO_DEFAULT_FEATURES: 1
+        shell: bash
+
+  set-matrix:
+    runs-on: ubuntu-22.04
+    name: Set Matrix
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      include: ${{ steps.matrix.outputs.include }}
+    steps:
+      - id: matrix
+        run: |
+          add_to_matrix() {
+            local os=$1
+            local target=$2
+            local timeout=$3
+
+            MATRIX=$(echo $MATRIX | jq \
+              --arg target "$target" \
+              '. += [$target]'
+            )
+
+            INCLUDE=$(echo $INCLUDE | jq \
+              --arg target "$target" \
+              --arg os "$os" \
+              --argjson timeout $timeout \
+              '. += [{
+                "target": $target,
+                "os": $os,
+                "timeout": $timeout
+              }]'
+            )
+          }
+
+          MATRIX=$(jq -n '[]')
+          INCLUDE=$(jq -n '[]')
+
+          if [ "${{ github.event.inputs.macosX86_64 }}" = "true" ]; then
+            add_to_matrix \
+              "macos-latest" \
+              "x86_64-apple-darwin" \
+              10
+          fi
+
+          if [ "${{ github.event.inputs.macosAarch64 }}" = "true" ]; then
+            add_to_matrix \
+              "macos-latest" \
+              "aarch64-apple-darwin" \
+              10
+          fi
+
+          if [ "${{ github.event.inputs.windowsX86_64 }}" = "true" ]; then
+            add_to_matrix \
+              "windows-latest" \
+              "x86_64-pc-windows-msvc" \
+              20
+          fi
+
+          if [ "${{ github.event.inputs.linuxMuslX86_64 }}" = "true" ]; then
+            add_to_matrix \
+              "ubuntu-22.04" \
+              "x86_64-unknown-linux-musl" \
+              10
+          fi
+
+          if [ "${{ github.event.inputs.linuxMuslAarch64 }}" = "true" ]; then
+            add_to_matrix \
+              "ubuntu-22.04" \
+              "aarch64-unknown-linux-musl" \
+              10
+          fi
+
+          if [ "${{ github.event.inputs.linuxGnuX86_64 }}" = "true" ] || [ "$(echo $MATRIX | jq '. | length')" -eq 0 ]; then
+            add_to_matrix \
+              "ubuntu-22.04" \
+              "x86_64-unknown-linux-gnu" \
+              10
+          fi
+
+          echo "Matrix:"
+          echo "$MATRIX"
+
+          echo "Include:"
+          echo "$INCLUDE"
+
+          echo "matrix=$(echo $MATRIX | jq -c)" >> "$GITHUB_OUTPUT"
+          echo "include=$(echo $INCLUDE | jq -c)" >> "$GITHUB_OUTPUT"
