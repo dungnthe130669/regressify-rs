@@ -3,4 +3,43 @@ name = "regressify"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["local"]
+local = []
+cloud = []
+
 [dependencies]
+anyhow = "1.0.100"
+base64 = "0.22.1"
+chrono = "0.4.26"
+clap = { version = "4", features = ["derive"] }
+colored = "3.0.0"
+oxipng = "10.0.0"
+pngquant = "3.0.3"
+reqwest = { version = "0.12.4", features = ["blocking", "json", "stream", "multipart" ] }
+serde = { version = "1.0.152", features = ["derive"] }
+serde_json = "1.0.91"
+sha2 = "0.10.7"
+tokio = { version = "1.49.0", features = ["full"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+winres = "0.1"
+time = "0.3"
+
+[package.metadata.winres]
+OriginalFilename = "regressify.exe"
+LegalCopyright = "Copyright ©Tuyen Pham 2025"
+ProductVersion = "1.0.0"
+ProductName = "Regressify CLI"
+FileDescription = "Regressify CLI"
+
+[profile.release]
+# See: https://doc.rust-lang.org/cargo/reference/profiles.html
+panic = "abort"   # Terminate the process upon panic
+codegen-units = 1 # Allows LLVM to perform better optimization.
+lto = true        # Enables link-time-optimizations.
+strip = true      # Strip symbols from a binary
+opt-level = "z"   # Optimize for binary size, but also turn off loop vectorization.
