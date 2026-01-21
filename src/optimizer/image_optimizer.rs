@@ -7,6 +7,7 @@ use walkdir::WalkDir;
 use crate::{common, helpers::OnceLockExtensions};
 
 pub fn optimize_images() -> Result<()> {
+    eprintln!("Starting image optimization...");
     let src_path = common::ROOT_DIR.get_required()?;
 
     for entry in WalkDir::new(src_path).into_iter().filter_map(|e| e.ok()) {
