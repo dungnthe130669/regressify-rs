@@ -13,6 +13,10 @@ pub struct OptimizeArgs {
     /// Speed for image optimization (1-10)
     #[clap(long, default_value_t = 1, value_parser = speed_parser)]
     pub speed: i32,
+
+    /// Minimum file size (in KB) to optimize
+    #[clap(long, default_value_t = 50)]
+    pub min_size_kb: u64,
 }
 
 fn quality_parser(s: &str) -> Result<u8, String> {

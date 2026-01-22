@@ -88,9 +88,9 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 }
 
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
-    // 0. If the file siz is less than 100 bytes, skip optimization
+    // 0. If the file siz is less than min file size, skip optimization
     let metadata = std::fs::metadata(path)?;
-    if metadata.len() < 100 {
+    if metadata.len() < args.min_size_kb * 1024 {
         return Ok(None);
     }
 
