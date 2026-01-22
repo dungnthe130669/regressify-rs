@@ -58,6 +58,13 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     let total_files = png_files.len();
     let counter = AtomicUsize::new(0);
 
+    let to_be_print_nth = match png_files.len() {
+        n if n < 50 => 1,
+        n if n < 200 => 2,
+        n if n < 500 => 5,
+        n if n < 2000 => 10,
+        _ => 20,
+    };
     let nth_width = png_files.len().to_string().len();
     png_files
         .par_iter()
@@ -72,6 +79,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             let result = optimize_png(path, &args);
 
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if idx % to_be_print_nth != 0 {
+                return Ok(());
+            }
 
             match result {
                 Ok(OptimizeResult::Pair(original_size, optimized_size)) => {
