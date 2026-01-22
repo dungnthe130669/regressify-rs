@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use base64::{Engine as _, engine::general_purpose};
 use colored::*;
 use sha2::{Digest, Sha384};
@@ -6,7 +6,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::types::{BackstopReport, HtmlReportSummary};
+use crate::{
+    common,
+    helpers::{IOExtensions, OnceLockExtensions},
+    types::{BackstopReport, HtmlReportSummary},
+};
 
 fn get_asset_version(content: &[u8]) -> String {
     let mut hasher = Sha384::new();
@@ -198,33 +202,32 @@ pub fn generate_html_report_summary(backstop_dir: &Path, summaries: &[HtmlReport
     );
 }
 
-fn snapshot(ids: Vec<String>, backstop_dir_name: &str) {
-    let current_dir = std::env::current_dir().unwrap();
-    let backstop_dir = current_dir.join(backstop_dir_name);
+pub fn snapshot() -> Result<()> {
+    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
 
     if !backstop_dir.exists() {
-        println!(
-            "{}",
-            format!("Backstop directory does not exist: {:?}", backstop_dir).red()
-        );
-        return;
+        bail!("Backstop directory does not exist: {:?}", backstop_dir);
     }
 
     let mut summaries = Vec::new();
     let mut hashes = HashMap::new();
 
-    for id in ids {
-        if let Ok(Some(summary)) = process_test_suite(&backstop_dir, &id, &mut hashes) {
-            summaries.push(summary);
+    let child_dirs = fs::read_dir(&backstop_dir)?;
+    for entry in child_dirs.flatten() {
+        let path = entry.path().normalize()?;
+
+        if path.is_dir() {
+            if let Some(dir_name) = path.file_name().and_then(|s| s.to_str()) {
+                if let Ok(Some(summary)) = process_test_suite(&backstop_dir, dir_name, &mut hashes)
+                {
+                    summaries.push(summary);
+                }
+            }
         }
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     generate_html_report_summary(&backstop_dir, &summaries);
-}
-
-pub fn snapshots(ids: Vec<String>) -> Result<()> {
-    snapshot(ids, "backstop_data");
 
     Ok(())
 }

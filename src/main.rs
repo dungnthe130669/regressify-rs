@@ -50,13 +50,24 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     set_global_vars(&cli)?;
 
     match cli.command {
-        Command::Report => snapshot::snapshots(vec![]),
+        Command::Snapshot => snapshot::snapshot(),
         Command::Optimize(args) => optimizer::optimize(args),
     }
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
     let normal_path = cli.root.normalize()?;
+
+    let backstop_dir_name = if let Some(ref site_env) = cli.site_env {
+        format!(".backstop__{}", site_env)
+    } else {
+        ".backstop".to_string()
+    };
+
+    let backstop_dir = normal_path.join(&backstop_dir_name);
+
+    common::BACKSTOP_DIR_NAME.set_value(backstop_dir_name)?;
+    common::BACKSTOP_DIR.set_value(backstop_dir)?;
     common::ROOT_DIR.set_value(normal_path)?;
 
     if let Some(ref proxy) = cli.proxy {

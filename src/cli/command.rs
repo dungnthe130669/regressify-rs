@@ -4,8 +4,8 @@ use crate::cli::args::OptimizeArgs;
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Report command
-    Report,
+    /// Snapshot command
+    Snapshot,
 
     /// Optimize images command
     Optimize(OptimizeArgs),

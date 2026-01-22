@@ -30,6 +30,10 @@ pub struct Cli {
     #[clap(long, default_value = "false")]
     pub verbose: bool,
 
+    /// Site environment
+    #[clap(long, allow_hyphen_values = true)]
+    pub site_env: Option<String>,
+
     /// Subcommand to execute
     #[clap(subcommand)]
     pub command: Command,

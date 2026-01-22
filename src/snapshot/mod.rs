@@ -1,3 +1,3 @@
 mod actions;
 
-pub use actions::snapshots;
+pub use actions::snapshot;
