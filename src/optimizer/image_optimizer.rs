@@ -8,8 +8,10 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::OptimizeArgs,
     common,
-    helpers::{IOExtensions, OnceLockExtensions},
+    helpers::{IOExtensions, OnceLockExtensions, format_bytes},
 };
+
+type OptimizeResult = Option<(u64, u64)>;
 
 pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
@@ -28,21 +30,46 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
         })
         .collect();
 
-    png_files.par_iter().try_for_each(|path| {
-        let normalized_path = path.normalize()?;
-        let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
-            p
-        } else {
-            path
-        };
-        eprintln!("Optimizing PNG: {:?}", relative_path.display());
-        optimize_png(path, &args).with_context(|| format!("Failed to optimize PNG: {:?}", path))
-    })?;
+    png_files
+        .par_iter()
+        .try_for_each(|path| -> Result<()> {
+            let normalized_path = path.normalize()?;
+            let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
+                p
+            } else {
+                path
+            };
+
+            match optimize_png(path, &args)
+                .with_context(|| format!("Failed to optimize PNG: {:?}", path))
+            {
+                Ok(Some((original_size, optimized_size))) => {
+                    eprintln!(
+                        "Optimizing PNG: {}: {} --> {}",
+                        relative_path.display(),
+                        format_bytes(original_size),
+                        format_bytes(optimized_size)
+                    );
+                }
+                Ok(None) => {
+                    eprintln!(
+                        "Optimizing PNG: {}: No size reduction",
+                        relative_path.display(),
+                    );
+                }
+                Err(e) => {
+                    eprintln!("Optimizing PNG: {}: Error: {}", relative_path.display(), e);
+                }
+            };
+
+            Ok(())
+        })
+        .ok();
 
     Ok(())
 }
 
-fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<()> {
+fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     // 1. Load the PNG file into an RGBA pixel buffer
     let mut decoder = lodepng::Decoder::new();
     let image = match decoder.decode_file(path)? {
@@ -113,7 +140,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<()> {
     let original_size = std::fs::metadata(path)?.len();
     let optimized_size = optimized_buffer.len() as u64;
     if optimized_size >= original_size {
-        return Ok(()); // No size reduction, skip writing
+        return Ok(None); // No size reduction, skip writing
     }
 
     // 10. Write optimized PNG back to disk
@@ -121,5 +148,5 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<()> {
     // Fail silently if write fails
     std::fs::write(path, optimized_buffer).ok();
 
-    Ok(())
+    Ok(Some((original_size, optimized_size)))
 }
