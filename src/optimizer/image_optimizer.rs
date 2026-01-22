@@ -10,7 +10,7 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::OptimizeArgs,
     common,
-    helpers::{IOExtensions, OnceLockExtensions, format_bytes},
+    helpers::{OnceLockExtensions, format_bytes},
 };
 
 enum OptimizeResult {
@@ -69,12 +69,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     png_files
         .par_iter()
         .try_for_each(|path| -> Result<()> {
-            let normalized_path = path.normalize()?;
-            let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
-                p
-            } else {
-                path
-            };
+            let file_name = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("unknown.png");
 
             let result = optimize_png(path, &args);
 
@@ -90,7 +88,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         "{:>width$} of {}: {}: {} --> {}",
                         idx,
                         total_files,
-                        relative_path.display(),
+                        file_name,
                         format_bytes(original_size).yellow(),
                         format_bytes(optimized_size).green(),
                         width = nth_width
@@ -101,7 +99,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         "{:>width$} of {}: {}: Already optimized ({}).",
                         idx,
                         total_files,
-                        relative_path.display(),
+                        file_name,
                         format_bytes(original_size).yellow(),
                         width = nth_width
                     );
@@ -111,7 +109,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         "{:>width$} of {}: {}: {} ({}).",
                         idx,
                         total_files,
-                        relative_path.display(),
+                        file_name,
                         "Too Small".blue(),
                         format_bytes(original_size),
                         width = nth_width
@@ -122,7 +120,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         "{:>width$} of {}: {}: {} (quality too low).",
                         idx,
                         total_files,
-                        relative_path.display(),
+                        file_name,
                         "Skipped".blue(),
                         width = nth_width
                     );
@@ -132,7 +130,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         "{:>width$} of {}: {}: {}: {}",
                         idx,
                         total_files,
-                        relative_path.display(),
+                        file_name,
                         "Error".red(),
                         e,
                         width = nth_width
