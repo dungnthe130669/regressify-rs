@@ -70,7 +70,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             {
                 Ok(Some((original_size, optimized_size))) => {
                     eprintln!(
-                        "{:0width$} of {}: {}: {} --> {}",
+                        "{:>width$} of {}: {}: {} --> {}",
                         idx,
                         total_files,
                         relative_path.display(),
@@ -80,8 +80,8 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Ok(None) => {
-                    eprintln!(
-                        "{:0width$} of {}: {}: No change",
+                    println!(
+                        "{:>width$} of {}: {}: No change",
                         idx,
                         total_files,
                         relative_path.display(),
@@ -90,7 +90,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!(
-                        "{:0width$} of {}: {}: {}: {}",
+                        "{:>width$} of {}: {}: {}: {}",
                         idx,
                         total_files,
                         relative_path.display(),
