@@ -64,8 +64,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                 path
             };
 
-            let result = optimize_png(path, &args)
-                .with_context(|| format!("Failed to optimize PNG: {:?}", path));
+            let result = optimize_png(path, &args);
 
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
 
