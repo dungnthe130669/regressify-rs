@@ -11,15 +11,19 @@ use reqwest::Proxy;
 
 use crate::{
     cli::{Cli, Command},
+    github::is_github,
     helpers::{IOExtensions, OnceLockBoolExtensions, OnceLockExtensions},
+    vso::is_azure_devops,
 };
 
 mod cli;
 mod common;
+mod github;
 mod helpers;
 mod optimizer;
 mod snapshot;
 mod types;
+mod vso;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -86,6 +90,11 @@ fn set_global_vars(cli: &Cli, work_dir: &Path) -> Result<()> {
 
     if cli.verbose {
         common::VERBOSE.set_bool(true)?;
+    }
+
+    if is_github() || is_azure_devops() {
+        // Force color output
+        colored::control::set_override(true);
     }
 
     Ok(())

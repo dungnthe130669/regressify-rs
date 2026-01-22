@@ -13,7 +13,12 @@ use crate::{
     helpers::{IOExtensions, OnceLockExtensions, format_bytes},
 };
 
-type OptimizeResult = Option<(u64, u64)>;
+enum OptimizeResult {
+    Pair(u64, u64), // (original_size, optimized_size)
+    TooSmall(u64),  // original_size
+    TooLowQuality,
+    AlreadyOptimized(u64), // original_size
+}
 
 pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
@@ -69,7 +74,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
 
             match result {
-                Ok(Some((original_size, optimized_size))) => {
+                Ok(OptimizeResult::Pair(original_size, optimized_size)) => {
                     eprintln!(
                         "{:>width$} of {}: {}: {} --> {}",
                         idx,
@@ -80,12 +85,34 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         width = nth_width
                     );
                 }
-                Ok(None) => {
+                Ok(OptimizeResult::AlreadyOptimized(original_size)) => {
                     eprintln!(
-                        "{:>width$} of {}: {}: No change",
+                        "{:>width$} of {}: {}: Already optimized ({}).",
                         idx,
                         total_files,
                         relative_path.display(),
+                        format_bytes(original_size).yellow(),
+                        width = nth_width
+                    );
+                }
+                Ok(OptimizeResult::TooSmall(original_size)) => {
+                    eprintln!(
+                        "{:>width$} of {}: {}: {} ({}).",
+                        idx,
+                        total_files,
+                        relative_path.display(),
+                        "Too Small".blue(),
+                        format_bytes(original_size),
+                        width = nth_width
+                    );
+                }
+                Ok(OptimizeResult::TooLowQuality) => {
+                    eprintln!(
+                        "{:>width$} of {}: {}: {} (quality too low).",
+                        idx,
+                        total_files,
+                        relative_path.display(),
+                        "Skipped".blue(),
                         width = nth_width
                     );
                 }
@@ -113,7 +140,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     // 1. If the file siz is less than min file size, skip optimization
     let metadata = std::fs::metadata(path)?;
     if metadata.len() < args.min_size_kb * 1024 {
-        return Ok(None);
+        return Ok(OptimizeResult::TooSmall(metadata.len()));
     }
 
     // 2. Load the PNG file into an RGBA pixel buffer
@@ -138,7 +165,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
         Ok(res) => res,
         Err(err) => {
             if format!("{}", err).contains("QUALITY_TOO_LOW") {
-                return Ok(None);
+                return Ok(OptimizeResult::TooLowQuality);
             }
             return Err(err.into());
         }
@@ -192,7 +219,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     let original_size = metadata.len();
     let optimized_size = optimized_buffer.len() as u64;
     if optimized_size >= original_size {
-        return Ok(None); // No size reduction, skip writing
+        return Ok(OptimizeResult::AlreadyOptimized(original_size)); // No size reduction, skip writing
     }
 
     // 10. Write optimized PNG back to disk
@@ -200,5 +227,5 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     // Fail silently if write fails
     std::fs::write(path, optimized_buffer).ok();
 
-    Ok(Some((original_size, optimized_size)))
+    Ok(OptimizeResult::Pair(original_size, optimized_size))
 }
