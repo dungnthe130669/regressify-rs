@@ -34,7 +34,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                 } else {
                     path
                 };
-                eprintln!("Optimizing PNG: {:?}", relative_path);
+                eprintln!("Optimizing PNG: {:?}", relative_path.display());
                 optimize_png(path, &args)
                     .with_context(|| format!("Failed to optimize PNG: {:?}", path))?;
             }
