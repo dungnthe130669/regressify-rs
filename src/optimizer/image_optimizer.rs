@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
+use lodepng::Image;
 use rayon::prelude::*;
 use rgb::Rgba;
 use walkdir::WalkDir;
@@ -162,9 +163,15 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 
     // 2. Load the PNG file into an RGBA pixel buffer
     let mut decoder = lodepng::Decoder::new();
-    let image = match decoder.decode_file(path)? {
-        lodepng::Image::RGBA(img) => img,
-        _ => return Err(anyhow!("Only RGBA PNGs are supported in this sample")),
+    let decoded = decoder.decode_file(path)?;
+    let image = match decoded {
+        Image::RGBA(img) => img,
+        _ => {
+            return Err(anyhow!(
+                "Only RGBA PNGs are supported in this sample. Current format: {:?}",
+                decoded
+            ));
+        }
     };
 
     let width = image.width;
