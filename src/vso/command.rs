@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use std::{collections::HashMap, path::PathBuf};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow};
 
@@ -10,7 +13,7 @@ use super::{
     task_result::{self, SUCCEEDED, SUCCEEDED_WITH_ISSUES},
 };
 
-pub fn prepend_path(path: &PathBuf) -> Result<()> {
+pub fn prepend_path(path: &Path) -> Result<()> {
     let path = path
         .to_str()
         .ok_or_else(|| anyhow!("Cannot convert path to string"))?;
