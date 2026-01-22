@@ -17,9 +17,17 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
     let src_path = common::ROOT_DIR.get_required()?;
 
+    eprintln!("Searching for PNGs in: {:?}", src_path);
+
     let png_files: Vec<_> = WalkDir::new(src_path)
         .into_iter()
-        .filter_map(|e| e.ok())
+        .filter_map(|e| match e {
+            Ok(entry) => Some(entry),
+            Err(err) => {
+                eprintln!("Error scanning entry: {}", err);
+                None
+            }
+        })
         .filter(|e| e.file_type().is_file())
         .map(|e| e.path().to_owned())
         .filter(|path| {
@@ -29,6 +37,16 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                 .unwrap_or(false)
         })
         .collect();
+
+    if png_files.is_empty() {
+        eprintln!("No PNG files found.");
+        return Ok(());
+    }
+
+    eprintln!(
+        "Found {} PNG files. Starting optimization...",
+        png_files.len()
+    );
 
     png_files
         .par_iter()
