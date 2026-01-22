@@ -97,7 +97,7 @@ pub fn process_test_suite(
                             ),
                             (
                                 format!("\"{}\"", file_path),
-                                format!("\"{}?v={}'", file_path, hash),
+                                format!("\"{}?v={}\"", file_path, hash),
                             ),
                             (
                                 format!("'{}'", win_file_path),
