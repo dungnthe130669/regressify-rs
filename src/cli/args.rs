@@ -3,7 +3,7 @@ use anyhow::Result;
 #[derive(clap::Args)]
 pub struct OptimizeArgs {
     /// Min quality for image optimization (0-100)
-    #[clap(long, default_value_t = 15, value_parser = quality_parser)]
+    #[clap(long, default_value_t = 0, value_parser = quality_parser)]
     pub min_quality: u8,
 
     /// Max quality for image optimization (0-100)
@@ -11,7 +11,7 @@ pub struct OptimizeArgs {
     pub max_quality: u8,
 
     /// Speed for image optimization (1-10)
-    #[clap(long, default_value_t = 1, value_parser = speed_parser)]
+    #[clap(long, default_value_t = 8, value_parser = speed_parser)]
     pub speed: i32,
 
     /// Minimum file size (in KB) to optimize
