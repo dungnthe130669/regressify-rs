@@ -14,9 +14,9 @@ use crate::{
 };
 
 enum OptimizeResult {
-    Pair(u64, u64), // (original_size, optimized_size)
-    TooSmall(u64),  // original_size
-    TooLowQuality,
+    Pair(u64, u64),        // (original_size, optimized_size)
+    TooSmall(u64),         // original_size
+    TooLowQuality(u64),    // original_size
     AlreadyOptimized(u64), // original_size
 }
 
@@ -115,13 +115,14 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         width = nth_width
                     );
                 }
-                Ok(OptimizeResult::TooLowQuality) => {
+                Ok(OptimizeResult::TooLowQuality(original_size)) => {
                     eprintln!(
-                        "{:>width$} of {}: {}: {} (quality too low).",
+                        "{:>width$} of {}: {}: {} ({} - quality too low).",
                         idx,
                         total_files,
                         file_name,
-                        "Skipped".blue(),
+                        "Skipped".cyan(),
+                        format_bytes(original_size),
                         width = nth_width
                     );
                 }
@@ -148,8 +149,9 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     // 1. If the file siz is less than min file size, skip optimization
     let metadata = std::fs::metadata(path)?;
-    if metadata.len() < args.min_size_kb * 1024 {
-        return Ok(OptimizeResult::TooSmall(metadata.len()));
+    let original_size = metadata.len();
+    if original_size < args.min_size_kb * 1024 {
+        return Ok(OptimizeResult::TooSmall(original_size));
     }
 
     // 2. Load the PNG file into an RGBA pixel buffer
@@ -174,7 +176,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
         Ok(res) => res,
         Err(err) => {
             if format!("{}", err).contains("QUALITY_TOO_LOW") {
-                return Ok(OptimizeResult::TooLowQuality);
+                return Ok(OptimizeResult::TooLowQuality(original_size));
             }
             return Err(err.into());
         }
@@ -225,7 +227,6 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
 
     // 9. Check file size reduction
-    let original_size = metadata.len();
     let optimized_size = optimized_buffer.len() as u64;
     if optimized_size >= original_size {
         return Ok(OptimizeResult::AlreadyOptimized(original_size)); // No size reduction, skip writing
