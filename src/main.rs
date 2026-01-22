@@ -48,7 +48,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 
     eprintln!("Setting working directory to {:?}", work_dir);
     set_current_dir(&work_dir).map_err(|e| anyhow!("Failed to set current directory: {}", e))?;
-    set_global_vars(&cli)?;
+    set_global_vars(&cli, &work_dir)?;
 
     match cli.command {
         Command::Snapshot => snapshot::snapshot(),
@@ -56,8 +56,8 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     }
 }
 
-fn set_global_vars(cli: &Cli) -> Result<()> {
-    let normal_path = cli.root.normalize()?;
+fn set_global_vars(cli: &Cli, work_dir: &PathBuf) -> Result<()> {
+    let normal_path = work_dir.clone();
 
     let backstop_dir_name = if let Some(ref site_env) = cli.site_env {
         format!(".backstop__{}", site_env)
