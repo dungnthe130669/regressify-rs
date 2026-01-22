@@ -160,7 +160,10 @@ fn process_test_suite(
     Ok(None)
 }
 
-pub fn generate_html_report_summary(backstop_dir: &Path, summaries: &[HtmlReportSummary]) {
+pub fn generate_html_report_summary(
+    backstop_dir: &Path,
+    summaries: &[HtmlReportSummary],
+) -> Result<()> {
     let mut rows_html = String::new();
 
     for summary in summaries {
@@ -191,15 +194,21 @@ pub fn generate_html_report_summary(backstop_dir: &Path, summaries: &[HtmlReport
         ));
     }
 
-    let template = include_str!("report_template.html"); // Or use a raw string
+    let template = include_str!("_report_template.html"); // Or use a raw string
     let final_html = template.replace("<!-- REPORT_PLACEHOLDER -->", &rows_html);
 
     let report_path = backstop_dir.join("index.html");
-    fs::write(&report_path, final_html).expect("Unable to write summary report");
+    fs::write(&report_path, final_html)?;
     println!(
         "{}",
         format!("Snapshot report summary generated at: {:?}", report_path).blue()
     );
+
+    let swa_config = include_bytes!("_staticwebapp.config.json");
+    let swa_config_path = backstop_dir.join("staticwebapp.config.json");
+    fs::write(&swa_config_path, swa_config)?;
+
+    Ok(())
 }
 
 pub fn snapshot() -> Result<()> {
@@ -238,7 +247,7 @@ pub fn snapshot() -> Result<()> {
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(&backstop_dir, &summaries);
+    generate_html_report_summary(&backstop_dir, &summaries)?;
 
     Ok(())
 }
