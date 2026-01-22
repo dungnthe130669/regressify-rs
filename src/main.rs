@@ -46,6 +46,7 @@ async fn main() -> Result<()> {
 async fn exec_commands(cli: Cli) -> Result<()> {
     let work_dir: PathBuf = cli.root.normalize()?;
 
+    eprintln!("Setting working directory to {:?}", work_dir);
     set_current_dir(&work_dir).map_err(|e| anyhow!("Failed to set current directory: {}", e))?;
     set_global_vars(&cli)?;
 
