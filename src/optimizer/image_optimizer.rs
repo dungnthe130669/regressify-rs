@@ -134,7 +134,15 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     let mut liq_image = liq.new_image(image.buffer, image.width, image.height, 0.0)?;
 
     // 4. Quantize the image
-    let mut res = liq.quantize(&mut liq_image)?;
+    let mut res = match liq.quantize(&mut liq_image) {
+        Ok(res) => res,
+        Err(err) => {
+            if format!("{}", err).contains("QUALITY_TOO_LOW") {
+                return Ok(None);
+            }
+            return Err(err.into());
+        }
+    };
 
     // 5. DISABLE DITHERING (Crucial for visual regression stability)
     // 1.0 is default, 0.0 is no dithering.
