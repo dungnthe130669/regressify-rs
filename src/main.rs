@@ -1,4 +1,8 @@
-use std::{env::set_current_dir, path::PathBuf, process::exit};
+use std::{
+    env::set_current_dir,
+    path::{Path, PathBuf},
+    process::exit,
+};
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -56,8 +60,8 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     }
 }
 
-fn set_global_vars(cli: &Cli, work_dir: &PathBuf) -> Result<()> {
-    let normal_path = work_dir.clone();
+fn set_global_vars(cli: &Cli, work_dir: &Path) -> Result<()> {
+    let normal_path = work_dir.to_path_buf();
 
     let backstop_dir_name = if let Some(ref site_env) = cli.site_env {
         format!(".backstop__{}", site_env)
