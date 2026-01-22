@@ -192,7 +192,7 @@ pub fn generate_html_report_summary(backstop_dir: &Path, summaries: &[HtmlReport
     }
 
     let template = include_str!("report_template.html"); // Or use a raw string
-    let final_html = template.replace("", &rows_html);
+    let final_html = template.replace("<!-- REPORT_PLACEHOLDER -->", &rows_html);
 
     let report_path = backstop_dir.join("index.html");
     fs::write(&report_path, final_html).expect("Unable to write summary report");
