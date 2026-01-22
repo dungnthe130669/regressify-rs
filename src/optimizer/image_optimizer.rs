@@ -88,6 +88,12 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 }
 
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
+    // 0. If the file siz is less than 100 bytes, skip optimization
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() < 100 {
+        return Ok(None);
+    }
+
     // 1. Load the PNG file into an RGBA pixel buffer
     let mut decoder = lodepng::Decoder::new();
     let image = match decoder.decode_file(path)? {
@@ -155,7 +161,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
 
     // 9. Check file size reduction
-    let original_size = std::fs::metadata(path)?.len();
+    let original_size = metadata.len();
     let optimized_size = optimized_buffer.len() as u64;
     if optimized_size >= original_size {
         return Ok(None); // No size reduction, skip writing
