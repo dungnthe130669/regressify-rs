@@ -1,6 +1,8 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Context, Result, anyhow};
+use colored::Colorize;
 use rayon::prelude::*;
 use rgb::Rgba;
 use walkdir::WalkDir;
@@ -48,9 +50,14 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
         png_files.len()
     );
 
+    let total_files = png_files.len();
+    let counter = AtomicUsize::new(0);
+
+    let nth_width = png_files.len().to_string().len();
     png_files
         .par_iter()
         .try_for_each(|path| -> Result<()> {
+            let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
             let normalized_path = path.normalize()?;
             let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
                 p
@@ -63,20 +70,34 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             {
                 Ok(Some((original_size, optimized_size))) => {
                     eprintln!(
-                        "Optimizing PNG: {}: {} --> {}",
+                        "{:0width$} of {}: {}: {} --> {}",
+                        idx,
+                        total_files,
                         relative_path.display(),
-                        format_bytes(original_size),
-                        format_bytes(optimized_size)
+                        format_bytes(original_size).yellow(),
+                        format_bytes(optimized_size).green(),
+                        width = nth_width
                     );
                 }
                 Ok(None) => {
                     eprintln!(
-                        "Optimizing PNG: {}: No size reduction",
+                        "{:0width$} of {}: {}: No change",
+                        idx,
+                        total_files,
                         relative_path.display(),
+                        width = nth_width
                     );
                 }
                 Err(e) => {
-                    eprintln!("Optimizing PNG: {}: Error: {}", relative_path.display(), e);
+                    eprintln!(
+                        "{:0width$} of {}: {}: {}: {}",
+                        idx,
+                        total_files,
+                        relative_path.display(),
+                        "Error".red(),
+                        e,
+                        width = nth_width
+                    );
                 }
             };
 
