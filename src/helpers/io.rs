@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
@@ -9,7 +9,7 @@ pub trait IOExtensions {
     fn normalize_string(&self, is_folder: bool) -> Result<String>;
 }
 
-fn normalize_path_string(path: &PathBuf) -> Result<String> {
+fn normalize_path_string(path: &Path) -> Result<String> {
     let mut path_str = std::fs::canonicalize(path)
         .unwrap_or_else(|_| std::path::PathBuf::from(path))
         .to_str()
@@ -25,6 +25,22 @@ fn normalize_path_string(path: &PathBuf) -> Result<String> {
 }
 
 impl IOExtensions for PathBuf {
+    fn normalize(&self) -> Result<PathBuf> {
+        Ok(PathBuf::from(normalize_path_string(self)?))
+    }
+
+    fn normalize_string(&self, is_folder: bool) -> Result<String> {
+        let mut path = normalize_path_string(self)?;
+
+        if is_folder && !path.ends_with('/') {
+            path.push('/');
+        }
+
+        Ok(path)
+    }
+}
+
+impl IOExtensions for Path {
     fn normalize(&self) -> Result<PathBuf> {
         Ok(PathBuf::from(normalize_path_string(self)?))
     }

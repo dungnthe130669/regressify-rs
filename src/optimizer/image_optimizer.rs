@@ -4,7 +4,10 @@ use anyhow::{Context, Result, anyhow};
 use rgb::Rgba;
 use walkdir::WalkDir;
 
-use crate::{common, helpers::OnceLockExtensions};
+use crate::{
+    common,
+    helpers::{IOExtensions, OnceLockExtensions},
+};
 
 pub fn optimize_images() -> Result<()> {
     eprintln!("Starting image optimization...");
@@ -24,7 +27,13 @@ pub fn optimize_images() -> Result<()> {
 
         match ext.as_str() {
             "png" => {
-                eprintln!("Optimizing PNG: {:?}", path);
+                let normalized_path = path.normalize()?;
+                let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
+                    p
+                } else {
+                    path
+                };
+                eprintln!("Optimizing PNG: {:?}", relative_path);
                 optimize_png(path)
                     .with_context(|| format!("Failed to optimize PNG: {:?}", path))?;
             }
