@@ -48,13 +48,25 @@
   <body>
     <h1>Visual Tests Summary</h1>
     <table>
-      <tr>
-        <th>Test Suite</th>
-        <th>Total Tests</th>
-        <th>Passed</th>
-        <th>Failed</th>
-      </tr>
-      <!-- REPORT_PLACEHOLDER -->
+      <thead>
+        <tr>
+          <th>Test Suite</th>
+          <th>Total Tests</th>
+          <th>Passed</th>
+          <th>Failed</th>
+        </tr>
+      </thead>
+      <tbody>
+        <!-- REPORT_PLACEHOLDER -->
+      </tbody>
+      <tfoot>
+        <tr>
+          <th>Total</th>
+          <th><!-- TOTAL_TESTS --></th>
+          <th class="[[ PASSED_CLASS ]]"><!-- TOTAL_PASSED --></th>
+          <th class="[[ FAILED_CLASS ]]"><!-- TOTAL_FAILED --></th>
+        </tr>
+      </tfoot>
     </table>
   </body>
 </html>
