@@ -7,7 +7,7 @@ pub struct OptimizeArgs {
     pub min_quality: u8,
 
     /// Max quality for image optimization (0-100)
-    #[clap(long, default_value_t = 20, value_parser = quality_parser)]
+    #[clap(long, default_value_t = 30, value_parser = quality_parser)]
     pub max_quality: u8,
 
     /// Speed for image optimization (1-10)

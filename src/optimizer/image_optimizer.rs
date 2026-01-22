@@ -111,29 +111,25 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 }
 
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
-    // 0. If the file siz is less than min file size, skip optimization
+    // 1. If the file siz is less than min file size, skip optimization
     let metadata = std::fs::metadata(path)?;
     if metadata.len() < args.min_size_kb * 1024 {
         return Ok(None);
     }
 
-    // 1. Load the PNG file into an RGBA pixel buffer
+    // 2. Load the PNG file into an RGBA pixel buffer
     let mut decoder = lodepng::Decoder::new();
     let image = match decoder.decode_file(path)? {
         lodepng::Image::RGBA(img) => img,
         _ => return Err(anyhow!("Only RGBA PNGs are supported in this sample")),
     };
 
-    // 2. Initialize imagequant library
+    // 3. Initialize imagequant library
     let mut liq = imagequant::new();
     liq.set_quality(args.min_quality, args.max_quality)?;
     liq.set_speed(args.speed)?;
     liq.set_min_posterization(4)?;
     liq.set_max_colors(8)?;
-    // 3. SETTINGS FOR MINIMAL SIZE & DETERMINISTIC PIXELS
-    // Set max colors low (e.g., 16 or 32) for UI regression tests
-    liq.set_quality(0, 20)?;
-    liq.set_speed(1)?; // Slowest speed = best compression
 
     // Create the imagequant image object
     let mut liq_image = liq.new_image(image.buffer, image.width, image.height, 0.0)?;
@@ -178,7 +174,9 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     // 8. Optimize with oxipng
     // Level 6 is a good balance for compression/speed, but we want minimal size so we can go higher (max is 6 in oxipng API for "default" presets usually,
     // or we can manually configure). `oxipng::Options::from_preset(6)` is robust.
-    let mut options = oxipng::Options::from_preset(6);
+    // Calculate oxipng level based on speed arg. speed 1 = level 6 (slowest), speed 10 = level 0 (fastest)
+    let oxipng_level = (10 - args.speed).clamp(0, 6) as u8;
+    let mut options = oxipng::Options::from_preset(oxipng_level);
     options.strip = oxipng::StripChunks::All;
 
     let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
