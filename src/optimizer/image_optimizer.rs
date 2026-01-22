@@ -78,7 +78,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
 
-            if idx % to_be_print_nth != 0 {
+            if !idx.is_multiple_of(to_be_print_nth) {
                 return Ok(());
             }
 
