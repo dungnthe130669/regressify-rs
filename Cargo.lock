@@ -1271,6 +1271,7 @@ dependencies = [
  "imagequant",
  "lodepng",
  "oxipng",
+ "rayon",
  "reqwest",
  "rgb",
  "serde",

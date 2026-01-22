@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, anyhow};
+use rayon::prelude::*;
 use rgb::Rgba;
 use walkdir::WalkDir;
 
@@ -14,33 +15,29 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
     let src_path = common::ROOT_DIR.get_required()?;
 
-    for entry in WalkDir::new(src_path).into_iter().filter_map(|e| e.ok()) {
-        if !entry.file_type().is_file() {
-            continue;
-        }
+    let png_files: Vec<_> = WalkDir::new(src_path)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_file())
+        .map(|e| e.path().to_owned())
+        .filter(|path| {
+            path.extension()
+                .and_then(|s| s.to_str())
+                .map(|s| s.eq_ignore_ascii_case("png"))
+                .unwrap_or(false)
+        })
+        .collect();
 
-        let path = entry.path();
-        let ext = path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-
-        match ext.as_str() {
-            "png" => {
-                let normalized_path = path.normalize()?;
-                let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
-                    p
-                } else {
-                    path
-                };
-                eprintln!("Optimizing PNG: {:?}", relative_path.display());
-                optimize_png(path, &args)
-                    .with_context(|| format!("Failed to optimize PNG: {:?}", path))?;
-            }
-            _ => {}
-        }
-    }
+    png_files.par_iter().try_for_each(|path| {
+        let normalized_path = path.normalize()?;
+        let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
+            p
+        } else {
+            path
+        };
+        eprintln!("Optimizing PNG: {:?}", relative_path.display());
+        optimize_png(path, &args).with_context(|| format!("Failed to optimize PNG: {:?}", path))
+    })?;
 
     Ok(())
 }
