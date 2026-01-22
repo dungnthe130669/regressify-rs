@@ -109,7 +109,14 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<()> {
 
     let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
 
-    // 9. Write optimized PNG back to disk
+    // 9. Check file size reduction
+    let original_size = std::fs::metadata(path)?.len();
+    let optimized_size = optimized_buffer.len() as u64;
+    if optimized_size >= original_size {
+        return Ok(()); // No size reduction, skip writing
+    }
+
+    // 10. Write optimized PNG back to disk
     // Overwrite the original file
     // Fail silently if write fails
     std::fs::write(path, optimized_buffer).ok();
