@@ -78,7 +78,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
 
-            if !idx.is_multiple_of(to_be_print_nth) {
+            if !idx.is_multiple_of(to_be_print_nth) && idx != total_files {
                 return Ok(());
             }
 
