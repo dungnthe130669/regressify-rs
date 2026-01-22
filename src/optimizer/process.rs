@@ -1,9 +1,17 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-use crate::optimizer::image_optimizer;
+use crate::{cli::args::OptimizeArgs, optimizer::image_optimizer};
 
-pub fn optimize() -> Result<()> {
-    image_optimizer::optimize_images()?;
+pub fn optimize(args: OptimizeArgs) -> Result<()> {
+    if args.min_quality > args.max_quality {
+        bail!(
+            "Minimum quality ({}) cannot be greater than maximum quality ({}).",
+            args.min_quality,
+            args.max_quality
+        );
+    }
+
+    image_optimizer::optimize_images(args)?;
 
     Ok(())
 }

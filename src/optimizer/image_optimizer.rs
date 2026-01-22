@@ -5,11 +5,12 @@ use rgb::Rgba;
 use walkdir::WalkDir;
 
 use crate::{
+    cli::args::OptimizeArgs,
     common,
     helpers::{IOExtensions, OnceLockExtensions},
 };
 
-pub fn optimize_images() -> Result<()> {
+pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
     let src_path = common::ROOT_DIR.get_required()?;
 
@@ -34,7 +35,7 @@ pub fn optimize_images() -> Result<()> {
                     path
                 };
                 eprintln!("Optimizing PNG: {:?}", relative_path);
-                optimize_png(path)
+                optimize_png(path, &args)
                     .with_context(|| format!("Failed to optimize PNG: {:?}", path))?;
             }
             _ => {}
@@ -44,7 +45,7 @@ pub fn optimize_images() -> Result<()> {
     Ok(())
 }
 
-fn optimize_png(path: &Path) -> Result<()> {
+fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<()> {
     // 1. Load the PNG file into an RGBA pixel buffer
     let mut decoder = lodepng::Decoder::new();
     let image = match decoder.decode_file(path)? {
@@ -54,8 +55,8 @@ fn optimize_png(path: &Path) -> Result<()> {
 
     // 2. Initialize imagequant library
     let mut liq = imagequant::new();
-    liq.set_quality(15, 15)?;
-    liq.set_speed(1)?;
+    liq.set_quality(args.min_quality, args.max_quality)?;
+    liq.set_speed(args.speed)?;
     liq.set_min_posterization(4)?;
     liq.set_max_colors(8)?;
     // 3. SETTINGS FOR MINIMAL SIZE & DETERMINISTIC PIXELS

@@ -51,7 +51,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 
     match cli.command {
         Command::Report => snapshot::snapshots(vec![]),
-        Command::Optimize => optimizer::optimize(),
+        Command::Optimize(args) => optimizer::optimize(args),
     }
 }
 
