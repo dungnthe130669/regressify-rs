@@ -114,7 +114,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                         idx,
                         total_files,
                         file_name,
-                        "Too Small".blue(),
+                        "Too Small".cyan(),
                         format_bytes(original_size),
                         width = nth_width
                     );
