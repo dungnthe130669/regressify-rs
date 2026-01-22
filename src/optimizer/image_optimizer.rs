@@ -57,7 +57,6 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     png_files
         .par_iter()
         .try_for_each(|path| -> Result<()> {
-            let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
             let normalized_path = path.normalize()?;
             let relative_path = if let Ok(p) = normalized_path.strip_prefix(src_path) {
                 p
@@ -65,9 +64,12 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                 path
             };
 
-            match optimize_png(path, &args)
-                .with_context(|| format!("Failed to optimize PNG: {:?}", path))
-            {
+            let result = optimize_png(path, &args)
+                .with_context(|| format!("Failed to optimize PNG: {:?}", path));
+
+            let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+            match result {
                 Ok(Some((original_size, optimized_size))) => {
                     eprintln!(
                         "{:>width$} of {}: {}: {} --> {}",
@@ -80,7 +82,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Ok(None) => {
-                    println!(
+                    eprintln!(
                         "{:>width$} of {}: {}: No change",
                         idx,
                         total_files,
