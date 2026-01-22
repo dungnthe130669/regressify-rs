@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use colored::Colorize;
 use rayon::prelude::*;
 use rgb::Rgba;
