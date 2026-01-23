@@ -82,75 +82,80 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             let result = optimize_png(path, &args);
 
             let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
-
-            if !idx.is_multiple_of(to_be_print_nth) && idx != total_files {
-                return Ok(());
-            }
+            let should_print = idx.is_multiple_of(to_be_print_nth) || idx == total_files;
 
             match result {
                 Ok(OptimizeResult::Pair(width, height, original_size, optimized_size)) => {
                     total_original_size.fetch_add(original_size, Ordering::Relaxed);
                     total_optimized_size.fetch_add(optimized_size, Ordering::Relaxed);
 
-                    eprintln!(
-                        "{:>width$} of {}: {}: {} --> {} ({}x{})",
-                        idx,
-                        total_files,
-                        file_name,
-                        format_bytes(original_size).yellow(),
-                        format_bytes(optimized_size).green(),
-                        width,
-                        height,
-                        width = nth_width
-                    );
+                    if should_print {
+                        eprintln!(
+                            "{:>width$} of {}: {}: {} --> {} ({}x{})",
+                            idx,
+                            total_files,
+                            file_name,
+                            format_bytes(original_size).yellow(),
+                            format_bytes(optimized_size).green(),
+                            width,
+                            height,
+                            width = nth_width
+                        );
+                    }
                 }
                 Ok(OptimizeResult::AlreadyOptimized(width, height, original_size)) => {
                     total_original_size.fetch_add(original_size, Ordering::Relaxed);
                     total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
                     total_skipped_files.fetch_add(1, Ordering::Relaxed);
 
-                    eprintln!(
-                        "{:>width$} of {}: {}: Already optimized: {} ({}x{}).",
-                        idx,
-                        total_files,
-                        file_name,
-                        format_bytes(original_size).yellow(),
-                        width,
-                        height,
-                        width = nth_width
-                    );
+                    if should_print {
+                        eprintln!(
+                            "{:>width$} of {}: {}: Already optimized: {} ({}x{}).",
+                            idx,
+                            total_files,
+                            file_name,
+                            format_bytes(original_size).yellow(),
+                            width,
+                            height,
+                            width = nth_width
+                        );
+                    }
                 }
                 Ok(OptimizeResult::TooSmall(original_size)) => {
                     total_original_size.fetch_add(original_size, Ordering::Relaxed);
                     total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
                     total_skipped_files.fetch_add(1, Ordering::Relaxed);
 
-                    eprintln!(
-                        "{:>width$} of {}: {}: {} ({}).",
-                        idx,
-                        total_files,
-                        file_name,
-                        "Too Small".cyan(),
-                        format_bytes(original_size),
-                        width = nth_width
-                    );
+                    if should_print {
+                        eprintln!(
+                            "{:>width$} of {}: {}: {} ({}).",
+                            idx,
+                            total_files,
+                            file_name,
+                            "Too Small".cyan(),
+                            format_bytes(original_size),
+                            width = nth_width
+                        );
+                    }
                 }
                 Ok(OptimizeResult::TooLowQuality(width, height, original_size)) => {
                     total_original_size.fetch_add(original_size, Ordering::Relaxed);
                     total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
                     total_skipped_files.fetch_add(1, Ordering::Relaxed);
 
-                    eprintln!(
-                        "{:>width$} of {}: {}: {}: {} ({}x{}) - quality too low",
-                        idx,
-                        total_files,
-                        file_name,
-                        "Skipped".cyan(),
-                        format_bytes(original_size),
-                        width,
-                        height,
-                        width = nth_width
-                    );
+                    if should_print {
+                        eprintln!(
+                            "{:>width$} of {}: {}: {}: {} ({}x{}) - quality too low",
+                            idx,
+                            total_files,
+                            file_name,
+                            "Skipped".cyan(),
+                            format_bytes(original_size),
+                            width,
+                            height,
+                            width = nth_width
+                        );
+                    }
                 }
                 Err(e) => {
                     let original_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
@@ -159,15 +164,17 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
                     total_errors.fetch_add(1, Ordering::Relaxed);
 
-                    eprintln!(
-                        "{:>width$} of {}: {}: {}: {}",
-                        idx,
-                        total_files,
-                        file_name,
-                        "Error".red(),
-                        e,
-                        width = nth_width
-                    );
+                    if should_print {
+                        eprintln!(
+                            "{:>width$} of {}: {}: {}: {}",
+                            idx,
+                            total_files,
+                            file_name,
+                            "Error".red(),
+                            e,
+                            width = nth_width
+                        );
+                    }
                 }
             };
 
