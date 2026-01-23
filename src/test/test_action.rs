@@ -7,8 +7,8 @@ use crate::types::{ClickAction, SaveAction, TestAction};
 
 pub async fn exec_test_action(page: &Page, action: &TestAction) -> Result<()> {
     match action {
-        TestAction::Click(ClickAction { selector }) => {
-            page.find_element(selector).await?.click().await?;
+        TestAction::Click(ClickAction { click }) => {
+            page.find_element(click).await?.click().await?;
         }
 
         TestAction::Save(SaveAction { save }) => {

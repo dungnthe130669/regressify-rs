@@ -108,7 +108,7 @@ pub struct TestScenario {
 
 /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/#spoiler--check
 #[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(untagged)]
 pub enum TestAction {
     Click(ClickAction),
     Save(SaveAction),
@@ -117,7 +117,7 @@ pub enum TestAction {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickAction {
-    pub selector: String,
+    pub click: String,
 }
 
 #[derive(Serialize, Deserialize)]
