@@ -4,7 +4,6 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::{
     browser::{Browser, BrowserConfig},
     cdp::browser_protocol::page::CaptureScreenshotFormat,
-    handler::viewport::Viewport,
     page::ScreenshotParams,
 };
 use futures::StreamExt;
@@ -24,14 +23,7 @@ pub async fn test() -> Result<()> {
     }
 
     let config = config_builder
-        .viewport(Some(Viewport {
-            width: 1920,
-            height: 1080,
-            device_scale_factor: None,
-            emulating_mobile: false,
-            is_landscape: true,
-            has_touch: false,
-        }))
+        .window_size(1920, 1080)
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
