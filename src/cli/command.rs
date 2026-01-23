@@ -9,4 +9,7 @@ pub enum Command {
 
     /// Optimize images command
     Optimize(OptimizeArgs),
+
+    /// Test command (not implemented yet)
+    Test,
 }

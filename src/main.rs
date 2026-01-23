@@ -22,6 +22,7 @@ mod github;
 mod helpers;
 mod optimizer;
 mod snapshot;
+mod test;
 mod types;
 mod vso;
 
@@ -61,6 +62,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Snapshot => snapshot::snapshot(),
         Command::Optimize(args) => optimizer::optimize(args),
+        Command::Test => test::test().await,
     }
 }
 

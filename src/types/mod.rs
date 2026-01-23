@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+mod regressify;
+
 #[derive(Debug, Deserialize)]
 pub struct BackstopReport {
     pub id: String,

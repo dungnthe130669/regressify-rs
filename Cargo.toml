@@ -11,9 +11,11 @@ cloud = []
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.22.1"
+chromiumoxide = "0.8.0"
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
+futures = "0.3.31"
 imagequant = "4.4.1"
 lodepng = "3.12.1"
 oxipng = "10.0.0"
