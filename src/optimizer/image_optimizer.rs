@@ -234,8 +234,8 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     liq.set_min_posterization(4)?;
     liq.set_max_colors(8)?;
 
-    // If the original file size is larger than 1 MB, reduce both min_quality and max_quality by 10
-    if original_size > 1 * 1024 * 1024 {
+    // If image resolution is larger than 1 megapixel, reduce quality by 10 to improve compression
+    if width * height > 1_000_000 {
         liq.set_quality(
             args.min_quality.saturating_sub(10),
             args.max_quality.saturating_sub(10),
