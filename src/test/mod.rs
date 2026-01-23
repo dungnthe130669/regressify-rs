@@ -86,11 +86,11 @@ pub async fn test() -> Result<()> {
 
     sleep(Duration::from_secs(5)).await;
 
-    eprintln!("Retrieving page content...");
-    let html = page.wait_for_navigation().await?.content().await?;
-    eprint!("{}", html);
+    // eprintln!("Retrieving page content...");
+    // let html = page.wait_for_navigation().await?.content().await?;
+    // eprint!("{}", html);
 
-    sleep(Duration::from_secs(5)).await;
+    // sleep(Duration::from_secs(5)).await;
 
     eprintln!("Taking screenshots...");
     page.save_screenshot(
