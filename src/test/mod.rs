@@ -37,10 +37,12 @@ pub async fn test() -> Result<()> {
     });
 
     // create a new browser page and navigate to the url
+    eprintln!("Navigating to https://tuyen.blog/ ...");
     let page = browser.new_page("https://tuyen.blog/").await?;
 
     sleep(Duration::from_secs(5)).await;
 
+    eprintln!("Taking screenshots...");
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -54,10 +56,12 @@ pub async fn test() -> Result<()> {
     sleep(Duration::from_secs(5)).await;
 
     // find and click the search toggle button to reveal the search bar
+    eprintln!("Toggling theme...");
     page.find_element("#theme-toggle").await?.click().await?;
 
     sleep(Duration::from_secs(5)).await;
 
+    eprintln!("Taking screenshots...");
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -72,6 +76,7 @@ pub async fn test() -> Result<()> {
 
     // find the search bar type into the search field and hit `Enter`,
     // this triggers a new navigation to the search result page
+    eprintln!("Navigating to Optimizely CMS section...");
     page.find_element("#nav-main > .menu-item[data-section=\"optimizely-cms\"] > .menu-link")
         .await?
         .click()
@@ -79,11 +84,13 @@ pub async fn test() -> Result<()> {
 
     sleep(Duration::from_secs(5)).await;
 
+    eprintln!("Retrieving page content...");
     let html = page.wait_for_navigation().await?.content().await?;
     eprint!("{}", html);
 
     sleep(Duration::from_secs(5)).await;
 
+    eprintln!("Taking screenshots...");
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -94,7 +101,12 @@ pub async fn test() -> Result<()> {
     )
     .await?;
 
+    eprintln!("Closing browser...");
     browser.close().await?;
+
+    eprintln!("Waiting for handler to finish...");
     handle.await?;
+
+    eprintln!("Test completed successfully.");
     Ok(())
 }
