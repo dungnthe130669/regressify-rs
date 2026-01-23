@@ -63,7 +63,7 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> 
 
     // For each test scenario
     for scenario in &test_suite.scenarios {
-        exec_test_scenario(&browser, &scenario).await?;
+        exec_test_scenario(&browser, scenario).await?;
     }
 
     eprintln!("Closing browser...");
