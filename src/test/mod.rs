@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
-    browser::{Browser, BrowserConfig},
+    browser::{Browser, BrowserConfig, HeadlessMode},
     cdp::browser_protocol::page::CaptureScreenshotFormat,
     page::ScreenshotParams,
 };
@@ -25,6 +25,7 @@ pub async fn test() -> Result<()> {
     let config = config_builder
         .window_size(1920, 1080)
         .viewport(None)
+        .headless_mode(HeadlessMode::New)
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
