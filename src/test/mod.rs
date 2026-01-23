@@ -41,7 +41,7 @@ pub async fn test() -> Result<()> {
 
     // find the search bar type into the search field and hit `Enter`,
     // this triggers a new navigation to the search result page
-    page.find_element("#nav-main > .menu-item > .menu-link:first-child")
+    page.find_element("#nav-main > .menu-item[data-section=\"optimizely-cms\"] > .menu-link")
         .await?
         .click()
         .await?;
