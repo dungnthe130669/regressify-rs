@@ -1,5 +1,9 @@
 use anyhow::{Result, anyhow};
-use chromiumoxide::browser::{Browser, BrowserConfig};
+use chromiumoxide::{
+    browser::{Browser, BrowserConfig},
+    cdp::browser_protocol::page::CaptureScreenshotFormat,
+    page::ScreenshotParams,
+};
 use futures::StreamExt;
 
 pub async fn test() -> Result<()> {
@@ -25,10 +29,19 @@ pub async fn test() -> Result<()> {
 
     // find and click the search toggle button to reveal the search bar
     page.find_element("#theme-toggle").await?.click().await?;
+    page.save_screenshot(
+        ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .full_page(true)
+            .omit_background(true)
+            .build(),
+        "step-1.png",
+    )
+    .await?;
 
     // find the search bar type into the search field and hit `Enter`,
     // this triggers a new navigation to the search result page
-    page.find_element("#nav-main > .menu-item > .menu-link")
+    page.find_element("#nav-main > .menu-item > .menu-link:first-child")
         .await?
         .click()
         .await?;
