@@ -197,11 +197,7 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
         "Total optimized size: {}",
         format_bytes(final_optimized_size).green()
     );
-    let savings = if final_original_size > final_optimized_size {
-        final_original_size - final_optimized_size
-    } else {
-        0
-    };
+    let savings = final_original_size.saturating_sub(final_optimized_size);
     eprintln!("Total savings: {}", format_bytes(savings).green());
 
     Ok(())
