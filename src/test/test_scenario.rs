@@ -8,6 +8,8 @@ use crate::{test::test_action::exec_test_action, types::TestScenario};
 pub async fn exec_test_scenario(browser: &Browser, scenario: &TestScenario) -> Result<()> {
     let TestScenario { url, actions, .. } = scenario;
 
+    eprint!("  Executing scenario for URL '{}': ", url);
+
     let page = browser.new_page(url.as_str()).await?;
 
     // Execute actions

@@ -5,7 +5,9 @@ use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
 use futures::StreamExt;
 
 use crate::{
-    common, helpers::OnceLockExtensions, test::test_scenario::exec_test_scenario,
+    common,
+    helpers::{IOExtensions, OnceLockExtensions},
+    test::test_scenario::exec_test_scenario,
     types::TestSuiteInput,
 };
 
@@ -26,7 +28,10 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> 
     }
 
     // Parse the test suite file (YAML or JSON)
-    eprintln!("Loading test suite from '{}'", test_suite_path.display());
+    eprintln!(
+        "Loading test suite from '{}'",
+        test_suite_path.normalize_string(false)?
+    );
     let test_suite_content = std::fs::read_to_string(&test_suite_path)?;
     let test_suite: crate::types::TestSuite = match format {
         crate::types::TestSuiteFormat::Yaml => serde_yaml::from_str(&test_suite_content)?,
@@ -35,6 +40,7 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> 
 
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
+    eprintln!("Launching browser...");
     let mut config_builder = BrowserConfig::builder();
 
     if debug {
@@ -58,10 +64,8 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> 
         }
     });
 
-    // create a new browser page and navigate to the url
-    eprintln!("Navigating to https://tuyen.blog/ ...");
-
     // For each test scenario
+    eprintln!("Executing test scenarios...");
     for scenario in &test_suite.scenarios {
         exec_test_scenario(&browser, scenario).await?;
     }
