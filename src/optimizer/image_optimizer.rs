@@ -226,6 +226,8 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 
     let width = image.width;
     let height = image.height;
+    // If image resolution is larger than 4 megapixel, reduce quality by 10 to improve compression
+    let is_large_image = width * height > 4_000_000;
 
     // 3. Initialize imagequant library
     let mut liq = imagequant::new();
@@ -235,7 +237,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     liq.set_max_colors(8)?;
 
     // If image resolution is larger than 4 megapixel, reduce quality by 10 to improve compression
-    if width * height > 4_000_000 {
+    if is_large_image {
         liq.set_quality(
             args.min_quality.saturating_sub(10),
             args.max_quality.saturating_sub(10),
