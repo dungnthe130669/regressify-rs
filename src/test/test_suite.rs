@@ -33,6 +33,8 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> 
         test_suite_path.normalize_string(false)?
     );
     let test_suite_content = std::fs::read_to_string(&test_suite_path)?;
+
+    eprintln!("Parsing test suite...");
     let test_suite: crate::types::TestSuite = match format {
         crate::types::TestSuiteFormat::Yaml => serde_yaml::from_str(&test_suite_content)?,
         crate::types::TestSuiteFormat::Json => serde_json::from_str(&test_suite_content)?,

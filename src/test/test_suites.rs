@@ -83,7 +83,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     futures::stream::iter(filtered_test_suites)
         .for_each_concurrent(None, |t| async {
-            exec_test_suite(&visual_tests_dir, t).await.ok();
+            _ = exec_test_suite(&visual_tests_dir, t).await;
         })
         .await;
 
