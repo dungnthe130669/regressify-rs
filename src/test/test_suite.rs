@@ -11,7 +11,7 @@ use crate::{
     types::TestSuiteInput,
 };
 
-pub async fn exec_test_suite(visual_tests_dir: &Path, input: TestSuiteInput) -> Result<()> {
+pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Result<()> {
     let TestSuiteInput {
         name,
         path: _,

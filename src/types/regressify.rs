@@ -111,13 +111,19 @@ pub struct TestScenario {
 #[serde(rename_all = "camelCase")]
 pub enum TestAction {
     Click(ClickAction),
-    Save(String),
+    Save(SaveAction),
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickAction {
     pub selector: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAction {
+    pub save: String,
 }
 
 /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
