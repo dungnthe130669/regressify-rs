@@ -1,2 +1,6 @@
 scenarios:
   - url: https://tuyen.blog/
+    actions:
+      - save: homepage
+      - click: '#theme-toggle'
+      - save: theme-toggle

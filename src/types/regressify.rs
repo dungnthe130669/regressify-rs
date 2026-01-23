@@ -111,6 +111,7 @@ pub struct TestScenario {
 #[serde(rename_all = "camelCase")]
 pub enum TestAction {
     Click(ClickAction),
+    Save(String),
 }
 
 #[derive(Serialize, Deserialize)]
