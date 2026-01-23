@@ -80,6 +80,7 @@ fn set_global_vars(cli: &Cli, work_dir: &Path) -> Result<()> {
     common::BACKSTOP_DIR_NAME.set_value(backstop_dir_name)?;
     common::BACKSTOP_DIR.set_value(backstop_dir)?;
     common::ROOT_DIR.set_value(normal_path)?;
+    common::DEBUG.set_value(cli.debug)?;
 
     if let Some(ref proxy) = cli.proxy {
         let proxy = Proxy::all(proxy)?;

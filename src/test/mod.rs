@@ -10,11 +10,20 @@ use chromiumoxide::{
 use futures::StreamExt;
 use tokio::time::sleep;
 
+use crate::{common, helpers::OnceLockExtensions};
+
 pub async fn test() -> Result<()> {
+    let debug = *common::DEBUG.get_required()?;
+
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
-    let config = BrowserConfig::builder()
-        .with_head()
+    let mut config_builder = BrowserConfig::builder();
+
+    if debug {
+        config_builder = config_builder.with_head();
+    }
+
+    let config = config_builder
         .viewport(Some(Viewport {
             width: 1920,
             height: 1080,
