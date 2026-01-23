@@ -34,6 +34,10 @@ pub struct Cli {
     #[clap(long, allow_hyphen_values = true)]
     pub site_env: Option<String>,
 
+    /// Enable debug mode
+    #[clap(long, action, default_value = "false")]
+    pub debug: bool,
+
     /// Subcommand to execute
     #[clap(subcommand)]
     pub command: Command,
