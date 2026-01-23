@@ -3,13 +3,17 @@ use futures::StreamExt;
 use walkdir::WalkDir;
 
 use crate::{
+    cli::args::TestArgs,
     common,
     helpers::OnceLockExtensions,
-    test::exec_test_suite,
+    test::test_suite::exec_test_suite,
     types::{TestSuiteFormat, TestSuiteInput},
 };
 
-pub async fn exec_test_suites(test_suites: &[String]) -> Result<()> {
+pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
+    let TestArgs {
+        test_suite: test_suites,
+    } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
 

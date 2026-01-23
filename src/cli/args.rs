@@ -21,7 +21,7 @@ pub struct OptimizeArgs {
 
 #[derive(clap::Args)]
 pub struct TestArgs {
-    test_suite: Vec<String>,
+    pub test_suite: Vec<String>,
 }
 
 fn quality_parser(s: &str) -> Result<u8, String> {

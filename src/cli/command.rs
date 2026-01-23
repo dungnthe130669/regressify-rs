@@ -1,6 +1,6 @@
 use clap::Subcommand;
 
-use crate::cli::args::OptimizeArgs;
+use crate::cli::args::{OptimizeArgs, TestArgs};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -11,5 +11,5 @@ pub enum Command {
     Optimize(OptimizeArgs),
 
     /// Test command (not implemented yet)
-    Test,
+    Test(TestArgs),
 }

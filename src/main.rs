@@ -62,7 +62,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Snapshot => snapshot::snapshot(),
         Command::Optimize(args) => optimizer::optimize(args),
-        Command::Test => test::test().await,
+        Command::Test(args) => test::exec_test_suites(args).await,
     }
 }
 
