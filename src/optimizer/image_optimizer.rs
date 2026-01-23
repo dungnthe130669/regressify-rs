@@ -153,6 +153,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Err(e) => {
+                    let original_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+
+                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
                     total_errors.fetch_add(1, Ordering::Relaxed);
 
                     eprintln!(
