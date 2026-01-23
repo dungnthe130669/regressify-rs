@@ -26,6 +26,15 @@ pub async fn test() -> Result<()> {
 
     // create a new browser page and navigate to the url
     let page = browser.new_page("https://tuyen.blog/").await?;
+    page.save_screenshot(
+        ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .full_page(true)
+            .omit_background(true)
+            .build(),
+        "step-0.png",
+    )
+    .await?;
 
     // find and click the search toggle button to reveal the search bar
     page.find_element("#theme-toggle").await?.click().await?;
@@ -48,6 +57,15 @@ pub async fn test() -> Result<()> {
 
     let html = page.wait_for_navigation().await?.content().await?;
     eprint!("{}", html);
+    page.save_screenshot(
+        ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .full_page(true)
+            .omit_background(true)
+            .build(),
+        "step-2.png",
+    )
+    .await?;
 
     browser.close().await?;
     handle.await?;
