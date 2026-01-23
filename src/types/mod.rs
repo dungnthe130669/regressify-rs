@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 
+mod actions;
 mod regressify;
 
+pub use actions::*;
 pub use regressify::*;
 
 #[derive(Debug, Deserialize)]

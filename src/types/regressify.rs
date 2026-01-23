@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::actions::TestAction;
+
 pub struct TestSuiteInput {
     pub name: String,
 
@@ -104,26 +106,6 @@ pub struct TestScenario {
     pub use_css_override: Option<bool>,
 
     pub viewport_names: Option<Selectors>,
-}
-
-/// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/#spoiler--check
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum TestAction {
-    Click(ClickAction),
-    Save(SaveAction),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ClickAction {
-    pub click: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaveAction {
-    pub save: String,
 }
 
 /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
