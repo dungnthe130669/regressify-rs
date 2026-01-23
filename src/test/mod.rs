@@ -24,6 +24,7 @@ pub async fn test() -> Result<()> {
 
     let config = config_builder
         .window_size(1920, 1080)
+        .viewport(None)
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
