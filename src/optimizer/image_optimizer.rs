@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
@@ -58,6 +58,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 
     let total_files = png_files.len();
     let counter = AtomicUsize::new(0);
+    let total_original_size = AtomicU64::new(0);
+    let total_optimized_size = AtomicU64::new(0);
+    let total_skipped_files = AtomicUsize::new(0);
+    let total_errors = AtomicUsize::new(0);
 
     let to_be_print_nth = match png_files.len() {
         n if n < 50 => 1,
@@ -85,6 +89,9 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
 
             match result {
                 Ok(OptimizeResult::Pair(width, height, original_size, optimized_size)) => {
+                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_optimized_size.fetch_add(optimized_size, Ordering::Relaxed);
+
                     eprintln!(
                         "{:>width$} of {}: {}: {} --> {} ({}x{})",
                         idx,
@@ -98,6 +105,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Ok(OptimizeResult::AlreadyOptimized(width, height, original_size)) => {
+                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+
                     eprintln!(
                         "{:>width$} of {}: {}: Already optimized: {} ({}x{}).",
                         idx,
@@ -110,6 +121,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Ok(OptimizeResult::TooSmall(original_size)) => {
+                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+
                     eprintln!(
                         "{:>width$} of {}: {}: {} ({}).",
                         idx,
@@ -121,6 +136,10 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Ok(OptimizeResult::TooLowQuality(width, height, original_size)) => {
+                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+
                     eprintln!(
                         "{:>width$} of {}: {}: {}: {} ({}x{}) - quality too low",
                         idx,
@@ -134,6 +153,8 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
                     );
                 }
                 Err(e) => {
+                    total_errors.fetch_add(1, Ordering::Relaxed);
+
                     eprintln!(
                         "{:>width$} of {}: {}: {}: {}",
                         idx,
@@ -149,6 +170,35 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
             Ok(())
         })
         .ok();
+
+    // Report summary
+    let final_original_size = total_original_size.load(Ordering::Relaxed);
+    let final_optimized_size = total_optimized_size.load(Ordering::Relaxed);
+    let final_skipped_files = total_skipped_files.load(Ordering::Relaxed);
+    let final_errors = total_errors.load(Ordering::Relaxed);
+
+    eprintln!("\nOptimization Summary:");
+    eprintln!("Total files processed: {}", total_files);
+    eprintln!(
+        "Total files optimized: {}",
+        total_files - final_skipped_files - final_errors
+    );
+    eprintln!("Total files skipped: {}", final_skipped_files);
+    eprintln!("Total errors: {}", final_errors);
+    eprintln!(
+        "Total original size: {}",
+        format_bytes(final_original_size).yellow()
+    );
+    eprintln!(
+        "Total optimized size: {}",
+        format_bytes(final_optimized_size).green()
+    );
+    let savings = if final_original_size > final_optimized_size {
+        final_original_size - final_optimized_size
+    } else {
+        0
+    };
+    eprintln!("Total savings: {}", format_bytes(savings).green());
 
     Ok(())
 }
