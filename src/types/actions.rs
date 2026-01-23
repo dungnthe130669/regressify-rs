@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum TestAction {
     Click(ClickAction),
     Save(SaveAction),
+    Wait(WaitAction),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -19,4 +20,19 @@ pub struct ClickAction {
 #[serde(rename_all = "camelCase")]
 pub struct SaveAction {
     pub save: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WaitAction {
+    pub wait: Wait,
+    pub url: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Wait {
+    Double(f64),
+
+    String(String),
 }

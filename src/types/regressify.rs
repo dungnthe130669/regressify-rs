@@ -120,14 +120,6 @@ pub enum Selectors {
 
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Wait {
-    Double(f64),
-
-    String(String),
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(untagged)]
 pub enum Needs {
     String(String),
 
