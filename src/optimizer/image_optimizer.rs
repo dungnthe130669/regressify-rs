@@ -233,23 +233,25 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 
     let width = image.width;
     let height = image.height;
-    // If image resolution is larger than 4 megapixel, reduce quality by 10 to improve compression
-    let is_large_image = width * height > 4_000_000;
+    let resolution = width * height;
+
+    // Further reduction for large images
+    let quality_delta = match resolution {
+        n if n > 16_000_000 => 10, // > 16 megapixel
+        n if n > 8_000_000 => 7,   // > 8 megapixel
+        n if n > 4_000_000 => 5,   // > 4 megapixel
+        _ => 0,
+    };
 
     // 3. Initialize imagequant library
     let mut liq = imagequant::new();
-    liq.set_quality(args.min_quality, args.max_quality)?;
+    liq.set_quality(
+        args.min_quality.saturating_sub(quality_delta),
+        args.max_quality.saturating_sub(quality_delta),
+    )?;
     liq.set_speed(args.speed)?;
     liq.set_min_posterization(4)?;
     liq.set_max_colors(8)?;
-
-    // If image resolution is larger than 4 megapixel, reduce quality by 10 to improve compression
-    if is_large_image {
-        liq.set_quality(
-            args.min_quality.saturating_sub(10),
-            args.max_quality.saturating_sub(10),
-        )?;
-    }
 
     // Create the imagequant image object
     let mut liq_image = liq.new_image(image.buffer, image.width, image.height, 0.0)?;
