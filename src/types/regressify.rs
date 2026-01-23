@@ -1,9 +1,25 @@
 #![allow(dead_code)]
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
+
+pub struct TestSuiteInput {
+    pub name: String,
+
+    pub path: PathBuf,
+
+    pub format: TestSuiteFormat,
+}
+
+pub enum TestSuiteFormat {
+    Yaml,
+
+    Json,
+}
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct MyType {
+pub struct TestSuite {
     pub async_capture_limit: Option<f64>,
 
     pub async_compare_limit: Option<f64>,
@@ -24,7 +40,7 @@ pub struct MyType {
 
     pub remove_selectors: Option<Vec<String>>,
 
-    pub scenarios: Vec<Url>,
+    pub scenarios: Vec<TestScenario>,
 
     pub state: Option<Needs>,
 
@@ -47,9 +63,9 @@ pub enum Browser {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Url {
+pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
-    pub actions: Option<Vec<Action>>,
+    pub actions: Option<Vec<TestAction>>,
 
     pub click_selector: Option<String>,
 
@@ -93,48 +109,14 @@ pub struct Url {
 /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/#spoiler--check
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct Action {
-    pub check: Option<String>,
+pub enum TestAction {
+    Click(ClickAction),
+}
 
-    pub frame: Option<Selectors>,
-
-    pub click: Option<String>,
-
-    pub goto: Option<String>,
-
-    pub hide: Option<String>,
-
-    pub hover: Option<String>,
-
-    pub append: Option<bool>,
-
-    pub input: Option<String>,
-
-    pub value: Option<Selectors>,
-
-    pub file: Option<Selectors>,
-
-    pub use_file_chooser: Option<bool>,
-
-    pub persist: Option<String>,
-
-    pub key: Option<String>,
-
-    pub press: Option<String>,
-
-    pub remove: Option<String>,
-
-    pub scroll: Option<String>,
-
-    pub label: Option<Selectors>,
-
-    pub select: Option<String>,
-
-    pub uncheck: Option<String>,
-
-    pub url: Option<String>,
-
-    pub wait: Option<Wait>,
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClickAction {
+    pub selector: String,
 }
 
 /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture

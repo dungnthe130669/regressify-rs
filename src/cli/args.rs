@@ -19,6 +19,11 @@ pub struct OptimizeArgs {
     pub min_size_kb: u64,
 }
 
+#[derive(clap::Args)]
+pub struct TestArgs {
+    test_suite: Vec<String>,
+}
+
 fn quality_parser(s: &str) -> Result<u8, String> {
     s.parse::<u8>()
         .map_err(|_| {
