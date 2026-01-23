@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
     browser::{Browser, BrowserConfig},
@@ -6,6 +8,7 @@ use chromiumoxide::{
     page::ScreenshotParams,
 };
 use futures::StreamExt;
+use tokio::time::sleep;
 
 pub async fn test() -> Result<()> {
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
@@ -35,6 +38,9 @@ pub async fn test() -> Result<()> {
 
     // create a new browser page and navigate to the url
     let page = browser.new_page("https://tuyen.blog/").await?;
+
+    sleep(Duration::from_secs(5)).await;
+
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -45,8 +51,13 @@ pub async fn test() -> Result<()> {
     )
     .await?;
 
+    sleep(Duration::from_secs(5)).await;
+
     // find and click the search toggle button to reveal the search bar
     page.find_element("#theme-toggle").await?.click().await?;
+
+    sleep(Duration::from_secs(5)).await;
+
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
@@ -57,6 +68,8 @@ pub async fn test() -> Result<()> {
     )
     .await?;
 
+    sleep(Duration::from_secs(5)).await;
+
     // find the search bar type into the search field and hit `Enter`,
     // this triggers a new navigation to the search result page
     page.find_element("#nav-main > .menu-item[data-section=\"optimizely-cms\"] > .menu-link")
@@ -64,8 +77,13 @@ pub async fn test() -> Result<()> {
         .click()
         .await?;
 
+    sleep(Duration::from_secs(5)).await;
+
     let html = page.wait_for_navigation().await?.content().await?;
     eprint!("{}", html);
+
+    sleep(Duration::from_secs(5)).await;
+
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
