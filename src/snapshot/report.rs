@@ -43,7 +43,7 @@ pub fn generate_html_report_summary(
             "Snapshot report summary generated at: {:?}",
             report_path.normalize_string(false)?
         )
-        .blue()
+        .cyan()
     );
 
     let swa_config = include_bytes!("_staticwebapp.config.json");
