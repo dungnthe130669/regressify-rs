@@ -423,16 +423,23 @@
         </tbody>
         <tfoot>
           <tr>
+            {%- set percent = (total_passed / total_tests * 100.0) | round(precision=2) -%}
+            {%- if total_passed == total_tests %}
+            {%- set passed_class = "success" -%}
+            {%- set failed_class = "success" -%}
+            {%- else -%}
+            {%- set failed_class = "danger" -%}
+            {%- endif %}
             <th>Total</th>
             <th>{{ total_tests }}</th>
-            <th{% if total_passed == total_tests %} class="success"{% endif %}>{{ total_passed }}</th>
-            <th{% if total_failed > 0 %} class="danger"{% endif %}>{{ total_failed }}</th>
-            <th{% if total_passed == total_tests %} class="success"{% endif %}>
+            <th{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>{{ total_passed }}</th>
+            <th{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>{{ total_failed }}</th>
+            <th{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
               <div class="progress-wrapper">
                 <div class="progress-track">
-                  <div class="progress-fill" style="width: {{ (total_passed / total_tests * 100.0) | round(precision=2) }}%"></div>
+                  <div class="progress-fill" style="width: {{ percent }}%"></div>
                 </div>
-                <div class="progress-text">{{ (total_passed / total_tests * 100.0) | round(precision=2) }}%</div>
+                <div class="progress-text">{{ percent }}%</div>
               </div>
             </th>
           </tr>
