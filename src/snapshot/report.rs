@@ -41,7 +41,7 @@ pub fn generate_html_report_summary(
         "{}",
         format!(
             "Snapshot report summary generated at: {:?}",
-            report_path.normalize_string(false)
+            report_path.normalize_string(false)?
         )
         .blue()
     );
