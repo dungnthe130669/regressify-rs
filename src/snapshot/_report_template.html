@@ -1,3 +1,9 @@
+{#- Use Tera Template Engine for rendering -#}
+{#- Requirement: looks clean, modern, and professional -#}
+{#- Responsive design for mobile and desktop -#}
+{#- Dark mode support -#}
+{#- Accessibility considerations -#}
+{#- Print-friendly styles -#}
 <!doctype html>
 <html lang="en">
   <head>
@@ -392,17 +398,24 @@
         </thead>
         <tbody>
           {%- for summary in summaries %}
+          {%- set percent = (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) -%}
+          {%- if summary.total_passed == summary.total_tests %}
+          {%- set passed_class = "success" -%}
+          {%- set failed_class = "success" -%}
+          {%- else -%}
+          {%- set failed_class = "danger" -%}
+          {%- endif %}
           <tr>
             <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.id }}</a></td>
             <td>{{ summary.total_tests }}</td>
-            <td{% if summary.total_passed == summary.total_tests %} class="success"{% endif %}>{{ summary.total_passed }}</td>
-            <td{% if summary.total_failed > 0 %} class="danger"{% endif %}>{{ summary.total_failed }}</td>
-            <td>
+            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>{{ summary.total_passed }}</td>
+            <td{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>{{ summary.total_failed }}</td>
+            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
               <div class="progress-wrapper">
                 <div class="progress-track">
-                  <div class="progress-fill" style="width: {{ (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) }}%"></div>
+                  <div class="progress-fill" style="width: {{ percent }}%"></div>
                 </div>
-                <div class="progress-text">{{ (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) }}%</div>
+                <div class="progress-text">{{ percent }}%</div>
               </div>
             </td>
           </tr>
@@ -414,7 +427,7 @@
             <th>{{ total_tests }}</th>
             <th{% if total_passed == total_tests %} class="success"{% endif %}>{{ total_passed }}</th>
             <th{% if total_failed > 0 %} class="danger"{% endif %}>{{ total_failed }}</th>
-            <th>
+            <th{% if total_passed == total_tests %} class="success"{% endif %}>
               <div class="progress-wrapper">
                 <div class="progress-track">
                   <div class="progress-fill" style="width: {{ (total_passed / total_tests * 100.0) | round(precision=2) }}%"></div>
