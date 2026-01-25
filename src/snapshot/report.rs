@@ -3,6 +3,7 @@ use colored::*;
 use std::fs;
 use std::path::Path;
 
+use crate::helpers::IOExtensions;
 use crate::types::HtmlReportSummary;
 
 pub fn generate_html_report_summary(
@@ -38,7 +39,11 @@ pub fn generate_html_report_summary(
     fs::write(&report_path, replaced_html)?;
     println!(
         "{}",
-        format!("Snapshot report summary generated at: {:?}", report_path).blue()
+        format!(
+            "Snapshot report summary generated at: {:?}",
+            report_path.normalize_string(false)
+        )
+        .blue()
     );
 
     let swa_config = include_bytes!("_staticwebapp.config.json");
