@@ -37,7 +37,7 @@ pub fn generate_html_report_summary(
 
     let report_path = backstop_dir.join("index.html");
     fs::write(&report_path, replaced_html)?;
-    println!(
+    eprintln!(
         "{}",
         format!(
             "Snapshot report summary generated at: {:?}",

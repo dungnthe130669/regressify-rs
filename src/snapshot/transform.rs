@@ -15,7 +15,7 @@ pub fn process_test_suite(
 ) -> Result<Option<HtmlReportSummary>> {
     let test_dir = backstop_dir.join(id);
     if !test_dir.exists() {
-        println!(
+        eprintln!(
             "{}",
             format!("Test directory does not exist: {:?}", test_dir).red()
         );
@@ -55,7 +55,7 @@ pub fn process_test_suite(
 
         if !config_text.contains(&unix_path) && !config_text.contains(&win_path) {
             fs::remove_dir_all(&path).ok();
-            println!(
+            eprintln!(
                 "{}",
                 format!("Removed unreferenced snapshot directory: {:?}", path).yellow()
             );
@@ -76,7 +76,6 @@ pub fn process_test_suite(
                                 let content = fs::read(&full_path).unwrap_or_default();
                                 let hash = get_asset_version(&content);
                                 hashes.insert(img_rel_path.clone(), hash.clone());
-                                println!("Calculated hash for image: {} => {}", img_rel_path, hash);
                             }
                         }
                     };
@@ -125,13 +124,9 @@ pub fn process_test_suite(
                     fs::write(&html_index_path, updated_html).ok();
                 }
 
-                println!(
-                    "{}",
-                    format!(
-                        "Snapshot directory: {}, Passed: {}, Failed: {}",
-                        sub_dir_name, pass_count, fail_count
-                    )
-                    .green()
+                eprintln!(
+                    "Snapshot directory: {}, Passed: {}, Failed: {}",
+                    sub_dir_name, pass_count, fail_count
                 );
 
                 return Ok(Some(HtmlReportSummary {

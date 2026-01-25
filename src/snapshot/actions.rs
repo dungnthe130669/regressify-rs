@@ -30,7 +30,7 @@ pub fn snapshot() -> Result<()> {
                 .chars()
                 .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
             {
-                println!(
+                eprintln!(
                         "{}",
                         format!("Skipping invalid test suite name: {}. Test suite names must be alphanumeric, underscores, or hyphens only.", dir_name).yellow()
                     );
