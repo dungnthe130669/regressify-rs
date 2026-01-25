@@ -147,6 +147,46 @@
         font-weight: 600;
       }
 
+      /* Progress Bar */
+      .progress-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        justify-content: flex-start;
+      }
+
+      td .progress-wrapper, tfoot .progress-wrapper {
+        /* On desktop, keep it somewhat aligned, maybe centered? */
+        /* Actually table cells are text-align center, but flex ignores that. 
+           Let's center the progress bar in the cell. */
+        justify-content: center;
+      }
+
+      .progress-track {
+        width: 80px;
+        height: 6px;
+        background-color: var(--border-color);
+        border-radius: 99px;
+        overflow: hidden;
+        /* Ensure it prints background colors */
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background-color: var(--success-text);
+        border-radius: 99px;
+        /* Ensure it prints background colors */
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+      
+      .progress-text {
+        font-family: monospace; /* Tabular figures usually */
+        font-size: 0.8em;
+      }
+
       tfoot {
         background-color: var(--bg-subtle);
         font-weight: 700;
@@ -255,6 +295,19 @@
           text-transform: uppercase;
           color: var(--text-muted);
         }
+        td:nth-of-type(5)::before {
+          content: 'Percent';
+          font-weight: 500;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+
+        /* Mobile Progress Adjustment */
+        td .progress-wrapper {
+          justify-content: flex-end; /* Align right on mobile */
+          flex: 1; /* Take space */
+        }
 
         /* Footer Mobile */
         tfoot {
@@ -303,6 +356,18 @@
           text-transform: uppercase;
           color: var(--text-muted);
         }
+        tfoot th:nth-of-type(5)::before {
+          content: 'Percent';
+          font-weight: 500;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          color: var(--text-muted);
+        }
+
+        tfoot .progress-wrapper {
+             justify-content: flex-end;
+             flex: 1;
+        }
       }
     </style>
   </head>
@@ -320,6 +385,7 @@
             <th>Total Tests</th>
             <th>Passed</th>
             <th>Failed</th>
+            <th>Percent</th>
           </tr>
         </thead>
         <tbody>
@@ -329,6 +395,14 @@
             <td>{{ summary.total_tests }}</td>
             <td{% if summary.total_passed == summary.total_tests %} class="success"{% endif %}>{{ summary.total_passed }}</td>
             <td{% if summary.total_failed > 0 %} class="danger"{% endif %}>{{ summary.total_failed }}</td>
+            <td>
+              <div class="progress-wrapper">
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: {{ (summary.total_passed as f64 / summary.total_tests as f64 * 100.0) | round(2) }}%"></div>
+                </div>
+                <div class="progress-text">{{ (summary.total_passed as f64 / summary.total_tests as f64 * 100.0) | round(2) }}%</div>
+              </div>
+            </td>
           </tr>
           {%- endfor %}
         </tbody>
@@ -338,6 +412,14 @@
             <th>{{ total_tests }}</th>
             <th{% if total_passed == total_tests %} class="success"{% endif %}>{{ total_passed }}</th>
             <th{% if total_failed > 0 %} class="danger"{% endif %}>{{ total_failed }}</th>
+            <th>
+              <div class="progress-wrapper">
+                <div class="progress-track">
+                  <div class="progress-fill" style="width: {{ (total_passed as f64 / total_tests as f64 * 100.0) | round(2) }}%"></div>
+                </div>
+                <div class="progress-text">{{ (total_passed as f64 / total_tests as f64 * 100.0) | round(2) }}%</div>
+              </div>
+            </th>
           </tr>
         </tfoot>
       </table>
