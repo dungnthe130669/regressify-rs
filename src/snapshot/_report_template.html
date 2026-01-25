@@ -325,7 +325,7 @@
         <tbody>
           {%- for summary in summaries %}
           <tr>
-            <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.name }}</a></td>
+            <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.id }}</a></td>
             <td>{{ summary.total_tests }}</td>
             <td{% if summary.total_passed == summary.total_tests %} class="success"{% endif %}>{{ summary.total_passed }}</td>
             <td{% if summary.total_failed > 0 %} class="danger"{% endif %}>{{ summary.total_failed }}</td>
