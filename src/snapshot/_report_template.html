@@ -8,16 +8,36 @@
       :root {
         --bg-body: #f3f4f6;
         --bg-card: #ffffff;
+        --bg-subtle: #f9fafb;
         --text-main: #1f2937;
         --text-muted: #6b7280;
         --border-color: #e5e7eb;
         --primary-color: #3b82f6;
+        --primary-hover: #2563eb;
         --success-text: #059669;
         --success-bg: #d1fae5;
         --danger-text: #dc2626;
         --danger-bg: #fee2e2;
         --radius: 12px;
         --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-body: #0d1117;
+          --bg-card: #161b22;
+          --bg-subtle: #21262d;
+          --text-main: #e6edf3;
+          --text-muted: #8b949e;
+          --border-color: #30363d;
+          --primary-color: #58a6ff;
+          --primary-hover: #79c0ff;
+          --success-text: #3fb950;
+          --success-bg: rgba(46, 160, 67, 0.15);
+          --danger-text: #f85149;
+          --danger-bg: rgba(248, 81, 73, 0.15);
+          --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+        }
       }
 
       * {
@@ -47,7 +67,7 @@
         padding: 32px;
         text-align: center;
         border-bottom: 1px solid var(--border-color);
-        background: #ffffff;
+        background: var(--bg-card);
       }
 
       h1 {
@@ -71,7 +91,7 @@
       }
 
       th {
-        background-color: #f9fafb;
+        background-color: var(--bg-subtle);
         color: var(--text-muted);
         font-weight: 600;
         font-size: 0.75rem;
@@ -104,7 +124,7 @@
       }
 
       td:first-child a:hover {
-        color: #2563eb;
+        color: var(--primary-hover);
         text-decoration: underline;
       }
 
@@ -128,7 +148,7 @@
       }
 
       tfoot {
-        background-color: #f9fafb;
+        background-color: var(--bg-subtle);
         font-weight: 700;
       }
 
@@ -144,7 +164,7 @@
         text-align: center;
         font-size: 0.875rem;
         color: var(--text-muted);
-        background-color: #f9fafb;
+        background-color: var(--bg-subtle);
         border-top: 1px solid var(--border-color);
       }
 
@@ -199,7 +219,7 @@
 
         /* The Title Cell */
         td:first-child {
-          background-color: #f9fafb;
+          background-color: var(--bg-subtle);
           text-align: left;
           display: block; /* Block allows wrapping */
           padding: 16px 24px;
@@ -258,7 +278,7 @@
         tfoot th:first-child {
           display: block;
           text-align: center;
-          background-color: #f3f4f6;
+          background-color: var(--bg-body);
           color: var(--text-main);
         }
 
@@ -303,14 +323,21 @@
           </tr>
         </thead>
         <tbody>
-          <!-- REPORT_PLACEHOLDER -->
+          {%- for summary in summaries %}
+          <tr>
+            <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.name }}</a></td>
+            <td>{{ summary.total_tests }}</td>
+            <td{% if summary.total_passed == summary.total_tests %} class="success"{% endif %}>{{ summary.total_passed }}</td>
+            <td{% if summary.total_failed > 0 %} class="danger"{% endif %}>{{ summary.total_failed }}</td>
+          </tr>
+          {%- endfor %}
         </tbody>
         <tfoot>
           <tr>
             <th>Total</th>
-            <th><!-- TOTAL_TESTS --></th>
-            <th class="[[ PASSED_CLASS ]]"><!-- TOTAL_PASSED --></th>
-            <th class="[[ FAILED_CLASS ]]"><!-- TOTAL_FAILED --></th>
+            <th>{{ total_tests }}</th>
+            <th{% if total_passed == total_tests %} class="success"{% endif %}>{{ total_passed }}</th>
+            <th{% if total_failed > 0 %} class="danger"{% endif %}>{{ total_failed }}</th>
           </tr>
         </tfoot>
       </table>
