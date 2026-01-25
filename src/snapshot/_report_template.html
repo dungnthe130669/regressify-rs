@@ -398,9 +398,9 @@
             <td>
               <div class="progress-wrapper">
                 <div class="progress-track">
-                  <div class="progress-fill" style="width: {{ (summary.total_passed as f64 / summary.total_tests as f64 * 100.0) | round(2) }}%"></div>
+                  <div class="progress-fill" style="width: {{ (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) }}%"></div>
                 </div>
-                <div class="progress-text">{{ (summary.total_passed as f64 / summary.total_tests as f64 * 100.0) | round(2) }}%</div>
+                <div class="progress-text">{{ (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) }}%</div>
               </div>
             </td>
           </tr>
@@ -415,9 +415,9 @@
             <th>
               <div class="progress-wrapper">
                 <div class="progress-track">
-                  <div class="progress-fill" style="width: {{ (total_passed as f64 / total_tests as f64 * 100.0) | round(2) }}%"></div>
+                  <div class="progress-fill" style="width: {{ (total_passed / total_tests * 100.0) | round(precision=2) }}%"></div>
                 </div>
-                <div class="progress-text">{{ (total_passed as f64 / total_tests as f64 * 100.0) | round(2) }}%</div>
+                <div class="progress-text">{{ (total_passed / total_tests * 100.0) | round(precision=2) }}%</div>
               </div>
             </th>
           </tr>
