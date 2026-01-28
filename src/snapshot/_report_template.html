@@ -1,4 +1,4 @@
-{#- Use Tera Template Engine for rendering -#}
+{#- Use Tera Template Engine for rendering - https://keats.github.io/tera/docs/ -#}
 {#- Requirement: looks clean, modern, and professional -#}
 {#- Responsive design for mobile and desktop -#}
 {#- Dark mode support -#}
@@ -74,6 +74,36 @@
         text-align: center;
         border-bottom: 1px solid var(--border-color);
         background: var(--bg-card);
+      }
+      
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 1px;
+        background-color: var(--border-color);
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .summary-item {
+        background-color: var(--bg-card);
+        padding: 24px;
+        text-align: center;
+      }
+
+      .summary-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: var(--text-muted);
+        margin-bottom: 8px;
+        font-weight: 600;
+      }
+
+      .summary-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: var(--text-main);
+        line-height: 1.2;
       }
 
       h1 {
@@ -224,6 +254,10 @@
 
       /* --- Responsive Mobile Styles --- */
       @media (max-width: 640px) {
+        .summary-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
         body {
           padding: 16px;
         }
@@ -384,6 +418,32 @@
       <div class="header">
         <h1>Visual Tests Summary</h1>
         <p class="subtitle">Snapshot regression report</p>
+      </div>
+
+      {%- set overall_percent = (total_passed / total_tests * 100.0) | round(precision=2) -%}
+      {%- if total_passed == total_tests %}
+        {%- set header_passed_class = "success" -%}
+        {%- set header_failed_class = "success" -%}
+      {%- else %}
+        {%- set header_failed_class = "danger" -%}
+      {%- endif %}
+      <div class="summary-grid">
+        <div class="summary-item">
+          <div class="summary-label">Total Tests</div>
+          <div class="summary-value">{{ total_tests }}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Passed</div>
+          <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ total_passed }}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Failed</div>
+          <div class="summary-value{% if header_failed_class is defined %} {{ header_failed_class }}{% endif %}">{{ total_failed }}</div>
+        </div>
+        <div class="summary-item">
+          <div class="summary-label">Pass Rate</div>
+          <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ overall_percent }}%</div>
+        </div>
       </div>
 
       <table>
