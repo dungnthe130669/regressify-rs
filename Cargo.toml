@@ -5,13 +5,13 @@ edition = "2024"
 
 [features]
 default = ["local"]
-local = []
+local = ["dep:chromiumoxide"]
 cloud = []
 
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.22.1"
-chromiumoxide = "0.8.0"
+chromiumoxide = { version = "0.8.0", optional = true }
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
