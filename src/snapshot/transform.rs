@@ -31,10 +31,14 @@ pub fn process_test_suite(
 
     let config_path = html_report_dir.join("config.js");
     let html_index_path = html_report_dir.join("index.html");
+    let index_bundle_path = html_report_dir.join("index_bundle.js");
 
     if !config_path.exists() {
         return Ok(None);
     }
+
+    let index_bundle_content = include_str!("index_bundle.js");
+    fs::write(&index_bundle_path, index_bundle_content)?;
 
     let config_text = fs::read_to_string(&config_path)?;
     let mut modified_config_text = config_text.clone();
@@ -115,12 +119,22 @@ pub fn process_test_suite(
                 }
                 fs::write(&config_path, &modified_config_text).ok();
 
+                let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
+
                 // Handle index.html config.js versioning
                 let config_hash = get_asset_version(modified_config_text.as_bytes());
                 if let Ok(html_content) = fs::read_to_string(&html_index_path) {
                     let updated_html = html_content
                         .replace("'config.js'", &format!("'config.js?v={}'", config_hash))
-                        .replace("\"config.js\"", &format!("\"config.js?v={}\"", config_hash));
+                        .replace("\"config.js\"", &format!("\"config.js?v={}\"", config_hash))
+                        .replace(
+                            "'index_bundle.js'",
+                            &format!("'index_bundle.js?v={}'", bundle_hash),
+                        )
+                        .replace(
+                            "\"index_bundle.js\"",
+                            &format!("\"index_bundle.js?v={}\"", bundle_hash),
+                        );
                     fs::write(&html_index_path, updated_html).ok();
                 }
 
