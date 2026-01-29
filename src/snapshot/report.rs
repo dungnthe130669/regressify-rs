@@ -92,6 +92,36 @@ pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
         include_bytes!("data/divergedWorker.js"),
     )?;
 
+    write_shared_file(
+        backstop_dir,
+        "favicon.ico",
+        include_bytes!("data/favicon.ico"),
+    )?;
+
+    write_shared_file(
+        backstop_dir,
+        "favicon.svg",
+        include_bytes!("data/favicon.svg"),
+    )?;
+
+    write_shared_file(
+        backstop_dir,
+        "favicon-16x16.png",
+        include_bytes!("data/favicon-16x16.png"),
+    )?;
+
+    write_shared_file(
+        backstop_dir,
+        "favicon-32x32.png",
+        include_bytes!("data/favicon-32x32.png"),
+    )?;
+
+    write_shared_file(
+        backstop_dir,
+        "apple-touch-icon.png",
+        include_bytes!("data/apple-touch-icon.png"),
+    )?;
+
     Ok(())
 }
 
