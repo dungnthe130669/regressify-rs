@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
 
-    <title>{{ title }}</title>
+    <title>{{ test_suite_name | upper }} | Regressify Report</title>
 
     <style>
       @font-face {
@@ -50,7 +50,7 @@
       }
     </script>
 
-    <script src="{{ config_url }}"></script>
-    <script src="{{ index_bundle_url }}"></script>
+    <script src="config.js?v={{ config_hash }}"></script>
+    <script src="index_bundle.js?v={{ index_bundle_hash }}"></script>
   </body>
 </html>

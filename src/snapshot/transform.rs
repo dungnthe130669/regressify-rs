@@ -123,18 +123,9 @@ pub fn process_test_suite(
                 let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
 
                 let mut context = tera::Context::new();
-
-                context.insert(
-                    "title",
-                    format!("Snapshot Report - {}", id.to_uppercase()).as_str(),
-                );
-
-                context.insert("config_url", &format!("config.js?v={}", config_hash));
-
-                context.insert(
-                    "index_bundle_url",
-                    &format!("index_bundle.js?v={}", bundle_hash),
-                );
+                context.insert("test_suite_name", id);
+                context.insert("config_hash", &config_hash);
+                context.insert("index_bundle_hash", &bundle_hash);
 
                 let replaced_html = tera.render("test_suite_report.html", &context)?;
 
