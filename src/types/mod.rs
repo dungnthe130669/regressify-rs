@@ -26,6 +26,8 @@ pub struct BackstopPair {
     pub test: Option<String>,
     #[serde(rename = "diffImage")]
     pub diff_image: Option<String>,
+    #[serde(rename = "engineErrorMsg")]
+    pub engine_error_msg: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -34,4 +36,5 @@ pub struct HtmlReportSummary {
     pub total_tests: usize,
     pub total_passed: usize,
     pub total_failed: usize,
+    pub has_engine_errors: bool,
 }

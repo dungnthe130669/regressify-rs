@@ -475,6 +475,9 @@
           {%- else -%}
           {%- set failed_class = "danger" -%}
           {%- endif %}
+          {%- if summary.has_engine_errors %}
+          {%- set failed_class = failed_class ~ " engine-error" -%}
+          {%- endif %}
           <tr>
             <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.id }}</a></td>
             <td>{{ summary.total_tests }}</td>

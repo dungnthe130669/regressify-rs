@@ -157,6 +157,10 @@ pub fn process_test_suite(
                     total_tests: report.tests.len(),
                     total_passed: pass_count,
                     total_failed: fail_count,
+                    has_engine_errors: report
+                        .tests
+                        .iter()
+                        .any(|t| t.pair.engine_error_msg.is_some()),
                 }));
             }
         }
