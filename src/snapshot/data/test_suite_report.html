@@ -2,23 +2,27 @@
 <html>
   <head>
     <meta charset="utf-8" />
-
+    <meta http-equiv="x-ua-compatible" content="ie=edge" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,shrink-to-fit=no" />
+    <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no" />
     <title>{{ test_suite_name | upper }} | Regressify Report</title>
+
+    <meta name="robots" content="noindex, follow" />
 
     <style>
       @font-face {
         font-family: 'latoregular';
         src:
-          url('./assets/fonts/lato-regular-webfont.woff2') format('woff2'),
-          url('./assets/fonts/lato-regular-webfont.woff') format('woff');
+          url('../../lato-regular-webfont.woff2') format('woff2'),
+          url('../../lato-regular-webfont.woff') format('woff');
         font-weight: 400;
         font-style: normal;
       }
       @font-face {
         font-family: 'latobold';
         src:
-          url('./assets/fonts/lato-bold-webfont.woff2') format('woff2'),
-          url('./assets/fonts/lato-bold-webfont.woff') format('woff');
+          url('../../lato-bold-webfont.woff2') format('woff2'),
+          url('../../lato-bold-webfont.woff') format('woff');
         font-weight: 700;
         font-style: normal;
       }
@@ -42,6 +46,6 @@
     </script>
 
     <script src="config.js?v={{ config_hash }}"></script>
-    <script src="index_bundle.js?v={{ index_bundle_hash }}"></script>
+    <script src="../../index_bundle.js?v={{ index_bundle_hash }}"></script>
   </body>
 </html>

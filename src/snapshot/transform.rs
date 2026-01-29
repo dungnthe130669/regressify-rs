@@ -1,18 +1,20 @@
 use anyhow::Result;
-use base64::{Engine as _, engine::general_purpose};
 use colored::*;
-use sha2::{Digest, Sha384};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-use crate::types::{BackstopReport, HtmlReportSummary};
+use crate::{
+    snapshot::helpers::get_asset_version,
+    types::{BackstopReport, HtmlReportSummary},
+};
 
 pub fn process_test_suite(
     backstop_dir: &Path,
     id: &str,
     hashes: &mut HashMap<String, String>,
     tera: &tera::Tera,
+    bundle_hash: &str,
 ) -> Result<Option<HtmlReportSummary>> {
     let test_dir = backstop_dir.join(id);
     if !test_dir.exists() {
@@ -30,9 +32,25 @@ pub fn process_test_suite(
         return Ok(None);
     }
 
+    let to_be_deleted_files = vec![
+        "assets",
+        "diff.js",
+        "diverged.js",
+        "divergedWorker.js",
+        "index_bundle.js.LICENSE.txt",
+    ];
+
+    for file_name in to_be_deleted_files {
+        let path = html_report_dir.join(file_name);
+        if path.is_dir() {
+            fs::remove_dir_all(&path).ok();
+        } else if path.is_file() {
+            fs::remove_file(&path).ok();
+        }
+    }
+
     let config_path = html_report_dir.join("config.js");
     let html_index_path = html_report_dir.join("index.html");
-    let index_bundle_path = html_report_dir.join("index_bundle.js");
 
     if !config_path.exists() {
         return Ok(None);
@@ -119,8 +137,6 @@ pub fn process_test_suite(
 
                 // Handle index.html config.js versioning
                 let config_hash = get_asset_version(modified_config_text.as_bytes());
-                let index_bundle_content = include_str!("index_bundle.js");
-                let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
 
                 let mut context = tera::Context::new();
                 context.insert("test_suite_name", id);
@@ -129,7 +145,6 @@ pub fn process_test_suite(
 
                 let replaced_html = tera.render("test_suite_report.html", &context)?;
 
-                fs::write(&index_bundle_path, index_bundle_content)?;
                 fs::write(&html_index_path, replaced_html)?;
 
                 eprintln!(
@@ -148,13 +163,4 @@ pub fn process_test_suite(
     }
 
     Ok(None)
-}
-
-fn get_asset_version(content: &[u8]) -> String {
-    let mut hasher = Sha384::new();
-    hasher.update(content);
-    let result = hasher.finalize();
-    // Node's 'base64url' (URL-safe, no padding)
-    let encoded = general_purpose::URL_SAFE_NO_PAD.encode(result);
-    encoded.chars().take(10).collect()
 }

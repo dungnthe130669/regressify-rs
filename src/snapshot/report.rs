@@ -41,9 +41,62 @@ pub fn generate_html_report_summary(
         .cyan()
     );
 
-    let swa_config = include_bytes!("_staticwebapp.config.json");
+    let swa_config = include_bytes!("data/staticwebapp.config.json");
     let swa_config_path = backstop_dir.join("staticwebapp.config.json");
     fs::write(&swa_config_path, swa_config)?;
 
+    Ok(())
+}
+
+pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
+    write_shared_file(
+        backstop_dir,
+        "lato-bold-webfont.woff",
+        include_bytes!("data/lato-bold-webfont.woff"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "lato-bold-webfont.woff2",
+        include_bytes!("data/lato-bold-webfont.woff2"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "Lato-Bold.ttf",
+        include_bytes!("data/Lato-Bold.ttf"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "lato-regular-webfont.woff",
+        include_bytes!("data/lato-regular-webfont.woff"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "lato-regular-webfont.woff2",
+        include_bytes!("data/lato-regular-webfont.woff2"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "Lato-Regular.ttf",
+        include_bytes!("data/Lato-Regular.ttf"),
+    )?;
+
+    write_shared_file(backstop_dir, "diff.js", include_bytes!("data/diff.js"))?;
+    write_shared_file(
+        backstop_dir,
+        "diverged.js",
+        include_bytes!("data/diverged.js"),
+    )?;
+    write_shared_file(
+        backstop_dir,
+        "divergedWorker.js",
+        include_bytes!("data/divergedWorker.js"),
+    )?;
+
+    Ok(())
+}
+
+pub fn write_shared_file(backstop_dir: &Path, file_name: &str, content: &[u8]) -> Result<()> {
+    let file_path = backstop_dir.join(file_name);
+    fs::write(&file_path, content)?;
     Ok(())
 }

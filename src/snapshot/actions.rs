@@ -6,7 +6,11 @@ use std::fs;
 use crate::{
     common,
     helpers::{IOExtensions, OnceLockExtensions},
-    snapshot::{report::generate_html_report_summary, transform::process_test_suite},
+    snapshot::{
+        helpers::get_asset_version,
+        report::{generate_html_report_summary, generate_shared_files, write_shared_file},
+        transform::process_test_suite,
+    },
 };
 
 pub fn snapshot() -> Result<()> {
@@ -24,13 +28,16 @@ pub fn snapshot() -> Result<()> {
 
     tera.add_raw_template(
         "report_template.html",
-        include_str!("_report_template.html"),
+        include_str!("data/report_template.html"),
     )?;
 
     tera.add_raw_template(
         "test_suite_report.html",
-        include_str!("_test_suite_report.html"),
+        include_str!("data/test_suite_report.html"),
     )?;
+
+    let index_bundle_content = include_str!("data/index_bundle.js");
+    let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
 
     let child_dirs = fs::read_dir(backstop_dir)?;
     for entry in child_dirs.flatten() {
@@ -51,7 +58,7 @@ pub fn snapshot() -> Result<()> {
             }
 
             if let Ok(Some(summary)) =
-                process_test_suite(backstop_dir, dir_name, &mut hashes, &tera)
+                process_test_suite(backstop_dir, dir_name, &mut hashes, &tera, &bundle_hash)
             {
                 summaries.push(summary);
             }
@@ -60,6 +67,13 @@ pub fn snapshot() -> Result<()> {
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
     generate_html_report_summary(backstop_dir, &tera, &summaries)?;
+    generate_shared_files(backstop_dir)?;
+
+    write_shared_file(
+        backstop_dir,
+        "index_bundle.js",
+        index_bundle_content.as_bytes(),
+    )?;
 
     Ok(())
 }
