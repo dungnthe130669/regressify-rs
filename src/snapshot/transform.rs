@@ -138,7 +138,8 @@ pub fn process_test_suite(
 
                 let replaced_html = tera.render("test_suite_report.html", &context)?;
 
-                fs::write(&html_index_path, replaced_html).ok();
+                fs::write(&index_bundle_path, index_bundle_content)?;
+                fs::write(&html_index_path, replaced_html)?;
 
                 eprintln!(
                     "Snapshot directory: {}, Passed: {}, Failed: {}",
