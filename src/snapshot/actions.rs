@@ -19,6 +19,19 @@ pub fn snapshot() -> Result<()> {
     let mut summaries = Vec::new();
     let mut hashes = HashMap::new();
 
+    // Using Tera template engine to render the report
+    let mut tera = tera::Tera::default();
+
+    tera.add_raw_template(
+        "report_template.html",
+        include_str!("_report_template.html"),
+    )?;
+
+    tera.add_raw_template(
+        "test_suite_report.html",
+        include_str!("_test_suite_report.html"),
+    )?;
+
     let child_dirs = fs::read_dir(backstop_dir)?;
     for entry in child_dirs.flatten() {
         let path = entry.path().normalize()?;
@@ -37,14 +50,16 @@ pub fn snapshot() -> Result<()> {
                 continue;
             }
 
-            if let Ok(Some(summary)) = process_test_suite(backstop_dir, dir_name, &mut hashes) {
+            if let Ok(Some(summary)) =
+                process_test_suite(backstop_dir, dir_name, &mut hashes, &tera)
+            {
                 summaries.push(summary);
             }
         }
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(backstop_dir, &summaries)?;
+    generate_html_report_summary(backstop_dir, &tera, &summaries)?;
 
     Ok(())
 }

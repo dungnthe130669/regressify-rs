@@ -12,6 +12,7 @@ pub fn process_test_suite(
     backstop_dir: &Path,
     id: &str,
     hashes: &mut HashMap<String, String>,
+    tera: &tera::Tera,
 ) -> Result<Option<HtmlReportSummary>> {
     let test_dir = backstop_dir.join(id);
     if !test_dir.exists() {
@@ -118,25 +119,26 @@ pub fn process_test_suite(
 
                 // Handle index.html config.js versioning
                 let config_hash = get_asset_version(modified_config_text.as_bytes());
-                if let Ok(html_content) = fs::read_to_string(&html_index_path) {
-                    let index_bundle_content = include_str!("index_bundle.js");
-                    let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
-                    fs::write(&index_bundle_path, index_bundle_content)?;
+                let index_bundle_content = include_str!("index_bundle.js");
+                let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
 
-                    let updated_html = html_content
-                        .replace("'config.js'", &format!("'config.js?v={}'", config_hash))
-                        .replace("\"config.js\"", &format!("\"config.js?v={}\"", config_hash))
-                        .replace(
-                            "'index_bundle.js'",
-                            &format!("'index_bundle.js?v={}'", bundle_hash),
-                        )
-                        .replace(
-                            "\"index_bundle.js\"",
-                            &format!("\"index_bundle.js?v={}\"", bundle_hash),
-                        );
+                let mut context = tera::Context::new();
 
-                    fs::write(&html_index_path, updated_html).ok();
-                }
+                context.insert(
+                    "title",
+                    format!("Snapshot Report - {}", id.to_uppercase()).as_str(),
+                );
+
+                context.insert("config_url", &format!("config.js?v={}", config_hash));
+
+                context.insert(
+                    "index_bundle_url",
+                    &format!("index_bundle.js?v={}", bundle_hash),
+                );
+
+                let replaced_html = tera.render("test_suite_report.html", &context)?;
+
+                fs::write(&html_index_path, replaced_html).ok();
 
                 eprintln!(
                     "Snapshot directory: {}, Passed: {}, Failed: {}",

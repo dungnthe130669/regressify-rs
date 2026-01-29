@@ -8,6 +8,7 @@ use crate::types::HtmlReportSummary;
 
 pub fn generate_html_report_summary(
     backstop_dir: &Path,
+    tera: &tera::Tera,
     summaries: &[HtmlReportSummary],
 ) -> Result<()> {
     let mut total_tests = 0;
@@ -20,12 +21,6 @@ pub fn generate_html_report_summary(
         total_failed += summary.total_failed;
     }
 
-    // Using Tera template engine to render the report
-    let mut tera = tera::Tera::default();
-    tera.add_raw_template(
-        "report_template.html",
-        include_str!("_report_template.html"),
-    )?;
     let mut context = tera::Context::new();
 
     context.insert("summaries", summaries);
