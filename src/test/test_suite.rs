@@ -53,6 +53,14 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
         .window_size(1920, 1080)
         .viewport(None)
         .headless_mode(HeadlessMode::New)
+        .args([
+            "--disable-infobars",
+            "--disable-setuid-sandbox",
+            "--ignore-certifcate-errors",
+            "--ignore-certifcate-errors-spki-list",
+            "--no-sandbox",
+            "--window-position=0,0",
+        ])
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
     let (mut browser, mut handler) = Browser::launch(config).await?;
