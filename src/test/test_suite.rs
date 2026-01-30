@@ -1,7 +1,10 @@
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
-use chromiumoxide::browser::{Browser, BrowserConfig, HeadlessMode};
+use chromiumoxide::{
+    browser::{Browser, BrowserConfig, HeadlessMode},
+    handler::viewport::Viewport,
+};
 use futures::StreamExt;
 
 use crate::{
@@ -51,7 +54,14 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
 
     let config = config_builder
         .window_size(1920, 1080)
-        .viewport(None)
+        .viewport(Some(Viewport {
+            width: 1920,
+            height: 1080,
+            device_scale_factor: Some(1.0),
+            emulating_mobile: false,
+            has_touch: false,
+            is_landscape: true,
+        }))
         .headless_mode(HeadlessMode::New)
         .args([
             "--disable-infobars",
