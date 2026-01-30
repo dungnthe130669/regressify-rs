@@ -193,6 +193,12 @@
         font-weight: 600;
       }
 
+      .engine-error {
+        color: var(--bg-card) !important;
+        background-color: var(--danger-text) !important;
+        font-weight: 800;
+      }
+
       /* Progress Bar */
       .progress-wrapper {
         display: flex;
@@ -478,11 +484,22 @@
           {%- if summary.has_engine_errors %}
           {%- set failed_class = failed_class ~ " engine-error" -%}
           {%- endif %}
-          <tr>
-            <td><a href="{{ summary.id }}/html_report/index.html">{{ summary.id }}</a></td>
+          <tr {%- if summary.has_engine_errors %} title="This test suite has engine errors. Open it to view the details."{% endif %}>
+            <td>
+              <a href="{{ summary.id }}/html_report/index.html">
+                {{ summary.id }}
+                {%- if summary.has_engine_errors %}
+                  &nbsp;⚠️
+                {%- endif %}
+              </a>
+            </td>
             <td>{{ summary.total_tests }}</td>
-            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>{{ summary.total_passed }}</td>
-            <td{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>{{ summary.total_failed }}</td>
+            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
+              {{ summary.total_passed }}
+            </td>
+            <td{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>
+              {{ summary.total_failed }}
+            </td>
             <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
               <div class="progress-wrapper">
                 <div class="progress-track">
