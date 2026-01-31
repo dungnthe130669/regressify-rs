@@ -95,15 +95,15 @@
                   <span class="badge">{{ summary.total_tests }}</span>
                 </td>
                 <td data-label="Passed">
-                  <span class="badge {% if summary.passed_class is defined %}{{ summary.passed_class }}{% endif %}">{{ summary.total_passed }}</span>
+                  <span class="badge {%- if summary.passed_class is defined %} {{ summary.passed_class }}{% endif %}">{{ summary.total_passed }}</span>
                 </td>
                 <td data-label="Failed">
-                  <span class="badge {% if summary.failed_class is defined %}{{ summary.failed_class }}{% endif %}">{{ summary.total_failed }}</span>
+                  <span class="badge {%- if summary.failed_class is defined %} {{ summary.failed_class }}{% endif %}">{{ summary.total_failed }}</span>
                 </td>
                 <td data-label="Pass Rate">
                   <div class="progress-wrapper">
                     <div class="progress-track" role="progressbar" aria-valuenow="{{ summary.percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ summary.percent }}% passed">
-                      <div class="progress-fill" style="width: {{ summary.percent }}%"></div>
+                      <div class="progress-fill {%- if summary.passed_class is defined %} {{ summary.passed_class }}{% endif %}" style="width: {{ summary.percent }}%"></div>
                     </div>
                     <div class="progress-text">{{ summary.percent }}%</div>
                   </div>
@@ -118,10 +118,10 @@
                   <span class="badge">{{ total_tests }}</span>
                 </th>
                 <th data-label="Passed">
-                  <span class="badge {% if passed_class is defined %}{{ passed_class }}{% endif %}">{{ total_passed }}</span>
+                  <span class="badge {%- if passed_class is defined %} {{ passed_class }}{% endif %}">{{ total_passed }}</span>
                 </th>
                 <th data-label="Failed">
-                  <span class="badge {% if failed_class is defined %}{{ failed_class }}{% endif %}">{{ total_failed }}</span>
+                  <span class="badge {%- if failed_class is defined %} {{ failed_class }}{% endif %}">{{ total_failed }}</span>
                 </th>
                 <th data-label="Pass Rate">
                   <div class="progress-wrapper">

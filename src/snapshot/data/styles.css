@@ -394,11 +394,15 @@ td:not(:first-child) {
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--success-text), #10b981);
+  background: linear-gradient(90deg, var(--text-main), #111827);
   border-radius: 99px;
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
+}
+
+.progress-fill.success {
+  background: linear-gradient(90deg, var(--success-text), #059669);
 }
 
 .progress-text {
