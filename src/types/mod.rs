@@ -37,4 +37,6 @@ pub struct HtmlReportSummary {
     pub total_passed: usize,
     pub total_failed: usize,
     pub has_engine_errors: bool,
+    pub percent: f32,
+    pub status: &'static str,
 }

@@ -152,6 +152,13 @@ pub fn process_test_suite(
                     sub_dir_name, pass_count, fail_count
                 );
 
+                let status = if fail_count > 0 { "failed" } else { "passed" };
+                let percent = if report.tests.len() > 0 {
+                    (pass_count as f32 / report.tests.len() as f32) * 100.0
+                } else {
+                    0.0
+                };
+
                 return Ok(Some(HtmlReportSummary {
                     id: report.id,
                     total_tests: report.tests.len(),
@@ -161,6 +168,8 @@ pub fn process_test_suite(
                         .tests
                         .iter()
                         .any(|t| t.pair.engine_error_msg.is_some()),
+                    percent,
+                    status,
                 }));
             }
         }
