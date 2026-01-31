@@ -159,6 +159,9 @@ pub fn process_test_suite(
                     0.0
                 };
 
+                // Percent text rounded to 2 decimal places
+                let percent = (percent * 100.0).round() / 100.0;
+
                 return Ok(Some(HtmlReportSummary {
                     id: report.id,
                     total_tests: report.tests.len(),
