@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::helpers::IOExtensions;
+use crate::snapshot::helpers::get_asset_version;
 use crate::types::HtmlReportSummary;
 
 pub fn generate_html_report_summary(
@@ -45,6 +46,22 @@ pub fn generate_html_report_summary(
     context.insert("passed_class", passed_class);
     context.insert("failed_class", failed_class);
 
+    generate_assets_file(
+        backstop_dir,
+        &mut context,
+        "styles.css",
+        include_bytes!("data/styles.css"),
+        Some("styles_hash"),
+    )?;
+
+    generate_assets_file(
+        backstop_dir,
+        &mut context,
+        "script.js",
+        include_bytes!("data/script.js"),
+        Some("script_hash"),
+    )?;
+
     let replaced_html = tera.render("report_template.html", &context)?;
 
     let report_path = backstop_dir.join("index.html");
@@ -61,6 +78,23 @@ pub fn generate_html_report_summary(
     let swa_config = include_bytes!("data/staticwebapp.config.json");
     let swa_config_path = backstop_dir.join("staticwebapp.config.json");
     fs::write(&swa_config_path, swa_config)?;
+
+    Ok(())
+}
+
+pub fn generate_assets_file(
+    backstop_dir: &Path,
+    context: &mut tera::Context,
+    path: &str,
+    content_bytes: &[u8],
+    version_name: Option<&str>,
+) -> Result<()> {
+    if let Some(version_name) = version_name {
+        let script_hash = get_asset_version(content_bytes);
+        context.insert(version_name, &script_hash);
+    }
+
+    write_shared_file(backstop_dir, path, content_bytes)?;
 
     Ok(())
 }
@@ -138,14 +172,6 @@ pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
         "apple-touch-icon.png",
         include_bytes!("data/apple-touch-icon.png"),
     )?;
-
-    write_shared_file(
-        backstop_dir,
-        "styles.css",
-        include_bytes!("data/styles.css"),
-    )?;
-
-    write_shared_file(backstop_dir, "script.js", include_bytes!("data/script.js"))?;
 
     Ok(())
 }
