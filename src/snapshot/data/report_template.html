@@ -1,551 +1,941 @@
-{#- Use Tera Template Engine for rendering - https://keats.github.io/tera/docs/ -#}
-{#- Requirement: looks clean, modern, and professional -#}
-{#- Responsive design for mobile and desktop -#}
-{#- Dark mode support -#}
-{#- Accessibility considerations -#}
-{#- Print-friendly styles -#}
-
-{%- set overall_percent = (total_passed / total_tests * 100.0) | round(precision=2) -%}
-{%- if total_passed == total_tests -%}
-  {%- set header_passed_class = "success" -%}
-  {%- set header_failed_class = "success" -%}
-{%- else -%}
-  {%- set header_failed_class = "danger" -%}
-{%- endif -%}
+{#- Use Tera Template Engine for rendering - https://keats.github.io/tera/docs/ -#} {#- Enhanced Requirements: -#} {#- - Modern, clean, professional design -#} {#- - Responsive design for mobile and desktop -#} {#- - Print friendly with proper color handling -#} {#- - Dark mode support -#} {#- - Enhanced accessibility (WCAG 2.1 AA compliant) -#} {#- - Interactive features and smooth animations -#} {#- - Better data visualization -#} {%- set overall_percent = (total_passed / total_tests * 100.0) | round(precision=2) -%} {%- if total_passed == total_tests -%} {%- set header_passed_class = "success" -%} {%- set header_failed_class = "success" -%} {%- else -%} {%- set header_failed_class = "danger" -%} {%- endif -%}
 <!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta http-equiv="x-ua-compatible" content="ie=edge">
-  <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,shrink-to-fit=no">
-  <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no">
-  <title>Snapshot Report Summary</title>
-  
-  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
-  <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png">
-  <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="x-ua-compatible" content="ie=edge" />
+    <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,shrink-to-fit=no" />
+    <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no" />
+    <meta name="description" content="Visual regression test results summary with {{ total_tests }} tests" />
+    <title>Snapshot Report Summary - {{ total_passed }}/{{ total_tests }} Passed</title>
 
-  <meta name="robots" content="noindex, follow">
-  
-  <style>
-    :root {
-      --bg-body: #f3f4f6;
-      --bg-card: #ffffff;
-      --bg-subtle: #f9fafb;
-      --text-main: #1f2937;
-      --text-muted: #6b7280;
-      --border-color: #e5e7eb;
-      --primary-color: #2563eb;
-      --primary-hover: #1d4ed8;
-      --success-text: #059669;
-      --success-bg: #d1fae5;
-      --danger-text: #dc2626;
-      --danger-bg: #fee2e2;
-      --radius: 12px;
-      --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-    }
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="./favicon-16x16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
 
-    @media (prefers-color-scheme: dark) {
+    <meta name="robots" content="noindex, follow" />
+
+    <style>
       :root {
-        --bg-body: #0d1117;
-        --bg-card: #161b22;
-        --bg-subtle: #21262d;
-        --text-main: #e6edf3;
-        --text-muted: #8b949e;
-        --border-color: #30363d;
-        --primary-color: #58a6ff;
-        --primary-hover: #79c0ff;
-        --success-text: #3fb950;
-        --success-bg: rgba(46, 160, 67, 0.15);
-        --danger-text: #f85149;
-        --danger-bg: rgba(248, 81, 73, 0.15);
-        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+        --bg-body: #f5f7fa;
+        --bg-card: #ffffff;
+        --bg-subtle: #f9fafb;
+        --bg-hover: #f3f4f6;
+        --text-main: #111827;
+        --text-muted: #6b7280;
+        --text-subtle: #9ca3af;
+        --border-color: #e5e7eb;
+        --border-hover: #d1d5db;
+        --primary-color: #2563eb;
+        --primary-hover: #1d4ed8;
+        --primary-light: #dbeafe;
+        --success-text: #059669;
+        --success-bg: #d1fae5;
+        --success-border: #6ee7b7;
+        --danger-text: #dc2626;
+        --danger-bg: #fee2e2;
+        --danger-border: #fca5a5;
+        --warning-text: #d97706;
+        --warning-bg: #fef3c7;
+        --radius-sm: 8px;
+        --radius: 12px;
+        --radius-lg: 16px;
+        --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+        --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
       }
-    }
 
-    * {
-      box-sizing: border-box;
-    }
-    
-    :focus-visible {
-      outline: 2px solid var(--primary-color);
-      outline-offset: 2px;
-    }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg-body: #0a0e14;
+          --bg-card: #151920;
+          --bg-subtle: #1e2430;
+          --bg-hover: #252c38;
+          --text-main: #e6edf3;
+          --text-muted: #8b949e;
+          --text-subtle: #6e7681;
+          --border-color: #2d3543;
+          --border-hover: #3d4554;
+          --primary-color: #58a6ff;
+          --primary-hover: #79c0ff;
+          --primary-light: #1f2d3d;
+          --success-text: #3fb950;
+          --success-bg: rgba(46, 160, 67, 0.15);
+          --success-border: rgba(46, 160, 67, 0.4);
+          --danger-text: #f85149;
+          --danger-bg: rgba(248, 81, 73, 0.15);
+          --danger-border: rgba(248, 81, 73, 0.4);
+          --warning-text: #e3b341;
+          --warning-bg: rgba(187, 128, 9, 0.15);
+          --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
+          --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -1px rgba(0, 0, 0, 0.3);
+          --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.6), 0 4px 6px -2px rgba(0, 0, 0, 0.4);
+        }
+      }
 
-    body {
-      margin: 0;
-      padding: 24px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg-body);
-      color: var(--text-main);
-      line-height: 1.5;
-      -webkit-font-smoothing: antialiased;
-    }
+      * {
+        box-sizing: border-box;
+      }
 
-    .container {
-      max-width: 960px;
-      margin: 0 auto;
-      background: var(--bg-card);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      overflow: hidden;
-    }
-
-    .header {
-      padding: 32px;
-      text-align: center;
-      border-bottom: 1px solid var(--border-color);
-      background: var(--bg-card);
-    }
-    
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 1px;
-      background-color: var(--border-color);
-      border-bottom: 1px solid var(--border-color);
-    }
-
-    .summary-item {
-      background-color: var(--bg-card);
-      padding: 24px;
-      text-align: center;
-    }
-
-    .summary-label {
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--text-muted);
-      margin-bottom: 8px;
-      font-weight: 600;
-    }
-
-    .summary-value {
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: var(--text-main);
-      line-height: 1.2;
-    }
-
-    h1 {
-      margin: 0;
-      font-size: 1.5rem;
-      font-weight: 700;
-      color: var(--text-main);
-      letter-spacing: -0.025em;
-    }
-
-    p.subtitle {
-      margin: 8px 0 0;
-      color: var(--text-muted);
-      font-size: 0.875rem;
-    }
-
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      text-align: left;
-    }
-
-    th {
-      background-color: var(--bg-subtle);
-      color: var(--text-muted);
-      font-weight: 600;
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--border-color);
-    }
-
-    td {
-      padding: 16px 24px;
-      border-bottom: 1px solid var(--border-color);
-      font-size: 0.875rem;
-      color: var(--text-muted);
-    }
-
-    /* First Column: Test Suite Link */
-    td:first-child {
-      color: var(--text-main);
-      font-weight: 500;
-    }
-
-    td:first-child a {
-      color: var(--primary-color);
-      text-decoration: none;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      transition: color 0.15s;
-      /* Crucial for long titles on any screen size if the column gets squeezed */
-      word-break: break-word;
-    }
-
-    td:first-child a:hover {
-      color: var(--primary-hover);
-      text-decoration: underline;
-    }
-
-    /* Numbers Alignment */
-    th:not(:first-child),
-    td:not(:first-child) {
-      text-align: center;
-    }
-
-    .summary__name-cell svg {
-      margin: -10px 0;
-      color: var(--danger-text);
-    }
-
-    /* Status Styles */
-    .success {
-      color: var(--success-text);
-      background-color: var(--success-bg);
-      font-weight: 600;
-    }
-
-    .danger {
-      color: var(--danger-text);
-      background-color: var(--danger-bg);
-      font-weight: 600;
-    }
-
-    /* Progress Bar */
-    .progress-wrapper {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      justify-content: flex-start;
-    }
-
-    td .progress-wrapper, tfoot .progress-wrapper {
-      /* On desktop, keep it somewhat aligned, maybe centered? */
-      /* Actually table cells are text-align center, but flex ignores that. 
-          Let's center the progress bar in the cell. */
-      justify-content: center;
-    }
-
-    .progress-track {
-      width: 80px;
-      height: 6px;
-      background-color: var(--border-color);
-      border-radius: 99px;
-      overflow: hidden;
-      /* Ensure it prints background colors */
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-
-    .progress-fill {
-      height: 100%;
-      background-color: var(--success-text);
-      border-radius: 99px;
-      /* Ensure it prints background colors */
-      -webkit-print-color-adjust: exact;
-      print-color-adjust: exact;
-    }
-    
-    .progress-text {
-      font-family: monospace; /* Tabular figures usually */
-      font-size: 0.8em;
-      width: 7ch; /* Ensure fixed width for alignment */
-      text-align: right;
-    }
-
-    tfoot {
-      background-color: var(--bg-subtle);
-      font-weight: 700;
-    }
-
-    tfoot th {
-      color: var(--text-main);
-      font-size: 0.875rem;
-      border-top: 2px solid var(--border-color);
-      border-bottom: none;
-    }
-
-    .footer-note {
-      padding: 24px;
-      text-align: center;
-      font-size: 0.875rem;
-      color: var(--text-muted);
-      background-color: var(--bg-subtle);
-      border-top: 1px solid var(--border-color);
-    }
-
-    .footer-note a {
-      color: var(--primary-color);
-      text-decoration: none;
-      font-weight: 500;
-    }
-
-    /* --- Responsive Mobile Styles --- */
-    @media (max-width: 640px) {
-      .summary-grid {
-        grid-template-columns: repeat(2, 1fr);
+      :focus-visible {
+        outline: 2px solid var(--primary-color);
+        outline-offset: 2px;
+        border-radius: var(--radius-sm);
       }
 
       body {
-        padding: 16px;
+        margin: 0;
+        padding: 32px 24px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', Arial, sans-serif;
+        background-color: var(--bg-body);
+        color: var(--text-main);
+        line-height: 1.6;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+      }
+
+      .container {
+        max-width: 1120px;
+        margin: 0 auto;
+      }
+
+      .card {
+        background: var(--bg-card);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        border: 1px solid var(--border-color);
       }
 
       .header {
-        padding: 24px 16px;
+        padding: 40px 32px;
+        text-align: center;
+        border-bottom: 1px solid var(--border-color);
+        background: linear-gradient(to bottom, var(--bg-card), var(--bg-subtle));
       }
 
-      table,
-      thead,
-      tbody,
-      th,
-      td,
-      tr,
-      tfoot {
-        display: block;
+      h1 {
+        margin: 0;
+        font-size: 2rem;
+        font-weight: 700;
+        color: var(--text-main);
+        letter-spacing: -0.025em;
+        line-height: 1.2;
+      }
+
+      p.subtitle {
+        margin: 8px 0 0;
+        color: var(--text-muted);
+        font-size: 0.9375rem;
+        font-weight: 500;
+      }
+
+      /* Summary Grid */
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1px;
+        background-color: var(--border-color);
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .summary-item {
+        background-color: var(--bg-card);
+        padding: 28px 24px;
+        text-align: center;
+        transition: var(--transition);
+        position: relative;
+      }
+
+      .summary-item:hover {
+        background-color: var(--bg-hover);
+      }
+
+      .summary-label {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--text-muted);
+        margin-bottom: 12px;
+        font-weight: 700;
+      }
+
+      .summary-value {
+        font-size: 2rem;
+        font-weight: 800;
+        color: var(--text-main);
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .summary-value.success {
+        color: var(--success-text);
+      }
+
+      .summary-value.danger {
+        color: var(--danger-text);
+      }
+
+      /* Filter Controls */
+      .controls {
+        padding: 20px 24px;
+        background-color: var(--bg-subtle);
+        border-bottom: 1px solid var(--border-color);
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .filter-btn {
+        padding: 8px 16px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-card);
+        color: var(--text-main);
+        border-radius: var(--radius-sm);
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        transition: var(--transition);
+        font-family: inherit;
+      }
+
+      .filter-btn:hover {
+        background: var(--bg-hover);
+        border-color: var(--border-hover);
+      }
+
+      .filter-btn.active {
+        background: var(--primary-color);
+        color: white;
+        border-color: var(--primary-color);
+      }
+
+      .search-box {
+        flex: 1;
+        min-width: 200px;
+        max-width: 300px;
+      }
+
+      .search-box input {
+        width: 100%;
+        padding: 8px 16px 8px 40px;
+        border: 1px solid var(--border-color);
+        background: var(--bg-card);
+        color: var(--text-main);
+        border-radius: var(--radius-sm);
+        font-size: 0.875rem;
+        font-family: inherit;
+        transition: var(--transition);
+      }
+
+      .search-box input:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 3px var(--primary-light);
+      }
+
+      .search-box {
+        position: relative;
+      }
+
+      .search-box::before {
+        content: '🔍';
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        font-size: 1rem;
+        opacity: 0.5;
+      }
+
+      /* Table Styles */
+      .table-wrapper {
+        overflow-x: auto;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        text-align: left;
       }
 
       thead {
+        position: sticky;
+        top: 0;
+        z-index: 10;
+      }
+
+      th {
+        background-color: var(--bg-subtle);
+        color: var(--text-muted);
+        font-weight: 700;
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 18px 24px;
+        border-bottom: 2px solid var(--border-color);
+        white-space: nowrap;
+      }
+
+      th.sortable {
+        cursor: pointer;
+        user-select: none;
+        position: relative;
+        padding-right: 40px;
+      }
+
+      th.sortable:hover {
+        background-color: var(--bg-hover);
+      }
+
+      th.sortable::after {
+        content: '↕';
+        position: absolute;
+        right: 12px;
+        opacity: 0.3;
+        font-size: 0.875rem;
+      }
+
+      th.sortable.sorted-asc::after {
+        content: '↑';
+        opacity: 1;
+        color: var(--primary-color);
+      }
+
+      th.sortable.sorted-desc::after {
+        content: '↓';
+        opacity: 1;
+        color: var(--primary-color);
+      }
+
+      tbody tr {
+        transition: var(--transition);
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      tbody tr:hover {
+        background-color: var(--bg-hover);
+      }
+
+      tbody tr.hidden {
         display: none;
       }
 
-      /* Each Row is a Card */
-      tbody tr {
-        margin-bottom: 16px;
-        border-top: 1px solid var(--border-color);
-      }
-
-      tbody tr:first-child {
-        border-top: none;
-      }
-
       td {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        text-align: right;
-        padding: 12px 24px;
-        border-bottom: 1px solid var(--border-color);
+        padding: 18px 24px;
+        font-size: 0.875rem;
+        color: var(--text-muted);
+        font-variant-numeric: tabular-nums;
       }
 
-      /* The Title Cell */
+      /* First Column: Test Suite Link */
       td:first-child {
-        background-color: var(--bg-subtle);
-        text-align: left;
-        display: block; /* Block allows wrapping */
-        padding: 16px 24px;
+        color: var(--text-main);
+        font-weight: 500;
+        max-width: 400px;
       }
 
       td:first-child a {
-        font-size: 1rem;
-        font-weight: 600;
-        overflow-wrap: break-word;
-        word-wrap: break-word;
-        hyphens: auto;
-      }
-
-      /* Labels */
-      td:nth-of-type(2)::before {
-        content: 'Total';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
-      }
-      td:nth-of-type(3)::before {
-        content: 'Passed';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
-      }
-      td:nth-of-type(4)::before {
-        content: 'Failed';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
-      }
-      td:nth-of-type(5)::before {
-        content: 'Percent';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
-      }
-
-      /* Mobile Progress Adjustment */
-      td .progress-wrapper {
-        justify-content: flex-end; /* Align right on mobile */
-        flex: 1; /* Take space */
-      }
-
-      /* Footer Mobile */
-      tfoot {
-        margin-top: 0;
-        border-top: 2px solid var(--border-color);
-      }
-
-      tfoot tr {
-        display: flex;
-        flex-direction: column;
-      }
-
-      tfoot th {
-        display: flex;
-        justify-content: space-between;
+        color: var(--primary-color);
+        text-decoration: none;
+        display: inline-flex;
         align-items: center;
-        padding: 12px 24px;
-        border-bottom: 1px solid var(--border-color);
+        gap: 8px;
+        transition: var(--transition);
+        word-break: break-word;
+        line-height: 1.5;
       }
 
-      tfoot th:first-child {
-        display: block;
+      td:first-child a:hover {
+        color: var(--primary-hover);
+        text-decoration: underline;
+      }
+
+      /* Numeric Columns Alignment */
+      th:not(:first-child),
+      td:not(:first-child) {
         text-align: center;
-        background-color: var(--bg-body);
+      }
+
+      /* Status Badge Styles */
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px 12px;
+        border-radius: 12px;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        line-height: 1.5;
+        min-width: 48px;
+      }
+
+      .badge.success {
+        color: var(--success-text);
+        background-color: var(--success-bg);
+        border: 1px solid var(--success-border);
+      }
+
+      .badge.danger {
+        color: var(--danger-text);
+        background-color: var(--danger-bg);
+        border: 1px solid var(--danger-border);
+      }
+
+      /* Engine Error Icon */
+      .error-icon {
+        color: var(--danger-text);
+        vertical-align: middle;
+        margin-left: 4px;
+        flex-shrink: 0;
+      }
+
+      /* Progress Bar */
+      .progress-wrapper {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        justify-content: center;
+      }
+
+      .progress-track {
+        width: 100px;
+        height: 8px;
+        background-color: var(--border-color);
+        border-radius: 99px;
+        overflow: hidden;
+        box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.1);
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, var(--success-text), #10b981);
+        border-radius: 99px;
+        transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+        -webkit-print-color-adjust: exact;
+        print-color-adjust: exact;
+      }
+
+      .progress-text {
+        font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, monospace;
+        font-size: 0.8125rem;
+        font-weight: 600;
+        min-width: 52px;
+        text-align: right;
         color: var(--text-main);
       }
 
-      tfoot th:nth-of-type(2)::before {
-        content: 'Total';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
+      /* Footer Totals */
+      tfoot {
+        background-color: var(--bg-subtle);
+        font-weight: 700;
       }
-      tfoot th:nth-of-type(3)::before {
-        content: 'Passed';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
+
+      tfoot th {
+        color: var(--text-main);
+        font-size: 0.875rem;
+        border-top: 2px solid var(--border-color);
+        border-bottom: none;
+        font-weight: 700;
+        padding: 20px 24px;
       }
-      tfoot th:nth-of-type(4)::before {
-        content: 'Failed';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
-        color: var(--text-muted);
+
+      /* Footer Note */
+      .footer-note {
+        padding: 24px;
+        text-align: center;
+        font-size: 0.8125rem;
+        color: var(--text-subtle);
+        background-color: var(--bg-subtle);
+        border-top: 1px solid var(--border-color);
+        line-height: 1.6;
       }
-      tfoot th:nth-of-type(5)::before {
-        content: 'Percent';
-        font-weight: 500;
-        font-size: 0.75rem;
-        text-transform: uppercase;
+
+      .footer-note a {
+        color: var(--primary-color);
+        text-decoration: none;
+        font-weight: 600;
+        transition: var(--transition);
+      }
+
+      .footer-note a:hover {
+        color: var(--primary-hover);
+        text-decoration: underline;
+      }
+
+      /* Empty State */
+      .empty-state {
+        padding: 60px 24px;
+        text-align: center;
         color: var(--text-muted);
       }
 
-      tfoot .progress-wrapper {
-            justify-content: flex-end;
-            flex: 1;
+      .empty-state p {
+        font-size: 1rem;
+        margin: 0;
       }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <header class="header">
-      <h1>Visual Tests Summary</h1>
-      <p class="subtitle">Snapshot regression report</p>
-    </header>
-    <main>
-      <div class="summary-grid">
-        <div class="summary-item">
-          <div class="summary-label">Total Tests</div>
-          <div class="summary-value">{{ total_tests }}</div>
+
+      /* Print Styles */
+      @media print {
+        body {
+          padding: 0;
+          background: white;
+        }
+
+        .card {
+          box-shadow: none;
+          border: none;
+        }
+
+        .controls {
+          display: none;
+        }
+
+        tbody tr:hover {
+          background-color: transparent;
+        }
+
+        .summary-item:hover {
+          background-color: var(--bg-card);
+        }
+
+        a {
+          text-decoration: none;
+          color: inherit;
+        }
+
+        thead {
+          position: static;
+        }
+      }
+
+      /* Responsive Mobile Styles */
+      @media (max-width: 768px) {
+        body {
+          padding: 16px;
+        }
+
+        h1 {
+          font-size: 1.5rem;
+        }
+
+        .header {
+          padding: 32px 20px;
+        }
+
+        .summary-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+
+        .summary-value {
+          font-size: 1.75rem;
+        }
+
+        .controls {
+          padding: 16px;
+        }
+
+        .search-box {
+          max-width: 100%;
+          order: -1;
+          flex: 1 1 100%;
+        }
+
+        /* Mobile Card Layout */
+        .table-wrapper {
+          overflow-x: visible;
+        }
+
+        table,
+        thead,
+        tbody,
+        th,
+        td,
+        tr,
+        tfoot {
+          display: block;
+        }
+
+        thead {
+          display: none;
+        }
+
+        tbody tr {
+          margin-bottom: 16px;
+          border: 1px solid var(--border-color);
+          border-radius: var(--radius);
+          overflow: hidden;
+        }
+
+        tbody tr:last-child {
+          margin-bottom: 0;
+        }
+
+        td {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          text-align: right;
+          padding: 14px 20px;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        td:last-child {
+          border-bottom: none;
+        }
+
+        /* Title Cell */
+        td:first-child {
+          background-color: var(--bg-subtle);
+          text-align: left;
+          display: block;
+          padding: 16px 20px;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        td:first-child a {
+          font-size: 0.9375rem;
+          font-weight: 600;
+        }
+
+        /* Data Labels */
+        td::before {
+          content: attr(data-label);
+          font-weight: 600;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          letter-spacing: 0.05em;
+        }
+
+        td:nth-of-type(2)::before {
+          content: 'Total';
+        }
+        td:nth-of-type(3)::before {
+          content: 'Passed';
+        }
+        td:nth-of-type(4)::before {
+          content: 'Failed';
+        }
+        td:nth-of-type(5)::before {
+          content: 'Pass Rate';
+        }
+
+        td .progress-wrapper {
+          justify-content: flex-end;
+          flex: 1;
+        }
+
+        /* Footer Mobile */
+        tfoot {
+          margin-top: 16px;
+          border: 1px solid var(--border-color);
+          border-radius: var(--radius);
+          overflow: hidden;
+        }
+
+        tfoot tr {
+          display: flex;
+          flex-direction: column;
+        }
+
+        tfoot th {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 14px 20px;
+          border-bottom: 1px solid var(--border-color);
+        }
+
+        tfoot th:last-child {
+          border-bottom: none;
+        }
+
+        tfoot th:first-child {
+          display: block;
+          text-align: center;
+          background-color: var(--bg-subtle);
+          padding: 16px 20px;
+        }
+
+        tfoot th::before {
+          content: attr(data-label);
+          font-weight: 600;
+          font-size: 0.75rem;
+          text-transform: uppercase;
+          color: var(--text-muted);
+          letter-spacing: 0.05em;
+        }
+
+        tfoot th:nth-of-type(2)::before {
+          content: 'Total';
+        }
+        tfoot th:nth-of-type(3)::before {
+          content: 'Passed';
+        }
+        tfoot th:nth-of-type(4)::before {
+          content: 'Failed';
+        }
+        tfoot th:nth-of-type(5)::before {
+          content: 'Pass Rate';
+        }
+
+        tfoot .progress-wrapper {
+          justify-content: flex-end;
+          flex: 1;
+        }
+      }
+
+      /* Tablet Adjustments */
+      @media (min-width: 769px) and (max-width: 1024px) {
+        .summary-grid {
+          grid-template-columns: repeat(4, 1fr);
+        }
+      }
+
+      /* Animations */
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+          transform: translateY(10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      tbody tr {
+        animation: fadeIn 0.3s ease-out;
+      }
+
+      /* Loading State */
+      .loading {
+        opacity: 0.6;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <header class="header">
+          <h1>Visual Tests Summary</h1>
+          <p class="subtitle">Snapshot regression test results</p>
+        </header>
+
+        <div class="summary-grid">
+          <div class="summary-item">
+            <div class="summary-label">Total Tests</div>
+            <div class="summary-value">{{ total_tests }}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Passed</div>
+            <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ total_passed }}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Failed</div>
+            <div class="summary-value{% if header_failed_class is defined %} {{ header_failed_class }}{% endif %}">{{ total_failed }}</div>
+          </div>
+          <div class="summary-item">
+            <div class="summary-label">Pass Rate</div>
+            <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ overall_percent }}%</div>
+          </div>
         </div>
-        <div class="summary-item">
-          <div class="summary-label">Passed</div>
-          <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ total_passed }}</div>
+
+        <div class="controls">
+          <div class="search-box">
+            <input type="search" id="searchInput" placeholder="Search test suites..." aria-label="Search test suites" />
+          </div>
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="passed">Passed</button>
+          <button class="filter-btn" data-filter="failed">Failed</button>
         </div>
-        <div class="summary-item">
-          <div class="summary-label">Failed</div>
-          <div class="summary-value{% if header_failed_class is defined %} {{ header_failed_class }}{% endif %}">{{ total_failed }}</div>
-        </div>
-        <div class="summary-item">
-          <div class="summary-label">Pass Rate</div>
-          <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ overall_percent }}%</div>
-        </div>
+
+        <main>
+          <div class="table-wrapper">
+            <table id="resultsTable">
+              <thead>
+                <tr>
+                  <th scope="col" class="sortable" data-sort="name">Test Suite</th>
+                  <th scope="col" class="sortable" data-sort="total">Total Tests</th>
+                  <th scope="col" class="sortable" data-sort="passed">Passed</th>
+                  <th scope="col" class="sortable" data-sort="failed">Failed</th>
+                  <th scope="col" class="sortable" data-sort="percent">Pass Rate</th>
+                </tr>
+              </thead>
+              <tbody id="tableBody">
+                {%- for summary in summaries %} {%- set percent = (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) -%} {%- if summary.total_passed == summary.total_tests %} {%- set status = "passed" -%} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set status = "failed" -%} {%- set failed_class = "danger" -%} {%- endif %}
+                <tr data-status="{{ status }}" data-name="{{ summary.id }}" data-total="{{ summary.total_tests }}" data-passed="{{ summary.total_passed }}" data-failed="{{ summary.total_failed }}" data-percent="{{ percent }}" {% if summary.has_engine_errors %} title="This test suite has engine errors. Click to view details." {% endif %}>
+                  <td data-label="Test Suite">
+                    <a href="{{ summary.id }}/html_report/index.html" aria-label="View {{ summary.id }} test results">
+                      {{ summary.id }} {%- if summary.has_engine_errors %}
+                      <svg class="error-icon" role="img" aria-label="Has engine errors" xmlns="http://www.w3.org/2000/svg" height="20px" viewBox="0 -960 960 960" width="20px" fill="currentColor"><path d="M480-120q-64 0-114.5-33T283-240l-95 54-40-69 103-60q-3-11-5-22.5t-4-22.5H120v-80h122q2-12 4-23.5t5-22.5l-103-60 40-69 94 55q8-14 18.5-27.5T322-612q-2-7-2-14v-14q0-24 7-46t19-41l-66-66 56-57 70 68q17-9 35.5-13.5T480-800q20 0 39 5t36 14l69-69 56 57-66 66q12 19 18.5 41t6.5 46v13.5q0 6.5-2 13.5 11 11 21.5 25t18.5 28l95-54 40 69-104 59q3 11 5.5 22.5T718-440h122v80H718q-2 12-4 23.5t-5 22.5l103 60-40 69-95-55q-32 54-82.5 87T480-120Zm-76-546q17-7 36.5-10.5T480-680q20 0 38.5 3t35.5 10q-8-23-28-38t-46-15q-26 0-47 15.5T404-666Zm76 466q73 0 116.5-61T640-400q0-70-40.5-135T480-600q-78 0-119 64.5T320-400q0 78 43.5 139T480-200Zm-40-80v-240h80v240h-80Z" /></svg>
+                      {%- endif %}
+                    </a>
+                  </td>
+                  <td data-label="Total">{{ summary.total_tests }}</td>
+                  <td data-label="Passed">
+                    <span class="badge {% if passed_class is defined %}{{ passed_class }}{% endif %}">{{ summary.total_passed }}</span>
+                  </td>
+                  <td data-label="Failed">
+                    <span class="badge {% if failed_class is defined %}{{ failed_class }}{% endif %}">{{ summary.total_failed }}</span>
+                  </td>
+                  <td data-label="Pass Rate">
+                    <div class="progress-wrapper">
+                      <div class="progress-track" role="progressbar" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ percent }}% passed">
+                        <div class="progress-fill" style="width: {{ percent }}%"></div>
+                      </div>
+                      <div class="progress-text">{{ percent }}%</div>
+                    </div>
+                  </td>
+                </tr>
+                {%- endfor %}
+              </tbody>
+              <tfoot>
+                <tr>
+                  {%- set percent = (total_passed / total_tests * 100.0) | round(precision=2) -%} {%- if total_passed == total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
+                  <th scope="row">Total</th>
+                  <th data-label="Total">{{ total_tests }}</th>
+                  <th data-label="Passed">
+                    <span class="badge {% if passed_class is defined %}{{ passed_class }}{% endif %}">{{ total_passed }}</span>
+                  </th>
+                  <th data-label="Failed">
+                    <span class="badge {% if failed_class is defined %}{{ failed_class }}{% endif %}">{{ total_failed }}</span>
+                  </th>
+                  <th data-label="Pass Rate">
+                    <div class="progress-wrapper">
+                      <div class="progress-track" role="progressbar" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ percent }}% total pass rate">
+                        <div class="progress-fill" style="width: {{ percent }}%"></div>
+                      </div>
+                      <div class="progress-text">{{ percent }}%</div>
+                    </div>
+                  </th>
+                </tr>
+              </tfoot>
+            </table>
+            <div class="empty-state" id="emptyState" style="display: none">
+              <p>No test suites match your search or filter criteria.</p>
+            </div>
+          </div>
+        </main>
+
+        <footer class="footer-note">Generated on {{ now() | date(format="%Y-%m-%d %H:%M:%S", timezone="UTC") }} UTC by <a href="https://marketplace.visualstudio.com/items?itemName=tuyen.regressify" target="_blank" rel="noopener noreferrer">Regressify</a> — Visual Regression Testing Tool</footer>
       </div>
+    </div>
 
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Test Suite</th>
-            <th scope="col">Total Tests</th>
-            <th scope="col">Passed</th>
-            <th scope="col">Failed</th>
-            <th scope="col">Percent</th>
-          </tr>
-        </thead>
-        <tbody>
-          {%- for summary in summaries %}
-          {%- set percent = (summary.total_passed / summary.total_tests * 100.0) | round(precision=2) -%}
-          {%- if summary.total_passed == summary.total_tests %}
-          {%- set passed_class = "success" -%}
-          {%- set failed_class = "success" -%}
-          {%- else -%}
-          {%- set failed_class = "danger" -%}
-          {%- endif %}
-          {%- if summary.has_engine_errors %}
-          {%- set failed_class = failed_class ~ " engine-error" -%}
-          {%- endif %}
-          <tr {%- if summary.has_engine_errors %} title="This test suite has engine errors. Open it to view the details."{% endif %}>
-            <td class="summary__name-cell" role="rowheader">
-              <a href="{{ summary.id }}/html_report/index.html">
-                {{ summary.id }}
-                {%- if summary.has_engine_errors %}
-                <svg role="img" aria-label="Engine Errors" xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px" fill="#e8eaed"><path d="M480-120q-64 0-114.5-33T283-240l-95 54-40-69 103-60q-3-11-5-22.5t-4-22.5H120v-80h122q2-12 4-23.5t5-22.5l-103-60 40-69 94 55q8-14 18.5-27.5T322-612q-2-7-2-14v-14q0-24 7-46t19-41l-66-66 56-57 70 68q17-9 35.5-13.5T480-800q20 0 39 5t36 14l69-69 56 57-66 66q12 19 18.5 41t6.5 46v13.5q0 6.5-2 13.5 11 11 21.5 25t18.5 28l95-54 40 69-104 59q3 11 5.5 22.5T718-440h122v80H718q-2 12-4 23.5t-5 22.5l103 60-40 69-95-55q-32 54-82.5 87T480-120Zm-76-546q17-7 36.5-10.5T480-680q20 0 38.5 3t35.5 10q-8-23-28-38t-46-15q-26 0-47 15.5T404-666Zm76 466q73 0 116.5-61T640-400q0-70-40.5-135T480-600q-78 0-119 64.5T320-400q0 78 43.5 139T480-200Zm-40-80v-240h80v240h-80Z" fill="currentColor"/></svg>
-                {%- endif %}
-              </a>
-            </td>
-            <td class="summary__total-cell">{{ summary.total_tests }}</td>
-            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
-              {{ summary.total_passed }}
-            </td>
-            <td{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>
-              {{ summary.total_failed }}
-            </td>
-            <td{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
-              <div class="progress-wrapper">
-                <div class="progress-track" aria-hidden="true">
-                  <div class="progress-fill" style="width: {{ percent }}%"></div>
-                </div>
-                <div class="progress-text">{{ percent }}%</div>
-              </div>
-            </td>
-          </tr>
-          {%- endfor %}
-        </tbody>
-        <tfoot>
-          <tr>
-            {%- set percent = (total_passed / total_tests * 100.0) | round(precision=2) -%}
-            {%- if total_passed == total_tests %}
-            {%- set passed_class = "success" -%}
-            {%- set failed_class = "success" -%}
-            {%- else -%}
-            {%- set failed_class = "danger" -%}
-            {%- endif %}
-            <th scope="row">Total</th>
-            <th>{{ total_tests }}</th>
-            <th{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>{{ total_passed }}</th>
-            <th{% if failed_class is defined %} class="{{ failed_class }}"{% endif %}>{{ total_failed }}</th>
-            <th{% if passed_class is defined %} class="{{ passed_class }}"{% endif %}>
-              <div class="progress-wrapper">
-                <div class="progress-track" aria-hidden="true">
-                  <div class="progress-fill" style="width: {{ percent }}%"></div>
-                </div>
-                <div class="progress-text">{{ percent }}%</div>
-              </div>
-            </th>
-          </tr>
-        </tfoot>
-      </table>
-    </main>
-    <footer class="footer-note">
-      Generated on {{ now() | date(format="%Y-%m-%d %H:%M:%S", timezone="UTC") }} UTC by <a href="https://marketplace.visualstudio.com/items?itemName=tuyen.regressify" target="_blank" rel="noopener noreferrer">Regressify</a> - a Visual Regression Tests Tool.
-    </footer>
-  </div>
-</body>
+    <script>
+      // Search functionality
+      const searchInput = document.getElementById('searchInput');
+      const tableBody = document.getElementById('tableBody');
+      const emptyState = document.getElementById('emptyState');
+      const filterBtns = document.querySelectorAll('.filter-btn');
+      const sortHeaders = document.querySelectorAll('.sortable');
+
+      let currentFilter = 'all';
+      let currentSort = { column: null, direction: 'asc' };
+
+      // Search
+      searchInput.addEventListener('input', (e) => {
+        filterTable();
+      });
+
+      // Filter buttons
+      filterBtns.forEach((btn) => {
+        btn.addEventListener('click', () => {
+          filterBtns.forEach((b) => b.classList.remove('active'));
+          btn.classList.add('active');
+          currentFilter = btn.dataset.filter;
+          filterTable();
+        });
+      });
+
+      // Sort functionality
+      sortHeaders.forEach((header) => {
+        header.addEventListener('click', () => {
+          const column = header.dataset.sort;
+
+          if (currentSort.column === column) {
+            currentSort.direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+          } else {
+            currentSort.column = column;
+            currentSort.direction = 'asc';
+          }
+
+          sortHeaders.forEach((h) => {
+            h.classList.remove('sorted-asc', 'sorted-desc');
+          });
+
+          header.classList.add(currentSort.direction === 'asc' ? 'sorted-asc' : 'sorted-desc');
+
+          sortTable();
+        });
+      });
+
+      function filterTable() {
+        const searchTerm = searchInput.value.toLowerCase();
+        const rows = Array.from(tableBody.querySelectorAll('tr'));
+        let visibleCount = 0;
+
+        rows.forEach((row) => {
+          const name = row.dataset.name.toLowerCase();
+          const status = row.dataset.status;
+
+          const matchesSearch = name.includes(searchTerm);
+          const matchesFilter = currentFilter === 'all' || status === currentFilter;
+
+          if (matchesSearch && matchesFilter) {
+            row.classList.remove('hidden');
+            visibleCount++;
+          } else {
+            row.classList.add('hidden');
+          }
+        });
+
+        emptyState.style.display = visibleCount === 0 ? 'block' : 'none';
+      }
+
+      function sortTable() {
+        const rows = Array.from(tableBody.querySelectorAll('tr'));
+        const column = currentSort.column;
+        const direction = currentSort.direction;
+
+        rows.sort((a, b) => {
+          let aVal, bVal;
+
+          if (column === 'name') {
+            aVal = a.dataset.name.toLowerCase();
+            bVal = b.dataset.name.toLowerCase();
+            return direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+          } else {
+            aVal = parseFloat(a.dataset[column]);
+            bVal = parseFloat(b.dataset[column]);
+            return direction === 'asc' ? aVal - bVal : bVal - aVal;
+          }
+        });
+
+        rows.forEach((row) => tableBody.appendChild(row));
+      }
+
+      // Keyboard navigation for filter buttons
+      filterBtns.forEach((btn, index) => {
+        btn.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowRight') {
+            e.preventDefault();
+            const nextBtn = filterBtns[index + 1] || filterBtns[0];
+            nextBtn.focus();
+          } else if (e.key === 'ArrowLeft') {
+            e.preventDefault();
+            const prevBtn = filterBtns[index - 1] || filterBtns[filterBtns.length - 1];
+            prevBtn.focus();
+          }
+        });
+      });
+    </script>
+  </body>
 </html>
