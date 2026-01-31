@@ -154,13 +154,10 @@ pub fn process_test_suite(
 
                 let status = if fail_count > 0 { "failed" } else { "passed" };
                 let percent = if report.tests.len() > 0 {
-                    (pass_count as f32 / report.tests.len() as f32) * 100.0
+                    ((pass_count as f32 / report.tests.len() as f32) * 10000.0).round() / 100.0
                 } else {
                     0.0
                 };
-
-                // Percent text rounded to 2 decimal places
-                let percent = (percent * 100.0).round() / 100.0;
 
                 return Ok(Some(HtmlReportSummary {
                     id: report.id,
