@@ -139,6 +139,12 @@ pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
         include_bytes!("data/apple-touch-icon.png"),
     )?;
 
+    write_shared_file(
+        backstop_dir,
+        "styles.css",
+        include_bytes!("data/styles.css"),
+    )?;
+
     Ok(())
 }
 
