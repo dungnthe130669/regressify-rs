@@ -159,6 +159,17 @@ pub fn process_test_suite(
                     0.0
                 };
 
+                let passed_class = if fail_count == 0 {
+                    Some("success")
+                } else {
+                    None
+                };
+                let failed_class = if fail_count == 0 {
+                    Some("success")
+                } else {
+                    Some("danger")
+                };
+
                 return Ok(Some(HtmlReportSummary {
                     id: report.id,
                     total_tests: report.tests.len(),
@@ -170,6 +181,8 @@ pub fn process_test_suite(
                         .any(|t| t.pair.engine_error_msg.is_some()),
                     percent,
                     status,
+                    passed_class,
+                    failed_class,
                 }));
             }
         }

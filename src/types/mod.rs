@@ -39,4 +39,6 @@ pub struct HtmlReportSummary {
     pub has_engine_errors: bool,
     pub percent: f32,
     pub status: &'static str,
+    pub passed_class: Option<&'static str>,
+    pub failed_class: Option<&'static str>,
 }

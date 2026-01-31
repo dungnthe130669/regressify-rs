@@ -774,7 +774,7 @@
                 </tr>
               </thead>
               <tbody id="tableBody">
-                {%- for summary in summaries %} {%- if summary.total_passed == summary.total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
+                {%- for summary in summaries %}
                 <tr data-status="{{ summary.status }}" data-name="{{ summary.id }}" data-total="{{ summary.total_tests }}" data-passed="{{ summary.total_passed }}" data-failed="{{ summary.total_failed }}" data-percent="{{ summary.percent }}" {% if summary.has_engine_errors %} title="This test suite has engine errors. Click to view details." {% endif %}>
                   <td data-label="Test Suite">
                     <a href="{{ summary.id }}/html_report/index.html" aria-label="View {{ summary.id }} test results">
@@ -787,10 +787,10 @@
                     <span class="badge">{{ summary.total_tests }}</span>
                   </td>
                   <td data-label="Passed">
-                    <span class="badge {% if passed_class is defined %}{{ passed_class }}{% endif %}">{{ summary.total_passed }}</span>
+                    <span class="badge {% if summary.passed_class is defined %}{{ summary.passed_class }}{% endif %}">{{ summary.total_passed }}</span>
                   </td>
                   <td data-label="Failed">
-                    <span class="badge {% if failed_class is defined %}{{ failed_class }}{% endif %}">{{ summary.total_failed }}</span>
+                    <span class="badge {% if summary.failed_class is defined %}{{ summary.failed_class }}{% endif %}">{{ summary.total_failed }}</span>
                   </td>
                   <td data-label="Pass Rate">
                     <div class="progress-wrapper">
