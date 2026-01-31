@@ -1,0 +1,4 @@
+{
+  "html.format.wrapAttributes": "preserve",
+  "html.format.wrapLineLength": 1500
+}
