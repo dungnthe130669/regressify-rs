@@ -394,7 +394,7 @@ td:not(:first-child) {
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--text-main), #111827);
+  background: var(--text-main);
   border-radius: 99px;
   transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
   -webkit-print-color-adjust: exact;
