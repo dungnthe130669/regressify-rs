@@ -805,7 +805,7 @@
               </tbody>
               <tfoot>
                 <tr>
-                  {%- set percent = (total_passed / total_tests * 100.0) | round(precision=2) -%} {%- if total_passed == total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
+                  {%- if total_passed == total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
                   <th scope="row">Total</th>
                   <th data-label="Total">
                     <span class="badge">{{ total_tests }}</span>
@@ -818,10 +818,10 @@
                   </th>
                   <th data-label="Pass Rate">
                     <div class="progress-wrapper">
-                      <div class="progress-track" role="progressbar" aria-valuenow="{{ percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ percent }}% total pass rate">
-                        <div class="progress-fill" style="width: {{ percent }}%"></div>
+                      <div class="progress-track" role="progressbar" aria-valuenow="{{ summary.percent }}" aria-valuemin="0" aria-valuemax="100" aria-label="{{ summary.percent }}% total pass rate">
+                        <div class="progress-fill" style="width: {{ summary.percent }}%"></div>
                       </div>
-                      <div class="progress-text">{{ percent }}%</div>
+                      <div class="progress-text">{{ summary.percent }}%</div>
                     </div>
                   </th>
                 </tr>
