@@ -411,7 +411,7 @@ td:not(:first-child) {
   font-weight: 600;
   min-width: 48px;
   text-align: right;
-  color: var(--text-main);
+  color: var(--text-muted);
 }
 
 /* Footer Totals */
