@@ -1,4 +1,4 @@
-{#- Use Tera Template Engine for rendering - https://keats.github.io/tera/docs/ -#} {#- Enhanced Requirements: -#} {#- - Modern, clean, professional design -#} {#- - Responsive design for mobile and desktop -#} {#- - Print friendly with proper color handling -#} {#- - Dark mode support -#} {#- - Enhanced accessibility (WCAG 2.1 AA compliant) -#} {#- - Interactive features and smooth animations -#} {#- - Better data visualization -#} {%- set overall_percent = (total_passed / total_tests * 100.0) | round(precision=2) -%} {%- if total_passed == total_tests -%} {%- set header_passed_class = "success" -%} {%- set header_failed_class = "success" -%} {%- else -%} {%- set header_failed_class = "danger" -%} {%- endif -%}
+{#- Use Tera Template Engine for rendering - https://keats.github.io/tera/docs/ -#} {#- Enhanced Requirements: -#} {#- - Modern, clean, professional design -#} {#- - Responsive design for mobile and desktop -#} {#- - Print friendly with proper color handling -#} {#- - Dark mode support -#} {#- - Enhanced accessibility (WCAG 2.1 AA compliant) -#} {#- - Interactive features and smooth animations -#} {#- - Better data visualization -#}
 <!doctype html>
 <html lang="en">
   <head>
@@ -748,7 +748,7 @@
           </div>
           <div class="summary-item">
             <div class="summary-label">Pass Rate</div>
-            <div class="summary-value{% if header_passed_class is defined %} {{ header_passed_class }}{% endif %}">{{ overall_percent }}%</div>
+            <div class="summary-value{% if passed_class is defined %} {{ passed_class }}{% endif %}">{{ percent }}%</div>
           </div>
         </div>
 
