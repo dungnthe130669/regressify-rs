@@ -21,12 +21,19 @@ pub fn generate_html_report_summary(
         total_failed += summary.total_failed;
     }
 
+    let percent = if total_tests == 0 {
+        0.0
+    } else {
+        (total_passed as f64 / total_tests as f64 * 10000.0).round() / 100.0
+    };
+
     let mut context = tera::Context::new();
 
     context.insert("summaries", summaries);
     context.insert("total_tests", &total_tests);
     context.insert("total_passed", &total_passed);
     context.insert("total_failed", &total_failed);
+    context.insert("percent", &percent);
 
     let replaced_html = tera.render("report_template.html", &context)?;
 
