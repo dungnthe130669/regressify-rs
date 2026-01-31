@@ -145,6 +145,8 @@ pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
         include_bytes!("data/styles.css"),
     )?;
 
+    write_shared_file(backstop_dir, "script.js", include_bytes!("data/script.js"))?;
+
     Ok(())
 }
 
