@@ -148,7 +148,7 @@ pub fn process_test_suite(
                 fs::write(&html_index_path, replaced_html)?;
 
                 eprintln!(
-                    "Snapshot directory: {}, Passed: {}, Failed: {}",
+                    "Test suite: {}, Passed: {}, Failed: {}",
                     sub_dir_name, pass_count, fail_count
                 );
 
