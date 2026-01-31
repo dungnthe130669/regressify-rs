@@ -27,6 +27,14 @@ pub fn generate_html_report_summary(
         (total_passed as f64 / total_tests as f64 * 10000.0).round() / 100.0
     };
 
+    let passed_class = if total_failed == 0 { "success" } else { "" };
+
+    let failed_class = if total_failed > 0 {
+        "danger"
+    } else {
+        "success"
+    };
+
     let mut context = tera::Context::new();
 
     context.insert("summaries", summaries);
@@ -34,6 +42,8 @@ pub fn generate_html_report_summary(
     context.insert("total_passed", &total_passed);
     context.insert("total_failed", &total_failed);
     context.insert("percent", &percent);
+    context.insert("passed_class", passed_class);
+    context.insert("failed_class", failed_class);
 
     let replaced_html = tera.render("report_template.html", &context)?;
 

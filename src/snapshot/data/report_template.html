@@ -805,7 +805,6 @@
               </tbody>
               <tfoot>
                 <tr>
-                  {%- if total_passed == total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
                   <th scope="row">Total</th>
                   <th data-label="Total">
                     <span class="badge">{{ total_tests }}</span>
