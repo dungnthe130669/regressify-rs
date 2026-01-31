@@ -149,7 +149,7 @@ pub fn process_test_suite(
 
                 eprintln!(
                     "Test suite: {}, Passed: {}, Failed: {}",
-                    sub_dir_name, pass_count, fail_count
+                    id, pass_count, fail_count
                 );
 
                 let status = if fail_count > 0 { "failed" } else { "passed" };
