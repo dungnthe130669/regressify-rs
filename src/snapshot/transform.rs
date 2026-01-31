@@ -153,7 +153,7 @@ pub fn process_test_suite(
                 );
 
                 let status = if fail_count > 0 { "failed" } else { "passed" };
-                let percent = if report.tests.len() > 0 {
+                let percent = if !report.tests.is_empty() {
                     ((pass_count as f32 / report.tests.len() as f32) * 10000.0).round() / 100.0
                 } else {
                     0.0
