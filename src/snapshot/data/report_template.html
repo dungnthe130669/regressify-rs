@@ -806,7 +806,7 @@
                   {%- set percent = (total_passed / total_tests * 100.0) | round(precision=2) -%} {%- if total_passed == total_tests %} {%- set passed_class = "success" -%} {%- set failed_class = "success" -%} {%- else -%} {%- set failed_class = "danger" -%} {%- endif %}
                   <th scope="row">Total</th>
                   <th data-label="Total">
-                    <span class="badge">{{ summary.total_tests }}</span>
+                    <span class="badge">{{ total_tests }}</span>
                   </th>
                   <th data-label="Passed">
                     <span class="badge {% if passed_class is defined %}{{ passed_class }}{% endif %}">{{ total_passed }}</span>
