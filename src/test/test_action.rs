@@ -21,6 +21,21 @@ pub async fn exec_test_action(
             page.find_element(click).await?.click().await?;
         }
 
+        TestAction::Hide(hide) => {
+            eprintln!("    Hiding element: {}", hide.hide);
+            // Inject CSS to hide the element
+            let script = format!(
+                "
+                var style = document.createElement('style');
+                style.type = 'text/css';
+                style.innerHTML = '{} {{ visibility: hidden !important; }}';
+                document.head.appendChild(style);
+            ",
+                hide.hide
+            );
+            page.evaluate(script.as_str()).await?;
+        }
+
         TestAction::Input(InputAction { input, value }) => {
             eprintln!("    Typing into element: {}", input);
             page.find_element(input).await?.type_str(value).await?;

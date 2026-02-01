@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 #[serde(untagged)]
 pub enum TestAction {
     Click(ClickAction),
+    Hide(HideAction),
     Input(InputAction),
     Save(SaveAction),
     Wait(WaitAction),
@@ -15,6 +16,12 @@ pub enum TestAction {
 #[serde(rename_all = "camelCase")]
 pub struct ClickAction {
     pub click: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HideAction {
+    pub hide: String,
 }
 
 #[derive(Serialize, Deserialize)]
