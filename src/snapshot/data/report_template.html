@@ -16,7 +16,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,minimum-scale=1,shrink-to-fit=no" />
   <meta name="format-detection" content="telephone=no,date=no,address=no,email=no,url=no" />
   <meta name="description" content="Visual regression test results summary with {{ total_tests }} tests" />
-  <title>{{ title | safe }}</title>
+  <title>{{ title }}</title>
 
   <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
   <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32x32.png" />
@@ -34,7 +34,7 @@
     <div class="card">
       <header class="header">
         <h1>{{ heading }}</h1>
-        <div class="subtitle">{{ subheading }}</div>
+        <div class="subtitle">{{ subheading | safe }}</div>
       </header>
 
       <div class="summary-grid">
