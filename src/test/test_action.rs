@@ -41,6 +41,21 @@ pub async fn exec_test_action(
             page.find_element(input).await?.type_str(value).await?;
         }
 
+        TestAction::RemoveAction(remove) => {
+            eprintln!("    Removing element: {}", remove.remove);
+            // Set display to none to remove the element from view
+            let script = format!(
+                "
+                var style = document.createElement('style');
+                style.type = 'text/css';
+                style.innerHTML = '{} {{ display: none !important; }}';
+                document.head.appendChild(style);
+            ",
+                remove.remove
+            );
+            page.evaluate(script.as_str()).await?;
+        }
+
         TestAction::Save(SaveAction { save }) => {
             eprintln!("    Saving screenshot: {}", save);
 

@@ -8,6 +8,7 @@ pub enum TestAction {
     Click(ClickAction),
     Hide(HideAction),
     Input(InputAction),
+    RemoveAction(RemoveAction),
     Save(SaveAction),
     Wait(WaitAction),
 }
@@ -22,6 +23,12 @@ pub struct ClickAction {
 #[serde(rename_all = "camelCase")]
 pub struct HideAction {
     pub hide: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoveAction {
+    pub remove: String,
 }
 
 #[derive(Serialize, Deserialize)]
