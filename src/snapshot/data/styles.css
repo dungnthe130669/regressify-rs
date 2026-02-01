@@ -704,6 +704,17 @@ tfoot th {
   }
 }
 
+@media print {
+  .summary-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
+@page {
+  size: A4;
+  margin: 20mm;
+}
+
 /* Animations */
 @keyframes fadeIn {
   from {
