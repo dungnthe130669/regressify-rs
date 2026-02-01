@@ -478,13 +478,13 @@ tfoot th {
 /* Print Styles */
 @media print {
   body {
-    padding: 20px 16px;
-    background: var(--bg-body);
+    padding: 0;
+    background: white;
   }
 
   .card {
-    box-shadow: var(--shadow);
-    border: 1px solid var(--border-color);
+    box-shadow: none;
+    border: none;
   }
 
   .controls {
@@ -492,79 +492,20 @@ tfoot th {
   }
 
   tbody tr:hover {
-    background-color: var(--bg-hover);
-  }
-
-  tbody tr {
-    page-break-inside: avoid;
+    background-color: transparent;
   }
 
   .summary-item:hover {
-    background-color: var(--bg-hover);
-  }
-
-  .summary-item {
-    page-break-inside: avoid;
-  }
-
-  .header {
-    page-break-inside: avoid;
+    background-color: var(--bg-card);
   }
 
   a {
-    color: var(--primary-color);
-    text-decoration: underline;
+    text-decoration: none;
+    color: inherit;
   }
 
   thead {
     position: static;
-    display: table-header-group;
-  }
-
-  th {
-    background-color: var(--bg-subtle);
-    color: var(--text-muted);
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  td {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  tbody tr {
-    background-color: var(--bg-card);
-    border-bottom: 1px solid var(--border-color);
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  .badge {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  .progress-track {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  .progress-fill {
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
-  }
-
-  .summary-grid {
-    page-break-inside: avoid;
-  }
-
-  .table-wrapper {
-    page-break-inside: avoid;
-  }
-
-  .footer-note {
-    page-break-inside: avoid;
   }
 }
 
