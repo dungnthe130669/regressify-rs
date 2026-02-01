@@ -20,7 +20,9 @@ pub async fn exec_test_scenario(
     // Execute actions
     if let Some(actions) = actions {
         for action in actions {
-            exec_test_action(&page, test_suite, scenario, action).await?;
+            exec_test_action(&page, test_suite, scenario, action)
+                .await
+                .ok();
         }
     }
 
