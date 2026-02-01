@@ -116,7 +116,9 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
         ])
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
-    let (mut browser, mut handler) = Browser::launch(config).await?;
+    let (mut browser, mut handler) = Browser::launch(config)
+        .await
+        .map_err(|e| anyhow!("Cannot launch browser: {:?}", e))?;
 
     // spawn a new task that continuously polls the handler
     let handle = tokio::spawn(async move {
