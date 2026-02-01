@@ -166,7 +166,7 @@ pub fn process_test_suite(
                     None
                 };
                 let failed_class = if fail_count == 0 {
-                    Some("success")
+                    None
                 } else {
                     Some("danger")
                 };
