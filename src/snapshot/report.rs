@@ -77,12 +77,8 @@ pub fn generate_html_report_summary(
     let report_path = backstop_dir.join("index.html");
     fs::write(&report_path, replaced_html)?;
     eprintln!(
-        "{}",
-        format!(
-            "Snapshot report summary generated at: {:?}",
-            report_path.normalize_string(false)?
-        )
-        .cyan()
+        "Snapshot report summary generated at: {}",
+        report_path.normalize_string(false)?.cyan()
     );
 
     let swa_config = include_bytes!("data/staticwebapp.config.json");
