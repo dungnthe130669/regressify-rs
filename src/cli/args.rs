@@ -20,6 +20,21 @@ pub struct OptimizeArgs {
 }
 
 #[derive(clap::Args)]
+pub struct SnapshotArgs {
+    /// The title of the report
+    #[clap(long, default_value = "Visual Tests Summary | Regressify")]
+    pub title: String,
+
+    /// The heading of the report
+    #[clap(long, default_value = "Visual Tests Summary")]
+    pub heading: String,
+
+    /// The subheading of the report. Support Markdown.
+    #[clap(long, default_value = "Snapshot regression test results")]
+    pub subheading: String,
+}
+
+#[derive(clap::Args)]
 pub struct TestArgs {
     pub test_suite: Vec<String>,
 }

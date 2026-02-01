@@ -20,6 +20,7 @@ glob = "0.3.3"
 imagequant = "4.4.1"
 lodepng = "3.12.1"
 oxipng = "10.0.0"
+pulldown-cmark = "0.13.0"
 rayon = "1.11.0"
 reqwest = { version = "0.12.4", features = ["blocking", "json", "stream", "multipart" ] }
 rgb = "0.8"

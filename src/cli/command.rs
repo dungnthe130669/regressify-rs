@@ -1,6 +1,6 @@
 use clap::Subcommand;
 
-use crate::cli::args::OptimizeArgs;
+use crate::cli::args::{OptimizeArgs, SnapshotArgs};
 
 #[cfg(feature = "local")]
 use crate::cli::args::TestArgs;
@@ -8,7 +8,7 @@ use crate::cli::args::TestArgs;
 #[derive(Subcommand)]
 pub enum Command {
     /// Snapshot command
-    Snapshot,
+    Snapshot(SnapshotArgs),
 
     /// Optimize images command
     Optimize(OptimizeArgs),

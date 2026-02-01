@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 
 use crate::{
+    cli::args::SnapshotArgs,
     common,
     helpers::{IOExtensions, OnceLockExtensions},
     snapshot::{
@@ -13,7 +14,7 @@ use crate::{
     },
 };
 
-pub fn snapshot() -> Result<()> {
+pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let backstop_dir = common::BACKSTOP_DIR.get_required()?;
 
     if !backstop_dir.exists() {
@@ -66,7 +67,7 @@ pub fn snapshot() -> Result<()> {
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(backstop_dir, &tera, &summaries)?;
+    generate_html_report_summary(backstop_dir, &tera, &summaries, &args)?;
     generate_shared_files(backstop_dir)?;
 
     write_shared_file(

@@ -62,7 +62,7 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     set_global_vars(&cli, &work_dir)?;
 
     match cli.command {
-        Command::Snapshot => snapshot::snapshot(),
+        Command::Snapshot(args) => snapshot::snapshot(args),
         Command::Optimize(args) => optimizer::optimize(args),
 
         #[cfg(feature = "local")]

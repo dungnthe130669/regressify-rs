@@ -3,6 +3,7 @@ use colored::*;
 use std::fs;
 use std::path::Path;
 
+use crate::cli::args::SnapshotArgs;
 use crate::helpers::IOExtensions;
 use crate::snapshot::helpers::get_asset_version;
 use crate::types::HtmlReportSummary;
@@ -11,6 +12,7 @@ pub fn generate_html_report_summary(
     backstop_dir: &Path,
     tera: &tera::Tera,
     summaries: &[HtmlReportSummary],
+    args: &SnapshotArgs,
 ) -> Result<()> {
     let mut total_tests = 0;
     let mut total_passed = 0;
@@ -45,6 +47,14 @@ pub fn generate_html_report_summary(
     context.insert("percent", &percent);
     context.insert("passed_class", passed_class);
     context.insert("failed_class", failed_class);
+
+    context.insert("title", &args.title);
+    context.insert("heading", &args.heading);
+
+    let parser = pulldown_cmark::Parser::new(&args.subheading);
+    let mut subheading = String::new();
+    pulldown_cmark::html::push_html(&mut subheading, parser);
+    context.insert("subheading", &subheading);
 
     generate_assets_file(
         backstop_dir,
