@@ -147,15 +147,23 @@ pub async fn exec_test_suite(
 
     // For each test scenario
     eprintln!("Executing test scenarios...");
-    for scenario in &test_suite.scenarios {
-        exec_test_scenario(&browser, &test_suite, scenario).await?;
+    let scenarios_result = async {
+        for scenario in &test_suite.scenarios {
+            exec_test_scenario(&browser, &test_suite, scenario).await?;
+        }
+        Ok(())
     }
+    .await;
 
     eprintln!("Closing browser...");
-    browser.close().await?;
+    if let Err(e) = browser.close().await {
+        eprintln!("Failed to close browser gracefully: {e}");
+    }
 
     eprintln!("Waiting for handler to finish...");
-    handle.await?;
+    if let Err(e) = handle.await {
+        eprintln!("Error waiting for browser handler task: {e}");
+    }
 
-    Ok(())
+    scenarios_result
 }
