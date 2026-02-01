@@ -1,5 +1,4 @@
 use anyhow::Result;
-use futures::StreamExt;
 use walkdir::WalkDir;
 
 use crate::{
@@ -82,17 +81,13 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             .collect()
     };
 
-    futures::stream::iter(filtered_test_suites)
-        .for_each_concurrent(None, |t| {
-            let visual_tests_dir = &visual_tests_dir;
-            async move {
-                match exec_test_suite(visual_tests_dir, &t).await {
-                    Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
-                    Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
-                }
-            }
-        })
-        .await;
+    for t in filtered_test_suites {
+        let visual_tests_dir = &visual_tests_dir;
+        match exec_test_suite(visual_tests_dir, &t).await {
+            Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
+            Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
+        }
+    }
 
     Ok(())
 }
