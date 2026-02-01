@@ -9,7 +9,7 @@ use futures::StreamExt;
 
 use crate::{
     common,
-    helpers::{IOExtensions, OnceLockExtensions},
+    helpers::{IOExtensions, OnceLockExtensions, slugify},
     snapshot::get_asset_version,
     test::test_scenario::exec_test_scenario,
     types::TestSuiteInput,
@@ -57,8 +57,14 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
     } else {
         // Loop through scenarios and assign IDs if missing
         for scenario in test_suite.scenarios.iter_mut() {
-            if scenario.id.is_none() {
-                scenario.id = Some(get_asset_version(scenario.url.as_bytes(), 20));
+            match (scenario.id.as_ref(), scenario.label.as_ref()) {
+                (None, Some(label)) => {
+                    scenario.id = Some(slugify(label));
+                }
+                (None, None) => {
+                    scenario.id = Some(get_asset_version(scenario.url.as_bytes(), 20));
+                }
+                (Some(_), _) => {}
             }
         }
 

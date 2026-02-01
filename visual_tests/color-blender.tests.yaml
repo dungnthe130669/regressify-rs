@@ -2,6 +2,7 @@ scenarios:
   # Scenario:
   # Testing the page without any user interaction
   - url: https://tuyen.blog/utils/general/color-blender/
+    label: Initial load
 
   # Scenario:
   # Verify that when clicked, the spoiler on top of the page will expands

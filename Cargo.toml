@@ -15,6 +15,7 @@ chromiumoxide = { version = "0.8.0", optional = true }
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
+deunicode = "1.6.2"
 futures = "0.3.31"
 glob = "0.3.3"
 imagequant = "4.4.1"

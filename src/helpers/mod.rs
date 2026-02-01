@@ -7,6 +7,7 @@ mod http;
 mod io;
 mod locks;
 mod numbers;
+mod slugify;
 
 #[cfg(unix)]
 mod mode;
@@ -19,6 +20,7 @@ pub use io::IOExtensions;
 pub use io::format_size;
 pub use locks::{OnceLockBoolExtensions, OnceLockExtensions};
 pub use numbers::format_bytes;
+pub use slugify::slugify;
 
 #[cfg(unix)]
 pub use mode::cmod;
