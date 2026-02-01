@@ -1,10 +1,12 @@
 use anyhow::{Result, anyhow};
-use chromiumoxide::{
-    Page, cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
-};
+use chromiumoxide::Page;
 
-use crate::types::{
-    ClickAction, SaveAction, TestAction, TestScenario, TestSuite, Wait, WaitAction,
+use crate::{
+    test::capture::save_screenshot,
+    types::{
+        ClickAction, SaveAction, ScreenshotType, TestAction, TestScenario, TestSuite, Wait,
+        WaitAction,
+    },
 };
 
 pub async fn exec_test_action(
@@ -19,25 +21,13 @@ pub async fn exec_test_action(
         }
 
         TestAction::Save(SaveAction { save }) => {
-            let test_suite_id = test_suite
-                .id
-                .as_ref()
-                .ok_or_else(|| anyhow!("Test suite ID is required for Save action"))?;
-
-            let scenario_id = scenario
-                .id
-                .as_ref()
-                .ok_or_else(|| anyhow!("Test scenario ID is required for Save action"))?;
-
-            page.save_screenshot(
-                ScreenshotParams::builder()
-                    .format(CaptureScreenshotFormat::Png)
-                    .full_page(true)
-                    .omit_background(true)
-                    .build(),
-                format!("${}__${}__${}.png", test_suite_id, scenario_id, save),
+            save_screenshot(
+                test_suite,
+                scenario,
+                page,
+                ScreenshotType::Step(save.to_string()),
             )
-            .await?;
+            .await?
         }
 
         TestAction::Wait(WaitAction { wait, url }) => {

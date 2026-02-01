@@ -48,6 +48,10 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
         test_suite.id = Some(name.clone());
     }
 
+    // Set the test suite date time, format: YYYYMMDD_HHMMSS
+    let now = chrono::Utc::now();
+    test_suite.test_date = Some(now.format("%Y%m%d_%H%M%S").to_string());
+
     if test_suite.scenarios.is_empty() {
         return Err(anyhow!("Test suite contains no scenarios."));
     } else {

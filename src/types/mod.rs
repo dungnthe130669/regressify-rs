@@ -42,3 +42,8 @@ pub struct HtmlReportSummary {
     pub passed_class: Option<&'static str>,
     pub failed_class: Option<&'static str>,
 }
+
+pub enum ScreenshotType {
+    Step(String),
+    Final,
+}

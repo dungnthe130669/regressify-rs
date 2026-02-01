@@ -24,6 +24,8 @@ pub enum TestSuiteFormat {
 pub struct TestSuite {
     pub id: Option<String>,
 
+    pub test_date: Option<String>,
+
     pub async_capture_limit: Option<f64>,
 
     pub async_compare_limit: Option<f64>,
