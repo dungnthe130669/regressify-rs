@@ -20,6 +20,7 @@ pub async fn exec_test_scenario(
 
     // Execute actions
     if let Some(actions) = actions {
+        eprintln!("    Executing {} actions...", actions.len());
         for action in actions {
             exec_test_action(&page, test_suite, scenario, action)
                 .await
@@ -30,12 +31,17 @@ pub async fn exec_test_scenario(
     if let Some(post_interaction_wait) = test_suite.post_interaction_wait
         && post_interaction_wait > 0.0
     {
+        eprintln!(
+            "    Waiting for {} milliseconds after interactions...",
+            post_interaction_wait
+        );
         tokio::time::sleep(std::time::Duration::from_millis(
             post_interaction_wait as u64,
         ))
         .await;
     }
 
+    eprintln!("    Capturing final screenshot...");
     save_screenshot(test_suite, scenario, &page, ScreenshotType::Final).await?;
 
     Ok(())
