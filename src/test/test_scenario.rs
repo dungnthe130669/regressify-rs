@@ -1,5 +1,6 @@
 use anyhow::Result;
 use chromiumoxide::Browser;
+use colored::Colorize;
 
 use crate::{
     test::{capture::save_screenshot, test_action::exec_test_action},
@@ -13,7 +14,7 @@ pub async fn exec_test_scenario(
 ) -> Result<()> {
     let TestScenario { url, actions, .. } = scenario;
 
-    eprint!("  Executing scenario for URL '{}': ", url);
+    eprintln!("  Executing scenario for URL {}: ", url.cyan());
 
     let page = browser.new_page(url.as_str()).await?;
 
