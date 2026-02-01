@@ -110,6 +110,8 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
             "--ignore-certifcate-errors",
             "--ignore-certifcate-errors-spki-list",
             "--no-sandbox",
+            "--disable-setuid-sandbox",
+            "--disable-gpu",
             "--window-position=0,0",
         ])
         .build()
