@@ -102,7 +102,8 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
             has_touch: false,
             is_landscape: true,
         }))
-        .headless_mode(HeadlessMode::New)
+        // .headless_mode(HeadlessMode::New)
+        .with_head()
         .args([
             "--disable-infobars",
             "--disable-setuid-sandbox",
@@ -110,7 +111,7 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
             "--ignore-certificate-errors-spki-list",
             "--no-sandbox",
             // "--disable-setuid-sandbox",
-            "--disable-gpu",
+            // "--disable-gpu",
             "--window-position=0,0",
         ])
         .build()
