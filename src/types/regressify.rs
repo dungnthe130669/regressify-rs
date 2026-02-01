@@ -22,6 +22,8 @@ pub enum TestSuiteFormat {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TestSuite {
+    pub id: Option<String>,
+
     pub async_capture_limit: Option<f64>,
 
     pub async_compare_limit: Option<f64>,

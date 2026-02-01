@@ -32,6 +32,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             let (suite_name, ext) = file_name
                 .rsplit_once(".tests.")
                 .expect("File name should contain '.tests.'");
+
             available_test_suites.push(TestSuiteInput {
                 name: suite_name.to_string(),
                 path: entry.path().to_path_buf(),

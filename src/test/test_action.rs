@@ -3,22 +3,39 @@ use chromiumoxide::{
     Page, cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
 };
 
-use crate::types::{ClickAction, SaveAction, TestAction, Wait, WaitAction};
+use crate::types::{
+    ClickAction, SaveAction, TestAction, TestScenario, TestSuite, Wait, WaitAction,
+};
 
-pub async fn exec_test_action(page: &Page, action: &TestAction) -> Result<()> {
+pub async fn exec_test_action(
+    page: &Page,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    action: &TestAction,
+) -> Result<()> {
     match action {
         TestAction::Click(ClickAction { click }) => {
             page.find_element(click).await?.click().await?;
         }
 
         TestAction::Save(SaveAction { save }) => {
+            let test_suite_id = test_suite
+                .id
+                .as_ref()
+                .ok_or_else(|| anyhow!("Test suite ID is required for Save action"))?;
+
+            let scenario_id = scenario
+                .id
+                .as_ref()
+                .ok_or_else(|| anyhow!("Test scenario ID is required for Save action"))?;
+
             page.save_screenshot(
                 ScreenshotParams::builder()
                     .format(CaptureScreenshotFormat::Png)
                     .full_page(true)
                     .omit_background(true)
                     .build(),
-                format!("{}.png", save),
+                format!("{}{}{}.png", test_suite_id, scenario_id, save),
             )
             .await?;
         }

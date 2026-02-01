@@ -10,6 +10,7 @@ use futures::StreamExt;
 use crate::{
     common,
     helpers::{IOExtensions, OnceLockExtensions},
+    snapshot::get_asset_version,
     test::test_scenario::exec_test_scenario,
     types::TestSuiteInput,
 };
@@ -38,10 +39,40 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
     let test_suite_content = std::fs::read_to_string(&test_suite_path)?;
 
     eprintln!("Parsing test suite...");
-    let test_suite: crate::types::TestSuite = match format {
+    let mut test_suite: crate::types::TestSuite = match format {
         crate::types::TestSuiteFormat::Yaml => serde_yaml::from_str(&test_suite_content)?,
         crate::types::TestSuiteFormat::Json => serde_json::from_str(&test_suite_content)?,
     };
+
+    if test_suite.id.is_none() {
+        test_suite.id = Some(name.clone());
+    }
+
+    if test_suite.scenarios.is_empty() {
+        return Err(anyhow!("Test suite contains no scenarios."));
+    } else {
+        // Loop through scenarios and assign IDs if missing
+        for scenario in test_suite.scenarios.iter_mut() {
+            if scenario.id.is_none() {
+                scenario.id = Some(get_asset_version(scenario.url.as_bytes()));
+            }
+        }
+
+        // Ensure all scenario IDs are unique
+        let mut scenario_ids = std::collections::HashSet::new();
+        for scenario in test_suite.scenarios.iter() {
+            let scenario_id = scenario
+                .id
+                .as_ref()
+                .ok_or_else(|| anyhow!("Scenario ID is missing."))?;
+            if !scenario_ids.insert(scenario_id) {
+                return Err(anyhow!(
+                    "Duplicate scenario ID found: '{}'. Scenario IDs must be unique.",
+                    scenario_id
+                ));
+            }
+        }
+    }
 
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
