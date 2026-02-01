@@ -4,8 +4,8 @@ use chromiumoxide::Page;
 use crate::{
     test::capture::save_screenshot,
     types::{
-        ClickAction, SaveAction, ScreenshotType, TestAction, TestScenario, TestSuite, Wait,
-        WaitAction,
+        ClickAction, InputAction, SaveAction, ScreenshotType, TestAction, TestScenario, TestSuite,
+        Wait, WaitAction,
     },
 };
 
@@ -18,6 +18,10 @@ pub async fn exec_test_action(
     match action {
         TestAction::Click(ClickAction { click }) => {
             page.find_element(click).await?.click().await?;
+        }
+
+        TestAction::Input(InputAction { input, value }) => {
+            page.find_element(input).await?.type_str(value).await?;
         }
 
         TestAction::Save(SaveAction { save }) => {
