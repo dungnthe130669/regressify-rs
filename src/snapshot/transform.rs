@@ -149,7 +149,13 @@ pub fn process_test_suite(
 
                 eprintln!(
                     "Test suite: {}, Passed: {}, Failed: {}",
-                    id, pass_count, fail_count
+                    id.cyan(),
+                    pass_count.to_string().green(),
+                    if fail_count > 0 {
+                        fail_count.to_string().red()
+                    } else {
+                        fail_count.to_string().normal()
+                    }
                 );
 
                 let status = if fail_count > 0 { "failed" } else { "passed" };
