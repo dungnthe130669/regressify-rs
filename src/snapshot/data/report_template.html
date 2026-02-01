@@ -79,7 +79,7 @@
             </thead>
             <tbody id="tableBody">
               {%- for summary in summaries %}
-              <tr data-status="{{ summary.status }}" data-name="{{ summary.id }}" data-total="{{ summary.total_tests }}" data-passed="{{ summary.total_passed }}" data-failed="{{ summary.total_failed }}" data-percent="{{ summary.percent }}" {%- if summary.has_engine_errors %} title="This test suite has engine errors. Click to view details." {% endif %}>
+              <tr data-status="{{ summary.status }}" data-name="{{ summary.id }}" data-total="{{ summary.total_tests }}" data-passed="{{ summary.total_passed }}" data-failed="{{ summary.total_failed }}" data-percent="{{ summary.percent }}" {%- if summary.has_engine_errors %} title="This test suite has engine errors. Click to view details." {%- endif %}>
                 <td data-label="Test Suite">
                   <a href="{{ summary.id }}/html_report/index.html" aria-label="View {{ summary.id }} test results">
                     {{ summary.id }} {%- if summary.has_engine_errors %}
