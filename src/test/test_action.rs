@@ -35,7 +35,7 @@ pub async fn exec_test_action(
                     .full_page(true)
                     .omit_background(true)
                     .build(),
-                format!("{}{}{}.png", test_suite_id, scenario_id, save),
+                format!("${}__${}__${}.png", test_suite_id, scenario_id, save),
             )
             .await?;
         }
