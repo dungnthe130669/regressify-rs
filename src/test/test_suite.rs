@@ -106,11 +106,11 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
         .args([
             "--disable-infobars",
             "--disable-setuid-sandbox",
-            "--ignore-certifcate-errors",
-            "--ignore-certifcate-errors-spki-list",
-            // "--no-sandbox",
+            "--ignore-certificate-errors",
+            "--ignore-certificate-errors-spki-list",
+            "--no-sandbox",
             // "--disable-setuid-sandbox",
-            // "--disable-gpu",
+            "--disable-gpu",
             "--window-position=0,0",
         ])
         .build()
