@@ -54,9 +54,9 @@ pub async fn exec_test_action(
             }
 
             match wait {
-                Wait::Double(seconds) => {
-                    eprintln!("    Waiting for {} seconds", seconds);
-                    tokio::time::sleep(std::time::Duration::from_secs_f64(*seconds)).await;
+                Wait::Number(milliseconds) => {
+                    eprintln!("    Waiting for {} milliseconds", milliseconds);
+                    tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
                     eprintln!("    Waiting for element: {}", selector);

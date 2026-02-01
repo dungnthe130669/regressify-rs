@@ -40,7 +40,7 @@ pub struct WaitAction {
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Wait {
-    Double(f64),
+    Number(u64),
 
     String(String),
 }
