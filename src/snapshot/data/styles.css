@@ -763,6 +763,11 @@ tfoot th {
   }
 }
 
+@page {
+  size: A4;
+  margin: 20mm;
+}
+
 /* Animations */
 @keyframes fadeIn {
   from {
