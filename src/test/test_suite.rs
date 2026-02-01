@@ -15,7 +15,11 @@ use crate::{
     types::TestSuiteInput,
 };
 
-pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Result<()> {
+pub async fn exec_test_suite(
+    visual_tests_dir: &Path,
+    exe_path: &Path,
+    input: &TestSuiteInput,
+) -> Result<()> {
     let TestSuiteInput {
         name,
         path: _,
@@ -86,7 +90,7 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
 
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
-    let mut config_builder = BrowserConfig::builder();
+    let mut config_builder = BrowserConfig::builder().chrome_executable(exe_path);
 
     if debug {
         config_builder = config_builder.with_head();

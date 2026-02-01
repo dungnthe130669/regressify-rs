@@ -1,3 +1,4 @@
+mod browers;
 mod capture;
 mod test_action;
 mod test_scenario;

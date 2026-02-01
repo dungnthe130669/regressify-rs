@@ -1,11 +1,11 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use walkdir::WalkDir;
 
 use crate::{
     cli::args::TestArgs,
     common,
     helpers::OnceLockExtensions,
-    test::test_suite::exec_test_suite,
+    test::{browers::fetcher, test_suite::exec_test_suite},
     types::{TestSuiteFormat, TestSuiteInput},
 };
 
@@ -15,6 +15,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
+    let exe_path = fetcher()
+        .await
+        .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
 
     // Find available test suites, where the file name ends with either `.tests.yaml`, `.tests.yml`, or `.tests.json`, ignoring case
     let mut available_test_suites = Vec::<TestSuiteInput>::new();
@@ -83,7 +86,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     for t in filtered_test_suites {
         let visual_tests_dir = &visual_tests_dir;
-        match exec_test_suite(visual_tests_dir, &t).await {
+        match exec_test_suite(visual_tests_dir, &exe_path, &t).await {
             Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
             Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
         }
