@@ -86,7 +86,6 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
 
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
-    eprintln!("Launching browser...");
     let mut config_builder = BrowserConfig::builder();
 
     if debug {
@@ -109,13 +108,15 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
             "--disable-setuid-sandbox",
             "--ignore-certifcate-errors",
             "--ignore-certifcate-errors-spki-list",
-            "--no-sandbox",
-            "--disable-setuid-sandbox",
-            "--disable-gpu",
+            // "--no-sandbox",
+            // "--disable-setuid-sandbox",
+            // "--disable-gpu",
             "--window-position=0,0",
         ])
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
+
+    eprintln!("Launching browser...");
     let (mut browser, mut handler) = Browser::launch(config)
         .await
         .map_err(|e| anyhow!("Cannot launch browser: {:?}", e))?;
