@@ -96,7 +96,7 @@ pub fn generate_assets_file(
     version_name: Option<&str>,
 ) -> Result<()> {
     if let Some(version_name) = version_name {
-        let script_hash = get_asset_version(content_bytes);
+        let script_hash = get_asset_version(content_bytes, 20);
         context.insert(version_name, &script_hash);
     }
 

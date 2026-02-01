@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use chromiumoxide::{
     Browser, cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
 };
@@ -35,13 +35,22 @@ pub async fn exec_test_scenario(
         .await;
     }
 
+    let test_suite_id = test_suite
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow!("Test suite ID is required for Save action"))?;
+
+    let scenario_id = scenario
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow!("Test scenario ID is required for Save action"))?;
     page.save_screenshot(
         ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
             .full_page(true)
             .omit_background(true)
             .build(),
-        "final.png",
+        format!("${}__${}__final.png", test_suite_id, scenario_id),
     )
     .await?;
 

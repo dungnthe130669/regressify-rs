@@ -38,7 +38,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     )?;
 
     let index_bundle_content = include_str!("data/index_bundle.js");
-    let bundle_hash = get_asset_version(index_bundle_content.as_bytes());
+    let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
     let child_dirs = fs::read_dir(backstop_dir)?;
     for entry in child_dirs.flatten() {

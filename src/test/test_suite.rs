@@ -54,7 +54,7 @@ pub async fn exec_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) ->
         // Loop through scenarios and assign IDs if missing
         for scenario in test_suite.scenarios.iter_mut() {
             if scenario.id.is_none() {
-                scenario.id = Some(get_asset_version(scenario.url.as_bytes()));
+                scenario.id = Some(get_asset_version(scenario.url.as_bytes(), 20));
             }
         }
 

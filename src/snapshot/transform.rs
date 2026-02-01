@@ -94,7 +94,7 @@ pub fn process_test_suite(
                             let full_path = bitmap_test_dir.join(img_rel_path);
                             if full_path.exists() && !hashes.contains_key(img_rel_path) {
                                 let content = fs::read(&full_path).unwrap_or_default();
-                                let hash = get_asset_version(&content);
+                                let hash = get_asset_version(&content, 20);
                                 hashes.insert(img_rel_path.clone(), hash.clone());
                             }
                         }
@@ -136,7 +136,7 @@ pub fn process_test_suite(
                 fs::write(&config_path, &modified_config_text).ok();
 
                 // Handle index.html config.js versioning
-                let config_hash = get_asset_version(modified_config_text.as_bytes());
+                let config_hash = get_asset_version(modified_config_text.as_bytes(), 20);
 
                 let mut context = tera::Context::new();
                 context.insert("test_suite_name", id);
