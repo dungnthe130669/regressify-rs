@@ -37,27 +37,27 @@ pub async fn save_screenshot(
 
     create_dir_all(&test_suite_dir)?;
 
-    page.save_screenshot(
-        ScreenshotParams::builder()
-            .format(CaptureScreenshotFormat::Png)
-            .full_page(true)
-            .omit_background(true)
-            .build(),
-        format!(
-            "{}/{}__{}{}.png",
-            test_suite_dir,
-            scenario_id,
-            match screenshot_type {
-                ScreenshotType::Step(_) => "$",
-                ScreenshotType::Final => "",
-            },
-            match &screenshot_type {
-                ScreenshotType::Step(step) => step,
-                ScreenshotType::Final => "FINAL",
-            }
-        ),
-    )
-    .await?;
+    let params = ScreenshotParams::builder()
+        .format(CaptureScreenshotFormat::Png)
+        .full_page(true)
+        .omit_background(true)
+        .build();
+
+    let path = format!(
+        "{}/{}__{}{}.png",
+        test_suite_dir,
+        scenario_id,
+        match screenshot_type {
+            ScreenshotType::Step(_) => "$",
+            ScreenshotType::Final => "",
+        },
+        match &screenshot_type {
+            ScreenshotType::Step(step) => step,
+            ScreenshotType::Final => "FINAL",
+        }
+    );
+
+    page.save_screenshot(params, &path).await?;
 
     Ok(())
 }
