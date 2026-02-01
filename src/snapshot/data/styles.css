@@ -478,13 +478,13 @@ tfoot th {
 /* Print Styles */
 @media print {
   body {
-    padding: 0;
-    background: white;
+    padding: 20px 16px;
+    background: var(--bg-body);
   }
 
   .card {
-    box-shadow: none;
-    border: none;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border-color);
   }
 
   .controls {
@@ -492,25 +492,84 @@ tfoot th {
   }
 
   tbody tr:hover {
-    background-color: transparent;
+    background-color: var(--bg-hover);
+  }
+
+  tbody tr {
+    page-break-inside: avoid;
   }
 
   .summary-item:hover {
-    background-color: var(--bg-card);
+    background-color: var(--bg-hover);
+  }
+
+  .summary-item {
+    page-break-inside: avoid;
+  }
+
+  .header {
+    page-break-inside: avoid;
   }
 
   a {
-    text-decoration: none;
-    color: inherit;
+    color: var(--primary-color);
+    text-decoration: underline;
   }
 
   thead {
     position: static;
+    display: table-header-group;
+  }
+
+  th {
+    background-color: var(--bg-subtle);
+    color: var(--text-muted);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  td {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  tbody tr {
+    background-color: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .badge {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .progress-track {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .progress-fill {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  .summary-grid {
+    page-break-inside: avoid;
+  }
+
+  .table-wrapper {
+    page-break-inside: avoid;
+  }
+
+  .footer-note {
+    page-break-inside: avoid;
   }
 }
 
 /* Responsive Mobile Styles */
-@media not print and (max-width: 768px) {
+@media (max-width: 768px) {
   body {
     padding: 16px;
   }
@@ -702,17 +761,6 @@ tfoot th {
   .summary-grid {
     grid-template-columns: repeat(4, 1fr);
   }
-}
-
-@media print {
-  .summary-grid {
-    grid-template-columns: repeat(4, 1fr);
-  }
-}
-
-@page {
-  size: A4;
-  margin: 20mm;
 }
 
 /* Animations */
