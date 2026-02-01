@@ -1,0 +1,6 @@
+scenarios:
+  - url: https://www.domain.com/account
+    requiredLogin: true
+  - url: https://www.domain.com
+    requiredLogin: false
+    

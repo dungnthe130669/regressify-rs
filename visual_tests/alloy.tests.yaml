@@ -1,0 +1,5 @@
+scenarios:
+  - url: https://alloy.eshn.dev/pages/home.html
+  - url: https://alloy.eshn.dev/pages/service.html
+  - url: https://alloy.eshn.dev/pages/portfolio.html
+  - url: https://alloy.eshn.dev/pages/contact/default.html

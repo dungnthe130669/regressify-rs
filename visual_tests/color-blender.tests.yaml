@@ -1,0 +1,62 @@
+scenarios:
+  # Scenario:
+  # Testing the page without any user interaction
+  - url: https://tuyen.blog/utils/general/color-blender/
+
+  # Scenario:
+  # Verify that when clicked, the spoiler on top of the page will expands
+  - url: https://tuyen.blog/utils/general/color-blender/
+    label: Expand the spoiler
+    # Click the spoiler, it contains the text:
+    # `Click here to view the instructions for usage.`
+    actions:
+      - click: main .t-spoiler__summary
+      - wait: 2000
+
+  # Scenario:
+  # Verify that when clicked second time, the spoiler on top of the page will collapses again
+  - url: https://tuyen.blog/utils/general/color-blender/
+    label: Collapse the spoiler
+    # Click the spoiler, it contains the text:
+    # `Click here to view the instructions for usage.`
+    actions:
+      - click: main .t-spoiler__summary
+      - click: main .t-spoiler__summary
+      - wait: 2000
+
+  # Scenario:
+  # Verify that when RGB mode was clicked, the color values in pallete will
+  # switch to RGB.
+  - url: https://tuyen.blog/utils/general/color-blender/
+    label: Click the RGB switch
+    # Click the RGB switch element
+    clickSelector: main .t-o-color-blender__mode-toggle
+
+  # Scenario:
+  # Verify the visual with specific input
+  - url: https://tuyen.blog/utils/general/color-blender/
+    label: Check visual for specific input
+    actions:
+      - input: '#color-blender-color-1'
+        value: yellow
+      - input: '#color-blender-color-2'
+        value: green
+      - click: '#color-blender-color-midpoints'
+      - click: .t-o-color-blender__midpoint-list-item[aria-label='10 midpoints']
+      - click: main
+      - wait: 1000
+
+  # Scenario:
+  # Verify the visual with invalid input
+  - url: https://tuyen.blog/utils/general/color-blender/
+    label: Check visual for invalid input
+    actions:
+      - input: '#color-blender-color-1'
+        # Input an invalid web color
+        value: really yellow
+      - input: '#color-blender-color-2'
+        value: green
+      - click: '#color-blender-color-midpoints'
+      - click: .t-o-color-blender__midpoint-list-item[aria-label='10 midpoints']
+      - click: main
+      - wait: 1000
