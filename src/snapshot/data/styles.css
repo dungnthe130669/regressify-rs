@@ -83,6 +83,11 @@ a {
   transition: var(--transition);
 }
 
+a:hover {
+  color: var(--primary-hover);
+  text-decoration: underline;
+}
+
 .container {
   max-width: 980px;
   margin: 0 auto;
