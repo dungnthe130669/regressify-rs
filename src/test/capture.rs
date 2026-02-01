@@ -53,7 +53,7 @@ pub async fn save_screenshot(
             },
             match &screenshot_type {
                 ScreenshotType::Step(step) => step,
-                ScreenshotType::Final => "final",
+                ScreenshotType::Final => "FINAL",
             }
         ),
     )
