@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
@@ -9,7 +9,7 @@ use futures::StreamExt;
 
 use crate::{
     common,
-    helpers::{IOExtensions, OnceLockExtensions, slugify},
+    helpers::{IOExtensions, OnceLockBoolExtensions, OnceLockExtensions, slugify},
     snapshot::get_asset_version,
     test::test_scenario::exec_test_scenario,
     types::TestSuiteInput,
@@ -17,7 +17,7 @@ use crate::{
 
 pub async fn exec_test_suite(
     visual_tests_dir: &Path,
-    exe_path: &Path,
+    exe_path: &Option<PathBuf>,
     input: &TestSuiteInput,
 ) -> Result<()> {
     let TestSuiteInput {
@@ -90,13 +90,17 @@ pub async fn exec_test_suite(
 
     // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
     // and the handler that drives the websocket etc.
-    let mut config_builder = BrowserConfig::builder().chrome_executable(exe_path);
+    let mut config_builder = BrowserConfig::builder();
+
+    if let Some(exe_path) = exe_path {
+        config_builder = config_builder.chrome_executable(&exe_path);
+    }
 
     if debug {
         config_builder = config_builder.with_head();
     }
 
-    let config = config_builder
+    config_builder = config_builder
         .window_size(1920, 1080)
         .viewport(Some(Viewport {
             width: 1920,
@@ -106,8 +110,6 @@ pub async fn exec_test_suite(
             has_touch: false,
             is_landscape: true,
         }))
-        // .headless_mode(HeadlessMode::New)
-        .with_head()
         .args([
             "--disable-infobars",
             "--disable-setuid-sandbox",
@@ -117,7 +119,15 @@ pub async fn exec_test_suite(
             // "--disable-setuid-sandbox",
             // "--disable-gpu",
             "--window-position=0,0",
-        ])
+        ]);
+
+    if common::DEBUG.get_bool() {
+        config_builder = config_builder.with_head();
+    } else {
+        config_builder = config_builder.headless_mode(HeadlessMode::New);
+    }
+
+    let config = config_builder
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 

@@ -36,6 +36,12 @@ pub struct SnapshotArgs {
 
 #[derive(clap::Args)]
 pub struct TestArgs {
+    /// Whether to fetch the browser before running tests
+    #[clap(long)]
+    pub fetch_browser: Option<bool>,
+
+    /// Names of test suites to execute (or 'all' / '*' for all test suites)
+    #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
 }
 

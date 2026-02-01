@@ -5,19 +5,27 @@ use crate::{
     cli::args::TestArgs,
     common,
     helpers::OnceLockExtensions,
-    test::{browers::fetcher, test_suite::exec_test_suite},
+    test::{browsers::fetcher, test_suite::exec_test_suite},
     types::{TestSuiteFormat, TestSuiteInput},
 };
 
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
+        fetch_browser,
         test_suite: test_suites,
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
-    let exe_path = fetcher()
-        .await
-        .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
+
+    let exe_path = if fetch_browser.unwrap_or(false) {
+        let path = fetcher()
+            .await
+            .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
+
+        Some(path)
+    } else {
+        None
+    };
 
     // Find available test suites, where the file name ends with either `.tests.yaml`, `.tests.yml`, or `.tests.json`, ignoring case
     let mut available_test_suites = Vec::<TestSuiteInput>::new();

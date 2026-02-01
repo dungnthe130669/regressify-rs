@@ -1,4 +1,4 @@
-mod browers;
+mod browsers;
 mod capture;
 mod test_action;
 mod test_scenario;
