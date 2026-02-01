@@ -1,8 +1,4 @@
-use std::{
-    env::set_current_dir,
-    path::{Path, PathBuf},
-    process::exit,
-};
+use std::{env::set_current_dir, path::PathBuf, process::exit};
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -38,9 +34,14 @@ async fn main() -> Result<()> {
     match exec_commands(cli).await {
         Ok(_) => {
             exit_code = 0;
+
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            let msg = format!("[{}] Finished successfully.", now).dimmed();
+            println!("{}", msg);
         }
         Err(e) => {
-            eprintln!("{} {:?}", "ERROR:".red(), e);
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            eprintln!("[{}] {} {:?}", now, "ERROR:".red(), e);
         }
     }
 
@@ -55,11 +56,8 @@ async fn main() -> Result<()> {
 }
 
 async fn exec_commands(cli: Cli) -> Result<()> {
-    let work_dir: PathBuf = cli.root.normalize()?;
-
-    eprintln!("Setting working directory to {:?}", work_dir);
-    set_current_dir(&work_dir).map_err(|e| anyhow!("Failed to set current directory: {}", e))?;
-    set_global_vars(&cli, &work_dir)?;
+    set_root(&cli)?;
+    set_global_vars(&cli)?;
 
     match cli.command {
         Command::Snapshot(args) => snapshot::snapshot(args),
@@ -70,20 +68,18 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     }
 }
 
-fn set_global_vars(cli: &Cli, work_dir: &Path) -> Result<()> {
-    let normal_path = work_dir.to_path_buf();
-
+fn set_global_vars(cli: &Cli) -> Result<()> {
     let backstop_dir_name = if let Some(ref site_env) = cli.site_env {
         format!(".backstop__{}", site_env)
     } else {
         ".backstop".to_string()
     };
 
-    let backstop_dir = normal_path.join(&backstop_dir_name);
+    let work_dir = common::ROOT_DIR.get_required()?;
+    let backstop_dir = work_dir.join(&backstop_dir_name);
 
     common::BACKSTOP_DIR_NAME.set_value(backstop_dir_name)?;
     common::BACKSTOP_DIR.set_value(backstop_dir)?;
-    common::ROOT_DIR.set_value(normal_path)?;
     common::DEBUG.set_value(cli.debug)?;
 
     if let Some(ref proxy) = cli.proxy {
@@ -103,6 +99,15 @@ fn set_global_vars(cli: &Cli, work_dir: &Path) -> Result<()> {
         // Force color output
         colored::control::set_override(true);
     }
+
+    Ok(())
+}
+
+fn set_root(cli: &Cli) -> Result<()> {
+    let work_dir: PathBuf = cli.root.normalize()?;
+
+    set_current_dir(&work_dir).map_err(|e| anyhow!("Failed to set current directory: {}", e))?;
+    common::ROOT_DIR.set_value(work_dir)?;
 
     Ok(())
 }
