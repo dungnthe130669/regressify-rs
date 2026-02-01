@@ -510,7 +510,7 @@ tfoot th {
 }
 
 /* Responsive Mobile Styles */
-@media (max-width: 768px) {
+@media not print and (max-width: 768px) {
   body {
     padding: 16px;
   }
