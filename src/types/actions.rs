@@ -5,12 +5,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum TestAction {
+    Check(CheckAction),
     Click(ClickAction),
+    Focus(FocusAction),
+    Goto(GotoAction),
     Hide(HideAction),
+    Hover(HoverAction),
     Input(InputAction),
-    RemoveAction(RemoveAction),
+    Press(PressAction),
+    Remove(RemoveAction),
     Save(SaveAction),
+    Select(SelectAction),
+    Scroll(ScrollAction),
+    Uncheck(UncheckAction),
     Wait(WaitAction),
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckAction {
+    pub check: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -21,8 +35,26 @@ pub struct ClickAction {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct FocusAction {
+    pub focus: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GotoAction {
+    pub goto: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HideAction {
     pub hide: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HoverAction {
+    pub hover: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -40,8 +72,34 @@ pub struct InputAction {
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PressAction {
+    pub press: String,
+    pub key: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SaveAction {
     pub save: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScrollAction {
+    pub scroll: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SelectAction {
+    pub select: String,
+    pub value: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UncheckAction {
+    pub uncheck: String,
 }
 
 #[derive(Serialize, Deserialize)]

@@ -4,8 +4,9 @@ use chromiumoxide::Page;
 use crate::{
     test::capture::save_screenshot,
     types::{
-        ClickAction, InputAction, SaveAction, ScreenshotType, TestAction, TestScenario, TestSuite,
-        Wait, WaitAction,
+        CheckAction, ClickAction, FocusAction, GotoAction, HideAction, HoverAction, InputAction,
+        PressAction, SaveAction, ScreenshotType, ScrollAction, SelectAction, TestAction,
+        TestScenario, TestSuite, UncheckAction, Wait, WaitAction,
     },
 };
 
@@ -16,13 +17,28 @@ pub async fn exec_test_action(
     action: &TestAction,
 ) -> Result<()> {
     match action {
+        TestAction::Check(CheckAction { check }) => {
+            eprintln!("    Check element: {}", check);
+            page.find_element(check).await?.click().await?;
+        }
+
         TestAction::Click(ClickAction { click }) => {
             eprintln!("    Clicking element: {}", click);
             page.find_element(click).await?.click().await?;
         }
 
-        TestAction::Hide(hide) => {
-            eprintln!("    Hiding element: {}", hide.hide);
+        TestAction::Focus(FocusAction { focus }) => {
+            eprintln!("    Focusing element: {}", focus);
+            page.find_element(focus).await?.focus().await?;
+        }
+
+        TestAction::Goto(GotoAction { goto }) => {
+            eprintln!("    Navigating to URL: {}", goto);
+            page.goto(goto).await?;
+        }
+
+        TestAction::Hide(HideAction { hide }) => {
+            eprintln!("    Hiding element: {}", hide);
             // Inject CSS to hide the element
             let script = format!(
                 "
@@ -31,9 +47,14 @@ pub async fn exec_test_action(
                 style.innerHTML = '{} {{ visibility: hidden !important; }}';
                 document.head.appendChild(style);
             ",
-                hide.hide
+                hide
             );
             page.evaluate(script.as_str()).await?;
+        }
+
+        TestAction::Hover(HoverAction { hover }) => {
+            eprintln!("    Hovering over element: {}", hover);
+            page.find_element(hover).await?.hover().await?;
         }
 
         TestAction::Input(InputAction { input, value }) => {
@@ -41,7 +62,12 @@ pub async fn exec_test_action(
             page.find_element(input).await?.type_str(value).await?;
         }
 
-        TestAction::RemoveAction(remove) => {
+        TestAction::Press(PressAction { press, key }) => {
+            eprintln!("    Pressing key '{}' on element: {}", key, press);
+            page.find_element(press).await?.press_key(key).await?;
+        }
+
+        TestAction::Remove(remove) => {
             eprintln!("    Removing element: {}", remove.remove);
             // Set display to none to remove the element from view
             let script = format!(
@@ -66,6 +92,22 @@ pub async fn exec_test_action(
                 ScreenshotType::Step(save.to_string()),
             )
             .await?
+        }
+
+        TestAction::Scroll(ScrollAction { scroll }) => {
+            eprintln!("    Scrolling to element: {}", scroll);
+            page.find_element(scroll).await?.scroll_into_view().await?;
+        }
+
+        TestAction::Select(SelectAction { select, value }) => {
+            eprintln!("    Selecting value '{}' in element: {}", value, select);
+            anyhow::bail!("Select action is not yet implemented");
+        }
+
+        TestAction::Uncheck(UncheckAction { uncheck }) => {
+            eprintln!("    Unchecking element: {}", uncheck);
+            let element = page.find_element(uncheck).await?;
+            element.click().await?;
         }
 
         TestAction::Wait(WaitAction { wait, url }) => {
