@@ -54,7 +54,7 @@ pub fn generate_html_report_summary(
     let parser = pulldown_cmark::Parser::new(&args.subheading);
     let mut subheading = String::new();
     pulldown_cmark::html::push_html(&mut subheading, parser);
-    context.insert("subheading", &subheading);
+    context.insert("subheading", subheading.trim());
 
     generate_assets_file(
         backstop_dir,
