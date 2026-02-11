@@ -40,8 +40,10 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let index_bundle_content = include_str!("data/index_bundle.js");
     let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
-    let child_dirs = fs::read_dir(backstop_dir)?;
-    for entry in child_dirs.flatten() {
+    let mut entries: Vec<_> = fs::read_dir(backstop_dir)?.flatten().collect();
+    entries.sort_by_key(|e| e.file_name());
+
+    for entry in entries {
         let path = entry.path().normalize()?;
 
         if path.is_dir()
