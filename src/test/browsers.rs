@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::anyhow;
 use chromiumoxide::{
@@ -26,21 +27,59 @@ pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
             .build()?,
     );
     let info = fetcher.fetch().await?;
+    let exe = &info.executable_path;
 
+    if !exe.exists() {
+        return Err(anyhow!(
+            "Fetched browser executable does not exist: {}",
+            exe.display()
+        )
+        .into());
+    }
+
+    // Ensure the binary is executable on Unix
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let metadata = std::fs::metadata(exe)?;
+        let perms = metadata.permissions();
+        if perms.mode() & 0o111 == 0 {
+            eprintln!("Fixing executable permissions for: {}", exe.display());
+            std::fs::set_permissions(exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;
+        }
+    }
+
+    eprintln!("Browser executable: {}", exe.display());
     Ok(info.executable_path)
 }
+
+/// Resolve a valid Chrome/Chromium executable path.
+/// If `exe_path` is provided but missing on disk, falls back to auto-detection.
+fn resolve_executable(exe_path: &Option<PathBuf>) -> Option<PathBuf> {
+    if let Some(path) = exe_path {
+        if path.exists() {
+            return Some(path.clone());
+        }
+        eprintln!(
+            "Warning: provided browser path does not exist: {}. Falling back to auto-detection.",
+            path.display()
+        );
+    }
+    None
+}
+
+const MAX_LAUNCH_RETRIES: u32 = 2;
 
 pub async fn launch_browser(
     exe_path: &Option<PathBuf>,
 ) -> Result<(Browser, JoinHandle<()>), Box<dyn std::error::Error>> {
     let debug = common::DEBUG.get_bool();
 
-    // create a `Browser` that spawns a `chromium` process running with UI (`with_head()`, headless is default)
-    // and the handler that drives the websocket etc.
     let mut config_builder = BrowserConfig::builder();
 
-    if let Some(exe_path) = exe_path {
-        config_builder = config_builder.chrome_executable(&exe_path);
+    let resolved = resolve_executable(exe_path);
+    if let Some(ref resolved) = resolved {
+        config_builder = config_builder.chrome_executable(resolved);
     }
 
     if debug {
@@ -57,18 +96,17 @@ pub async fn launch_browser(
             has_touch: false,
             is_landscape: true,
         }))
+        .launch_timeout(Duration::from_secs(45))
         .args([
             "--disable-infobars",
             "--disable-setuid-sandbox",
             "--ignore-certificate-errors",
             "--ignore-certificate-errors-spki-list",
             "--no-sandbox",
-            // "--disable-setuid-sandbox",
-            // "--disable-gpu",
             "--window-position=0,0",
         ]);
 
-    if common::DEBUG.get_bool() {
+    if debug {
         config_builder = config_builder.with_head();
     } else {
         config_builder = config_builder.headless_mode(HeadlessMode::New);
@@ -78,19 +116,42 @@ pub async fn launch_browser(
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
-    eprintln!("Launching browser...");
-    let (browser, mut handler) = Browser::launch(config)
-        .await
-        .map_err(|e| anyhow!("Cannot launch browser: {:?}", e))?;
+    if let Some(ref path) = resolved {
+        eprintln!("Launching browser (executable: {})...", path.display());
+    } else {
+        eprintln!("Launching browser (auto-detected)...");
+    }
 
-    // spawn a new task that continuously polls the handler
-    let handle = tokio::spawn(async move {
-        while let Some(h) = handler.next().await {
-            if h.is_err() {
-                break;
+    let mut last_err = None;
+    for attempt in 1..=MAX_LAUNCH_RETRIES {
+        match Browser::launch(config.clone()).await {
+            Ok((browser, mut handler)) => {
+                let handle = tokio::spawn(async move {
+                    while let Some(h) = handler.next().await {
+                        if h.is_err() {
+                            break;
+                        }
+                    }
+                });
+                return Ok((browser, handle));
+            }
+            Err(e) => {
+                eprintln!(
+                    "Browser launch attempt {}/{} failed: {:?}",
+                    attempt, MAX_LAUNCH_RETRIES, e
+                );
+                last_err = Some(e);
+                if attempt < MAX_LAUNCH_RETRIES {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                }
             }
         }
-    });
+    }
 
-    Ok((browser, handle))
+    Err(anyhow!(
+        "Cannot launch browser after {} attempts: {:?}",
+        MAX_LAUNCH_RETRIES,
+        last_err,
+    )
+    .into())
 }
