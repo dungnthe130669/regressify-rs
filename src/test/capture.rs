@@ -33,7 +33,7 @@ pub async fn save_screenshot(
         .ok_or_else(|| anyhow!("Test suite date is required for Save action"))?;
 
     let test_dir = common::REGRESSIFY_DIR_NAME.get_required()?;
-    let test_suite_dir = format!("{}/{}/tests/{}", test_dir, test_suite_id, test_date);
+    let test_suite_dir = format!("{}/{}/bitmaps_test/{}", test_dir, test_suite_id, test_date);
 
     create_dir_all(&test_suite_dir)?;
 
