@@ -1,3 +1,5 @@
+use std::fs;
+
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 use walkdir::WalkDir;
@@ -5,7 +7,6 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
-    compare::report_gen::approve_screenshots,
     helpers::OnceLockExtensions,
     snapshot,
     test::{browsers::fetcher, test_suite::exec_test_suite},
@@ -107,8 +108,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     Ok(())
 }
 
-/// `ref` command: capture reference screenshots.
-/// Runs the test suites (without comparison), then auto-approves results as reference.
+/// `ref` command: capture baseline reference screenshots.
+/// Deletes existing references, runs the test suites (without comparison),
+/// then promotes captured screenshots directly as the new reference baseline.
 pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let RefArgs {
         fetch_browser,
@@ -133,17 +135,64 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
     for t in &filtered {
-        // Run tests without comparison (skip_compare=true)
+        let suite_dir = regressify_dir.join(&t.name);
+
+        // Delete existing reference screenshots
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        if reference_dir.exists() {
+            eprintln!(
+                "Removing existing reference screenshots for '{}'...",
+                t.name
+            );
+            fs::remove_dir_all(&reference_dir)?;
+        }
+
+        // Run tests without comparison (skip_compare=true, no reference to compare against)
         match exec_test_suite(&visual_tests_dir, &exe_path, t, true, 0.0).await {
             Ok(_) => {
-                // Auto-approve: promote test screenshots to reference
-                let suite_dir = regressify_dir.join(&t.name);
-                if suite_dir.exists() {
-                    eprintln!("Approving reference screenshots for '{}'...", t.name.cyan());
-                    if let Err(e) = approve_screenshots(&suite_dir, &t.name) {
-                        eprintln!("Error approving '{}': {:?}", t.name, e);
+                // Approve directly from tests/ directory
+                let tests_dir = suite_dir.join("tests");
+                if !tests_dir.exists() {
+                    eprintln!("No test screenshots found for '{}', skipping.", t.name);
+                    continue;
+                }
+
+                // Find the latest test run
+                let mut test_runs: Vec<String> = Vec::new();
+                for entry in fs::read_dir(&tests_dir)?.flatten() {
+                    if entry.path().is_dir() {
+                        test_runs.push(entry.file_name().to_string_lossy().to_string());
                     }
                 }
+                test_runs.sort();
+
+                let latest_run = match test_runs.last() {
+                    Some(run) => run.clone(),
+                    None => {
+                        eprintln!("No test run directories found for '{}', skipping.", t.name);
+                        continue;
+                    }
+                };
+
+                let latest_test_dir = tests_dir.join(&latest_run);
+                let ref_dest = suite_dir.join("bitmaps_reference").join(&t.name);
+                fs::create_dir_all(&ref_dest)?;
+
+                let mut count = 0;
+                for entry in fs::read_dir(&latest_test_dir)?.flatten() {
+                    let file_name = entry.file_name().to_string_lossy().to_string();
+                    if file_name.ends_with(".png") {
+                        fs::copy(entry.path(), ref_dest.join(&file_name))?;
+                        count += 1;
+                    }
+                }
+
+                eprintln!(
+                    "Captured {} reference screenshot(s) for '{}' (run: {}).",
+                    count.to_string().green(),
+                    t.name.cyan(),
+                    latest_run
+                );
             }
             Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
         }
