@@ -132,12 +132,14 @@ pub async fn launch_browser(
     for attempt in 1..=MAX_LAUNCH_RETRIES {
         match Browser::launch(config.clone()).await {
             Ok((browser, mut handler)) => {
+                let data_dir = user_data_dir.clone();
                 let handle = tokio::spawn(async move {
                     while let Some(h) = handler.next().await {
                         if h.is_err() {
                             break;
                         }
                     }
+                    let _ = tokio::fs::remove_dir_all(&data_dir).await;
                 });
                 return Ok((browser, handle));
             }
