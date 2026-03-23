@@ -108,6 +108,12 @@ pub fn generate_assets_file(
 pub fn generate_shared_files(regressify_dir: &Path) -> Result<()> {
     write_shared_file(
         regressify_dir,
+        ".gitignore",
+        include_bytes!("data/gitignore"),
+    )?;
+
+    write_shared_file(
+        regressify_dir,
         "lato-bold-webfont.woff",
         include_bytes!("data/lato-bold-webfont.woff"),
     )?;
