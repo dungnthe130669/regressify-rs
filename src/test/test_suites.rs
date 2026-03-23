@@ -130,14 +130,14 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let available = discover_test_suites(&visual_tests_dir);
     let filtered = filter_test_suites(available, &test_suites);
 
-    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
     for t in &filtered {
         // Run tests without comparison (skip_compare=true)
         match exec_test_suite(&visual_tests_dir, &exe_path, t, true, 0.0).await {
             Ok(_) => {
                 // Auto-approve: promote test screenshots to reference
-                let suite_dir = backstop_dir.join(&t.name);
+                let suite_dir = regressify_dir.join(&t.name);
                 if suite_dir.exists() {
                     eprintln!("Approving reference screenshots for '{}'...", t.name.cyan());
                     if let Err(e) = approve_screenshots(&suite_dir, &t.name) {

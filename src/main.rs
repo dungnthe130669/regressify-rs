@@ -75,17 +75,17 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
-    let backstop_dir_name = if let Some(ref site_env) = cli.site_env {
-        format!(".backstop__{}", site_env)
+    let regressify_dir_name = if let Some(ref site_env) = cli.site_env {
+        format!(".regressify__{}", site_env)
     } else {
-        ".backstop".to_string()
+        ".regressify".to_string()
     };
 
     let work_dir = common::ROOT_DIR.get_required()?;
-    let backstop_dir = work_dir.join(&backstop_dir_name);
+    let regressify_dir = work_dir.join(&regressify_dir_name);
 
-    common::BACKSTOP_DIR_NAME.set_value(backstop_dir_name)?;
-    common::BACKSTOP_DIR.set_value(backstop_dir)?;
+    common::REGRESSIFY_DIR_NAME.set_value(regressify_dir_name)?;
+    common::REGRESSIFY_DIR.set_value(regressify_dir)?;
     common::DEBUG.set_value(cli.debug)?;
 
     if let Some(ref proxy) = cli.proxy {

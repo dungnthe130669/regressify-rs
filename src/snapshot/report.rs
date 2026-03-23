@@ -9,7 +9,7 @@ use crate::snapshot::helpers::get_asset_version;
 use crate::types::HtmlReportSummary;
 
 pub fn generate_html_report_summary(
-    backstop_dir: &Path,
+    regressify_dir: &Path,
     tera: &tera::Tera,
     summaries: &[HtmlReportSummary],
     args: &SnapshotArgs,
@@ -57,7 +57,7 @@ pub fn generate_html_report_summary(
     context.insert("subheading", subheading.trim());
 
     generate_assets_file(
-        backstop_dir,
+        regressify_dir,
         &mut context,
         "styles.css",
         include_bytes!("data/styles.css"),
@@ -65,7 +65,7 @@ pub fn generate_html_report_summary(
     )?;
 
     generate_assets_file(
-        backstop_dir,
+        regressify_dir,
         &mut context,
         "script.js",
         include_bytes!("data/script.js"),
@@ -74,7 +74,7 @@ pub fn generate_html_report_summary(
 
     let replaced_html = tera.render("report_template.html", &context)?;
 
-    let report_path = backstop_dir.join("index.html");
+    let report_path = regressify_dir.join("index.html");
     fs::write(&report_path, replaced_html)?;
     eprintln!(
         "Snapshot report summary generated at: {}",
@@ -82,14 +82,14 @@ pub fn generate_html_report_summary(
     );
 
     let swa_config = include_bytes!("data/staticwebapp.config.json");
-    let swa_config_path = backstop_dir.join("staticwebapp.config.json");
+    let swa_config_path = regressify_dir.join("staticwebapp.config.json");
     fs::write(&swa_config_path, swa_config)?;
 
     Ok(())
 }
 
 pub fn generate_assets_file(
-    backstop_dir: &Path,
+    regressify_dir: &Path,
     context: &mut tera::Context,
     path: &str,
     content_bytes: &[u8],
@@ -100,81 +100,81 @@ pub fn generate_assets_file(
         context.insert(version_name, &script_hash);
     }
 
-    write_shared_file(backstop_dir, path, content_bytes)?;
+    write_shared_file(regressify_dir, path, content_bytes)?;
 
     Ok(())
 }
 
-pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
+pub fn generate_shared_files(regressify_dir: &Path) -> Result<()> {
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "lato-bold-webfont.woff",
         include_bytes!("data/lato-bold-webfont.woff"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "lato-bold-webfont.woff2",
         include_bytes!("data/lato-bold-webfont.woff2"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "Lato-Bold.ttf",
         include_bytes!("data/Lato-Bold.ttf"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "lato-regular-webfont.woff",
         include_bytes!("data/lato-regular-webfont.woff"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "lato-regular-webfont.woff2",
         include_bytes!("data/lato-regular-webfont.woff2"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "Lato-Regular.ttf",
         include_bytes!("data/Lato-Regular.ttf"),
     )?;
 
-    write_shared_file(backstop_dir, "diff.js", include_bytes!("data/diff.js"))?;
+    write_shared_file(regressify_dir, "diff.js", include_bytes!("data/diff.js"))?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "diverged.js",
         include_bytes!("data/diverged.js"),
     )?;
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "divergedWorker.js",
         include_bytes!("data/divergedWorker.js"),
     )?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "favicon.ico",
         include_bytes!("data/favicon.ico"),
     )?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "favicon.svg",
         include_bytes!("data/favicon.svg"),
     )?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "favicon-16x16.png",
         include_bytes!("data/favicon-16x16.png"),
     )?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "favicon-32x32.png",
         include_bytes!("data/favicon-32x32.png"),
     )?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "apple-touch-icon.png",
         include_bytes!("data/apple-touch-icon.png"),
     )?;
@@ -182,8 +182,8 @@ pub fn generate_shared_files(backstop_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn write_shared_file(backstop_dir: &Path, file_name: &str, content: &[u8]) -> Result<()> {
-    let file_path = backstop_dir.join(file_name);
+pub fn write_shared_file(regressify_dir: &Path, file_name: &str, content: &[u8]) -> Result<()> {
+    let file_path = regressify_dir.join(file_name);
     fs::write(&file_path, content)?;
     Ok(())
 }

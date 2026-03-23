@@ -118,8 +118,8 @@ pub async fn exec_test_suite(
         && let (Some(suite_id), Some(test_date)) =
             (test_suite.id.as_deref(), test_suite.test_date.as_deref())
     {
-        let backstop_dir = common::BACKSTOP_DIR.get_required()?;
-        let suite_dir = backstop_dir.join(suite_id);
+        let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+        let suite_dir = regressify_dir.join(suite_id);
 
         // Use per-suite threshold if configured, otherwise use CLI threshold
         let threshold = test_suite

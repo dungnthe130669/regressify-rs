@@ -6,17 +6,17 @@ use std::path::Path;
 
 use crate::{
     snapshot::helpers::get_asset_version,
-    types::{BackstopReport, HtmlReportSummary},
+    types::{HtmlReportSummary, RegressifyReport},
 };
 
 pub fn process_test_suite(
-    backstop_dir: &Path,
+    regressify_dir: &Path,
     id: &str,
     hashes: &mut HashMap<String, String>,
     tera: &tera::Tera,
     bundle_hash: &str,
 ) -> Result<Option<HtmlReportSummary>> {
-    let test_dir = backstop_dir.join(id);
+    let test_dir = regressify_dir.join(id);
     if !test_dir.exists() {
         eprintln!(
             "{}",
@@ -69,7 +69,7 @@ pub fn process_test_suite(
 
         let sub_dir_name = entry.file_name().into_string().unwrap();
 
-        // Backstop uses both forward and backslashes in config
+        // Regressify uses both forward and backslashes in config
         let win_path = format!("bitmaps_test\\\\{}", sub_dir_name);
         let unix_path = format!("bitmaps_test/{}", sub_dir_name);
 
@@ -83,7 +83,7 @@ pub fn process_test_suite(
             let report_json_path = path.join("report.json");
             if report_json_path.exists() {
                 let report_content = fs::read_to_string(&report_json_path)?;
-                let report: BackstopReport = serde_json::from_str(&report_content)?;
+                let report: RegressifyReport = serde_json::from_str(&report_content)?;
 
                 let pass_count = report.tests.iter().filter(|t| t.status == "pass").count();
                 let fail_count = report.tests.iter().filter(|t| t.status == "fail").count();

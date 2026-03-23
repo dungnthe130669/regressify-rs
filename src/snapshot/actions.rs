@@ -15,10 +15,10 @@ use crate::{
 };
 
 pub fn snapshot(args: SnapshotArgs) -> Result<()> {
-    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
-    if !backstop_dir.exists() {
-        bail!("Backstop directory does not exist: {:?}", backstop_dir);
+    if !regressify_dir.exists() {
+        bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
     let mut summaries = Vec::new();
@@ -40,7 +40,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let index_bundle_content = include_str!("data/index_bundle.js");
     let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
-    let mut entries: Vec<_> = fs::read_dir(backstop_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
@@ -61,7 +61,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
             }
 
             if let Ok(Some(summary)) =
-                process_test_suite(backstop_dir, dir_name, &mut hashes, &tera, &bundle_hash)
+                process_test_suite(regressify_dir, dir_name, &mut hashes, &tera, &bundle_hash)
             {
                 summaries.push(summary);
             }
@@ -69,11 +69,11 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(backstop_dir, &tera, &summaries, &args)?;
-    generate_shared_files(backstop_dir)?;
+    generate_html_report_summary(regressify_dir, &tera, &summaries, &args)?;
+    generate_shared_files(regressify_dir)?;
 
     write_shared_file(
-        backstop_dir,
+        regressify_dir,
         "index_bundle.js",
         index_bundle_content.as_bytes(),
     )?;

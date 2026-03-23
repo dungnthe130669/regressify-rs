@@ -54,11 +54,11 @@ struct DimensionDiff {
     height: i64,
 }
 
-/// Generate a BackstopJS-compatible comparison report for a test suite.
+/// Generate a comparison report for a test suite.
 ///
 /// Directory structure:
 /// ```text
-/// .backstop/<suite_id>/
+/// .regressify/<suite_id>/
 ///   bitmaps_reference/<suite_id>/   ← reference screenshots
 ///   bitmaps_test/<date>/            ← test screenshots + diff images + report.json
 ///   html_report/config.js           ← report config for React UI
@@ -239,7 +239,7 @@ pub fn generate_comparison_report(
     let report_path = bitmaps_test_dir.join("report.json");
     fs::write(&report_path, &report_json)?;
 
-    // Generate config.js for BackstopJS React UI
+    // Generate config.js for Regressify React UI
     let config_js = format!("report({});", report_json);
     let config_path = html_report_dir.join("config.js");
     fs::write(&config_path, &config_js)?;

@@ -13,15 +13,15 @@ use crate::{
 /// Entry point for the `compare` CLI command.
 /// Compares the latest test screenshots against reference images for each test suite.
 pub fn compare(args: CompareArgs) -> Result<()> {
-    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
-    if !backstop_dir.exists() {
-        anyhow::bail!("Backstop directory does not exist: {:?}", backstop_dir);
+    if !regressify_dir.exists() {
+        anyhow::bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
     let mis_match_threshold = args.mis_match_threshold;
 
-    let mut entries: Vec<_> = fs::read_dir(backstop_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_compared = false;
@@ -88,13 +88,13 @@ pub fn compare(args: CompareArgs) -> Result<()> {
 /// Entry point for the `approve` CLI command.
 /// Promotes the latest test screenshots to reference images.
 pub fn approve(args: ApproveArgs) -> Result<()> {
-    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
-    if !backstop_dir.exists() {
-        anyhow::bail!("Backstop directory does not exist: {:?}", backstop_dir);
+    if !regressify_dir.exists() {
+        anyhow::bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
-    let mut entries: Vec<_> = fs::read_dir(backstop_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_approved = false;
