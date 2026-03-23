@@ -216,6 +216,24 @@ pub async fn exec_test_scenario(
 
                 await scrollToBottom();
                 await scrollToTop();
+
+                // Wait for all images to be fully loaded or errored
+                const IMG_TIMEOUT = 30000;
+                const start = Date.now();
+                const images = Array.from(document.querySelectorAll('img'));
+                if (images.length > 0) {
+                    await Promise.all(images.map(img => {
+                        if (img.complete) return Promise.resolve();
+                        return new Promise((resolve) => {
+                            img.addEventListener('load', resolve, { once: true });
+                            img.addEventListener('error', resolve, { once: true });
+                            // Per-image timeout fallback
+                            const remaining = IMG_TIMEOUT - (Date.now() - start);
+                            if (remaining <= 0) { resolve(); return; }
+                            setTimeout(resolve, remaining);
+                        });
+                    }));
+                }
             })()"#,
         )
         .await
