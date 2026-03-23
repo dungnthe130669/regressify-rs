@@ -59,7 +59,7 @@ struct DimensionDiff {
 /// Directory structure:
 /// ```text
 /// .regressify/<suite_id>/
-///   bitmaps_reference/<suite_id>/   ← reference screenshots
+///   bitmaps_reference/   ← reference screenshots
 ///   bitmaps_test/<date>/            ← test screenshots + diff images + report.json
 ///   html_report/config.js           ← report config for React UI
 ///   tests/<date>/                   ← raw captured screenshots (existing)
@@ -75,7 +75,7 @@ pub fn generate_comparison_report(
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
     }
 
-    let reference_dir = suite_dir.join("bitmaps_reference").join(suite_id);
+    let reference_dir = suite_dir.join("bitmaps_reference");
     let bitmaps_test_dir = suite_dir.join("bitmaps_test").join(test_date);
     let html_report_dir = suite_dir.join("html_report");
 
@@ -127,7 +127,7 @@ pub fn generate_comparison_report(
             report_tests.push(ReportTest {
                 pair: ReportPair {
                     label,
-                    reference: format!("../bitmaps_reference/{}/{}", suite_id, screenshot_name),
+                    reference: format!("../bitmaps_reference/{}", screenshot_name),
                     test: relative_test,
                     diff_image: None,
                     selector: "document".to_string(),
@@ -179,7 +179,7 @@ pub fn generate_comparison_report(
                 report_tests.push(ReportTest {
                     pair: ReportPair {
                         label,
-                        reference: format!("../bitmaps_reference/{}/{}", suite_id, screenshot_name),
+                        reference: format!("../bitmaps_reference/{}", screenshot_name),
                         test: relative_test,
                         diff_image: if diff_image_path.exists() {
                             Some(relative_diff)
@@ -215,7 +215,7 @@ pub fn generate_comparison_report(
                 report_tests.push(ReportTest {
                     pair: ReportPair {
                         label,
-                        reference: format!("../bitmaps_reference/{}/{}", suite_id, screenshot_name),
+                        reference: format!("../bitmaps_reference/{}", screenshot_name),
                         test: relative_test,
                         diff_image: None,
                         selector: "document".to_string(),
@@ -266,7 +266,7 @@ pub fn generate_comparison_report(
 /// Promote test screenshots to reference (approve).
 pub fn approve_screenshots(suite_dir: &Path, suite_id: &str) -> Result<()> {
     let bitmaps_test_dir = suite_dir.join("bitmaps_test");
-    let reference_dir = suite_dir.join("bitmaps_reference").join(suite_id);
+    let reference_dir = suite_dir.join("bitmaps_reference");
 
     if !bitmaps_test_dir.exists() {
         anyhow::bail!("No test screenshots found in: {:?}", bitmaps_test_dir);
