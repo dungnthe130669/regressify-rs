@@ -3,10 +3,11 @@ use colored::Colorize;
 use walkdir::WalkDir;
 
 use crate::{
-    cli::args::{RefArgs, TestArgs},
+    cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
     compare::report_gen::approve_screenshots,
     helpers::OnceLockExtensions,
+    snapshot,
     test::{browsers::fetcher, test_suite::exec_test_suite},
     types::{TestSuiteFormat, TestSuiteInput},
 };
@@ -101,6 +102,8 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         }
     }
 
+    generate_snapshot_reports()?;
+
     Ok(())
 }
 
@@ -146,5 +149,15 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         }
     }
 
+    generate_snapshot_reports()?;
+
     Ok(())
+}
+
+fn generate_snapshot_reports() -> Result<()> {
+    snapshot::snapshot(SnapshotArgs {
+        title: "Visual Tests Summary | Regressify".to_string(),
+        heading: "Visual Tests Summary".to_string(),
+        subheading: "Snapshot regression test results".to_string(),
+    })
 }
