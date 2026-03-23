@@ -89,8 +89,7 @@ pub async fn launch_browser(
 
     // Use a unique user data dir per launch to avoid ProcessSingleton lock conflicts
     let guid_base64url = general_purpose::URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
-    let user_data_dir =
-        std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
+    let user_data_dir = std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
     config_builder = config_builder.user_data_dir(&user_data_dir);
 
     config_builder = config_builder
