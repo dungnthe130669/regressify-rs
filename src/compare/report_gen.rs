@@ -105,8 +105,8 @@ pub fn generate_comparison_report(
 
         let reference_path = reference_dir.join(screenshot_name);
 
-        // Relative paths for the report (from bitmaps_test/ perspective)
-        let relative_test = format!("{}/{}", test_date, screenshot_name);
+        // Relative paths for the report (from html_report/ perspective)
+        let relative_test = format!("../bitmaps_test/{}/{}", test_date, screenshot_name);
 
         // Derive label from filename: "scenario-id__FINAL.png" → "scenario-id FINAL"
         let label = screenshot_name
@@ -172,7 +172,7 @@ pub fn generate_comparison_report(
                     status_text,
                 );
 
-                let relative_diff = format!("{}/{}", test_date, diff_image_name);
+                let relative_diff = format!("../bitmaps_test/{}/{}", test_date, diff_image_name);
 
                 report_tests.push(ReportTest {
                     pair: ReportPair {
