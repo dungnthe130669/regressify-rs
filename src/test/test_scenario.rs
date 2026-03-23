@@ -141,19 +141,19 @@ pub async fn exec_test_scenario(
         .post_interaction_wait
         .or(test_suite.post_interaction_wait);
 
-    if let Some(wait_ms) = post_wait {
-        if wait_ms > 0.0 {
-            eprintln!("    Waiting for {} ms after interactions...", wait_ms);
-            tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
-        }
+    if let Some(wait_ms) = post_wait
+        && wait_ms > 0.0
+    {
+        eprintln!("    Waiting for {} ms after interactions...", wait_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
     // Apply delay before screenshot
-    if let Some(delay) = scenario.delay {
-        if delay > 0.0 {
-            eprintln!("    Delay: waiting {} ms before screenshot...", delay);
-            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-        }
+    if let Some(delay) = scenario.delay
+        && delay > 0.0
+    {
+        eprintln!("    Delay: waiting {} ms before screenshot...", delay);
+        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
     // Scroll to top before screenshot (unless noScrollTop is set)

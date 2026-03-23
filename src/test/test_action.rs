@@ -483,11 +483,8 @@ pub async fn exec_test_action(
                 }
             }
 
-            let doc_js = if let Some(selectors) = get_frame_selectors(frame) {
-                Some(build_frame_document_js(&selectors))
-            } else {
-                None
-            };
+            let doc_js =
+                get_frame_selectors(frame).map(|selectors| build_frame_document_js(&selectors));
 
             match wait {
                 Wait::Number(milliseconds) => {

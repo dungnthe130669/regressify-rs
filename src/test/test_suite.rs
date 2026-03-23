@@ -114,22 +114,21 @@ pub async fn exec_test_suite(
     scenarios_result?;
 
     // Run visual comparison against reference images
-    if !skip_compare {
-        if let (Some(suite_id), Some(test_date)) =
+    if !skip_compare
+        && let (Some(suite_id), Some(test_date)) =
             (test_suite.id.as_deref(), test_suite.test_date.as_deref())
-        {
-            let backstop_dir = common::BACKSTOP_DIR.get_required()?;
-            let suite_dir = backstop_dir.join(suite_id);
+    {
+        let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+        let suite_dir = backstop_dir.join(suite_id);
 
-            // Use per-suite threshold if configured, otherwise use CLI threshold
-            let threshold = test_suite
-                .mis_match_threshold
-                .unwrap_or(mis_match_threshold);
+        // Use per-suite threshold if configured, otherwise use CLI threshold
+        let threshold = test_suite
+            .mis_match_threshold
+            .unwrap_or(mis_match_threshold);
 
-            eprintln!("Running visual comparison...");
-            if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
-                eprintln!("Visual comparison failed: {:?}", e);
-            }
+        eprintln!("Running visual comparison...");
+        if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
+            eprintln!("Visual comparison failed: {:?}", e);
         }
     }
 
