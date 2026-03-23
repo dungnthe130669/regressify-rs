@@ -176,7 +176,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                 };
 
                 let latest_test_dir = tests_dir.join(&latest_run);
-                let ref_dest = suite_dir.join("bitmaps_reference").join(&t.name);
+                let ref_dest = suite_dir.join("bitmaps_reference");
                 fs::create_dir_all(&ref_dest)?;
 
                 let mut count = 0;
