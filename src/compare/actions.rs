@@ -128,7 +128,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         }
 
         eprintln!("Approving test suite: {}", suite_id.cyan());
-        approve_screenshots(&path, &suite_id)?;
+        approve_screenshots(&path)?;
         any_approved = true;
     }
 

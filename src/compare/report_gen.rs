@@ -264,7 +264,7 @@ pub fn generate_comparison_report(
 }
 
 /// Promote test screenshots to reference (approve).
-pub fn approve_screenshots(suite_dir: &Path, suite_id: &str) -> Result<()> {
+pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
     let bitmaps_test_dir = suite_dir.join("bitmaps_test");
     let reference_dir = suite_dir.join("bitmaps_reference");
 
