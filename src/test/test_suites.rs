@@ -7,6 +7,7 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
+    compare::report_gen::generate_comparison_report,
     helpers::OnceLockExtensions,
     snapshot,
     test::{browsers::fetcher, test_suite::exec_test_suite},
@@ -193,6 +194,12 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                     t.name.cyan(),
                     latest_run
                 );
+
+                // Run comparison so results show all scenarios as passed
+                eprintln!("Running visual comparison...");
+                if let Err(e) = generate_comparison_report(&suite_dir, &t.name, &latest_run, 0.0) {
+                    eprintln!("Visual comparison failed: {:?}", e);
+                }
             }
             Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
         }
