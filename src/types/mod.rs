@@ -3,9 +3,7 @@ use serde::{Deserialize, Serialize};
 mod actions;
 mod regressify;
 
-#[cfg(feature = "local")]
 pub use actions::*;
-#[cfg(feature = "local")]
 pub use regressify::*;
 
 #[derive(Debug, Deserialize)]
