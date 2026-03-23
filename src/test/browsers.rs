@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::anyhow;
+use base64::{Engine as _, engine::general_purpose};
 use chromiumoxide::{
     Browser, BrowserConfig,
     browser::HeadlessMode,
@@ -85,6 +86,12 @@ pub async fn launch_browser(
     if debug {
         config_builder = config_builder.with_head();
     }
+
+    // Use a unique user data dir per launch to avoid ProcessSingleton lock conflicts
+    let guid_base64url = general_purpose::URL_SAFE_NO_PAD.encode(uuid::Uuid::new_v4().as_bytes());
+    let user_data_dir =
+        std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
+    config_builder = config_builder.user_data_dir(&user_data_dir);
 
     config_builder = config_builder
         .window_size(1920, 1080)
