@@ -100,8 +100,10 @@ pub fn generate_comparison_report(
         let test_src = tests_dir.join(screenshot_name);
         let test_dst = bitmaps_test_dir.join(screenshot_name);
 
-        // Copy test screenshot to bitmaps_test/<date>/
-        fs::copy(&test_src, &test_dst)?;
+        // Copy test screenshot to bitmaps_test/<date>/ (skip if already there)
+        if test_src != test_dst {
+            fs::copy(&test_src, &test_dst)?;
+        }
 
         let reference_path = reference_dir.join(screenshot_name);
 
