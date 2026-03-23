@@ -49,7 +49,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
             }
         }
 
-        let tests_dir = path.join("tests");
+        let tests_dir = path.join("bitmaps_test");
         if !tests_dir.exists() {
             continue;
         }

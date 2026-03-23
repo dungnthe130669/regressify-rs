@@ -151,8 +151,8 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         // Run tests without comparison (skip_compare=true, no reference to compare against)
         match exec_test_suite(&visual_tests_dir, &exe_path, t, true, 0.0).await {
             Ok(_) => {
-                // Approve directly from tests/ directory
-                let tests_dir = suite_dir.join("tests");
+                // Approve directly from bitmaps_test/ directory
+                let tests_dir = suite_dir.join("bitmaps_test");
                 if !tests_dir.exists() {
                     eprintln!("No test screenshots found for '{}', skipping.", t.name);
                     continue;

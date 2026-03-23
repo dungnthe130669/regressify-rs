@@ -70,7 +70,7 @@ pub fn generate_comparison_report(
     test_date: &str,
     mis_match_threshold: f64,
 ) -> Result<()> {
-    let tests_dir = suite_dir.join("tests").join(test_date);
+    let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
     if !tests_dir.exists() {
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
     }
@@ -83,7 +83,7 @@ pub fn generate_comparison_report(
     create_dir_all(&bitmaps_test_dir)?;
     create_dir_all(&html_report_dir)?;
 
-    // Collect all PNG files from tests/<date>/
+    // Collect all PNG files from bitmaps_test/<date>/
     let mut test_screenshots: Vec<String> = Vec::new();
     for entry in fs::read_dir(&tests_dir)? {
         let entry = entry?;
