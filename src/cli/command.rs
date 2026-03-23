@@ -3,7 +3,7 @@ use clap::Subcommand;
 use crate::cli::args::{ApproveArgs, CompareArgs, OptimizeArgs, SnapshotArgs};
 
 #[cfg(feature = "local")]
-use crate::cli::args::TestArgs;
+use crate::cli::args::{RefArgs, TestArgs};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -13,9 +13,13 @@ pub enum Command {
     /// Optimize images command
     Optimize(OptimizeArgs),
 
-    /// Test command (not implemented yet)
+    /// Run visual regression tests and compare against reference images
     #[cfg(feature = "local")]
     Test(TestArgs),
+
+    /// Capture reference screenshots (runs tests + auto-approves as baseline)
+    #[cfg(feature = "local")]
+    Ref(RefArgs),
 
     /// Compare test screenshots against reference images
     Compare(CompareArgs),

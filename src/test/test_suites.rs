@@ -1,37 +1,20 @@
 use anyhow::{Result, anyhow};
+use colored::Colorize;
 use walkdir::WalkDir;
 
 use crate::{
-    cli::args::TestArgs,
+    cli::args::{RefArgs, TestArgs},
     common,
+    compare::report_gen::approve_screenshots,
     helpers::OnceLockExtensions,
     test::{browsers::fetcher, test_suite::exec_test_suite},
     types::{TestSuiteFormat, TestSuiteInput},
 };
 
-pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
-    let TestArgs {
-        fetch_browser,
-        test_suite: test_suites,
-        skip_compare,
-        mis_match_threshold,
-    } = args;
-    let root_dir = common::ROOT_DIR.get_required()?;
-    let visual_tests_dir = root_dir.join("visual_tests");
-
-    let exe_path = if fetch_browser.unwrap_or(false) {
-        let path = fetcher()
-            .await
-            .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
-
-        Some(path)
-    } else {
-        None
-    };
-
-    // Find available test suites, where the file name ends with either `.tests.yaml`, `.tests.yml`, or `.tests.json`, ignoring case
-    let mut available_test_suites = Vec::<TestSuiteInput>::new();
-    for entry in WalkDir::new(&visual_tests_dir)
+/// Discover available test suite files in the visual_tests/ directory.
+fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Vec<TestSuiteInput> {
+    let mut suites = Vec::new();
+    for entry in WalkDir::new(visual_tests_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
@@ -45,7 +28,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                 .rsplit_once(".tests.")
                 .expect("File name should contain '.tests.'");
 
-            available_test_suites.push(TestSuiteInput {
+            suites.push(TestSuiteInput {
                 name: suite_name.to_string(),
                 path: entry.path().to_path_buf(),
                 format: match ext {
@@ -56,48 +39,109 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             });
         }
     }
+    suites
+}
 
-    let filtered_test_suites: Vec<TestSuiteInput> = if test_suites.is_empty()
-        || test_suites.contains(&"all".to_string())
-        || test_suites.contains(&"*".to_string())
+/// Filter test suites by glob patterns (or return all if patterns is empty / contains "all" / "*").
+fn filter_test_suites(available: Vec<TestSuiteInput>, patterns: &[String]) -> Vec<TestSuiteInput> {
+    if patterns.is_empty()
+        || patterns.contains(&"all".to_string())
+        || patterns.contains(&"*".to_string())
     {
-        available_test_suites
+        available
     } else {
-        // let mut selected_suites = Vec::<TestSuiteInput>::new();
-        // for suite in test_suites {
-        //     let mut found = false;
-        //     for available_suite in &available_test_suites {
-        //         if glob::Pattern::new(suite)
-        //             .map_err(|e| anyhow::anyhow!("Invalid glob pattern '{}': {}", suite, e))?
-        //             .matches(&available_suite.name)
-        //         {
-        //             selected_suites.push(available_suite.clone());
-        //             found = true;
-        //         }
-        //     }
-        //     if !found {
-        //         eprintln!("Warning: Test suite '{}' not found.", suite);
-        //     }
-        // }
-        // selected_suites
-
-        available_test_suites
+        available
             .into_iter()
             .filter(|ts| {
-                test_suites.iter().any(|pattern| {
+                patterns.iter().any(|pattern| {
                     glob::Pattern::new(pattern)
-                        .map_err(|e| anyhow::anyhow!("Invalid glob pattern '{}': {}", pattern, e))
-                        .unwrap()
-                        .matches(&ts.name)
+                        .map(|p| p.matches(&ts.name))
+                        .unwrap_or(false)
                 })
             })
             .collect()
+    }
+}
+
+pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
+    let TestArgs {
+        fetch_browser,
+        test_suite: test_suites,
+        skip_compare,
+        mis_match_threshold,
+    } = args;
+    let root_dir = common::ROOT_DIR.get_required()?;
+    let visual_tests_dir = root_dir.join("visual_tests");
+
+    let exe_path = if fetch_browser.unwrap_or(false) {
+        Some(
+            fetcher()
+                .await
+                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?,
+        )
+    } else {
+        None
     };
 
-    for t in filtered_test_suites {
-        let visual_tests_dir = &visual_tests_dir;
-        match exec_test_suite(visual_tests_dir, &exe_path, &t, skip_compare, mis_match_threshold).await {
+    let available = discover_test_suites(&visual_tests_dir);
+    let filtered = filter_test_suites(available, &test_suites);
+
+    for t in filtered {
+        match exec_test_suite(
+            &visual_tests_dir,
+            &exe_path,
+            &t,
+            skip_compare,
+            mis_match_threshold,
+        )
+        .await
+        {
             Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
+            Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
+        }
+    }
+
+    Ok(())
+}
+
+/// `ref` command: capture reference screenshots.
+/// Runs the test suites (without comparison), then auto-approves results as reference.
+pub async fn exec_ref(args: RefArgs) -> Result<()> {
+    let RefArgs {
+        fetch_browser,
+        test_suite: test_suites,
+    } = args;
+    let root_dir = common::ROOT_DIR.get_required()?;
+    let visual_tests_dir = root_dir.join("visual_tests");
+
+    let exe_path = if fetch_browser.unwrap_or(false) {
+        Some(
+            fetcher()
+                .await
+                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?,
+        )
+    } else {
+        None
+    };
+
+    let available = discover_test_suites(&visual_tests_dir);
+    let filtered = filter_test_suites(available, &test_suites);
+
+    let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+
+    for t in &filtered {
+        // Run tests without comparison (skip_compare=true)
+        match exec_test_suite(&visual_tests_dir, &exe_path, t, true, 0.0).await {
+            Ok(_) => {
+                // Auto-approve: promote test screenshots to reference
+                let suite_dir = backstop_dir.join(&t.name);
+                if suite_dir.exists() {
+                    eprintln!("Approving reference screenshots for '{}'...", t.name.cyan());
+                    if let Err(e) = approve_screenshots(&suite_dir, &t.name) {
+                        eprintln!("Error approving '{}': {:?}", t.name, e);
+                    }
+                }
+            }
             Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
         }
     }

@@ -93,7 +93,7 @@ pub async fn exec_test_suite(
                 .await
                 .map_err(|e| anyhow!("Failed to launch browser: {:?}", e))?;
 
-            exec_test_scenario(&browser, &test_suite, scenario)
+            exec_test_scenario(&browser, &test_suite, scenario, &test_suite.scenarios)
                 .await
                 .ok();
 
@@ -122,7 +122,9 @@ pub async fn exec_test_suite(
             let suite_dir = backstop_dir.join(suite_id);
 
             // Use per-suite threshold if configured, otherwise use CLI threshold
-            let threshold = test_suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+            let threshold = test_suite
+                .mis_match_threshold
+                .unwrap_or(mis_match_threshold);
 
             eprintln!("Running visual comparison...");
             if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {

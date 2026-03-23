@@ -1,415 +1,204 @@
 ---
 title: Create a scenario
-description: Create and configure a scenario for automated browser testing, including setting URL targets, defining actions like click, input, and scroll, managing dependencies between scenarios, and customizing options such as delays, viewports, and thresholds.
-guid: 620b9098-627b-4db5-bb0b-cd43b9949e35
-date: 2023-06-29T17:00:00+00:00
-updated: 2026-01-13T17:00:00+00:00
-draft: false
-hidden: false
-weight: 30000
-sort_by: weight
-template: docs/page.html
-
-extra:
-  toc: true
-  top: false
+description: Create and configure test scenarios for Regressify CLI visual regression testing.
 ---
 
 ## Properties
 
 ### Required properties
 
-{% spoiler() %}
-
-url
-
-:::::
+#### url
 
 Type: `string`.
 
-The URL you want to test.
+The URL to test. A headless browser will navigate to this URL and capture a screenshot.
 
-{% end %}
+```yaml
+scenarios:
+  - url: https://example.com/
+```
 
 ### Optional properties
 
-{% spoiler() %}
-
-actions
-
-:::::
+#### actions
 
 Type: array of actions.  
 Default value: `[]`.
 
-Provide the list of actions should be executed sequentiality by the test browser. Available options are:
+A list of actions to execute sequentially before capturing the final screenshot. Available actions:
 
-| Action  | Use for                                                  |
-| ------- | -------------------------------------------------------- |
-| check   | Check a radio or checkbox                                |
-| click   | Click an element                                         |
-| focus   | Focus an element                                         |
-| hide    | Hide an element - set `visibility: hidden !important`    |
-| hover   | Hover an element                                         |
-| input   | Type text in an element or upload files                  |
-| press   | Press a key (or key combination) on an element           |
-| remove  | Remove an element - set `display: none !important`       |
-| scroll  | Scroll to an element                                     |
-| select  | Select an option inside a `select` element               |
-| uncheck | Uncheck a radio or checkbox                              |
-| wait    | Wait for X miliseconds or wait for an element to appears |
+| Action  | Use for                                             |
+| ------- | --------------------------------------------------- |
+| check   | Check a radio or checkbox                           |
+| click   | Click an element                                    |
+| focus   | Focus an element                                    |
+| goto    | Navigate to a different URL                         |
+| hide    | Hide an element (`visibility: hidden !important`)   |
+| hover   | Hover an element                                    |
+| input   | Type text in an element or upload files             |
+| persist | Save browser state (cookies + localStorage) to disk |
+| press   | Press a key (or key combination) on an element      |
+| remove  | Remove an element (`display: none !important`)      |
+| save    | Take an intermediate screenshot                     |
+| scroll  | Scroll to an element                                |
+| select  | Select an option inside a `<select>` element        |
+| uncheck | Uncheck a radio or checkbox                         |
+| wait    | Wait for milliseconds, an element, or a navigation  |
 
-For more infomation, please refer to [Create an action][create-an-action].
+See [Actions Reference](actions.md) for full details.
 
-A scenario can have multiple actions. Sample:
+Example:
 
-```yml
+```yaml
 actions:
-
-  # Check the checkbox with `tos-accept` ID
   - check: checkbox#tos-accept
-
-  # Click the button with `submit` class
   - click: button.submit
-
-  # Focus an element with `username` ID
   - focus: '#username'
-
-  # Hide the element with `cookie-modal` ID
   - hide: '#cookie-modal'
-
-  # Hover mouse over an element contains `my-chart` ID
   - hover: '#my-chart'
-
-  # Type `My Name` in an input element with `username` ID
   - input: 'input#username'
     value: My Name
-    append: false
-
-  # Type `my-name@domain.com` in an input element with `email` ID
-  - input: 'input#email'
-    value: my-name@domain.com
-    append: false
-
-  # Select all content inside an element with `text-area` ID
   - press: '#text-area'
     key: Ctrl+A
-
-  # Remove a `div` element with `random-content` class
   - remove: div.random-content
-
-  # Scroll to an element with `report` class
   - scroll: .report
-
-  # Uncheck the checkbox named `subscrible-email`
-  - uncheck: checkbox[name="subscrible-email"]
-
-  # Delay 1 second
+  - uncheck: checkbox[name="subscribe-email"]
   - wait: 1000
-
-  # Wait for an element with `popup` class appears
   - wait: .popup
 ```
 
-Please note that if `actions` property is set, following properties with be ignored:
+#### cookiePath
 
-- `clickSelector`
-- `clickSelectors`
-- `hoverSelector`
-- `hoverSelectors`
-- `keyPressSelector`
-- `keyPressSelectors`
-- `scrollToSelector`
-- `postInteractionWait`
+Type: `string`.  
+Default value: none.
 
-{% end %}
+Path to a YAML file containing cookies to load before running this scenario.
 
-{% spoiler() %}
-
-cssOverridePath
-
-:::::
+#### cssOverridePath
 
 Type: `string`.  
 Default value: Test suite's value.
 
-{% end %}
+Path to a CSS override file for this specific scenario.
 
-{% spoiler() %}
-
-cookiePath
-
-:::::
-
-Type: `string`.  
-Default value: Test suite's value.
-
-Import cookies in YAML format.
-
-{% end %}
-
-{% spoiler() %}
-
-delay
-
-:::::
+#### delay
 
 Type: `number`.  
-Default value: `1000`.
+Default value: none.
 
-When the page is ready, wait for X miliseconds before takeing the screenshot.  
-Use for the scenario where the page under test need a long time to load or render.
-
-{% end %}
-
-{% spoiler() %}
-
-id
-
-:::::
-
-Type: `string`.  
-Default value: empty.
-
-Scenario ID. This property is for identifying this scenario when you re-use in other one. Use any value you find meaningful, but should be as short and concise as possible.  
-Recommend to use only lowercase alphanumeric charaters (`a-z`, `0-9`), minus (`-`) and underscore (`_`).
-
-Use together with [needs](#spoiler--needs) property.
-
-Example:
+Wait for X milliseconds after all actions are executed (and after `postInteractionWait`), right before capturing the final screenshot. Useful for pages that need extra time to fully render.
 
 ```yaml
 scenarios:
-  - url: https://www.domain.com
+  - url: https://example.com/slow-page
+    delay: 3000
+```
+
+#### hideSelectors
+
+Type: `string[]`.  
+Default value: none (inherits from test suite).
+
+Array of CSS selectors set to `visibility: hidden !important` before screenshots. Applied in addition to the test suite's `hideSelectors`.
+
+#### id
+
+Type: `string`.  
+Default value: auto-generated from `label` or URL hash.
+
+Unique identifier for this scenario. Required when using the [needs](#needs) property in other scenarios.
+
+```yaml
+scenarios:
+  - url: https://example.com
     id: first-visit
 ```
 
-{% end %}
-
-{% spoiler() %}
-
-jsOnReadyPath
-
-:::::
+#### label
 
 Type: `string`.  
-Default value: Test suite's value.
+Default value: auto-generated from URL.
 
-{% end %}
-
-{% spoiler() %}
-
-label
-
-:::::
-
-Type: `string`.
-
-Name of current scenario.  
-If not set, the path of current URL will be used.  
-Recommend to use only lowercase alphanumeric charaters (`a-z`, `0-9`), minus (`-`) and underscore (`_`).
-
-Example:
+Human-readable name for the scenario. Used for identification in reports and as the basis for auto-generated IDs.
 
 ```yaml
 scenarios:
-  - url: https://www.domain.com
+  - url: https://example.com
     label: check-login-with-valid-credentials
 ```
 
-{% end %}
-
-{% spoiler() %}
-
-misMatchThreshold
-
-:::::
+#### misMatchThreshold
 
 Type: `number`.  
 Default value: Test suite's value.  
-Min value: `0`.  
-Max value: `100`.
+Range: `0` – `100`.
 
-This parameter represents the percentage of permissible differing pixels for a test to pass. A lower value ensures more precise test results. The choice of a suitable value depends entirely on your project's specific requirements.
+Override the test suite's mismatch threshold for this specific scenario.
 
-{% end %}
-
-{% spoiler() %}
-
-needs
-
-:::::
+#### needs
 
 Type: `string | string[]`.  
-Default value: `[]`.
+Default value: none.
 
-List of the IDs of other scenarios needed to be executed before this scenario.
-
-Example:
+List of scenario IDs whose actions should be executed before this scenario's own actions. This enables action reuse across scenarios — each scenario still opens a fresh browser page, but the prerequisite actions are replayed first.
 
 ```yaml
 scenarios:
-  - url: https://www.domain.com
-    id: open-form
+  - url: https://example.com/form
+    id: fill-username
     actions:
-      - click: '#form-popup'
+      - input: '#username'
+        value: testuser
 
-  - url: https://www.domain.com
-    id: input-form
-    # Execute `open-form` actions
-    # before executing this scenario's actions
-    needs: open-form
+  - url: https://example.com/form
+    id: fill-password
+    needs: fill-username
     actions:
-      - input: input#username
-        value: My Name
-      - input: input#password
-        value: Passw0rd!
-  
-  - url: https://www.domain.com
+      - input: '#password'
+        value: Pa$$w0rd
+
+  - url: https://example.com/form
     label: Submit form
-    # Execute `open-form` and `input-form` actions
-    # before executing this scenario's actions
-    needs: input-form
+    needs: fill-password
     actions:
       - click: button[type="submit"]
+      - wait: 3000
+        url: '**/success'
 ```
 
-{% end %}
+Dependencies are resolved recursively — if scenario C `needs: B` and B `needs: A`, then C will execute A's actions, then B's actions, then its own.
 
-{% spoiler() %}
-
-noScrollTop
-
-:::::
+#### noScrollTop
 
 Type: `boolean`.  
 Default value: `false`.
 
-Disable scrollTop prior to screen capture.
+When `false` (default), the page is scrolled to the top before capturing the final screenshot. Set to `true` to disable this behavior.
 
-{% end %}
-
-{% spoiler() %}
-
-postInteractionWait
-
-:::::
+#### postInteractionWait
 
 Type: `number`.  
-Default value: Test suite's value.  
+Default value: Test suite's value.
 
-Wait for X miliseconds prior to screen shot.
+Wait for X milliseconds after all actions are executed, before the delay and screenshot. Overrides the test suite's value if set.
 
-{% end %}
+#### removeSelectors
 
-{% spoiler() %}
+Type: `string[]`.  
+Default value: none (inherits from test suite).
 
-useCssOverride
+Array of CSS selectors set to `display: none !important` before screenshots. Applied in addition to the test suite's `removeSelectors`.
 
-:::::
+#### useCssOverride
 
 Type: `boolean`.  
-Accepted values: `true` or `false`.  
 Default value: `true`.
 
-Should the scenario use CSS override.
+Whether to inject the CSS override file for this scenario.
 
-{% end %}
-
-{% spoiler() %}
-
-viewportNames
-
-:::::
+#### viewportNames
 
 Type: `string | string[]`.  
 Default value: all available viewports.
 
-Choose the viewports you want applied for the scenario.  
-If this property is set at both the scenario and test suite levels, the scenario-level setting will take precedence.
-
-Sample:
-
-```yaml hl_lines=4-6
-scenarios:
-  - url: https://tuyen.blog/
-    label: Click theme toggle on tablet and desktop
-    viewportNames:
-      - tablet
-      - desktop
-    actions:
-      - click: theme-toggle
-```
-
-{% end %}
-
-### Obsoleted properties
-
-{% spoiler(danger=true) %}
-
-clickSelector - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.click][action-click] instead.
-
-Type: `string`.  
-Default value: Empty.
-
-Click the specified DOM element prior to screen shot.  
-Notes: this property will be ignored if [actions](#spoiler--actions) property is set.
-
-{% end %}
-
-{% spoiler(danger=true) %}
-
-clickSelectors - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.click][action-click] instead.
-
-Type: `string[]`.  
-Default value: `[]`.
-
-Click the specified DOM elements prior to screen shot.  
-Notes: this property will be ignored if [actions](#spoiler--actions) property is set.
-
-{% end %}
-
-{% spoiler(danger=true) %}
-
-hideSelectors - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.hide][action-hide] instead.
-
-Type: `string[]`.  
-Default value: Test suite's value.
-
-Array of selectors set to `visibility: hidden`  
-Notes: this property will be ignored if [actions](#spoiler--actions) property is set.
-
-{% end %}
-
-{% spoiler(danger=true) %}
-
-removeSelectors - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.remove][action-remove] instead.
-
-Type: `string[]`.  
-Default value: Test suite's value.
-
-Array of selectors set to `display: none`.  
-Notes: this property will be ignored if [actions](#spoiler--actions) property is set.
-
-{% end %}
-
-[create-an-action]: @/optimizely-cms/testing/create-action.md
-[action-click]: @/optimizely-cms/testing/create-action.md#spoiler--click
-[action-hide]: @/optimizely-cms/testing/create-action.md#spoiler--hide
-[action-remove]: @/optimizely-cms/testing/create-action.md#spoiler--remove
+> **Note:** Viewport support is planned but not yet implemented. Currently all tests run at the default 1920×1080 viewport.

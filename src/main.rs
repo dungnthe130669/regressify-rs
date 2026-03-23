@@ -68,6 +68,9 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 
         #[cfg(feature = "local")]
         Command::Test(args) => test::exec_test_suites(args).await,
+
+        #[cfg(feature = "local")]
+        Command::Ref(args) => test::exec_ref(args).await,
     }
 }
 

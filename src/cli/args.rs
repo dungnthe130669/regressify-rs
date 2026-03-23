@@ -54,6 +54,17 @@ pub struct TestArgs {
 }
 
 #[derive(clap::Args)]
+pub struct RefArgs {
+    /// Whether to fetch the browser before running tests
+    #[clap(long)]
+    pub fetch_browser: Option<bool>,
+
+    /// Names of test suites to capture references for (or 'all' / '*' for all)
+    #[clap(long, short = 's')]
+    pub test_suite: Vec<String>,
+}
+
+#[derive(clap::Args)]
 pub struct CompareArgs {
     /// Names of test suites to compare (or 'all' / '*' for all)
     #[clap(long, short = 's')]
