@@ -3,7 +3,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::{
-    helpers::{IOExtensions, slugify},
+    common,
+    compare::report_gen::generate_comparison_report,
+    helpers::{IOExtensions, OnceLockExtensions, slugify},
     snapshot::get_asset_version,
     test::{browsers::launch_browser, test_scenario::exec_test_scenario},
     types::TestSuiteInput,
@@ -13,6 +15,8 @@ pub async fn exec_test_suite(
     visual_tests_dir: &Path,
     exe_path: &Option<PathBuf>,
     input: &TestSuiteInput,
+    skip_compare: bool,
+    mis_match_threshold: f64,
 ) -> Result<()> {
     let TestSuiteInput {
         name,
@@ -83,7 +87,7 @@ pub async fn exec_test_suite(
 
     // For each test scenario
     eprintln!("Executing test scenarios...");
-    let scenarios_result = async {
+    let scenarios_result: Result<()> = async {
         for scenario in &test_suite.scenarios {
             let (mut browser, handle) = launch_browser(exe_path)
                 .await
@@ -107,5 +111,25 @@ pub async fn exec_test_suite(
     }
     .await;
 
-    scenarios_result
+    scenarios_result?;
+
+    // Run visual comparison against reference images
+    if !skip_compare {
+        if let (Some(suite_id), Some(test_date)) =
+            (test_suite.id.as_deref(), test_suite.test_date.as_deref())
+        {
+            let backstop_dir = common::BACKSTOP_DIR.get_required()?;
+            let suite_dir = backstop_dir.join(suite_id);
+
+            // Use per-suite threshold if configured, otherwise use CLI threshold
+            let threshold = test_suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+
+            eprintln!("Running visual comparison...");
+            if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
+                eprintln!("Visual comparison failed: {:?}", e);
+            }
+        }
+    }
+
+    Ok(())
 }

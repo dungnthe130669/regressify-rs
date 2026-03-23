@@ -43,6 +43,32 @@ pub struct TestArgs {
     /// Names of test suites to execute (or 'all' / '*' for all test suites)
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
+
+    /// Skip visual comparison after test run
+    #[clap(long, default_value_t = false)]
+    pub skip_compare: bool,
+
+    /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
+    #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
+    pub mis_match_threshold: f64,
+}
+
+#[derive(clap::Args)]
+pub struct CompareArgs {
+    /// Names of test suites to compare (or 'all' / '*' for all)
+    #[clap(long, short = 's')]
+    pub test_suite: Vec<String>,
+
+    /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
+    #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
+    pub mis_match_threshold: f64,
+}
+
+#[derive(clap::Args)]
+pub struct ApproveArgs {
+    /// Names of test suites to approve (or 'all' / '*' for all)
+    #[clap(long, short = 's')]
+    pub test_suite: Vec<String>,
 }
 
 fn quality_parser(s: &str) -> Result<u8, String> {

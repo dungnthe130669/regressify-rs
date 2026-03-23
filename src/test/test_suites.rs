@@ -13,6 +13,8 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
         test_suite: test_suites,
+        skip_compare,
+        mis_match_threshold,
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
@@ -94,7 +96,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     for t in filtered_test_suites {
         let visual_tests_dir = &visual_tests_dir;
-        match exec_test_suite(visual_tests_dir, &exe_path, &t).await {
+        match exec_test_suite(visual_tests_dir, &exe_path, &t, skip_compare, mis_match_threshold).await {
             Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
             Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
         }

@@ -14,6 +14,7 @@ use crate::{
 
 mod cli;
 mod common;
+mod compare;
 mod github;
 mod helpers;
 mod optimizer;
@@ -62,6 +63,8 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     match cli.command {
         Command::Snapshot(args) => snapshot::snapshot(args),
         Command::Optimize(args) => optimizer::optimize(args),
+        Command::Compare(args) => compare::compare(args),
+        Command::Approve(args) => compare::approve(args),
 
         #[cfg(feature = "local")]
         Command::Test(args) => test::exec_test_suites(args).await,
