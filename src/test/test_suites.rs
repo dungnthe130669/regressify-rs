@@ -143,21 +143,18 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     // Run visual comparison per suite
     for (input, suite) in &parsed_suites {
-        if !skip_compare {
-            if let (Some(suite_id), Some(test_date)) =
+        if !skip_compare
+            && let (Some(suite_id), Some(test_date)) =
                 (suite.id.as_deref(), suite.test_date.as_deref())
-            {
-                let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
-                let suite_dir = regressify_dir.join(suite_id);
+        {
+            let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+            let suite_dir = regressify_dir.join(suite_id);
 
-                let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+            let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
 
-                eprintln!("Running visual comparison for '{}'...", input.name);
-                if let Err(e) =
-                    generate_comparison_report(&suite_dir, suite_id, test_date, threshold)
-                {
-                    eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
-                }
+            eprintln!("Running visual comparison for '{}'...", input.name);
+            if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
+                eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
             }
         }
         eprintln!("Test suite '{}' completed.", input.name);
