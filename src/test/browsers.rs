@@ -134,9 +134,16 @@ pub async fn launch_browser(
             Ok((browser, mut handler)) => {
                 let data_dir = user_data_dir.clone();
                 let handle = tokio::spawn(async move {
-                    while let Some(h) = handler.next().await {
-                        if h.is_err() {
-                            break;
+                    // Process CDP events with a timeout to prevent indefinite hangs
+                    loop {
+                        match tokio::time::timeout(Duration::from_secs(30), handler.next()).await {
+                            Ok(Some(h)) if h.is_err() => break,
+                            Ok(None) => break,
+                            Ok(Some(_)) => {} // Continue processing events
+                            Err(_) => {
+                                // Timeout waiting for next event, exit cleanup loop
+                                break;
+                            }
                         }
                     }
                     let _ = tokio::fs::remove_dir_all(&data_dir).await;

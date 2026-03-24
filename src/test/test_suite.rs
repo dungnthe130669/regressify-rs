@@ -101,8 +101,16 @@ pub async fn exec_single_scenario(
     }
 
     eprintln!("Waiting for handler to finish...");
-    if let Err(e) = handle.await {
-        eprintln!("Error waiting for browser handler task: {e}");
+    match tokio::time::timeout(std::time::Duration::from_secs(5), handle).await {
+        Ok(Err(e)) => {
+            eprintln!("Error waiting for browser handler task: {e}");
+        }
+        Err(_) => {
+            eprintln!("Browser handler task did not finish within timeout, aborting.");
+        }
+        Ok(Ok(())) => {
+            eprintln!("Browser handler finished cleanly.");
+        }
     }
 
     Ok(())
