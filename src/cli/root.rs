@@ -38,6 +38,10 @@ pub struct Cli {
     #[clap(long, allow_hyphen_values = true)]
     pub run_id: Option<String>,
 
+    /// Number of test scenarios to run in parallel
+    #[clap(long, allow_hyphen_values = true, default_value = "5")]
+    pub async_capture_limit: u32,
+
     /// Enable debug mode
     #[clap(long, action, default_value = "false")]
     pub debug: bool,

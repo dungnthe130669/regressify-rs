@@ -87,6 +87,8 @@ fn set_global_vars(cli: &Cli) -> Result<()> {
     common::REGRESSIFY_DIR.set_value(regressify_dir)?;
     common::DEBUG.set_value(cli.debug)?;
 
+    common::ASYNC_CAPTURE_LIMIT.set_value((cli.async_capture_limit as usize).max(1))?;
+
     if let Some(ref proxy) = cli.proxy {
         let proxy = Proxy::all(proxy)?;
         common::PROXY.set_value(proxy)?;

@@ -26,8 +26,6 @@ pub struct TestSuite {
 
     pub test_date: Option<String>,
 
-    pub async_capture_limit: Option<f64>,
-
     pub async_compare_limit: Option<f64>,
 
     pub browser: Option<Browser>,

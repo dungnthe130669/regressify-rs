@@ -1,7 +1,9 @@
 use std::fs;
+use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
+use tokio::sync::Semaphore;
 use walkdir::WalkDir;
 
 use crate::{
@@ -10,8 +12,11 @@ use crate::{
     compare::report_gen::generate_comparison_report,
     helpers::OnceLockExtensions,
     snapshot,
-    test::{browsers::fetcher, test_suite::exec_test_suite},
-    types::{TestSuiteFormat, TestSuiteInput},
+    test::{
+        browsers::fetcher,
+        test_suite::{exec_single_scenario, parse_test_suite},
+    },
+    types::{TestSuite, TestSuiteFormat, TestSuiteInput},
 };
 
 /// Discover available test suite files in the visual_tests/ directory.
@@ -89,19 +94,73 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let available = discover_test_suites(&visual_tests_dir);
     let filtered = filter_test_suites(available, &test_suites);
 
-    for t in filtered {
-        match exec_test_suite(
-            &visual_tests_dir,
-            &exe_path,
-            &t,
-            skip_compare,
-            mis_match_threshold,
-        )
-        .await
-        {
-            Ok(_) => eprintln!("Test suite '{}' completed successfully.", t.name),
-            Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
+    // Parse all test suites upfront
+    let parsed_suites: Vec<(TestSuiteInput, Arc<TestSuite>)> = filtered
+        .into_iter()
+        .filter_map(|t| match parse_test_suite(&visual_tests_dir, &t) {
+            Ok(suite) => Some((t, Arc::new(suite))),
+            Err(e) => {
+                eprintln!("Error parsing test suite '{}': {:?}", t.name, e);
+                None
+            }
+        })
+        .collect();
+
+    // Run all scenarios across all suites with a global concurrency limit
+    let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
+    let semaphore = Arc::new(Semaphore::new(limit));
+    let exe_path = Arc::new(exe_path);
+    let mut handles = Vec::new();
+
+    for (_input, suite) in &parsed_suites {
+        for scenario_idx in 0..suite.scenarios.len() {
+            let sem = semaphore.clone();
+            let suite = suite.clone();
+            let exe_path = exe_path.clone();
+
+            let handle = tokio::spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                exec_single_scenario(
+                    &exe_path,
+                    &suite,
+                    &suite.scenarios[scenario_idx],
+                    &suite.scenarios,
+                )
+                .await
+                .ok();
+            });
+
+            handles.push(handle);
         }
+    }
+
+    // Wait for all scenarios to complete
+    for handle in handles {
+        if let Err(e) = handle.await {
+            eprintln!("Task failed: {:?}", e);
+        }
+    }
+
+    // Run visual comparison per suite
+    for (input, suite) in &parsed_suites {
+        if !skip_compare {
+            if let (Some(suite_id), Some(test_date)) =
+                (suite.id.as_deref(), suite.test_date.as_deref())
+            {
+                let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+                let suite_dir = regressify_dir.join(suite_id);
+
+                let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+
+                eprintln!("Running visual comparison for '{}'...", input.name);
+                if let Err(e) =
+                    generate_comparison_report(&suite_dir, suite_id, test_date, threshold)
+                {
+                    eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
+                }
+            }
+        }
+        eprintln!("Test suite '{}' completed.", input.name);
     }
 
     generate_snapshot_reports()?;
@@ -135,10 +194,9 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
+    // Delete existing reference screenshots before running
     for t in &filtered {
         let suite_dir = regressify_dir.join(&t.name);
-
-        // Delete existing reference screenshots
         let reference_dir = suite_dir.join("bitmaps_reference");
         if reference_dir.exists() {
             eprintln!(
@@ -147,61 +205,109 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             );
             fs::remove_dir_all(&reference_dir)?;
         }
+    }
 
-        // Run tests without comparison (skip_compare=true, no reference to compare against)
-        match exec_test_suite(&visual_tests_dir, &exe_path, t, true, 0.0).await {
-            Ok(_) => {
-                // Approve directly from bitmaps_test/ directory
-                let tests_dir = suite_dir.join("bitmaps_test");
-                if !tests_dir.exists() {
-                    eprintln!("No test screenshots found for '{}', skipping.", t.name);
-                    continue;
-                }
-
-                // Find the latest test run
-                let mut test_runs: Vec<String> = Vec::new();
-                for entry in fs::read_dir(&tests_dir)?.flatten() {
-                    if entry.path().is_dir() {
-                        test_runs.push(entry.file_name().to_string_lossy().to_string());
-                    }
-                }
-                test_runs.sort();
-
-                let latest_run = match test_runs.last() {
-                    Some(run) => run.clone(),
-                    None => {
-                        eprintln!("No test run directories found for '{}', skipping.", t.name);
-                        continue;
-                    }
-                };
-
-                let latest_test_dir = tests_dir.join(&latest_run);
-                let ref_dest = suite_dir.join("bitmaps_reference");
-                fs::create_dir_all(&ref_dest)?;
-
-                let mut count = 0;
-                for entry in fs::read_dir(&latest_test_dir)?.flatten() {
-                    let file_name = entry.file_name().to_string_lossy().to_string();
-                    if file_name.ends_with(".png") {
-                        fs::copy(entry.path(), ref_dest.join(&file_name))?;
-                        count += 1;
-                    }
-                }
-
-                eprintln!(
-                    "Captured {} reference screenshot(s) for '{}' (run: {}).",
-                    count.to_string().green(),
-                    t.name.cyan(),
-                    latest_run
-                );
-
-                // Run comparison so results show all scenarios as passed
-                eprintln!("Running visual comparison...");
-                if let Err(e) = generate_comparison_report(&suite_dir, &t.name, &latest_run, 0.0) {
-                    eprintln!("Visual comparison failed: {:?}", e);
-                }
+    // Parse all test suites upfront
+    let parsed_suites: Vec<(TestSuiteInput, Arc<TestSuite>)> = filtered
+        .into_iter()
+        .filter_map(|t| match parse_test_suite(&visual_tests_dir, &t) {
+            Ok(suite) => Some((t, Arc::new(suite))),
+            Err(e) => {
+                eprintln!("Error parsing test suite '{}': {:?}", t.name, e);
+                None
             }
-            Err(e) => eprintln!("Error executing test suite '{}': {:?}", t.name, e),
+        })
+        .collect();
+
+    // Run all scenarios across all suites with a global concurrency limit
+    let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
+    let semaphore = Arc::new(Semaphore::new(limit));
+    let exe_path = Arc::new(exe_path);
+    let mut handles = Vec::new();
+
+    for (_input, suite) in &parsed_suites {
+        for scenario_idx in 0..suite.scenarios.len() {
+            let sem = semaphore.clone();
+            let suite = suite.clone();
+            let exe_path = exe_path.clone();
+
+            let handle = tokio::spawn(async move {
+                let _permit = sem.acquire().await.expect("semaphore closed");
+                exec_single_scenario(
+                    &exe_path,
+                    &suite,
+                    &suite.scenarios[scenario_idx],
+                    &suite.scenarios,
+                )
+                .await
+                .ok();
+            });
+
+            handles.push(handle);
+        }
+    }
+
+    // Wait for all scenarios to complete
+    for handle in handles {
+        if let Err(e) = handle.await {
+            eprintln!("Task failed: {:?}", e);
+        }
+    }
+
+    // Promote screenshots and run comparison per suite
+    for (input, _suite) in &parsed_suites {
+        let suite_dir = regressify_dir.join(&input.name);
+        let tests_dir = suite_dir.join("bitmaps_test");
+
+        if !tests_dir.exists() {
+            eprintln!("No test screenshots found for '{}', skipping.", input.name);
+            continue;
+        }
+
+        // Find the latest test run
+        let mut test_runs: Vec<String> = Vec::new();
+        for entry in fs::read_dir(&tests_dir)?.flatten() {
+            if entry.path().is_dir() {
+                test_runs.push(entry.file_name().to_string_lossy().to_string());
+            }
+        }
+        test_runs.sort();
+
+        let latest_run = match test_runs.last() {
+            Some(run) => run.clone(),
+            None => {
+                eprintln!(
+                    "No test run directories found for '{}', skipping.",
+                    input.name
+                );
+                continue;
+            }
+        };
+
+        let latest_test_dir = tests_dir.join(&latest_run);
+        let ref_dest = suite_dir.join("bitmaps_reference");
+        fs::create_dir_all(&ref_dest)?;
+
+        let mut count = 0;
+        for entry in fs::read_dir(&latest_test_dir)?.flatten() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.ends_with(".png") {
+                fs::copy(entry.path(), ref_dest.join(&file_name))?;
+                count += 1;
+            }
+        }
+
+        eprintln!(
+            "Captured {} reference screenshot(s) for '{}' (run: {}).",
+            count.to_string().green(),
+            input.name.cyan(),
+            latest_run
+        );
+
+        // Run comparison so results show all scenarios as passed
+        eprintln!("Running visual comparison...");
+        if let Err(e) = generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0) {
+            eprintln!("Visual comparison failed: {:?}", e);
         }
     }
 
