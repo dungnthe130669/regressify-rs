@@ -20,3 +20,4 @@ pub static VERBOSE: OnceLock<bool> = OnceLock::new();
 pub static PROXY: OnceLock<Proxy> = OnceLock::new();
 pub static DEBUG: OnceLock<bool> = OnceLock::new();
 pub static ASYNC_CAPTURE_LIMIT: OnceLock<usize> = OnceLock::new();
+pub static ASYNC_CAPTURE_RAMP_MS: OnceLock<u64> = OnceLock::new();

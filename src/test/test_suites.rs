@@ -4,6 +4,7 @@ use std::sync::Arc;
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 use tokio::sync::Semaphore;
+use tokio::time::{Duration, sleep};
 use walkdir::WalkDir;
 
 use crate::{
@@ -71,6 +72,26 @@ fn filter_test_suites(available: Vec<TestSuiteInput>, patterns: &[String]) -> Ve
     }
 }
 
+/// Build a semaphore that ramps concurrency from 1 to `limit`,
+/// adding one permit every `step_ms` milliseconds until the target is reached.
+fn create_ramped_semaphore(limit: usize) -> Arc<Semaphore> {
+    let target = limit.max(1);
+    let step_ms = common::ASYNC_CAPTURE_RAMP_MS.get().copied().unwrap_or(1000);
+    let semaphore = Arc::new(Semaphore::new(1));
+
+    if target > 1 {
+        let sem = Arc::clone(&semaphore);
+        tokio::spawn(async move {
+            for _ in 1..target {
+                sleep(Duration::from_millis(step_ms)).await;
+                sem.add_permits(1);
+            }
+        });
+    }
+
+    semaphore
+}
+
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
@@ -108,7 +129,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     // Run all scenarios across all suites with a global concurrency limit
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
-    let semaphore = Arc::new(Semaphore::new(limit));
+    let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
     let mut handles = Vec::new();
 
@@ -218,7 +239,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     // Run all scenarios across all suites with a global concurrency limit
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
-    let semaphore = Arc::new(Semaphore::new(limit));
+    let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
     let mut handles = Vec::new();
 

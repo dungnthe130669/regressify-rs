@@ -42,6 +42,10 @@ pub struct Cli {
     #[clap(long, allow_hyphen_values = true, default_value = "5")]
     pub async_capture_limit: u32,
 
+    /// Milliseconds between concurrency ramp-up steps (1 additional scenario slot per step)
+    #[clap(long, allow_hyphen_values = true, default_value = "1000")]
+    pub async_capture_ramp_ms: u64,
+
     /// Enable debug mode
     #[clap(long, action, default_value = "false")]
     pub debug: bool,
