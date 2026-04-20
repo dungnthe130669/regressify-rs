@@ -19,7 +19,7 @@
     ".xsl": "application/xml; charset=utf-8"
   },
   "globalHeaders": {
-    "Access-Control-Max-Age": 86400,
+    "Access-Control-Max-Age": "86400",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Vary": "Origin"
   }
