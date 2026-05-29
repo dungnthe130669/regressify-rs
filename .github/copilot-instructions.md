@@ -74,6 +74,16 @@ Before performing any interactive action (click, hover, check, uncheck, focus, i
 - **save**: No interactability checks — screenshot utility.
 - **persist**: No interactability checks — state persistence utility.
 
+### Scenario Isolation
+
+Each scenario is an **independent test**. The execution model:
+
+- If an action within a scenario **fails**, that scenario fails immediately (no further actions in that scenario execute).
+- A failed scenario MUST NOT stop other scenarios from executing. All scenarios always run to completion (pass or fail) so the user sees the full test report.
+- Scenarios run concurrently (controlled by `asyncCaptureLimit`). Each gets its own browser instance.
+- Error propagation: `exec_test_action` returns `Err` → `exec_test_scenario` returns `Err` → the spawn block logs the error and continues.
+- Never use `panic!`, `unwrap()` on fallible operations, or `process::exit()` inside action/scenario code — these would kill the entire process.
+
 ### Timeout & Retry
 
 - Default timeout for element existence: 30 seconds

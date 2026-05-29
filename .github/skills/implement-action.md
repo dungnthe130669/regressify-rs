@@ -13,7 +13,18 @@ Use this skill when:
 - `src/types/actions.rs` — Action struct definitions
 - `src/test/test_action.rs` — Action execution (`exec_test_action`)
 - `src/test/test_scenario.rs` — Scenario orchestration (calls `exec_test_action`)
+- `src/test/test_suites.rs` — Top-level orchestration (runs all scenarios concurrently)
 - `docs/actions.md` — Action documentation
+
+## Error Handling Philosophy
+
+Each scenario is an **independent test**:
+
+- If an action fails → the scenario fails immediately (return `Err`, do NOT continue remaining actions).
+- A failed scenario MUST NOT prevent other scenarios from running. The orchestrator catches errors per-scenario and logs them.
+- **Never** use `panic!`, `.unwrap()` on fallible ops, or `.ok()` to swallow errors inside action handlers.
+- Use `?` to propagate all errors. Use `anyhow::bail!()` for validation failures.
+- The user expects a full pass/fail report for ALL scenarios every run.
 
 ## Implementation Checklist
 

@@ -94,8 +94,9 @@ Contains:
 3. **Actionability module:** `src/test/actionability.rs` provides `ensure_actionable`, `ensure_focusable`, `ensure_exists`, `cdp_click`, `cdp_hover`
 4. **Config cascade:** scenario → suite → workspace → defaults (see `src/config/mod.rs`)
 5. **Error handling:** Actions MUST propagate errors with `?`, never `.ok()`
-6. **Security:** All user-provided selectors go through `escape_js_string` or `escape_css_rule` before injection into JS/CSS strings
-7. **Iframes:** Frame traversal via `contentDocument` chains built by `build_frame_document_js`
+6. **Scenario isolation:** Each scenario is independent. A failed scenario MUST NOT stop other scenarios. All scenarios always execute so the user gets a full pass/fail report. Action error → scenario fails → other scenarios continue.
+7. **Security:** All user-provided selectors go through `escape_js_string` or `escape_css_rule` before injection into JS/CSS strings
+8. **Iframes:** Frame traversal via `contentDocument` chains built by `build_frame_document_js`
 
 ## Common Tasks and Which Files to Read
 

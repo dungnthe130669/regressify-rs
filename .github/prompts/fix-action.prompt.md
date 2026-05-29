@@ -17,8 +17,15 @@ When working on `src/test/test_action.rs`, always apply the adversarial code rev
 1. **Read the current implementation** of the action being modified
 2. **Check against the adversarial review checklist** in `.github/skills/adversarial-review.md`
 3. **Verify all pre-action validations** are implemented per `.github/skills/implement-action.md`
-4. **Never use `.ok()` to swallow errors** — action failures are test failures
+4. **Never use `.ok()` to swallow errors** — action failures fail the scenario
 5. **Never use JS `.click()` for the click action** — use CDP mouse events
+6. **Never use `panic!` or `.unwrap()` on fallible ops** — use `?` to propagate errors
+
+## Error Model
+
+- Action error → scenario fails (remaining actions in that scenario are skipped)
+- Scenario failure MUST NOT stop other scenarios — each is an independent test
+- All scenarios always execute so the user gets a full pass/fail report
 
 ## Pre-Action Validation Order (MANDATORY for interactive actions)
 
