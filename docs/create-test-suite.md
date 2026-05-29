@@ -1,136 +1,274 @@
 ---
 title: Create a test suite
-description: Learn how to create and configure test suites for Regressify CLI visual regression testing.
+guid: 4e46191b-a1e4-4d2d-82ff-5ec3827a33cb
+description: Learn how to create Regressify test suites, group related scenarios, and configure suite-level options for stable visual regression testing.
+date: 2023-06-29T17:00:00+00:00
+updated: 2026-04-17T17:00:00+00:00
+draft: false
+hidden: false
+weight: 20000
+sort_by: weight
+template: docs/page.html
+
+extra:
+  toc: true
+  top: false
 ---
 
-A test suite is a collection of [test scenarios](create-scenario.md) grouped together. You decide which scenarios belong in the same suite — for example, all tests for a single page, or tests for an entire website migration.
+A test suite is a collection of [test scenarios][create-test-scenario] that are grouped together based on your decision. You have the flexibility to determine which scenarios should be included in the same test suite. For example, a test suite can encompass test cases for the entire Home page, including different blocks, or focus solely on the Header block with various states (e.g., closed/opened menu).
 
-Test suite files are placed in the `visual_tests/` directory and must be named `*.tests.yaml` (or `.tests.yml` / `.tests.json`).
+In one of my projects, the objective was to assist customers in migrating multiple websites from an old platform to a newer one. To ensure that everything was functioning correctly, I created dedicated test suites for each website. This allowed the QA engineer to test any individual website as needed.
 
-At a minimum, a test suite contains a list of URLs to test:
+At a minimum, a test suite contains a list of URLs to be tested. For example:
 
 ```yaml
 scenarios:
-  - url: https://example.com/
-  - url: https://example.com/about
-  - url: https://example.com/contact
+  - url: https://alloy.eshn.dev/pages/home.html
+  - url: https://alloy.eshn.dev/pages/service.html
+  - url: https://alloy.eshn.dev/pages/portfolio.html
+  - url: https://alloy.eshn.dev/pages/contact/default.html
 ```
 
-Each URL will be loaded in a headless Chromium browser and a full-page screenshot will be captured.
+The purpose of these tests is to load the specified URLs and capture screenshots. For more complex test cases, you can utilize a combination of the properties provided below.
 
 ## Properties
 
 ### Required properties
 
-#### scenarios
+{% spoiler() %}
+
+scenarios
+
+:::::
 
 Type: `ScenarioModel[]`.
 
-List of test scenarios. See [Create a scenario](create-scenario.md) for all available properties.
+List of test scenarios. Refer to [create a scenario](@/optimizely-cms/testing/create-scenario.md) for more information.
+
+{% end %}
 
 ### Optional properties
 
-#### cssOverridePath
+{% spoiler() %}
+
+asyncCaptureLimit
+
+:::::
+
+Type: `number`.  
+Default value: `5`.
+
+This parameter determines the maximum number of screens captured in parallel during testing. Increasing this value can accelerate the execution of your test suite. However, it's important to note that if your network connections or your website's capacity to handle concurrent requests is limited, raising this limit too high could result in less stable test results.
+
+{% end %}
+
+{% spoiler() %}
+
+asyncCompareLimit
+
+:::::
+
+Type: `number`.  
+Default value: `50`.
+
+This parameter dictates the maximum number of screens that can be compared in parallel. Unlike `asyncCaptureLimit`, this value isn't dependent on your network connections or your website's capacity. Instead, it's contingent on your computer's hardware specifications. If your computer boasts robust hardware capabilities, increasing this value will result in quicker comparisons between reference and test results.
+
+{% end %}
+
+{% spoiler() %}
+
+browser
+
+:::::
 
 Type: `string`.  
-Default value: `common/_override.css`.
+Default value: `chromium`.  
+Allowed values: `chromium`, `firefox`, `webkit`.
 
-Path to a CSS file that will be injected into every scenario's page. Useful for hiding dynamic elements (ads, animations) globally.
+The browser used for the test.
 
-#### debug
+{% end %}
+
+{% spoiler() %}
+
+debug
+
+:::::
 
 Type: `boolean`.  
-Default value: `false` (overridden by `--debug` CLI flag).
+Default value: `false`.
 
-When `true`, launches the browser in headed (visible) mode so you can see the test running.
+Should the tool displays the Chrome window as tests are running. This will allow you to visually see your app state at the time of your test.
+
+Example:
 
 ```yaml
 debug: true
 ```
 
-#### hideSelectors
+{% end %}
+
+{% spoiler() %}
+
+cssOverridePath
+
+:::::
+
+Type: `string`.
+
+CSS override path.  
+Default value: **common/_override.css**
+
+{% end %}
+
+{% spoiler() %}
+
+hideSelectors
+
+:::::
 
 Type: `string[]`.  
 Default value: `[]`.
 
-Array of CSS selectors that will be set to `visibility: hidden !important` on every scenario's page before screenshots are captured.
+Array of selectors set to `visibility: hidden`.  
+This property will affects all the scenarios within the same test suite.
 
-```yaml
-hideSelectors:
-  - '#cookie-banner'
-  - .ad-container
-```
+{% end %}
 
-#### misMatchThreshold
+{% spoiler() %}
+
+ignoreSslErrors
+
+:::::
+
+Type: `boolean`.  
+Default value: `false`.
+
+Whether the tool should ignore SSL errors.
+
+{% end %}
+
+{% spoiler() %}
+
+misMatchThreshold
+
+:::::
 
 Type: `number`.  
 Default value: `0.1`.  
-Range: `0` – `100`.
+Min value: `0`.  
+Max value: `100`.
 
-The percentage of permissible differing pixels for a test to pass. A lower value means stricter comparison. Can be overridden per-scenario.
+This parameter represents the percentage of permissible differing pixels for a test to pass. A lower value ensures more precise test results. The choice of a suitable value depends entirely on your project's specific requirements.
 
-```yaml
-misMatchThreshold: 0.5
-```
+{% end %}
 
-#### postInteractionWait
+{% spoiler() %}
+
+postInteractionWait
+
+:::::
 
 Type: `number`.  
-Default value: none.
+Default value: `1000`.  
 
-Wait for X milliseconds after all actions are executed, before capturing the final screenshot. Can be overridden per-scenario.
+Wait for X miliseconds prior to screen shot.
 
-```yaml
-postInteractionWait: 1000
-```
+{% end %}
 
-#### removeSelectors
+{% spoiler() %}
+
+removeSelectors
+
+:::::
 
 Type: `string[]`.  
 Default value: `[]`.
 
-Array of CSS selectors that will be set to `display: none !important` on every scenario's page before screenshots are captured.
+Array of selectors set to `display: none`.  
+This property will affects all the scenarios within the same test suite.
 
-```yaml
-removeSelectors:
-  - .random-content
-  - '#auto-play-video'
-```
+{% end %}
 
-#### state
+{% spoiler() %}
+
+state
+
+:::::
 
 Type: `string | string[]`.  
-Default value: none.
+Default value: Empty.
 
-Load a previously saved browser state (cookies + localStorage) before running tests. Used together with the [persist action](actions.md#persist).
+Loads a previously saved browser state before running tests. This should be used in conjunction with the [persist action][action-persist].
 
-```yaml
-state: logged-in-user
+Example:
+
+```yaml wrap
+state: user-aaaa
 ```
 
-#### urlReplacements
+{% end %}
+
+{% spoiler() %}
+
+urlReplacements
+
+:::::
 
 Type: `ReplacementModel[]`.  
 Default value: `[]`.
 
-Find/replace rules applied to scenario URLs. Useful for testing the same scenarios against different environments.
+Find/replace for the URLs in `test` command.
+
+Example:
 
 ```yaml
+# Below settings have no effect when running under `ref` command.
+# When running using `test` command,
+# replace the URL from `https://legacy1.domain.com/` to `https://new1.domain.com/`,
+# and from `https://legacy2.domain.com/` to `https://new2.domain.com/`
 urlReplacements:
-  - ref: https://legacy.example.com/
-    test: https://new.example.com/
+  - ref: https://legacy1.domain.com/
+    test: https://new1.domain.com/
+  - ref: https://legacy2.domain.com/
+    test: https://new2.domain.com/
 ```
 
-#### useCssOverride
+{% end %}
+
+{% spoiler() %}
+
+useCssOverride
+
+:::::
 
 Type: `boolean`.  
 Default value: `true`.
 
-Whether to inject the CSS override file (see `cssOverridePath`).
+Should the scenarios use CSS override.
 
-#### viewportNames
+{% end %}
+
+{% spoiler() %}
+
+viewportNames
+
+:::::
 
 Type: `string | string[]`.  
 Default value: all available viewports.
 
-> **Note:** Viewport support is planned but not yet implemented. Currently all tests run at the default 1920×1080 viewport.
+Choose the viewports you want applied for the test suite.
+
+Sample:
+
+```yaml hl_lines=4-6
+viewportNames:
+  - tablet
+  - desktop
+```
+
+{% end %}
+
+[create-test-scenario]: @/optimizely-cms/testing/create-scenario.md
+[action-persist]: @/optimizely-cms/testing/create-action.md#spoiler--persist

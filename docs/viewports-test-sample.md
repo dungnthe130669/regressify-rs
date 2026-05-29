@@ -1,47 +1,159 @@
 ---
-title: 'Sample: Viewports'
-description: Testing different viewports (mobile, tablet, desktop) for responsive website verification.
+title: 'Sample: Viewport-Specific Testing'
+guid: 5fb24910-6e86-4eae-ba0c-28a8d8a239b3
+description: Use this sample to test viewport-specific behavior in Regressify, with separate scenarios for phone, tablet, and desktop states.
+date: 2023-08-08T17:00:00+00:00
+updated: 2026-04-17T17:00:00+00:00
+draft: false
+hidden: false
+weight: 84000
+sort_by: weight
+template: docs/page.html
+
+extra:
+  lead: This sample shows how the same feature can need different scenarios on phone, tablet, and desktop layouts. It uses the theme toggle as a small but realistic example, because responsive UI likes to move the goalposts just when your tests thought they were settled.
+  toc: true
+  top: false
 ---
+
+```css injected
+main img[alt="Hamburger"],
+main img[alt="Moon"],
+main img[alt="Sun"] {
+  margin: 0 0.5em;
+  display: inline-block;
+  transform: translateY(0.1em) scale(1.5);
+  line-height: 1em;
+  height: 1em;
+  width: auto;
+}
+
+@media not print {
+  [data-theme='dark'] main img[alt="Hamburger"],
+  [data-theme='dark'] main img[alt="Moon"],
+  [data-theme='dark'] main img[alt="Sun"] {
+    filter: invert(100%);
+  }
+}
+```
+
+Responsive interfaces rarely behave like one page in three jackets. This sample shows how to test the same feature across viewport-specific states without pretending mobile and desktop are interchangeable.
 
 ## Use case
 
-Certain sections of websites vary across mobile, tablet, and desktop viewports. For example, a header may show a hamburger menu on mobile but be fully expanded on desktop.
+Frequently, certain sections of the website exhibit variations across mobile, tablet, and desktop interfaces. For instance, the Header block may be entirely visible on desktop, whereas on mobile, it remains hidden until the user interacts with the ![Hamburger][hamburger] icon. When assessing the functionality of such a Header, distinct test scenarios tailored to each viewport are essential.
+
+## Test case
+
+Validation of Theme Toggle Button Functionality.
+
+Objective: To confirm the proper functioning of the theme toggle button located at the upper part of this website.
+
+1. Locate the ![Sun][sun] or ![Moon][moon] icon positioned at the top-right corner of this website.
+
+1. On mobile devices, clicking the ![Hamburger][hamburger] icon should reveal the theme toggle icon.
+
+1. After clicking the ![Sun][sun] icon, the site's appearance should change to **Light** mode, and the icon should be replaced by the ![Moon][moon] icon.
+
+1. After clicking the ![Moon][moon] icon, the site's appearance should change to **Dark** mode, and the icon should be replaced by the ![Sun][sun] icon.
+
+Note: The test assumes the presence of the ![Sun][sun] or ![Moon][moon] toggle button and its behavior as described. Any deviation from the expected behavior should be considered a defect.
 
 ## Test suite
 
-Create a file named **visual_tests/theme-toggle.tests.yaml**:
+To create the test suite, follow these steps:
 
-```yaml
-scenarios:
-  - url: https://tuyen.blog/
-    label: Visit the page
+1. Create a file named **visual_tests/theme-toggle.tests.yaml** in your test project.
 
-  - url: https://tuyen.blog/
-    label: Click theme toggle
-    actions:
-      - click: '#theme-toggle'
+1. Add the following content to the file:
 
-  - url: https://tuyen.blog/
-    label: Click theme toggle twice
-    actions:
-      - click: '#theme-toggle'
-      - click: '#theme-toggle'
-```
+   ```yml h500
+   scenarios:
+     # Visit the page on tablet and desktop without any user interaction
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+       label: Visit the page on tablet and desktop without any user interaction
+       viewportNames:
+         - tablet
+         - desktop
 
-> **Note:** The `viewportNames` property is planned but not yet implemented. Currently all tests run at the default 1920×1080 viewport. You can still test different viewport sizes by configuring browser launch options.
+     # The page under test in below test case should have dark theme
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+       label: Click theme toggle on tablet and desktop
+       viewportNames:
+         - tablet
+         - desktop
+       actions:
+         - click: '#theme-toggle'
+
+     # The page under test in below test case should have light theme
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+      label: Click theme toggle a second time on tablet and desktop
+       viewportNames:
+         - tablet
+         - desktop
+       actions:
+         - click: '#theme-toggle'
+         - click: '#theme-toggle'
+
+     # Visit the page on mobile without any user interaction
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+       label: Visit the page on mobile without any user interaction
+       viewportNames:
+         - phone
+
+     # The page under test in below scenario should have dark theme
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+       label: Click theme toggle on mobile
+       viewportNames:
+         - phone
+       actions:
+         - click: '#menu-btn'
+         - click: '#theme-toggle'
+
+     # The page under test in below scenario should have light theme
+     - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+      label: Click theme toggle a second time on mobile
+       viewportNames:
+         - phone
+       actions:
+         - click: '#menu-btn'
+         - click: '#theme-toggle'
+         - click: '#theme-toggle'
+   ```
 
 ## Verify
 
-```bash
-# Capture reference screenshots
-regressify ref --test-suite theme-toggle
+Execute the following command to verify the test suite:
 
-# Run tests and compare against reference
+```bash
+regressify ref --test-suite theme-toggle
+regressify approve --test-suite theme-toggle
 regressify test --test-suite theme-toggle
 ```
 
-If you need to update the reference after verifying the test results:
+## Further Experimentation
 
-```bash
-regressify approve --test-suite theme-toggle
+Try removing the `viewportNames` property from some of the scenarios and compare how the results change.
+
+## Advanced use cases
+
+The `phone`, `tablet`, and `desktop` labels used in the test suite are defined in the **common/_viewports.yaml** file. You can adjust their names, dimensions, and inclusion rules to match the project.
+
+If a scenario needs a viewport that is not predefined there, you can test it with the `viewports` property, as shown below:
+
+```yaml
+scenarios:
+  - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+    viewports:
+      - label: My special device # Use any name you find meaningful
+        width: 1366
+        height: 768
+
+      - label: My other special device
+        width: 600
+        height: 1200
 ```
+
+[moon]: /icons/moon.svg
+[sun]: /icons/sun.svg
+[hamburger]: /icons/hamburger.svg

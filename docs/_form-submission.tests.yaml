@@ -1,0 +1,59 @@
+scenarios:
+  # Scenario:
+  # Testing the page without any user interaction
+  - url: https://tuyen.blog/optimizely-cms/testing/form-submission-test-sample/
+    label: Visit the page
+
+  # Scenario:
+  # Testing the form with valid data
+  - url: https://tuyen.blog/optimizely-cms/testing/form-submission-test-sample/
+    label: Testing the form with valid data
+    actions:
+      - input: '#signup #username'
+        value: test
+      - input: '#signup #email'
+        value: test@gmail.com
+      - input: '#signup #password'
+        value: kCzs0!!kP^jIXamK}g@e
+      - input: '#signup #confirm-password'
+        value: kCzs0!!kP^jIXamK}g@e
+      - click: '#signup input[type="submit"]'
+      - wait: 5000
+        url: '**/?action=signup'
+
+  # Scenario:
+  # Testing the form when clic submit without input any data
+  - url: https://tuyen.blog/optimizely-cms/testing/form-submission-test-sample/
+    label: Testing the form when clic submit without input any data
+    actions:
+      - click: '#signup input[type="submit"]'
+
+  # Scenario:
+  # Testing the form with invalid password
+  - url: https://tuyen.blog/optimizely-cms/testing/form-submission-test-sample/
+    label: Testing the form with invalid password
+    actions:
+      - input: '#signup #username'
+        value: test
+      - input: '#signup #email'
+        value: test@gmail.com
+      - input: '#signup #password'
+        value: 'too simple password'
+      - input: '#signup #confirm-password'
+        value: 'too simple password'
+      - click: '#signup input[type="submit"]'
+
+  # Scenario:
+  # Testing the form with Password and Confirm password mismatch
+  - url: https://tuyen.blog/optimizely-cms/testing/form-submission-test-sample/
+    label: Testing the form with Password and Confirm password mismatch
+    actions:
+      - input: '#signup #username'
+        value: test
+      - input: '#signup #email'
+        value: test@gmail.com
+      - input: '#signup #password'
+        value: kCzs0!!kP^jIXamK}g@e
+      - input: '#signup #confirm-password'
+        value: 25H;]Ib,e>5M<#,FFJ=q
+      - click: '#signup input[type="submit"]'
