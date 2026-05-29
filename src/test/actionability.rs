@@ -46,6 +46,7 @@ pub fn escape_js_string(s: &str) -> String {
         .replace('\n', "\\n")
         .replace('\r', "\\r")
         .replace('\t', "\\t")
+        .replace('\0', "")
 }
 
 /// Escape a selector for safe insertion into CSS rule `innerHTML`.

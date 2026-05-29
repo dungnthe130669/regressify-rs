@@ -273,6 +273,10 @@ pub async fn exec_test_action(
         }
 
         TestAction::Persist(PersistAction { persist, .. }) => {
+            // Validate persist name doesn't contain path separators
+            if persist.contains('/') || persist.contains('\\') || persist.contains("..") {
+                anyhow::bail!("Invalid persist name '{}': must not contain path separators or '..'", persist);
+            }
             eprintln!("    Persisting state: {}", persist);
             let root_dir = ROOT_DIR
                 .get()

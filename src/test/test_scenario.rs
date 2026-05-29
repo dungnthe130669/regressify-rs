@@ -73,16 +73,19 @@ pub async fn exec_test_scenario(
     // Apply urlReplacements to the scenario URL
     let url = apply_url_replacements(&scenario.url, test_suite);
 
-    let page = browser.new_page(url.as_str()).await?;
-
-    // Bypass CSP if configured (must be set before page loads content)
-    if resolved.bypass_csp {
+    // Create page with about:blank first, apply CSP bypass, then navigate
+    let page = if resolved.bypass_csp {
+        let page = browser.new_page("about:blank").await?;
         let cmd = chromiumoxide::cdp::browser_protocol::page::SetBypassCspParams::builder()
             .enabled(true)
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build SetBypassCspParams: {}", e))?;
         page.execute(cmd).await?;
-    }
+        page.goto(url.as_str()).await?;
+        page
+    } else {
+        browser.new_page(url.as_str()).await?
+    };
 
     // Load state (cookies + localStorage) if configured at suite level
     if let Some(ref state) = test_suite.state {
@@ -130,12 +133,18 @@ pub async fn exec_test_scenario(
         let root_dir = crate::common::ROOT_DIR
             .get()
             .ok_or_else(|| anyhow::anyhow!("ROOT_DIR not initialized"))?;
-        let full_path = root_dir.join("visual_tests").join(js_path);
-        if full_path.exists() {
-            let js_content = std::fs::read_to_string(&full_path)?;
-            page.evaluate(js_content).await?;
-            eprintln!("    Executed jsOnReady script: {}", js_path);
+        let visual_tests_dir = root_dir.join("visual_tests");
+        let full_path = visual_tests_dir.join(js_path);
+        let canonical = full_path
+            .canonicalize()
+            .map_err(|_| anyhow::anyhow!("jsOnReadyPath '{}' does not exist", js_path))?;
+        let canonical_base = visual_tests_dir.canonicalize().unwrap_or(visual_tests_dir);
+        if !canonical.starts_with(&canonical_base) {
+            anyhow::bail!("jsOnReadyPath '{}' escapes visual_tests directory", js_path);
         }
+        let js_content = std::fs::read_to_string(&canonical)?;
+        page.evaluate(js_content).await?;
+        eprintln!("    Executed jsOnReady script: {}", js_path);
     }
 
     // Execute prerequisite actions from `needs` dependencies
@@ -178,28 +187,24 @@ pub async fn exec_test_scenario(
         .await?;
     }
 
-    // Apply postInteractionWait: scenario-level overrides suite-level
-    let post_wait = scenario
-        .post_interaction_wait
-        .or(test_suite.post_interaction_wait);
-
-    if let Some(wait_ms) = post_wait
-        && wait_ms > 0.0
-    {
-        eprintln!("    Waiting for {} ms after interactions...", wait_ms);
-        tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
+    // Apply postInteractionWait from resolved config
+    if let Some(wait_ms) = resolved.post_interaction_wait {
+        if wait_ms > 0.0 {
+            eprintln!("    Waiting for {} ms after interactions...", wait_ms);
+            tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
+        }
     }
 
     // Apply delay before screenshot
-    if let Some(delay) = scenario.delay
-        && delay > 0.0
-    {
-        eprintln!("    Delay: waiting {} ms before screenshot...", delay);
-        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+    if let Some(delay) = resolved.delay {
+        if delay > 0.0 {
+            eprintln!("    Delay: waiting {} ms before screenshot...", delay);
+            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
+        }
     }
 
     // Scroll page top-to-bottom then back to top to trigger lazy-loaded images
-    if !scenario.no_scroll_top.unwrap_or(false) {
+    if !resolved.no_scroll_top {
         eprintln!("    Scrolling page to load lazy images...");
         page.evaluate(
             r#"(async () => {
@@ -461,18 +466,15 @@ async fn apply_css_override(
 
     eprintln!("    Applying CSS override: {}", css_path);
     let css_content = std::fs::read_to_string(css_path)?;
-    let escaped = css_content
-        .replace('\\', "\\\\")
-        .replace('\'', "\\'")
-        .replace('\n', "\\n");
+    let css_json = serde_json::to_string(&css_content)?;
     let script = format!(
         "(() => {{
             var style = document.createElement('style');
             style.type = 'text/css';
-            style.innerHTML = '{}';
+            style.textContent = {};
             document.head.appendChild(style);
         }})()",
-        escaped
+        css_json
     );
     page.evaluate(script).await.ok();
 
