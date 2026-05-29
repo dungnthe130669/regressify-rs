@@ -7,7 +7,7 @@ use crate::{
     helpers::{IOExtensions, slugify},
     snapshot::get_asset_version,
     test::{browsers::launch_browser, test_scenario::exec_test_scenario},
-    types::{TestScenario, TestSuite, TestSuiteInput},
+    types::{TestScenario, TestSuite, TestSuiteInput, UrlReplacement},
 };
 
 /// Parse a test suite file (YAML or JSON) and assign IDs to scenarios.
@@ -88,13 +88,21 @@ pub async fn exec_single_scenario(
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
     workspace_config: &WorkspaceConfig,
+    replacement_profile: &[UrlReplacement],
 ) -> Result<()> {
     let (mut browser, handle) = launch_browser(exe_path)
         .await
         .map_err(|e| anyhow!("Failed to launch browser: {:?}", e))?;
 
-    exec_test_scenario(&browser, test_suite, scenario, all_scenarios, workspace_config)
-        .await?;
+    let scenario_result = exec_test_scenario(
+        &browser,
+        test_suite,
+        scenario,
+        all_scenarios,
+        workspace_config,
+        replacement_profile,
+    )
+    .await;
 
     eprintln!("Closing browser...");
     if let Err(e) = browser.close().await {
@@ -114,5 +122,5 @@ pub async fn exec_single_scenario(
         }
     }
 
-    Ok(())
+    scenario_result
 }

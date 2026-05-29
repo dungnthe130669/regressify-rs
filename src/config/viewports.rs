@@ -44,11 +44,7 @@ pub fn resolve_viewports(
     match viewport_names {
         Some(names) if !names.is_empty() => all_viewports
             .iter()
-            .filter(|v| {
-                names
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(&v.label))
-            })
+            .filter(|v| names.iter().any(|n| n.eq_ignore_ascii_case(&v.label)))
             .cloned()
             .collect(),
         _ => all_viewports.to_vec(),

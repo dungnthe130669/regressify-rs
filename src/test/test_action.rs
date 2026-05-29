@@ -10,9 +10,8 @@ use crate::{
     test::{
         actionability::{
             self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
-            check_enabled, ensure_actionable, ensure_exists, ensure_focusable,
-            escape_css_rule, escape_js_string, get_frame_selectors, scroll_into_view,
-            wait_for_selector,
+            check_enabled, ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule,
+            escape_js_string, get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::save_screenshot,
     },
@@ -40,8 +39,13 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
         if !full_path.exists() {
             anyhow::bail!("file does not exist: {}", f);
         }
+        let canonical_base = visual_tests_dir.canonicalize()?;
+        let canonical_path = full_path.canonicalize()?;
+        if !canonical_path.starts_with(&canonical_base) {
+            anyhow::bail!("file '{}' escapes the visual_tests folder", f);
+        }
         paths.push(
-            full_path
+            canonical_path
                 .to_str()
                 .ok_or_else(|| anyhow!("Invalid file path"))?
                 .to_string(),
@@ -112,7 +116,12 @@ pub async fn exec_test_action(
             if !is_checked {
                 // Click to check it
                 let frame_offset = actionability::get_frame_offset(page, frame).await?;
-                cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
+                cdp_click(
+                    page,
+                    frame_offset.0 + info.center_x,
+                    frame_offset.1 + info.center_y,
+                )
+                .await?;
             }
         }
 
@@ -120,7 +129,12 @@ pub async fn exec_test_action(
             eprintln!("    Clicking element: {}", click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame).await?;
-            cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
+            cdp_click(
+                page,
+                frame_offset.0 + info.center_x,
+                frame_offset.1 + info.center_y,
+            )
+            .await?;
         }
 
         TestAction::Focus(FocusAction { focus, frame }) => {
@@ -183,7 +197,12 @@ pub async fn exec_test_action(
             eprintln!("    Hovering over element: {}", hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame).await?;
-            cdp_hover(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
+            cdp_hover(
+                page,
+                frame_offset.0 + info.center_x,
+                frame_offset.1 + info.center_y,
+            )
+            .await?;
         }
 
         TestAction::Input(InputAction {
@@ -245,19 +264,41 @@ pub async fn exec_test_action(
                 page.evaluate(script).await?;
             } else if let Some(file) = file {
                 eprintln!("    Uploading file to element: {}", input);
+                if frame.is_some() {
+                    anyhow::bail!(
+                        "input file upload inside iframes is not supported yet; selector '{}' has a frame configured",
+                        input
+                    );
+                }
                 let root_dir = ROOT_DIR
                     .get()
                     .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
                 let visual_tests_dir = root_dir.join("visual_tests");
                 let file_paths = resolve_file_paths(file, &visual_tests_dir)?;
 
-                // Wait for the element to exist
-                wait_for_selector(page, input, frame, &ac).await?;
+                let info = ensure_actionable(page, input, frame, &ac).await?;
+
+                let sel_escaped = escape_js_string(input);
+                let type_script = format!(
+                    "(() => {{ var el = document.querySelector('{sel}'); return el ? el.type : ''; }})()",
+                    sel = sel_escaped
+                );
+                let input_type: String = page
+                    .evaluate(type_script)
+                    .await?
+                    .into_value()
+                    .unwrap_or_default();
+                if input_type != "file" {
+                    anyhow::bail!(
+                        "input file upload requires an <input type='file'> element, got type='{}'",
+                        input_type
+                    );
+                }
 
                 let element = page.find_element(input).await?;
 
                 if use_file_chooser.unwrap_or(false) {
-                    element.click().await?;
+                    cdp_click(page, info.center_x, info.center_y).await?;
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
 
@@ -275,7 +316,10 @@ pub async fn exec_test_action(
         TestAction::Persist(PersistAction { persist, .. }) => {
             // Validate persist name doesn't contain path separators
             if persist.contains('/') || persist.contains('\\') || persist.contains("..") {
-                anyhow::bail!("Invalid persist name '{}': must not contain path separators or '..'", persist);
+                anyhow::bail!(
+                    "Invalid persist name '{}': must not contain path separators or '..'",
+                    persist
+                );
             }
             eprintln!("    Persisting state: {}", persist);
             let root_dir = ROOT_DIR
@@ -518,7 +562,12 @@ pub async fn exec_test_action(
 
             if is_checked {
                 let frame_offset = actionability::get_frame_offset(page, frame).await?;
-                cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
+                cdp_click(
+                    page,
+                    frame_offset.0 + info.center_x,
+                    frame_offset.1 + info.center_y,
+                )
+                .await?;
             }
         }
 
@@ -577,11 +626,8 @@ pub async fn exec_test_action(
                     eprintln!("    Waiting for element: {}", selector);
                     if let Some(doc) = doc_js {
                         let sel_escaped = escape_js_string(selector);
-                        let script = format!(
-                            "{doc}.querySelector('{sel}')",
-                            doc = doc,
-                            sel = sel_escaped
-                        );
+                        let script =
+                            format!("{doc}.querySelector('{sel}')", doc = doc, sel = sel_escaped);
                         let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
                         let start = std::time::Instant::now();
                         loop {
@@ -600,7 +646,10 @@ pub async fn exec_test_action(
                                     ac.element_timeout_ms
                                 );
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(ac.poll_interval_ms)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                ac.poll_interval_ms,
+                            ))
+                            .await;
                         }
                     } else {
                         // Use the actionability module's wait_for_selector

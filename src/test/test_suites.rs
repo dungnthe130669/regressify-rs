@@ -11,14 +11,14 @@ use crate::{
     cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
     compare::report_gen::generate_comparison_report,
-    config,
+    config::{self, replacements},
     helpers::OnceLockExtensions,
     snapshot,
     test::{
         browsers::fetcher,
         test_suite::{exec_single_scenario, parse_test_suite},
     },
-    types::{TestSuite, TestSuiteFormat, TestSuiteInput},
+    types::{TestSuite, TestSuiteFormat, TestSuiteInput, UrlReplacement},
 };
 
 /// Discover available test suite files in the visual_tests/ directory.
@@ -93,19 +93,50 @@ fn create_ramped_semaphore(limit: usize) -> Arc<Semaphore> {
     semaphore
 }
 
+fn load_active_replacement_profile(
+    visual_tests_dir: &std::path::Path,
+    cli_profile: Option<&str>,
+) -> Result<Vec<UrlReplacement>> {
+    let profile_name = replacements::get_profile_name(cli_profile);
+    let explicit_profile = cli_profile.is_some()
+        || std::env::var("REPLACEMENT_PROFILE")
+            .map(|value| !value.is_empty())
+            .unwrap_or(false);
+
+    let Some(profiles) = replacements::load_replacement_profiles(visual_tests_dir)? else {
+        if explicit_profile {
+            anyhow::bail!(
+                "Replacement profile file not found: {}",
+                visual_tests_dir
+                    .join("common/_replacement-profiles.yaml")
+                    .display()
+            );
+        }
+        return Ok(Vec::new());
+    };
+
+    Ok(profiles
+        .profiles
+        .get(&profile_name)
+        .cloned()
+        .unwrap_or_default())
+}
+
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
         test_suite: test_suites,
         skip_compare,
         mis_match_threshold,
-        replacement_profile: _replacement_profile,
+        replacement_profile,
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
 
     // Load workspace config
     let workspace_config = config::load_workspace_config(root_dir)?;
+    let active_replacements =
+        load_active_replacement_profile(&visual_tests_dir, replacement_profile.as_deref())?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         Some(
@@ -137,6 +168,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
     let workspace_config = Arc::new(workspace_config);
+    let active_replacements = Arc::new(active_replacements);
     let mut handles = Vec::new();
 
     for (_input, suite) in &parsed_suites {
@@ -145,15 +177,20 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             let suite = suite.clone();
             let exe_path = exe_path.clone();
             let ws_config = workspace_config.clone();
+            let replacements = active_replacements.clone();
 
             let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
+                let Ok(_permit) = sem.acquire().await else {
+                    eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
+                    return false;
+                };
                 if let Err(e) = exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
                     &suite.scenarios,
                     &ws_config,
+                    &replacements,
                 )
                 .await
                 {
@@ -163,7 +200,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                         .or(suite.scenarios[scenario_idx].id.as_deref())
                         .unwrap_or("unknown");
                     eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                    return false;
                 }
+                true
             });
 
             handles.push(handle);
@@ -171,13 +210,20 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     }
 
     // Wait for all scenarios to complete
+    let mut scenario_failures = 0usize;
     for handle in handles {
-        if let Err(e) = handle.await {
-            eprintln!("Task failed: {:?}", e);
+        match handle.await {
+            Ok(true) => {}
+            Ok(false) => scenario_failures += 1,
+            Err(e) => {
+                eprintln!("Task failed: {:?}", e);
+                scenario_failures += 1;
+            }
         }
     }
 
     // Run visual comparison per suite
+    let mut comparison_failures = 0usize;
     for (input, suite) in &parsed_suites {
         if !skip_compare
             && let (Some(suite_id), Some(test_date)) =
@@ -191,12 +237,21 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             eprintln!("Running visual comparison for '{}'...", input.name);
             if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
                 eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
+                comparison_failures += 1;
             }
         }
         eprintln!("Test suite '{}' completed.", input.name);
     }
 
     generate_snapshot_reports()?;
+
+    if scenario_failures > 0 || comparison_failures > 0 {
+        anyhow::bail!(
+            "Test run failed: {} scenario(s) failed, {} suite comparison(s) failed",
+            scenario_failures,
+            comparison_failures
+        );
+    }
 
     Ok(())
 }
@@ -261,6 +316,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
     let workspace_config = Arc::new(workspace_config);
+    let active_replacements = Arc::new(Vec::<UrlReplacement>::new());
     let mut handles = Vec::new();
 
     for (_input, suite) in &parsed_suites {
@@ -269,15 +325,20 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             let suite = suite.clone();
             let exe_path = exe_path.clone();
             let ws_config = workspace_config.clone();
+            let replacements = active_replacements.clone();
 
             let handle = tokio::spawn(async move {
-                let _permit = sem.acquire().await.expect("semaphore closed");
+                let Ok(_permit) = sem.acquire().await else {
+                    eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
+                    return false;
+                };
                 if let Err(e) = exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
                     &suite.scenarios,
                     &ws_config,
+                    &replacements,
                 )
                 .await
                 {
@@ -287,7 +348,9 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                         .or(suite.scenarios[scenario_idx].id.as_deref())
                         .unwrap_or("unknown");
                     eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                    return false;
                 }
+                true
             });
 
             handles.push(handle);
@@ -295,10 +358,23 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     }
 
     // Wait for all scenarios to complete
+    let mut scenario_failures = 0usize;
     for handle in handles {
-        if let Err(e) = handle.await {
-            eprintln!("Task failed: {:?}", e);
+        match handle.await {
+            Ok(true) => {}
+            Ok(false) => scenario_failures += 1,
+            Err(e) => {
+                eprintln!("Task failed: {:?}", e);
+                scenario_failures += 1;
+            }
         }
+    }
+
+    if scenario_failures > 0 {
+        anyhow::bail!(
+            "Reference capture failed: {} scenario(s) failed",
+            scenario_failures
+        );
     }
 
     // Promote screenshots and run comparison per suite
@@ -353,9 +429,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
         // Run comparison so results show all scenarios as passed
         eprintln!("Running visual comparison...");
-        if let Err(e) = generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0) {
-            eprintln!("Visual comparison failed: {:?}", e);
-        }
+        generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0)?;
     }
 
     generate_snapshot_reports()?;

@@ -27,12 +27,13 @@ pub struct ReplacementProfilesFile {
 }
 
 /// Load replacement profiles from a YAML file.
-/// Looks for `common/_replacements.yaml` or `common/_replacements.yml` in the visual_tests dir.
+/// Looks for `common/_replacement-profiles.yaml` or `common/_replacement-profiles.yml`
+/// in the visual_tests dir.
 pub fn load_replacement_profiles(
     visual_tests_dir: &Path,
 ) -> Result<Option<ReplacementProfilesFile>> {
-    let yaml_path = visual_tests_dir.join("common/_replacements.yaml");
-    let yml_path = visual_tests_dir.join("common/_replacements.yml");
+    let yaml_path = visual_tests_dir.join("common/_replacement-profiles.yaml");
+    let yml_path = visual_tests_dir.join("common/_replacement-profiles.yml");
 
     let config_path = if yaml_path.exists() {
         Some(yaml_path)
@@ -58,7 +59,9 @@ pub fn get_profile_name(cli_arg: Option<&str>) -> String {
     if let Some(name) = cli_arg {
         return name.to_string();
     }
-    if let Ok(env_val) = std::env::var("REPLACEMENT_PROFILE") && !env_val.is_empty() {
+    if let Ok(env_val) = std::env::var("REPLACEMENT_PROFILE")
+        && !env_val.is_empty()
+    {
         return env_val;
     }
     "default".to_string()

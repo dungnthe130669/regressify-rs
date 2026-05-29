@@ -82,7 +82,7 @@ impl Default for ResolvedConfig {
             no_scroll_top: false,
             post_interaction_wait: None,
             remove_selectors: Vec::new(),
-            use_css_override: false,
+            use_css_override: true,
             viewport_names: None,
             viewports_path: "common/_viewports.yaml".to_string(),
             element_timeout_ms: 30_000,
@@ -161,10 +161,7 @@ pub fn resolve_config(
             .or(suite.css_override_path.clone())
             .or(workspace.css_override_path.clone()),
 
-        debug: suite
-            .debug
-            .or(workspace.debug)
-            .unwrap_or(defaults.debug),
+        debug: suite.debug.or(workspace.debug).unwrap_or(defaults.debug),
 
         delay: scenario.delay.or(workspace.delay),
 

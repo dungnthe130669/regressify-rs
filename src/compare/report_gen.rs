@@ -260,6 +260,14 @@ pub fn generate_comparison_report(
         report.tests.len()
     );
 
+    if fail_count > 0 {
+        anyhow::bail!(
+            "Comparison failed: {} failed out of {} tests",
+            fail_count,
+            report.tests.len()
+        );
+    }
+
     Ok(())
 }
 

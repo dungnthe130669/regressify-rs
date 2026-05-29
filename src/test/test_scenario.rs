@@ -1,11 +1,15 @@
-use anyhow::Result;
+use std::path::{Path, PathBuf};
+
+use anyhow::{Result, anyhow};
 use chromiumoxide::Browser;
 use colored::Colorize;
 
 use crate::{
-    config::{self, WorkspaceConfig},
+    common,
+    config::{self, ResolvedConfig, WorkspaceConfig},
+    helpers::OnceLockExtensions,
     test::{capture::save_screenshot, test_action::exec_test_action},
-    types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite},
+    types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
 };
 
 /// Collect all prerequisite actions from `needs` dependencies recursively.
@@ -58,6 +62,7 @@ pub async fn exec_test_scenario(
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
     workspace_config: &WorkspaceConfig,
+    replacement_profile: &[UrlReplacement],
 ) -> Result<()> {
     let label = scenario
         .label
@@ -71,7 +76,12 @@ pub async fn exec_test_scenario(
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
 
     // Apply urlReplacements to the scenario URL
-    let url = apply_url_replacements(&scenario.url, test_suite);
+    let url = apply_url_replacements(
+        &scenario.url,
+        test_suite,
+        workspace_config,
+        replacement_profile,
+    );
 
     // Create page with about:blank first, apply CSP bypass, then navigate
     let page = if resolved.bypass_csp {
@@ -93,52 +103,30 @@ pub async fn exec_test_scenario(
     }
 
     // Load cookies from cookiePath if configured
-    if let Some(ref cookie_path) = scenario.cookie_path {
+    if let Some(ref cookie_path) = resolved.cookie_path {
         load_cookie_path(&page, cookie_path).await?;
     }
 
     // Apply CSS override if configured
-    apply_css_override(&page, test_suite, scenario).await?;
+    apply_css_override(&page, &resolved).await?;
 
-    // Apply suite-level hideSelectors
-    if let Some(ref selectors) = test_suite.hide_selectors {
-        for sel in selectors {
-            inject_css(&page, sel, "visibility: hidden !important").await?;
-        }
+    for sel in &resolved.hide_selectors {
+        inject_css(&page, sel, "visibility: hidden !important").await?;
     }
 
-    // Apply suite-level removeSelectors
-    if let Some(ref selectors) = test_suite.remove_selectors {
-        for sel in selectors {
-            inject_css(&page, sel, "display: none !important").await?;
-        }
-    }
-
-    // Apply scenario-level hideSelectors (overrides suite if set)
-    if let Some(ref selectors) = scenario.hide_selectors {
-        for sel in selectors {
-            inject_css(&page, sel, "visibility: hidden !important").await?;
-        }
-    }
-
-    // Apply scenario-level removeSelectors (overrides suite if set)
-    if let Some(ref selectors) = scenario.remove_selectors {
-        for sel in selectors {
-            inject_css(&page, sel, "display: none !important").await?;
-        }
+    for sel in &resolved.remove_selectors {
+        inject_css(&page, sel, "display: none !important").await?;
     }
 
     // Execute jsOnReadyPath script if configured
     if let Some(ref js_path) = resolved.js_on_ready_path {
-        let root_dir = crate::common::ROOT_DIR
-            .get()
-            .ok_or_else(|| anyhow::anyhow!("ROOT_DIR not initialized"))?;
+        let root_dir = common::ROOT_DIR.get_required()?;
         let visual_tests_dir = root_dir.join("visual_tests");
         let full_path = visual_tests_dir.join(js_path);
         let canonical = full_path
             .canonicalize()
             .map_err(|_| anyhow::anyhow!("jsOnReadyPath '{}' does not exist", js_path))?;
-        let canonical_base = visual_tests_dir.canonicalize().unwrap_or(visual_tests_dir);
+        let canonical_base = visual_tests_dir.canonicalize()?;
         if !canonical.starts_with(&canonical_base) {
             anyhow::bail!("jsOnReadyPath '{}' escapes visual_tests directory", js_path);
         }
@@ -283,8 +271,7 @@ pub async fn exec_test_scenario(
                 }
             })()"#,
         )
-        .await
-        .ok();
+        .await?;
     }
 
     eprintln!("    Capturing final screenshot...");
@@ -295,34 +282,42 @@ pub async fn exec_test_scenario(
 
 /// Apply urlReplacements from the test suite to a URL.
 /// Supports both literal string replacement and regex replacement.
-fn apply_url_replacements(url: &str, test_suite: &TestSuite) -> String {
+fn apply_url_replacements(
+    url: &str,
+    test_suite: &TestSuite,
+    workspace_config: &WorkspaceConfig,
+    replacement_profile: &[UrlReplacement],
+) -> String {
     let mut result = url.to_string();
+    result = config::replacements::apply_replacements(&result, replacement_profile);
+    if let Some(ref replacements) = workspace_config.url_replacements {
+        result = config::replacements::apply_replacements(&result, replacements);
+    }
     if let Some(ref replacements) = test_suite.url_replacements {
-        for r in replacements {
-            if r.regex.unwrap_or(false) {
-                // Regex replacement
-                let flags = r.flags.as_deref().unwrap_or("");
-                let case_insensitive = flags.contains('i');
-                let pattern_str = if case_insensitive {
-                    format!("(?i){}", r.ref_pattern)
-                } else {
-                    r.ref_pattern.clone()
-                };
-                if let Ok(re) = regex::Regex::new(&pattern_str) {
-                    result = re.replace_all(&result, r.test.as_str()).to_string();
-                } else {
-                    eprintln!(
-                        "    WARNING: Invalid regex pattern '{}' in urlReplacements",
-                        r.ref_pattern
-                    );
-                }
-            } else {
-                // Literal string replacement
-                result = result.replace(&r.ref_pattern, &r.test);
-            }
-        }
+        result = config::replacements::apply_replacements(&result, replacements);
     }
     result
+}
+
+fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
+    let root_dir = common::ROOT_DIR.get_required()?;
+    let candidate = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        root_dir.join(path)
+    };
+
+    if !candidate.exists() {
+        return Ok(None);
+    }
+
+    let canonical_root = root_dir.canonicalize()?;
+    let canonical_path = candidate.canonicalize()?;
+    if !canonical_path.starts_with(&canonical_root) {
+        anyhow::bail!("Path '{}' escapes the workspace root", path);
+    }
+
+    Ok(Some(canonical_path))
 }
 
 /// Load persisted state (cookies + localStorage) into the page.
@@ -333,7 +328,16 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
     };
 
     for name in &state_names {
-        let state_path = std::path::Path::new(".regressify")
+        if name.contains('/') || name.contains('\\') || name.contains("..") {
+            anyhow::bail!(
+                "Invalid state name '{}': must not contain path separators or '..'",
+                name
+            );
+        }
+
+        let root_dir = common::ROOT_DIR.get_required()?;
+        let state_path = root_dir
+            .join(".regressify")
             .join("states")
             .join(format!("{}.json", name));
 
@@ -376,7 +380,9 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
                     let cookie_param = param
                         .build()
                         .map_err(|e| anyhow::anyhow!("Failed to build cookie param: {:?}", e))?;
-                    page.set_cookie(cookie_param).await.ok();
+                    page.set_cookie(cookie_param).await.map_err(|e| {
+                        anyhow!("Failed to restore state cookie '{}': {:?}", name, e)
+                    })?;
                 }
             }
         }
@@ -390,7 +396,9 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
                         serde_json::to_string(key)?,
                         serde_json::to_string(val_str)?
                     );
-                    page.evaluate(script).await.ok();
+                    page.evaluate(script).await.map_err(|e| {
+                        anyhow!("Failed to restore localStorage key '{}': {:?}", key, e)
+                    })?;
                 }
             }
         }
@@ -401,17 +409,17 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
 
 /// Load cookies from a YAML file.
 async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Result<()> {
-    if !std::path::Path::new(cookie_path).exists() {
+    let Some(cookie_path) = resolve_work_dir_path(cookie_path)? else {
         eprintln!(
             "    {} Cookie file not found: {}",
             "WARNING:".yellow(),
             cookie_path
         );
         return Ok(());
-    }
+    };
 
-    eprintln!("    Loading cookies from: {}", cookie_path);
-    let content = std::fs::read_to_string(cookie_path)?;
+    eprintln!("    Loading cookies from: {}", cookie_path.display());
+    let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
 
     use chromiumoxide::cdp::browser_protocol::network::CookieParam;
@@ -432,7 +440,9 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
             let cookie_param = param
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to build cookie param: {:?}", e))?;
-            page.set_cookie(cookie_param).await.ok();
+            page.set_cookie(cookie_param)
+                .await
+                .map_err(|e| anyhow!("Failed to load cookie '{}': {:?}", name, e))?;
         }
     }
 
@@ -440,32 +450,22 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
 }
 
 /// Apply CSS override from file if configured.
-async fn apply_css_override(
-    page: &chromiumoxide::Page,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-) -> Result<()> {
-    let use_override = scenario
-        .use_css_override
-        .or(test_suite.use_css_override)
-        .unwrap_or(true);
-
-    if !use_override {
+async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfig) -> Result<()> {
+    if !resolved.use_css_override {
         return Ok(());
     }
 
-    let css_path = scenario
+    let css_path = resolved
         .css_override_path
         .as_deref()
-        .or(test_suite.css_override_path.as_deref())
         .unwrap_or("common/_override.css");
 
-    if !std::path::Path::new(css_path).exists() {
+    let Some(css_path) = resolve_work_dir_path(css_path)? else {
         return Ok(()); // No override file — that's fine
-    }
+    };
 
-    eprintln!("    Applying CSS override: {}", css_path);
-    let css_content = std::fs::read_to_string(css_path)?;
+    eprintln!("    Applying CSS override: {}", css_path.display());
+    let css_content = std::fs::read_to_string(&css_path)?;
     let css_json = serde_json::to_string(&css_content)?;
     let script = format!(
         "(() => {{
@@ -476,7 +476,7 @@ async fn apply_css_override(
         }})()",
         css_json
     );
-    page.evaluate(script).await.ok();
+    page.evaluate(script).await?;
 
     Ok(())
 }
