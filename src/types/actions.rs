@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/#spoiler--check
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum TestAction {
     Check(CheckAction),
@@ -32,7 +32,7 @@ pub enum Frame {
 }
 
 /// File input: a single file path or an array of file paths (relative to visual_tests).
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum FileInput {
     Single(String),
@@ -40,63 +40,63 @@ pub enum FileInput {
 }
 
 /// Select value: a single value or an array of values.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum SelectValue {
     Single(String),
     Multiple(Vec<String>),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckAction {
     pub check: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ClickAction {
     pub click: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FocusAction {
     pub focus: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct GotoAction {
     pub goto: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HideAction {
     pub hide: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct HoverAction {
     pub hover: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoveAction {
     pub remove: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InputAction {
     pub input: String,
@@ -107,14 +107,14 @@ pub struct InputAction {
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistAction {
     pub persist: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct PressAction {
     pub press: String,
@@ -122,21 +122,21 @@ pub struct PressAction {
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveAction {
     pub save: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct ScrollAction {
     pub scroll: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct SelectAction {
     pub select: String,
@@ -145,14 +145,14 @@ pub struct SelectAction {
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct UncheckAction {
     pub uncheck: String,
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct WaitAction {
     pub wait: Wait,
@@ -160,7 +160,7 @@ pub struct WaitAction {
     pub frame: Option<Frame>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Wait {
     Number(u64),

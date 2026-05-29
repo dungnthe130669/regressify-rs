@@ -11,6 +11,7 @@ use crate::{
     cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
     compare::report_gen::generate_comparison_report,
+    config,
     helpers::OnceLockExtensions,
     snapshot,
     test::{
@@ -98,9 +99,13 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         test_suite: test_suites,
         skip_compare,
         mis_match_threshold,
+        replacement_profile: _replacement_profile,
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
+
+    // Load workspace config
+    let workspace_config = config::load_workspace_config(root_dir)?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         Some(
@@ -131,6 +136,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
     let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
+    let workspace_config = Arc::new(workspace_config);
     let mut handles = Vec::new();
 
     for (_input, suite) in &parsed_suites {
@@ -138,17 +144,26 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             let sem = semaphore.clone();
             let suite = suite.clone();
             let exe_path = exe_path.clone();
+            let ws_config = workspace_config.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                exec_single_scenario(
+                if let Err(e) = exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
                     &suite.scenarios,
+                    &ws_config,
                 )
                 .await
-                .ok();
+                {
+                    let label = suite.scenarios[scenario_idx]
+                        .label
+                        .as_deref()
+                        .or(suite.scenarios[scenario_idx].id.as_deref())
+                        .unwrap_or("unknown");
+                    eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                }
             });
 
             handles.push(handle);
@@ -193,9 +208,13 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let RefArgs {
         fetch_browser,
         test_suite: test_suites,
+        replacement_profile: _replacement_profile,
     } = args;
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
+
+    // Load workspace config
+    let workspace_config = config::load_workspace_config(root_dir)?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         Some(
@@ -241,6 +260,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
     let semaphore = create_ramped_semaphore(limit);
     let exe_path = Arc::new(exe_path);
+    let workspace_config = Arc::new(workspace_config);
     let mut handles = Vec::new();
 
     for (_input, suite) in &parsed_suites {
@@ -248,17 +268,26 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             let sem = semaphore.clone();
             let suite = suite.clone();
             let exe_path = exe_path.clone();
+            let ws_config = workspace_config.clone();
 
             let handle = tokio::spawn(async move {
                 let _permit = sem.acquire().await.expect("semaphore closed");
-                exec_single_scenario(
+                if let Err(e) = exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
                     &suite.scenarios,
+                    &ws_config,
                 )
                 .await
-                .ok();
+                {
+                    let label = suite.scenarios[scenario_idx]
+                        .label
+                        .as_deref()
+                        .or(suite.scenarios[scenario_idx].id.as_deref())
+                        .unwrap_or("unknown");
+                    eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                }
             });
 
             handles.push(handle);

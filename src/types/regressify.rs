@@ -19,16 +19,20 @@ pub enum TestSuiteFormat {
     Json,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TestSuite {
     pub id: Option<String>,
 
     pub test_date: Option<String>,
 
+    pub async_capture_limit: Option<usize>,
+
     pub async_compare_limit: Option<f64>,
 
     pub browser: Option<Browser>,
+
+    pub bypass_csp: Option<bool>,
 
     pub css_override_path: Option<String>,
 
@@ -37,6 +41,8 @@ pub struct TestSuite {
     pub hide_selectors: Option<Vec<String>>,
 
     pub ignore_ssl_errors: Option<bool>,
+
+    pub js_on_ready_path: Option<String>,
 
     pub mis_match_threshold: Option<f64>,
 
@@ -48,14 +54,14 @@ pub struct TestSuite {
 
     pub state: Option<Needs>,
 
-    pub url_replacements: Option<Vec<UrlReplacements>>,
+    pub url_replacements: Option<Vec<UrlReplacement>>,
 
     pub use_css_override: Option<bool>,
 
     pub viewport_names: Option<Selectors>,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum Browser {
     Chromium,
@@ -65,11 +71,13 @@ pub enum Browser {
     Webkit,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
     pub actions: Option<Vec<TestAction>>,
+
+    pub bypass_csp: Option<bool>,
 
     pub click_selector: Option<String>,
 
@@ -112,7 +120,7 @@ pub struct TestScenario {
 
 /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
 /// the viewport size.
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Selectors {
     String(String),
@@ -120,7 +128,7 @@ pub enum Selectors {
     StringArray(Vec<String>),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Needs {
     String(String),
@@ -128,10 +136,15 @@ pub enum Needs {
     StringArray(Vec<String>),
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct UrlReplacements {
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct UrlReplacement {
     #[serde(rename = "ref")]
-    pub url_replacements_ref: String,
+    pub ref_pattern: String,
 
     pub test: String,
+
+    pub regex: Option<bool>,
+
+    pub flags: Option<String>,
 }

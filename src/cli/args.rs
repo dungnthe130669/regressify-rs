@@ -51,6 +51,10 @@ pub struct TestArgs {
     /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
     #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
     pub mis_match_threshold: f64,
+
+    /// Replacement profile name (overrides REPLACEMENT_PROFILE env var)
+    #[clap(long, visible_alias = "rp")]
+    pub replacement_profile: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -62,6 +66,10 @@ pub struct RefArgs {
     /// Names of test suites to capture references for (or 'all' / '*' for all)
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
+
+    /// Replacement profile name (overrides REPLACEMENT_PROFILE env var)
+    #[clap(long, visible_alias = "rp")]
+    pub replacement_profile: Option<String>,
 }
 
 #[derive(clap::Args)]

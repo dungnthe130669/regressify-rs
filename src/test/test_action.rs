@@ -6,39 +6,23 @@ use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 
 use crate::{
     common::ROOT_DIR,
-    test::capture::save_screenshot,
+    config::ResolvedConfig,
+    test::{
+        actionability::{
+            self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
+            check_enabled, ensure_actionable, ensure_exists, ensure_focusable,
+            escape_css_rule, escape_js_string, get_frame_selectors, scroll_into_view,
+            wait_for_selector,
+        },
+        capture::save_screenshot,
+    },
     types::{
-        CheckAction, ClickAction, FileInput, FocusAction, Frame, GotoAction, HideAction,
-        HoverAction, InputAction, PersistAction, PressAction, RemoveAction, SaveAction,
-        ScreenshotType, ScrollAction, SelectAction, SelectValue, TestAction, TestScenario,
-        TestSuite, UncheckAction, Wait, WaitAction,
+        CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
+        InputAction, PersistAction, PressAction, RemoveAction, SaveAction, ScreenshotType,
+        ScrollAction, SelectAction, SelectValue, TestAction, TestScenario, TestSuite,
+        UncheckAction, Wait, WaitAction,
     },
 };
-
-/// Resolve the frame chain: navigate into nested iframes and return
-/// a JS expression prefix that targets the innermost frame's document.
-/// Returns `None` if there is no frame, meaning actions run on the main page.
-fn get_frame_selectors(frame: &Option<Frame>) -> Option<Vec<String>> {
-    match frame {
-        Some(Frame::Single(s)) => Some(vec![s.clone()]),
-        Some(Frame::Multiple(v)) => Some(v.clone()),
-        None => None,
-    }
-}
-
-/// Build a JS expression that navigates into nested iframes and returns
-/// the target document at the deepest level.
-fn build_frame_document_js(selectors: &[String]) -> String {
-    let mut js = "document".to_string();
-    for sel in selectors {
-        js = format!(
-            "{}.querySelector('{}').contentDocument",
-            js,
-            sel.replace('\'', "\\'")
-        );
-    }
-    js
-}
 
 /// Resolve file paths from a FileInput, validating they are relative and exist.
 fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<String>> {
@@ -66,56 +50,95 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
     Ok(paths)
 }
 
+/// Build an ActionabilityConfig from a ResolvedConfig.
+fn actionability_config(config: &ResolvedConfig) -> ActionabilityConfig {
+    ActionabilityConfig {
+        element_timeout_ms: config.element_timeout_ms,
+        actionability_timeout_ms: config.actionability_timeout_ms,
+        ..Default::default()
+    }
+}
+
 pub async fn exec_test_action(
     page: &Page,
     test_suite: &TestSuite,
     scenario: &TestScenario,
     action: &TestAction,
+    config: &ResolvedConfig,
 ) -> Result<()> {
+    let ac = actionability_config(config);
+
     match action {
         TestAction::Check(CheckAction { check, frame }) => {
             eprintln!("    Check element: {}", check);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{ let el = {doc}.querySelector('{sel}'); el.click(); }})()",
-                    doc = doc,
-                    sel = check.replace('\'', "\\'")
+            let frame_selectors = get_frame_selectors(frame);
+            let info = ensure_actionable(page, check, frame, &ac).await?;
+
+            // Verify it's a checkbox or radio
+            let sel_escaped = escape_js_string(check);
+            let doc = frame_selectors
+                .as_ref()
+                .map(|s| build_frame_document_js(s))
+                .unwrap_or_else(|| "document".to_string());
+            let type_script = format!(
+                "(() => {{ var el = {doc}.querySelector('{sel}'); return el.type; }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            let el_type: String = page
+                .evaluate(type_script)
+                .await?
+                .into_value()
+                .unwrap_or_default();
+            if el_type != "checkbox" && el_type != "radio" {
+                anyhow::bail!(
+                    "check action requires a checkbox or radio element, got type='{}'",
+                    el_type
                 );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(check).await?.click().await?;
+            }
+
+            // Check if already checked
+            let checked_script = format!(
+                "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            let is_checked: bool = page
+                .evaluate(checked_script)
+                .await?
+                .into_value()
+                .unwrap_or(false);
+
+            if !is_checked {
+                // Click to check it
+                let frame_offset = actionability::get_frame_offset(page, frame).await?;
+                cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
             }
         }
 
         TestAction::Click(ClickAction { click, frame }) => {
             eprintln!("    Clicking element: {}", click);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{ {doc}.querySelector('{sel}').click(); }})()",
-                    doc = doc,
-                    sel = click.replace('\'', "\\'")
-                );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(click).await?.click().await?;
-            }
+            let info = ensure_actionable(page, click, frame, &ac).await?;
+            let frame_offset = actionability::get_frame_offset(page, frame).await?;
+            cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
         }
 
         TestAction::Focus(FocusAction { focus, frame }) => {
             eprintln!("    Focusing element: {}", focus);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{ {doc}.querySelector('{sel}').focus(); }})()",
-                    doc = doc,
-                    sel = focus.replace('\'', "\\'")
-                );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(focus).await?.focus().await?;
-            }
+            let frame_selectors = get_frame_selectors(frame);
+            ensure_focusable(page, focus, frame, &ac).await?;
+
+            let sel_escaped = escape_js_string(focus);
+            let doc = frame_selectors
+                .as_ref()
+                .map(|s| build_frame_document_js(s))
+                .unwrap_or_else(|| "document".to_string());
+            let script = format!(
+                "(() => {{ {doc}.querySelector('{sel}').focus(); }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            page.evaluate(script).await?;
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
@@ -125,8 +148,11 @@ pub async fn exec_test_action(
 
         TestAction::Hide(HideAction { hide, frame }) => {
             eprintln!("    Hiding element: {}", hide);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
+            let frame_selectors = get_frame_selectors(frame);
+            let css_escaped = escape_css_rule(hide);
+
+            if let Some(selectors) = &frame_selectors {
+                let doc = build_frame_document_js(selectors);
                 let script = format!(
                     "(() => {{
                         var d = {doc};
@@ -136,7 +162,7 @@ pub async fn exec_test_action(
                         d.head.appendChild(style);
                     }})()",
                     doc = doc,
-                    sel = hide.replace('\'', "\\'")
+                    sel = css_escaped
                 );
                 page.evaluate(script).await?;
             } else {
@@ -144,10 +170,10 @@ pub async fn exec_test_action(
                     "(() => {{
                         var style = document.createElement('style');
                         style.type = 'text/css';
-                        style.innerHTML = '{} {{ visibility: hidden !important; }}';
+                        style.innerHTML = '{sel} {{ visibility: hidden !important; }}';
                         document.head.appendChild(style);
                     }})()",
-                    hide
+                    sel = css_escaped
                 );
                 page.evaluate(script.as_str()).await?;
             }
@@ -155,21 +181,9 @@ pub async fn exec_test_action(
 
         TestAction::Hover(HoverAction { hover, frame }) => {
             eprintln!("    Hovering over element: {}", hover);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{
-                        var el = {doc}.querySelector('{sel}');
-                        var evt = new MouseEvent('mouseover', {{ bubbles: true, cancelable: true }});
-                        el.dispatchEvent(evt);
-                    }})()",
-                    doc = doc,
-                    sel = hover.replace('\'', "\\'")
-                );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(hover).await?.hover().await?;
-            }
+            let info = ensure_actionable(page, hover, frame, &ac).await?;
+            let frame_offset = actionability::get_frame_offset(page, frame).await?;
+            cdp_hover(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
         }
 
         TestAction::Input(InputAction {
@@ -184,51 +198,51 @@ pub async fn exec_test_action(
                 anyhow::bail!("`input` action must not contain both `value` and `file`");
             }
 
+            let frame_selectors = get_frame_selectors(frame);
+
             if let Some(value) = value {
                 eprintln!("    Typing into element: {} value: {}", input, value);
-                if let Some(selectors) = get_frame_selectors(frame) {
-                    let doc = build_frame_document_js(&selectors);
-                    let append = append.unwrap_or(false);
-                    let clear_js = if !append {
-                        format!(
-                            "{doc}.querySelector('{sel}').value = '';",
-                            doc = doc,
-                            sel = input.replace('\'', "\\'")
-                        )
-                    } else {
-                        String::new()
-                    };
-                    // For frame input, we use native input events via JS
-                    let script = format!(
-                        "(() => {{
-                            var el = {doc}.querySelector('{sel}');
-                            {clear}
-                            el.focus();
-                            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                            if (nativeInputValueSetter) {{
-                                nativeInputValueSetter.set.call(el, el.value + '{val}');
-                            }} else {{
-                                el.value = el.value + '{val}';
-                            }}
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        }})()",
+                ensure_focusable(page, input, frame, &ac).await?;
+                check_enabled(page, input, frame).await?;
+
+                let sel_escaped = escape_js_string(input);
+                let val_escaped = escape_js_string(value);
+                let doc = frame_selectors
+                    .as_ref()
+                    .map(|s| build_frame_document_js(s))
+                    .unwrap_or_else(|| "document".to_string());
+
+                let append_mode = append.unwrap_or(false);
+                let clear_js = if !append_mode {
+                    format!(
+                        "{doc}.querySelector('{sel}').value = '';",
                         doc = doc,
-                        sel = input.replace('\'', "\\'"),
-                        clear = clear_js,
-                        val = value.replace('\'', "\\'").replace('\n', "\\n")
-                    );
-                    page.evaluate(script).await?;
+                        sel = sel_escaped
+                    )
                 } else {
-                    let element = page.find_element(input).await?;
-                    if !append.unwrap_or(false) {
-                        // Clear existing value before typing
-                        element
-                            .call_js_fn("function() { this.value = ''; }", false)
-                            .await?;
-                    }
-                    element.type_str(value).await?;
-                }
+                    String::new()
+                };
+
+                let script = format!(
+                    "(() => {{
+                        var el = {doc}.querySelector('{sel}');
+                        {clear}
+                        el.focus();
+                        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                        if (nativeInputValueSetter) {{
+                            nativeInputValueSetter.set.call(el, el.value + '{val}');
+                        }} else {{
+                            el.value = el.value + '{val}';
+                        }}
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                    }})()",
+                    doc = doc,
+                    sel = sel_escaped,
+                    clear = clear_js,
+                    val = val_escaped
+                );
+                page.evaluate(script).await?;
             } else if let Some(file) = file {
                 eprintln!("    Uploading file to element: {}", input);
                 let root_dir = ROOT_DIR
@@ -237,15 +251,16 @@ pub async fn exec_test_action(
                 let visual_tests_dir = root_dir.join("visual_tests");
                 let file_paths = resolve_file_paths(file, &visual_tests_dir)?;
 
+                // Wait for the element to exist
+                wait_for_selector(page, input, frame, &ac).await?;
+
                 let element = page.find_element(input).await?;
 
                 if use_file_chooser.unwrap_or(false) {
-                    // Click to trigger file chooser, then set files via CDP
                     element.click().await?;
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
 
-                // Use CDP DOM.setFileInputFiles to set files on the input
                 let cmd = SetFileInputFilesParams::builder()
                     .files(file_paths)
                     .node_id(element.node_id)
@@ -291,29 +306,38 @@ pub async fn exec_test_action(
 
         TestAction::Press(PressAction { press, key, frame }) => {
             eprintln!("    Pressing key '{}' on element: {}", key, press);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{
-                        var el = {doc}.querySelector('{sel}');
-                        el.focus();
-                        el.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{key}', bubbles: true }}));
-                        el.dispatchEvent(new KeyboardEvent('keyup', {{ key: '{key}', bubbles: true }}));
-                    }})()",
-                    doc = doc,
-                    sel = press.replace('\'', "\\'"),
-                    key = key.replace('\'', "\\'")
-                );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(press).await?.press_key(key).await?;
-            }
+            let frame_selectors = get_frame_selectors(frame);
+            ensure_focusable(page, press, frame, &ac).await?;
+
+            let sel_escaped = escape_js_string(press);
+            let key_escaped = escape_js_string(key);
+            let doc = frame_selectors
+                .as_ref()
+                .map(|s| build_frame_document_js(s))
+                .unwrap_or_else(|| "document".to_string());
+
+            let script = format!(
+                "(() => {{
+                    var el = {doc}.querySelector('{sel}');
+                    el.focus();
+                    el.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{key}', code: '{key}', bubbles: true }}));
+                    el.dispatchEvent(new KeyboardEvent('keypress', {{ key: '{key}', code: '{key}', bubbles: true }}));
+                    el.dispatchEvent(new KeyboardEvent('keyup', {{ key: '{key}', code: '{key}', bubbles: true }}));
+                }})()",
+                doc = doc,
+                sel = sel_escaped,
+                key = key_escaped
+            );
+            page.evaluate(script).await?;
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
             eprintln!("    Removing element: {}", remove);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
+            let frame_selectors = get_frame_selectors(frame);
+            let css_escaped = escape_css_rule(remove);
+
+            if let Some(selectors) = &frame_selectors {
+                let doc = build_frame_document_js(selectors);
                 let script = format!(
                     "(() => {{
                         var d = {doc};
@@ -323,7 +347,7 @@ pub async fn exec_test_action(
                         d.head.appendChild(style);
                     }})()",
                     doc = doc,
-                    sel = remove.replace('\'', "\\'")
+                    sel = css_escaped
                 );
                 page.evaluate(script).await?;
             } else {
@@ -331,10 +355,10 @@ pub async fn exec_test_action(
                     "(() => {{
                         var style = document.createElement('style');
                         style.type = 'text/css';
-                        style.innerHTML = '{} {{ display: none !important; }}';
+                        style.innerHTML = '{sel} {{ display: none !important; }}';
                         document.head.appendChild(style);
                     }})()",
-                    remove
+                    sel = css_escaped
                 );
                 page.evaluate(script.as_str()).await?;
             }
@@ -354,17 +378,9 @@ pub async fn exec_test_action(
 
         TestAction::Scroll(ScrollAction { scroll, frame }) => {
             eprintln!("    Scrolling to element: {}", scroll);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{ {doc}.querySelector('{sel}').scrollIntoView(); }})()",
-                    doc = doc,
-                    sel = scroll.replace('\'', "\\'")
-                );
-                page.evaluate(script).await?;
-            } else {
-                page.find_element(scroll).await?.scroll_into_view().await?;
-            }
+            // Only wait for existence, no interactability needed for scroll
+            ensure_exists(page, scroll, frame, &ac).await?;
+            scroll_into_view(page, scroll, frame).await?;
         }
 
         TestAction::Select(SelectAction {
@@ -380,11 +396,33 @@ pub async fn exec_test_action(
                 anyhow::bail!("Select action must have either `value` or `label`.");
             }
 
-            let doc_js = if let Some(selectors) = get_frame_selectors(frame) {
-                build_frame_document_js(&selectors)
-            } else {
-                "document".to_string()
-            };
+            let frame_selectors = get_frame_selectors(frame);
+            ensure_focusable(page, select, frame, &ac).await?;
+            check_enabled(page, select, frame).await?;
+
+            // Verify it's a <select> element
+            let sel_escaped = escape_js_string(select);
+            let doc = frame_selectors
+                .as_ref()
+                .map(|s| build_frame_document_js(s))
+                .unwrap_or_else(|| "document".to_string());
+
+            let tag_script = format!(
+                "(() => {{ var el = {doc}.querySelector('{sel}'); return el ? el.tagName : ''; }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            let tag_name: String = page
+                .evaluate(tag_script)
+                .await?
+                .into_value()
+                .unwrap_or_default();
+            if tag_name.to_uppercase() != "SELECT" {
+                anyhow::bail!(
+                    "select action requires a <select> element, got <{}>",
+                    tag_name.to_lowercase()
+                );
+            }
 
             if let Some(select_value) = value {
                 let values = match select_value {
@@ -406,12 +444,13 @@ pub async fn exec_test_action(
                         }}
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }})()",
-                    doc = doc_js,
-                    sel = select.replace('\'', "\\'"),
+                    doc = doc,
+                    sel = sel_escaped,
                     values = values_json
                 );
                 page.evaluate(script).await?;
             } else if let Some(label) = label {
+                let label_escaped = escape_js_string(label);
                 eprintln!("    Selecting label '{}' in element: {}", label, select);
                 let script = format!(
                     "(() => {{
@@ -425,9 +464,9 @@ pub async fn exec_test_action(
                         }}
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }})()",
-                    doc = doc_js,
-                    sel = select.replace('\'', "\\'"),
-                    lbl = label.replace('\'', "\\'")
+                    doc = doc,
+                    sel = sel_escaped,
+                    lbl = label_escaped
                 );
                 page.evaluate(script).await?;
             }
@@ -435,56 +474,95 @@ pub async fn exec_test_action(
 
         TestAction::Uncheck(UncheckAction { uncheck, frame }) => {
             eprintln!("    Unchecking element: {}", uncheck);
-            if let Some(selectors) = get_frame_selectors(frame) {
-                let doc = build_frame_document_js(&selectors);
-                let script = format!(
-                    "(() => {{
-                        var el = {doc}.querySelector('{sel}');
-                        if (el.checked) el.click();
-                    }})()",
-                    doc = doc,
-                    sel = uncheck.replace('\'', "\\'")
+            let frame_selectors = get_frame_selectors(frame);
+            let info = ensure_actionable(page, uncheck, frame, &ac).await?;
+
+            // Verify it's a checkbox or radio
+            let sel_escaped = escape_js_string(uncheck);
+            let doc = frame_selectors
+                .as_ref()
+                .map(|s| build_frame_document_js(s))
+                .unwrap_or_else(|| "document".to_string());
+            let type_script = format!(
+                "(() => {{ var el = {doc}.querySelector('{sel}'); return el.type; }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            let el_type: String = page
+                .evaluate(type_script)
+                .await?
+                .into_value()
+                .unwrap_or_default();
+            if el_type != "checkbox" && el_type != "radio" {
+                anyhow::bail!(
+                    "uncheck action requires a checkbox or radio element, got type='{}'",
+                    el_type
                 );
-                page.evaluate(script).await?;
-            } else {
-                let element = page.find_element(uncheck).await?;
-                element.click().await?;
+            }
+
+            // Only click if currently checked
+            let checked_script = format!(
+                "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
+                doc = doc,
+                sel = sel_escaped
+            );
+            let is_checked: bool = page
+                .evaluate(checked_script)
+                .await?
+                .into_value()
+                .unwrap_or(false);
+
+            if is_checked {
+                let frame_offset = actionability::get_frame_offset(page, frame).await?;
+                cdp_click(page, frame_offset.0 + info.center_x, frame_offset.1 + info.center_y).await?;
             }
         }
 
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
                 eprintln!("    Waiting for URL: {}", url);
-                page.wait_for_navigation().await?;
 
-                let current_url = page
-                    .url()
-                    .await?
-                    .ok_or_else(|| anyhow!("Failed to get current URL"))?;
+                // Poll-based URL check to avoid race condition with wait_for_navigation
+                let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
+                let start = std::time::Instant::now();
 
-                // Support glob-style `**` matching
-                if url.contains("**") {
-                    let pattern = url.replace("**", "");
-                    if !current_url.contains(&pattern)
-                        && !current_url.ends_with(pattern.trim_start_matches('/'))
-                    {
-                        // Check if the suffix after ** matches the end of the URL
-                        let suffix = url.split("**").last().unwrap_or("");
-                        if !suffix.is_empty() && !current_url.ends_with(suffix) {
-                            anyhow::bail!(
-                                "Expected URL matching '{}', but got '{}'",
-                                url,
-                                current_url
-                            );
-                        }
+                loop {
+                    let current_url = page
+                        .url()
+                        .await?
+                        .ok_or_else(|| anyhow!("Failed to get current URL"))?;
+
+                    let matches = if url.contains("**") {
+                        // Glob-style matching
+                        let parts: Vec<&str> = url.splitn(2, "**").collect();
+                        let prefix = parts[0];
+                        let suffix = parts.get(1).copied().unwrap_or("");
+                        let prefix_ok = prefix.is_empty() || current_url.starts_with(prefix);
+                        let suffix_ok = suffix.is_empty() || current_url.ends_with(suffix);
+                        prefix_ok && suffix_ok
+                    } else {
+                        current_url == *url
+                    };
+
+                    if matches {
+                        break;
                     }
-                } else if &current_url != url {
-                    anyhow::bail!("Expected URL '{}', but got '{}'", url, current_url);
+
+                    if start.elapsed() > timeout {
+                        let current_url = page.url().await?.unwrap_or_default();
+                        anyhow::bail!(
+                            "Timeout waiting for URL '{}', current URL is '{}'",
+                            url,
+                            current_url
+                        );
+                    }
+
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
             }
 
-            let doc_js =
-                get_frame_selectors(frame).map(|selectors| build_frame_document_js(&selectors));
+            let frame_selectors = get_frame_selectors(frame);
+            let doc_js = frame_selectors.as_ref().map(|s| build_frame_document_js(s));
 
             match wait {
                 Wait::Number(milliseconds) => {
@@ -494,13 +572,13 @@ pub async fn exec_test_action(
                 Wait::String(selector) => {
                     eprintln!("    Waiting for element: {}", selector);
                     if let Some(doc) = doc_js {
-                        // Poll for element in iframe
+                        let sel_escaped = escape_js_string(selector);
                         let script = format!(
                             "{doc}.querySelector('{sel}')",
                             doc = doc,
-                            sel = selector.replace('\'', "\\'")
+                            sel = sel_escaped
                         );
-                        let timeout = std::time::Duration::from_secs(30);
+                        let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
                         let start = std::time::Instant::now();
                         loop {
                             let result = page.evaluate(script.as_str()).await?;
@@ -513,14 +591,16 @@ pub async fn exec_test_action(
                             }
                             if start.elapsed() > timeout {
                                 anyhow::bail!(
-                                    "Timeout waiting for element '{}' in frame",
-                                    selector
+                                    "Timeout waiting for element '{}' in frame after {}ms",
+                                    selector,
+                                    ac.element_timeout_ms
                                 );
                             }
-                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            tokio::time::sleep(std::time::Duration::from_millis(ac.poll_interval_ms)).await;
                         }
                     } else {
-                        page.find_element(selector).await?;
+                        // Use the actionability module's wait_for_selector
+                        wait_for_selector(page, selector, frame, &ac).await?;
                     }
                 }
             }

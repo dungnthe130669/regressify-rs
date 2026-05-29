@@ -3,6 +3,7 @@ use chromiumoxide::Browser;
 use colored::Colorize;
 
 use crate::{
+    config::{self, WorkspaceConfig},
     test::{capture::save_screenshot, test_action::exec_test_action},
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite},
 };
@@ -56,6 +57,7 @@ pub async fn exec_test_scenario(
     test_suite: &TestSuite,
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
+    workspace_config: &WorkspaceConfig,
 ) -> Result<()> {
     let label = scenario
         .label
@@ -65,10 +67,22 @@ pub async fn exec_test_scenario(
 
     eprintln!("  Executing scenario: {} ({})", label.cyan(), scenario.url);
 
+    // Resolve configuration cascade: scenario -> suite -> workspace -> defaults
+    let resolved = config::resolve_config(workspace_config, test_suite, scenario);
+
     // Apply urlReplacements to the scenario URL
     let url = apply_url_replacements(&scenario.url, test_suite);
 
     let page = browser.new_page(url.as_str()).await?;
+
+    // Bypass CSP if configured (must be set before page loads content)
+    if resolved.bypass_csp {
+        let cmd = chromiumoxide::cdp::browser_protocol::page::SetBypassCspParams::builder()
+            .enabled(true)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Failed to build SetBypassCspParams: {}", e))?;
+        page.execute(cmd).await?;
+    }
 
     // Load state (cookies + localStorage) if configured at suite level
     if let Some(ref state) = test_suite.state {
@@ -111,6 +125,19 @@ pub async fn exec_test_scenario(
         }
     }
 
+    // Execute jsOnReadyPath script if configured
+    if let Some(ref js_path) = resolved.js_on_ready_path {
+        let root_dir = crate::common::ROOT_DIR
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("ROOT_DIR not initialized"))?;
+        let full_path = root_dir.join("visual_tests").join(js_path);
+        if full_path.exists() {
+            let js_content = std::fs::read_to_string(&full_path)?;
+            page.evaluate(js_content).await?;
+            eprintln!("    Executed jsOnReady script: {}", js_path);
+        }
+    }
+
     // Execute prerequisite actions from `needs` dependencies
     let mut visited = Vec::new();
     let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
@@ -120,9 +147,7 @@ pub async fn exec_test_scenario(
             needs_actions.len()
         );
         for action in &needs_actions {
-            exec_test_action(&page, test_suite, scenario, action)
-                .await
-                .ok();
+            exec_test_action(&page, test_suite, scenario, action, &resolved).await?;
         }
     }
 
@@ -130,10 +155,27 @@ pub async fn exec_test_scenario(
     if let Some(actions) = &scenario.actions {
         eprintln!("    Executing {} actions...", actions.len());
         for action in actions {
-            exec_test_action(&page, test_suite, scenario, action)
-                .await
-                .ok();
+            exec_test_action(&page, test_suite, scenario, action, &resolved).await?;
         }
+    }
+
+    // Execute clickSelector if configured (clicks the element after all actions)
+    if let Some(ref click_sel) = scenario.click_selector {
+        eprintln!("    Clicking selector: {}", click_sel);
+        use crate::test::actionability::{self as act, ActionabilityConfig};
+        let ac = ActionabilityConfig {
+            element_timeout_ms: resolved.element_timeout_ms,
+            actionability_timeout_ms: resolved.actionability_timeout_ms,
+            ..Default::default()
+        };
+        let info = act::ensure_actionable(&page, click_sel, &None, &ac).await?;
+        let frame_offset = act::get_frame_offset(&page, &None).await?;
+        act::cdp_click(
+            &page,
+            frame_offset.0 + info.center_x,
+            frame_offset.1 + info.center_y,
+        )
+        .await?;
     }
 
     // Apply postInteractionWait: scenario-level overrides suite-level
@@ -247,11 +289,32 @@ pub async fn exec_test_scenario(
 }
 
 /// Apply urlReplacements from the test suite to a URL.
+/// Supports both literal string replacement and regex replacement.
 fn apply_url_replacements(url: &str, test_suite: &TestSuite) -> String {
     let mut result = url.to_string();
     if let Some(ref replacements) = test_suite.url_replacements {
         for r in replacements {
-            result = result.replace(&r.url_replacements_ref, &r.test);
+            if r.regex.unwrap_or(false) {
+                // Regex replacement
+                let flags = r.flags.as_deref().unwrap_or("");
+                let case_insensitive = flags.contains('i');
+                let pattern_str = if case_insensitive {
+                    format!("(?i){}", r.ref_pattern)
+                } else {
+                    r.ref_pattern.clone()
+                };
+                if let Ok(re) = regex::Regex::new(&pattern_str) {
+                    result = re.replace_all(&result, r.test.as_str()).to_string();
+                } else {
+                    eprintln!(
+                        "    WARNING: Invalid regex pattern '{}' in urlReplacements",
+                        r.ref_pattern
+                    );
+                }
+            } else {
+                // Literal string replacement
+                result = result.replace(&r.ref_pattern, &r.test);
+            }
         }
     }
     result
@@ -318,9 +381,9 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
             for (key, value) in local_storage {
                 if let Some(val_str) = value.as_str() {
                     let script = format!(
-                        "localStorage.setItem('{}', '{}')",
-                        key.replace('\'', "\\'"),
-                        val_str.replace('\'', "\\'")
+                        "localStorage.setItem({}, {})",
+                        serde_json::to_string(key)?,
+                        serde_json::to_string(val_str)?
                     );
                     page.evaluate(script).await.ok();
                 }
@@ -418,6 +481,8 @@ async fn apply_css_override(
 
 /// Inject a CSS rule for a selector.
 async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> Result<()> {
+    use crate::test::actionability::escape_css_rule;
+    let safe_selector = escape_css_rule(selector);
     let script = format!(
         "(() => {{
             var style = document.createElement('style');
@@ -425,8 +490,7 @@ async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> R
             style.innerHTML = '{} {{ {} }}';
             document.head.appendChild(style);
         }})()",
-        selector.replace('\'', "\\'"),
-        rule
+        safe_selector, rule
     );
     page.evaluate(script).await?;
     Ok(())

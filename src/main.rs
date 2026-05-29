@@ -15,6 +15,7 @@ use crate::{
 mod cli;
 mod common;
 mod compare;
+mod config;
 mod github;
 mod helpers;
 mod optimizer;

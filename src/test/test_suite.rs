@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::{
+    config::WorkspaceConfig,
     helpers::{IOExtensions, slugify},
     snapshot::get_asset_version,
     test::{browsers::launch_browser, test_scenario::exec_test_scenario},
@@ -86,14 +87,14 @@ pub async fn exec_single_scenario(
     test_suite: &TestSuite,
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
+    workspace_config: &WorkspaceConfig,
 ) -> Result<()> {
     let (mut browser, handle) = launch_browser(exe_path)
         .await
         .map_err(|e| anyhow!("Failed to launch browser: {:?}", e))?;
 
-    exec_test_scenario(&browser, test_suite, scenario, all_scenarios)
-        .await
-        .ok();
+    exec_test_scenario(&browser, test_suite, scenario, all_scenarios, workspace_config)
+        .await?;
 
     eprintln!("Closing browser...");
     if let Err(e) = browser.close().await {

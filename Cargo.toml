@@ -23,6 +23,7 @@ lodepng = "3.12.1"
 oxipng = "10.0.0"
 pulldown-cmark = "0.13.0"
 rayon = "1.11.0"
+regex = "1"
 reqwest = { version = "0.12.4", features = ["blocking", "json", "stream", "multipart" ] }
 rgb = "0.8"
 serde = { version = "1.0.152", features = ["derive"] }
