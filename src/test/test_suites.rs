@@ -34,18 +34,33 @@ fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Vec<TestSuiteInpu
             || file_name.ends_with(".tests.yml")
             || file_name.ends_with(".tests.json")
         {
-            let (suite_name, ext) = file_name
-                .rsplit_once(".tests.")
-                .expect("File name should contain '.tests.'");
+            let Some((suite_name, ext)) = file_name.rsplit_once(".tests.") else {
+                eprintln!(
+                    "  {} Skipping unexpected test suite file name: {}",
+                    "WARNING:".yellow(),
+                    file_name
+                );
+                continue;
+            };
+
+            let format = match ext {
+                "yaml" | "yml" => TestSuiteFormat::Yaml,
+                "json" => TestSuiteFormat::Json,
+                _ => {
+                    eprintln!(
+                        "  {} Skipping test suite with unsupported format '{}': {}",
+                        "WARNING:".yellow(),
+                        ext,
+                        file_name
+                    );
+                    continue;
+                }
+            };
 
             suites.push(TestSuiteInput {
                 name: suite_name.to_string(),
                 path: entry.path().to_path_buf(),
-                format: match ext {
-                    "yaml" | "yml" => TestSuiteFormat::Yaml,
-                    "json" => TestSuiteFormat::Json,
-                    _ => panic!("Unsupported test suite format: {}", ext),
-                },
+                format,
             });
         }
     }
@@ -263,8 +278,15 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let RefArgs {
         fetch_browser,
         test_suite: test_suites,
-        replacement_profile: _replacement_profile,
+        replacement_profile,
     } = args;
+    if replacement_profile.is_some() {
+        eprintln!(
+            "{}",
+            "WARNING: --replacement-profile is ignored in ref mode (references use raw URLs)."
+                .yellow()
+        );
+    }
     let root_dir = common::ROOT_DIR.get_required()?;
     let visual_tests_dir = root_dir.join("visual_tests");
 

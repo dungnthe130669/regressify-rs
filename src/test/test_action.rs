@@ -63,6 +63,31 @@ fn actionability_config(config: &ResolvedConfig) -> ActionabilityConfig {
     }
 }
 
+/// Map a W3C `KeyboardEvent.key` value to the corresponding `code` value.
+/// Covers common cases (named keys, ASCII letters, digits, space).
+/// Unknown keys fall back to the key itself.
+fn key_to_code(key: &str) -> String {
+    match key {
+        " " => "Space".to_string(),
+        "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "Insert" | "Home" | "End"
+        | "PageUp" | "PageDown" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
+        | "Shift" | "Control" | "Alt" | "Meta" | "CapsLock" | "NumLock" | "ScrollLock" => {
+            key.to_string()
+        }
+        k if k.chars().count() == 1 => {
+            let c = k.chars().next().unwrap_or(' ');
+            if c.is_ascii_alphabetic() {
+                format!("Key{}", c.to_ascii_uppercase())
+            } else if c.is_ascii_digit() {
+                format!("Digit{}", c)
+            } else {
+                key.to_string()
+            }
+        }
+        _ => key.to_string(),
+    }
+}
+
 pub async fn exec_test_action(
     page: &Page,
     test_suite: &TestSuite,
@@ -359,24 +384,56 @@ pub async fn exec_test_action(
 
             let sel_escaped = escape_js_string(press);
             let key_escaped = escape_js_string(key);
+            let code_escaped = escape_js_string(&key_to_code(key));
             let doc = frame_selectors
                 .as_ref()
                 .map(|s| build_frame_document_js(s))
                 .unwrap_or_else(|| "document".to_string());
 
+            // Focus the element (in-frame via JS), then dispatch key events.
+            // We dispatch synthetic JS events that include the correct W3C `code`
+            // so framework handlers see realistic values.
             let script = format!(
                 "(() => {{
                     var el = {doc}.querySelector('{sel}');
                     el.focus();
-                    el.dispatchEvent(new KeyboardEvent('keydown', {{ key: '{key}', code: '{key}', bubbles: true }}));
-                    el.dispatchEvent(new KeyboardEvent('keypress', {{ key: '{key}', code: '{key}', bubbles: true }}));
-                    el.dispatchEvent(new KeyboardEvent('keyup', {{ key: '{key}', code: '{key}', bubbles: true }}));
+                    var init = {{ key: '{key}', code: '{code}', bubbles: true, cancelable: true }};
+                    el.dispatchEvent(new KeyboardEvent('keydown', init));
+                    el.dispatchEvent(new KeyboardEvent('keypress', init));
+                    el.dispatchEvent(new KeyboardEvent('keyup', init));
                 }})()",
                 doc = doc,
                 sel = sel_escaped,
-                key = key_escaped
+                key = key_escaped,
+                code = code_escaped
             );
             page.evaluate(script).await?;
+
+            // Also dispatch a native CDP key event so the browser sees real input
+            // (e.g. form submission on Enter, Tab navigation). Only at the top
+            // frame — nested-frame native key targeting requires execution
+            // context resolution that chromiumoxide doesn't expose simply.
+            if frame.is_none() {
+                use chromiumoxide::cdp::browser_protocol::input::{
+                    DispatchKeyEventParams, DispatchKeyEventType,
+                };
+                let key_str = key.clone();
+                let code_str = key_to_code(key);
+                let down = DispatchKeyEventParams::builder()
+                    .r#type(DispatchKeyEventType::KeyDown)
+                    .key(key_str.clone())
+                    .code(code_str.clone())
+                    .build()
+                    .map_err(|e| anyhow!("Failed to build key down event: {:?}", e))?;
+                page.execute(down).await?;
+                let up = DispatchKeyEventParams::builder()
+                    .r#type(DispatchKeyEventType::KeyUp)
+                    .key(key_str)
+                    .code(code_str)
+                    .build()
+                    .map_err(|e| anyhow!("Failed to build key up event: {:?}", e))?;
+                page.execute(up).await?;
+            }
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
@@ -413,6 +470,13 @@ pub async fn exec_test_action(
         }
 
         TestAction::Save(SaveAction { save, .. }) => {
+            // Validate save name doesn't contain path separators
+            if save.contains('/') || save.contains('\\') || save.contains("..") {
+                anyhow::bail!(
+                    "Invalid save name '{}': must not contain path separators or '..'",
+                    save
+                );
+            }
             eprintln!("    Saving screenshot: {}", save);
 
             save_screenshot(
@@ -504,7 +568,7 @@ pub async fn exec_test_action(
                     "(() => {{
                         var el = {doc}.querySelector('{sel}');
                         for (var i = 0; i < el.options.length; i++) {{
-                            if (el.options[i].text === '{lbl}') {{
+                            if (el.options[i].text.trim() === '{lbl}'.trim()) {{
                                 el.options[i].selected = true;
                             }} else {{
                                 el.options[i].selected = false;

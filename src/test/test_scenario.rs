@@ -354,9 +354,29 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
         let content = std::fs::read_to_string(&state_path)?;
         let state: serde_json::Value = serde_json::from_str(&content)?;
 
+        // Warn if state has unexpected shape
+        if let Some(c) = state.get("cookies") {
+            if !c.is_array() {
+                eprintln!(
+                    "    {} State '{}': 'cookies' is not an array; ignoring",
+                    "WARNING:".yellow(),
+                    name
+                );
+            }
+        }
+        if let Some(ls) = state.get("localStorage") {
+            if !ls.is_object() {
+                eprintln!(
+                    "    {} State '{}': 'localStorage' is not an object; ignoring",
+                    "WARNING:".yellow(),
+                    name
+                );
+            }
+        }
+
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
-            use chromiumoxide::cdp::browser_protocol::network::CookieParam;
+            use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite};
             for cookie in cookies {
                 if let (Some(name), Some(value)) = (
                     cookie.get("name").and_then(|v| v.as_str()),
@@ -376,6 +396,16 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
                     if let Some(http_only) = cookie.get("httpOnly").and_then(|v| v.as_bool()) {
                         param = param.http_only(http_only);
                     }
+                    if let Some(expires) = cookie.get("expires").and_then(|v| v.as_f64()) {
+                        use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
+                        param = param.expires(TimeSinceEpoch::new(expires));
+                    }
+                    if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str()) {
+                        if let Some(ss) = parse_same_site(same_site) {
+                            param = param.same_site(ss);
+                        }
+                    }
+                    let _ = CookieSameSite::Strict; // ensure import is exercised even if no sameSite
 
                     let cookie_param = param
                         .build()
@@ -399,6 +429,13 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
                     page.evaluate(script).await.map_err(|e| {
                         anyhow!("Failed to restore localStorage key '{}': {:?}", key, e)
                     })?;
+                } else {
+                    eprintln!(
+                        "    {} State '{}': localStorage entry '{}' is not a string; skipping",
+                        "WARNING:".yellow(),
+                        name,
+                        key
+                    );
                 }
             }
         }
@@ -422,7 +459,7 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
 
-    use chromiumoxide::cdp::browser_protocol::network::CookieParam;
+    use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite};
     for cookie in &cookies {
         if let (Some(name), Some(value)) = (
             cookie.get("name").and_then(|v| v.as_str()),
@@ -436,6 +473,22 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
             if let Some(path) = cookie.get("path").and_then(|v| v.as_str()) {
                 param = param.path(path);
             }
+            if let Some(secure) = cookie.get("secure").and_then(|v| v.as_bool()) {
+                param = param.secure(secure);
+            }
+            if let Some(http_only) = cookie.get("httpOnly").and_then(|v| v.as_bool()) {
+                param = param.http_only(http_only);
+            }
+            if let Some(expires) = cookie.get("expires").and_then(|v| v.as_f64()) {
+                use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
+                param = param.expires(TimeSinceEpoch::new(expires));
+            }
+            if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str()) {
+                if let Some(ss) = parse_same_site(same_site) {
+                    param = param.same_site(ss);
+                }
+            }
+            let _ = CookieSameSite::Strict;
 
             let cookie_param = param
                 .build()
@@ -447,6 +500,19 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
     }
 
     Ok(())
+}
+
+/// Parse a SameSite string from cookie JSON into the CDP enum.
+fn parse_same_site(
+    s: &str,
+) -> Option<chromiumoxide::cdp::browser_protocol::network::CookieSameSite> {
+    use chromiumoxide::cdp::browser_protocol::network::CookieSameSite;
+    match s {
+        "Strict" | "strict" => Some(CookieSameSite::Strict),
+        "Lax" | "lax" => Some(CookieSameSite::Lax),
+        "None" | "none" => Some(CookieSameSite::None),
+        _ => None,
+    }
 }
 
 /// Apply CSS override from file if configured.
@@ -485,14 +551,16 @@ async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfi
 async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> Result<()> {
     use crate::test::actionability::escape_css_rule;
     let safe_selector = escape_css_rule(selector);
+    let css_text = format!("{} {{ {} }}", safe_selector, rule);
+    let css_json = serde_json::to_string(&css_text)?;
     let script = format!(
         "(() => {{
             var style = document.createElement('style');
             style.type = 'text/css';
-            style.innerHTML = '{} {{ {} }}';
+            style.textContent = {};
             document.head.appendChild(style);
         }})()",
-        safe_selector, rule
+        css_json
     );
     page.evaluate(script).await?;
     Ok(())

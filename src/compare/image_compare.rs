@@ -9,6 +9,10 @@ use rgb::RGBA8;
 pub struct CompareResult {
     pub is_same_dimensions: bool,
     pub dimension_difference: (i64, i64),
+    pub ref_width: usize,
+    pub ref_height: usize,
+    pub test_width: usize,
+    pub test_height: usize,
     pub raw_mis_match_percentage: f64,
     pub mis_match_percentage: String,
     pub analysis_time_ms: u128,
@@ -57,6 +61,10 @@ pub fn compare_images(
             CompareResult {
                 is_same_dimensions: false,
                 dimension_difference,
+                ref_width: ref_w,
+                ref_height: ref_h,
+                test_width: test_w,
+                test_height: test_h,
                 raw_mis_match_percentage: 100.0,
                 mis_match_percentage: "100.00".to_string(),
                 analysis_time_ms: elapsed,
@@ -120,6 +128,10 @@ pub fn compare_images(
         CompareResult {
             is_same_dimensions: true,
             dimension_difference,
+            ref_width: ref_w,
+            ref_height: ref_h,
+            test_width: test_w,
+            test_height: test_h,
             raw_mis_match_percentage: raw_mis_match,
             mis_match_percentage: format!("{:.2}", raw_mis_match),
             analysis_time_ms: elapsed,

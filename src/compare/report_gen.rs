@@ -192,11 +192,11 @@ pub fn generate_comparison_report(
                         diff: Some(build_diff(&result)),
                         engine_error_msg: if !result.is_same_dimensions {
                             Some(format!(
-                                "Dimensions differ: {}x{} vs {}x{}",
-                                result.dimension_difference.0,
-                                result.dimension_difference.1,
-                                result.dimension_difference.0,
-                                result.dimension_difference.1
+                                "Dimensions differ: reference {}x{} vs test {}x{}",
+                                result.ref_width,
+                                result.ref_height,
+                                result.test_width,
+                                result.test_height
                             ))
                         } else {
                             None

@@ -323,8 +323,8 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 
     // 10. Write optimized PNG back to disk
     // Overwrite the original file
-    // Fail silently if write fails
-    std::fs::write(path, optimized_buffer).ok();
+    std::fs::write(path, optimized_buffer)
+        .map_err(|e| anyhow!("Failed to write optimized PNG {}: {}", path.display(), e))?;
 
     Ok(OptimizeResult::Pair(
         width,

@@ -163,6 +163,9 @@ pub async fn launch_browser(
         }
     }
 
+    // All retries exhausted — clean up the leaked user-data directory before failing.
+    let _ = std::fs::remove_dir_all(&user_data_dir);
+
     Err(anyhow!(
         "Cannot launch browser after {} attempts: {:?}",
         MAX_LAUNCH_RETRIES,

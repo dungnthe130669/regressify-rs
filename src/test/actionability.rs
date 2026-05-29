@@ -212,6 +212,8 @@ pub async fn wait_for_stable(
     let start = std::time::Instant::now();
 
     let mut prev_rect: Option<(f64, f64, f64, f64)> = None;
+    let mut stable_streak: u32 = 0;
+    const REQUIRED_STABLE_STREAK: u32 = 2;
 
     loop {
         let result = page.evaluate(script.as_str()).await?;
@@ -229,9 +231,16 @@ pub async fn wait_for_stable(
                 && (w - pw).abs() < 1.0
                 && (h - ph).abs() < 1.0
             {
-                return Ok(());
+                stable_streak += 1;
+                if stable_streak >= REQUIRED_STABLE_STREAK {
+                    return Ok(());
+                }
+            } else {
+                stable_streak = 0;
             }
             prev_rect = Some((x, y, w, h));
+        } else {
+            stable_streak = 0;
         }
 
         if start.elapsed() > timeout {

@@ -67,18 +67,37 @@ pub fn process_test_suite(
             continue;
         }
 
-        let sub_dir_name = entry.file_name().into_string().unwrap();
+        let Ok(sub_dir_name) = entry.file_name().into_string() else {
+            eprintln!(
+                "{}",
+                format!(
+                    "Skipping bitmap subdirectory with non-UTF8 name: {:?}",
+                    entry.file_name()
+                )
+                .yellow()
+            );
+            continue;
+        };
 
         // Regressify uses both forward and backslashes in config
         let win_path = format!("bitmaps_test\\\\{}", sub_dir_name);
         let unix_path = format!("bitmaps_test/{}", sub_dir_name);
 
         if !config_text.contains(&unix_path) && !config_text.contains(&win_path) {
-            fs::remove_dir_all(&path).ok();
-            eprintln!(
-                "{}",
-                format!("Removed unreferenced snapshot directory: {:?}", path).yellow()
-            );
+            match fs::remove_dir_all(&path) {
+                Ok(_) => eprintln!(
+                    "{}",
+                    format!("Removed unreferenced snapshot directory: {:?}", path).yellow()
+                ),
+                Err(e) => eprintln!(
+                    "{}",
+                    format!(
+                        "Failed to remove unreferenced snapshot directory {:?}: {}",
+                        path, e
+                    )
+                    .red()
+                ),
+            }
         } else {
             let report_json_path = path.join("report.json");
             if report_json_path.exists() {
@@ -93,9 +112,21 @@ pub fn process_test_suite(
                         if let Some(img_rel_path) = img_path_str {
                             let full_path = bitmap_test_dir.join(img_rel_path);
                             if full_path.exists() && !hashes.contains_key(img_rel_path) {
-                                let content = fs::read(&full_path).unwrap_or_default();
-                                let hash = get_asset_version(&content, 20);
-                                hashes.insert(img_rel_path.clone(), hash.clone());
+                                match fs::read(&full_path) {
+                                    Ok(content) => {
+                                        let hash = get_asset_version(&content, 20);
+                                        hashes.insert(img_rel_path.clone(), hash.clone());
+                                    }
+                                    Err(e) => eprintln!(
+                                        "{}",
+                                        format!(
+                                            "Failed to read {} for hashing: {}",
+                                            full_path.display(),
+                                            e
+                                        )
+                                        .yellow()
+                                    ),
+                                }
                             }
                         }
                     };
@@ -133,7 +164,7 @@ pub fn process_test_suite(
                         }
                     }
                 }
-                fs::write(&config_path, &modified_config_text).ok();
+                fs::write(&config_path, &modified_config_text)?;
 
                 // Handle index.html config.js versioning
                 let config_hash = get_asset_version(modified_config_text.as_bytes(), 20);
