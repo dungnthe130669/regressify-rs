@@ -2,4 +2,7 @@
 *.log
 *.tmp
 ./backstop
-./regressify
+/.regressify/
+/.regressify__int/
+bitmaps_test/
+html_report/
