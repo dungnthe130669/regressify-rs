@@ -99,6 +99,8 @@ fi
 
 PACKAGE_7Z="$PACKAGE_NAME-$TARGET.7z"
 PACKAGE_ZIP="$PACKAGE_NAME-$TARGET.zip"
+PACKAGE_7Z_SHA256="$PACKAGE_7Z.sha256"
+PACKAGE_ZIP_SHA256="$PACKAGE_ZIP.sha256"
 
 # If package is already exists, remove it
 if [ -f $PACKAGE_7Z ]
@@ -109,6 +111,16 @@ fi
 if [ -f $PACKAGE_ZIP ]
 then
   rm $PACKAGE_ZIP
+fi
+
+if [ -f $PACKAGE_7Z_SHA256 ]
+then
+  rm $PACKAGE_7Z_SHA256
+fi
+
+if [ -f $PACKAGE_ZIP_SHA256 ]
+then
+  rm $PACKAGE_ZIP_SHA256
 fi
 
 if [ -n "$PASSWORD" ]
@@ -129,6 +141,24 @@ else
   7z a $PACKAGE_ZIP $asset -mx5
 fi
 
+create_sha256_file() {
+  file=$1
+
+  if command -v sha256sum &> /dev/null
+  then
+    sha256sum "$file" > "$file.sha256"
+  elif command -v shasum &> /dev/null
+  then
+    shasum -a 256 "$file" > "$file.sha256"
+  else
+    echo "sha256sum or shasum must be available"
+    exit 1
+  fi
+}
+
+create_sha256_file "$PACKAGE_7Z"
+create_sha256_file "$PACKAGE_ZIP"
+
 # Check if $TOKEN is set
 if [ -n "$TOKEN" ]
 then
@@ -139,7 +169,9 @@ then
 
   # Upload the release
   gh release upload $tag $PACKAGE_7Z --repo $REPO --clobber
+  gh release upload $tag $PACKAGE_7Z_SHA256 --repo $REPO --clobber
   gh release upload $tag $PACKAGE_ZIP --repo $REPO --clobber
+  gh release upload $tag $PACKAGE_ZIP_SHA256 --repo $REPO --clobber
 else
   echo "TOKEN must be set"
 fi
