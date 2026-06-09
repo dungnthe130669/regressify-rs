@@ -48,13 +48,13 @@ jobs:
         target: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
         include: ${{ fromJson(needs.set-matrix.outputs.include) }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: release
           submodules: recursive
 
       - name: ⚡ Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/bin/
@@ -72,7 +72,7 @@ jobs:
         shell: bash
 
       - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
+        uses: microsoft/setup-msbuild@v3
         if: ${{ contains(matrix.os, 'windows') }}
 
       - name: Build artifacts
