@@ -129,15 +129,14 @@ pub async fn exec_test_scenario(
 }
 
 /// Load and filter the viewports configured for this scenario.
-/// Viewport definitions live in a YAML file resolved relative to `visual_tests/`
-/// (default `common/_viewports.yaml`). Returns an empty vec when no viewport file
-/// exists, which means "capture once at the default browser size".
+/// Viewport definitions live in a YAML file resolved relative to the workspace
+/// root (default `common/_viewports.yaml`). Returns an empty vec when no viewport
+/// file exists, which means "capture once at the default browser size".
 fn resolve_scenario_viewports(
     resolved: &ResolvedConfig,
 ) -> Result<Vec<config::viewports::ViewportDef>> {
     let root_dir = common::ROOT_DIR.get_required()?;
-    let visual_tests_dir = root_dir.join("visual_tests");
-    let viewports_path = visual_tests_dir.join(&resolved.viewports_path);
+    let viewports_path = root_dir.join(&resolved.viewports_path);
     let all = config::viewports::load_viewports(&viewports_path)?;
     if all.is_empty() {
         return Ok(Vec::new());

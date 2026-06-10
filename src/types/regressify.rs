@@ -59,6 +59,8 @@ pub struct TestSuite {
     pub use_css_override: Option<bool>,
 
     pub viewport_names: Option<Selectors>,
+
+    pub viewports_path: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

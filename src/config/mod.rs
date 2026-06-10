@@ -215,9 +215,10 @@ pub fn resolve_config(
             .or(selectors_to_vec(&suite.viewport_names))
             .or(selectors_to_vec(&workspace.viewport_names)),
 
-        viewports_path: workspace
+        viewports_path: suite
             .viewports_path
             .clone()
+            .or(workspace.viewports_path.clone())
             .unwrap_or(defaults.viewports_path),
 
         element_timeout_ms: workspace
