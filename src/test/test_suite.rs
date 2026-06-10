@@ -82,6 +82,24 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
 }
 
 /// Execute a single scenario: launch browser, run scenario, close browser.
+/// Categorized result of running a single scenario.
+///
+/// A visual regression tool must keep running (and exit zero) when the *page
+/// under test* misbehaves — timeouts, missing elements, navigation errors are
+/// expected outcomes that should surface in the comparison report, not crash
+/// the run. Only failures of our own infrastructure (launching the browser)
+/// should fail the command.
+pub enum ScenarioOutcome {
+    /// Scenario captured successfully.
+    Passed,
+    /// The page under test caused the failure (timeout, element not found,
+    /// navigation error, etc.). Expected — must NOT fail the command.
+    PageFailed(anyhow::Error),
+    /// Our infrastructure failed (browser could not be launched). Must fail
+    /// the command with a non-zero exit code.
+    InfraFailed(anyhow::Error),
+}
+
 pub async fn exec_single_scenario(
     exe_path: &Option<PathBuf>,
     test_suite: &TestSuite,
@@ -89,11 +107,18 @@ pub async fn exec_single_scenario(
     all_scenarios: &[TestScenario],
     workspace_config: &WorkspaceConfig,
     replacement_profile: &[UrlReplacement],
-) -> Result<()> {
-    let (mut browser, handle) = launch_browser(exe_path)
-        .await
-        .map_err(|e| anyhow!("Failed to launch browser: {:?}", e))?;
+) -> ScenarioOutcome {
+    // Browser launch is infrastructure — if this fails the environment is
+    // broken (e.g. Chrome not installed/launchable), so it must fail the run.
+    let (mut browser, handle) = match launch_browser(exe_path).await {
+        Ok(pair) => pair,
+        Err(e) => {
+            return ScenarioOutcome::InfraFailed(anyhow!("Failed to launch browser: {:?}", e));
+        }
+    };
 
+    // Everything from here on interacts with the page under test. Any error is
+    // a page-level failure that must not fail the command.
     let scenario_result = exec_test_scenario(
         &browser,
         test_suite,
@@ -124,5 +149,8 @@ pub async fn exec_single_scenario(
         }
     }
 
-    scenario_result
+    match scenario_result {
+        Ok(()) => ScenarioOutcome::Passed,
+        Err(e) => ScenarioOutcome::PageFailed(e),
+    }
 }

@@ -16,10 +16,21 @@ use crate::{
     snapshot,
     test::{
         browsers::fetcher,
-        test_suite::{exec_single_scenario, parse_test_suite},
+        test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
     types::{TestSuite, TestSuiteFormat, TestSuiteInput, UrlReplacement},
 };
+
+/// Outcome of a spawned scenario task, used to decide the process exit code.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TaskStatus {
+    /// Scenario captured successfully.
+    Passed,
+    /// Page-level failure (timeout, not found, ...) — does NOT fail the command.
+    PageFailed,
+    /// Infrastructure failure (browser launch) — fails the command.
+    InfraFailed,
+}
 
 /// Discover available test suite files in the visual_tests/ directory.
 fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Vec<TestSuiteInput> {
@@ -197,9 +208,14 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             let handle = tokio::spawn(async move {
                 let Ok(_permit) = sem.acquire().await else {
                     eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
-                    return false;
+                    return TaskStatus::InfraFailed;
                 };
-                if let Err(e) = exec_single_scenario(
+                let label = suite.scenarios[scenario_idx]
+                    .label
+                    .as_deref()
+                    .or(suite.scenarios[scenario_idx].id.as_deref())
+                    .unwrap_or("unknown");
+                match exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
@@ -209,30 +225,43 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                 )
                 .await
                 {
-                    let label = suite.scenarios[scenario_idx]
-                        .label
-                        .as_deref()
-                        .or(suite.scenarios[scenario_idx].id.as_deref())
-                        .unwrap_or("unknown");
-                    eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
-                    return false;
+                    ScenarioOutcome::Passed => TaskStatus::Passed,
+                    ScenarioOutcome::PageFailed(e) => {
+                        // Page errors (timeout, not found, ...) are expected for a
+                        // visual regression tool — log and continue, the result is
+                        // reflected in the comparison report.
+                        eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                        TaskStatus::PageFailed
+                    }
+                    ScenarioOutcome::InfraFailed(e) => {
+                        eprintln!(
+                            "  {} Scenario '{}' failed (infrastructure): {:?}",
+                            "ERROR:".red(),
+                            label,
+                            e
+                        );
+                        TaskStatus::InfraFailed
+                    }
                 }
-                true
             });
 
             handles.push(handle);
         }
     }
 
-    // Wait for all scenarios to complete
-    let mut scenario_failures = 0usize;
+    // Wait for all scenarios to complete. Only infrastructure failures (browser
+    // launch) fail the command; page-level failures are reported but tolerated.
+    let mut page_failures = 0usize;
+    let mut infra_failures = 0usize;
     for handle in handles {
         match handle.await {
-            Ok(true) => {}
-            Ok(false) => scenario_failures += 1,
+            Ok(TaskStatus::Passed) => {}
+            Ok(TaskStatus::PageFailed) => page_failures += 1,
+            Ok(TaskStatus::InfraFailed) => infra_failures += 1,
             Err(e) => {
-                eprintln!("Task failed: {:?}", e);
-                scenario_failures += 1;
+                // A panicked task is a bug in our code, not the page under test.
+                eprintln!("Task panicked: {:?}", e);
+                infra_failures += 1;
             }
         }
     }
@@ -260,11 +289,27 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     generate_snapshot_reports()?;
 
-    if scenario_failures > 0 || comparison_failures > 0 {
+    if page_failures > 0 {
+        eprintln!(
+            "{} scenario(s) failed due to page errors (e.g. timeout, not found). \
+             These are reported in the comparison and do not fail the run.",
+            page_failures.to_string().yellow()
+        );
+    }
+    if comparison_failures > 0 {
+        eprintln!(
+            "{} suite comparison(s) could not be generated.",
+            comparison_failures.to_string().yellow()
+        );
+    }
+
+    // Only infrastructure failures (browser could not be launched) fail the
+    // command. Page errors and visual differences are expected results of a
+    // regression run and must not produce a non-zero exit.
+    if infra_failures > 0 {
         anyhow::bail!(
-            "Test run failed: {} scenario(s) failed, {} suite comparison(s) failed",
-            scenario_failures,
-            comparison_failures
+            "Test run failed: {} scenario(s) could not launch the browser",
+            infra_failures
         );
     }
 
@@ -352,9 +397,14 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             let handle = tokio::spawn(async move {
                 let Ok(_permit) = sem.acquire().await else {
                     eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
-                    return false;
+                    return TaskStatus::InfraFailed;
                 };
-                if let Err(e) = exec_single_scenario(
+                let label = suite.scenarios[scenario_idx]
+                    .label
+                    .as_deref()
+                    .or(suite.scenarios[scenario_idx].id.as_deref())
+                    .unwrap_or("unknown");
+                match exec_single_scenario(
                     &exe_path,
                     &suite,
                     &suite.scenarios[scenario_idx],
@@ -364,38 +414,61 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                 )
                 .await
                 {
-                    let label = suite.scenarios[scenario_idx]
-                        .label
-                        .as_deref()
-                        .or(suite.scenarios[scenario_idx].id.as_deref())
-                        .unwrap_or("unknown");
-                    eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
-                    return false;
+                    ScenarioOutcome::Passed => TaskStatus::Passed,
+                    ScenarioOutcome::PageFailed(e) => {
+                        // Page errors (timeout, not found, ...) are expected for a
+                        // visual regression tool — log and continue. The scenario
+                        // simply won't produce a reference screenshot this run.
+                        eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                        TaskStatus::PageFailed
+                    }
+                    ScenarioOutcome::InfraFailed(e) => {
+                        eprintln!(
+                            "  {} Scenario '{}' failed (infrastructure): {:?}",
+                            "ERROR:".red(),
+                            label,
+                            e
+                        );
+                        TaskStatus::InfraFailed
+                    }
                 }
-                true
             });
 
             handles.push(handle);
         }
     }
 
-    // Wait for all scenarios to complete
-    let mut scenario_failures = 0usize;
+    // Wait for all scenarios to complete. Only infrastructure failures (browser
+    // launch) fail the command; page-level failures are reported but tolerated.
+    let mut page_failures = 0usize;
+    let mut infra_failures = 0usize;
     for handle in handles {
         match handle.await {
-            Ok(true) => {}
-            Ok(false) => scenario_failures += 1,
+            Ok(TaskStatus::Passed) => {}
+            Ok(TaskStatus::PageFailed) => page_failures += 1,
+            Ok(TaskStatus::InfraFailed) => infra_failures += 1,
             Err(e) => {
-                eprintln!("Task failed: {:?}", e);
-                scenario_failures += 1;
+                // A panicked task is a bug in our code, not the page under test.
+                eprintln!("Task panicked: {:?}", e);
+                infra_failures += 1;
             }
         }
     }
 
-    if scenario_failures > 0 {
+    if page_failures > 0 {
+        eprintln!(
+            "{} scenario(s) failed due to page errors (e.g. timeout, not found). \
+             No reference screenshot was captured for them; the run continues.",
+            page_failures.to_string().yellow()
+        );
+    }
+
+    // Only infrastructure failures (browser could not be launched) fail the
+    // command. Page errors must not produce a non-zero exit.
+    if infra_failures > 0 {
         anyhow::bail!(
-            "Reference capture failed: {} scenario(s) failed",
-            scenario_failures
+            "Reference capture failed: {} scenario(s) could not launch the browser",
+            infra_failures
         );
     }
 
