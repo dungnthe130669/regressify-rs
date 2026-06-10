@@ -72,6 +72,7 @@ const MAX_LAUNCH_RETRIES: u32 = 2;
 
 pub async fn launch_browser(
     exe_path: &Option<PathBuf>,
+    log_prefix: &str,
 ) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
     let debug = common::DEBUG.get_bool();
 
@@ -122,9 +123,13 @@ pub async fn launch_browser(
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
     if let Some(ref path) = resolved {
-        eprintln!("Launching browser (executable: {})...", path.display());
+        eprintln!(
+            "{} Launching browser (executable: {})...",
+            log_prefix,
+            path.display()
+        );
     } else {
-        eprintln!("Launching browser (auto-detected)...");
+        eprintln!("{} Launching browser (auto-detected)...", log_prefix);
     }
 
     let mut last_err = None;
@@ -151,8 +156,8 @@ pub async fn launch_browser(
             }
             Err(e) => {
                 eprintln!(
-                    "Browser launch attempt {}/{} failed: {:?}",
-                    attempt, MAX_LAUNCH_RETRIES, e
+                    "{} Browser launch attempt {}/{} failed: {:?}",
+                    log_prefix, attempt, MAX_LAUNCH_RETRIES, e
                 );
                 last_err = Some(e);
                 if attempt < MAX_LAUNCH_RETRIES {

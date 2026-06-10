@@ -1,9 +1,11 @@
 use std::fs;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
 use tokio::sync::Semaphore;
+use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
 use walkdir::WalkDir;
 
@@ -18,7 +20,7 @@ use crate::{
         browsers::fetcher,
         capture,
         test_scenario::{
-            ScenarioRequest, make_log_prefix, scenario_capture_count, scenario_capture_prefixes,
+            ScenarioRequest, make_log_prefix, scenario_capture_prefixes, scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
@@ -34,6 +36,129 @@ enum TaskStatus {
     PageFailed,
     /// Infrastructure failure (browser launch) — fails the command.
     InfraFailed,
+}
+
+/// One independent capture unit: a single scenario at a single viewport, with a
+/// dedicated global index. Built upfront (TS/BackstopJS-style) so every
+/// scenario/viewport pair runs as its own task with its own browser and index.
+struct CaptureJob {
+    suite: Arc<TestSuite>,
+    scenario_idx: usize,
+    viewport: Option<config::viewports::ViewportDef>,
+    index: usize,
+}
+
+/// Flatten every scenario/viewport pair across all parsed suites into a flat list
+/// of independent capture jobs, assigning each a 1-based dedicated index. The
+/// total number of jobs is simply the returned vec's length.
+fn build_capture_jobs(
+    parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
+    workspace_config: &config::WorkspaceConfig,
+) -> Vec<CaptureJob> {
+    let mut jobs = Vec::new();
+    for (_input, suite) in parsed_suites {
+        for scenario_idx in 0..suite.scenarios.len() {
+            let viewports =
+                scenario_capture_viewports(workspace_config, suite, &suite.scenarios[scenario_idx]);
+            for viewport in viewports {
+                jobs.push(CaptureJob {
+                    suite: suite.clone(),
+                    scenario_idx,
+                    viewport,
+                    index: 0,
+                });
+            }
+        }
+    }
+    for (i, job) in jobs.iter_mut().enumerate() {
+        job.index = i + 1;
+    }
+    jobs
+}
+
+/// Spawn one task per capture job. Each task acquires a concurrency permit,
+/// launches its own browser, and runs exactly one scenario/viewport capture with
+/// its dedicated index. A failure in one capture only fails that task; siblings
+/// (including other viewports of the same scenario) run independently.
+fn spawn_capture_jobs(
+    jobs: Vec<CaptureJob>,
+    semaphore: &Arc<Semaphore>,
+    exe_path: &Arc<Option<PathBuf>>,
+    workspace_config: &Arc<config::WorkspaceConfig>,
+    active_replacements: &Arc<Vec<UrlReplacement>>,
+) -> Vec<JoinHandle<TaskStatus>> {
+    let total = jobs.len();
+    let mut handles = Vec::with_capacity(total);
+
+    for job in jobs {
+        let CaptureJob {
+            suite,
+            scenario_idx,
+            viewport,
+            index,
+        } = job;
+        let sem = semaphore.clone();
+        let exe_path = exe_path.clone();
+        let ws_config = workspace_config.clone();
+        let replacements = active_replacements.clone();
+
+        let handle = tokio::spawn(async move {
+            let Ok(_permit) = sem.acquire().await else {
+                eprintln!("  {} Capture semaphore closed", "ERROR:".red());
+                return TaskStatus::InfraFailed;
+            };
+            let log_prefix = make_log_prefix(index, total);
+            let label = suite.scenarios[scenario_idx]
+                .label
+                .as_deref()
+                .or(suite.scenarios[scenario_idx].id.as_deref())
+                .unwrap_or("unknown");
+            match exec_single_scenario(
+                &exe_path,
+                ScenarioRequest {
+                    test_suite: &suite,
+                    scenario: &suite.scenarios[scenario_idx],
+                    all_scenarios: &suite.scenarios,
+                    workspace_config: &ws_config,
+                    replacement_profile: &replacements,
+                    viewport: viewport.as_ref(),
+                    index,
+                    total,
+                },
+            )
+            .await
+            {
+                ScenarioOutcome::Passed => TaskStatus::Passed,
+                ScenarioOutcome::PageFailed(e) => {
+                    // Page errors (timeout, not found, ...) are expected for a
+                    // visual regression tool — log and continue, the result is
+                    // reflected in the comparison report.
+                    eprintln!(
+                        "{} {} Capture '{}' failed: {:?}",
+                        log_prefix,
+                        "ERROR:".red(),
+                        label,
+                        e
+                    );
+                    TaskStatus::PageFailed
+                }
+                ScenarioOutcome::InfraFailed(e) => {
+                    eprintln!(
+                        "{} {} Capture '{}' failed (infrastructure): {:?}",
+                        log_prefix,
+                        "ERROR:".red(),
+                        label,
+                        e
+                    );
+                    TaskStatus::InfraFailed
+                }
+            }
+        });
+
+        handles.push(handle);
+    }
+
+    handles
 }
 
 /// Discover available test suite files in the visual_tests/ directory.
@@ -197,23 +322,6 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let exe_path = Arc::new(exe_path);
     let workspace_config = Arc::new(workspace_config);
     let active_replacements = Arc::new(active_replacements);
-    let mut handles = Vec::new();
-
-    // Precompute the global log index/total over all scenario/viewport pairs so
-    // logs from scenarios running in parallel can be filtered. Each
-    // scenario/viewport pair is counted independently (matching the TS version).
-    let mut base_indices: Vec<usize> = Vec::new();
-    let mut scenario_total = 0usize;
-    for (_input, suite) in &parsed_suites {
-        for scenario_idx in 0..suite.scenarios.len() {
-            base_indices.push(scenario_total + 1);
-            scenario_total += scenario_capture_count(
-                workspace_config.as_ref(),
-                suite,
-                &suite.scenarios[scenario_idx],
-            );
-        }
-    }
 
     // Write the per-suite report ordering manifest so the comparison report lists
     // screenshots in scenario-then-viewport order (matching the TS/BackstopJS
@@ -237,73 +345,17 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         }
     }
 
-    let mut flat_idx = 0usize;
-    for (_input, suite) in &parsed_suites {
-        for scenario_idx in 0..suite.scenarios.len() {
-            let base_index = base_indices[flat_idx];
-            let total = scenario_total;
-            flat_idx += 1;
-            let sem = semaphore.clone();
-            let suite = suite.clone();
-            let exe_path = exe_path.clone();
-            let ws_config = workspace_config.clone();
-            let replacements = active_replacements.clone();
-
-            let handle = tokio::spawn(async move {
-                let Ok(_permit) = sem.acquire().await else {
-                    eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
-                    return TaskStatus::InfraFailed;
-                };
-                let log_prefix = make_log_prefix(base_index, total);
-                let label = suite.scenarios[scenario_idx]
-                    .label
-                    .as_deref()
-                    .or(suite.scenarios[scenario_idx].id.as_deref())
-                    .unwrap_or("unknown");
-                match exec_single_scenario(
-                    &exe_path,
-                    ScenarioRequest {
-                        test_suite: &suite,
-                        scenario: &suite.scenarios[scenario_idx],
-                        all_scenarios: &suite.scenarios,
-                        workspace_config: &ws_config,
-                        replacement_profile: &replacements,
-                        base_index,
-                        total,
-                    },
-                )
-                .await
-                {
-                    ScenarioOutcome::Passed => TaskStatus::Passed,
-                    ScenarioOutcome::PageFailed(e) => {
-                        // Page errors (timeout, not found, ...) are expected for a
-                        // visual regression tool — log and continue, the result is
-                        // reflected in the comparison report.
-                        eprintln!(
-                            "{} {} Scenario '{}' failed: {:?}",
-                            log_prefix,
-                            "ERROR:".red(),
-                            label,
-                            e
-                        );
-                        TaskStatus::PageFailed
-                    }
-                    ScenarioOutcome::InfraFailed(e) => {
-                        eprintln!(
-                            "{} {} Scenario '{}' failed (infrastructure): {:?}",
-                            log_prefix,
-                            "ERROR:".red(),
-                            label,
-                            e
-                        );
-                        TaskStatus::InfraFailed
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-    }
+    // Flatten every scenario/viewport pair into an independent capture job (own
+    // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
+    // model where pairs are scaffolded upfront and run independently.
+    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref());
+    let handles = spawn_capture_jobs(
+        jobs,
+        &semaphore,
+        &exe_path,
+        &workspace_config,
+        &active_replacements,
+    );
 
     // Wait for all scenarios to complete. Only infrastructure failures (browser
     // launch) fail the command; page-level failures are reported but tolerated.
@@ -440,91 +492,18 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let exe_path = Arc::new(exe_path);
     let workspace_config = Arc::new(workspace_config);
     let active_replacements = Arc::new(Vec::<UrlReplacement>::new());
-    let mut handles = Vec::new();
 
-    // Precompute the global log index/total over all scenario/viewport pairs so
-    // logs from scenarios running in parallel can be filtered. Each
-    // scenario/viewport pair is counted independently (matching the TS version).
-    let mut base_indices: Vec<usize> = Vec::new();
-    let mut scenario_total = 0usize;
-    for (_input, suite) in &parsed_suites {
-        for scenario_idx in 0..suite.scenarios.len() {
-            base_indices.push(scenario_total + 1);
-            scenario_total += scenario_capture_count(
-                workspace_config.as_ref(),
-                suite,
-                &suite.scenarios[scenario_idx],
-            );
-        }
-    }
-
-    let mut flat_idx = 0usize;
-    for (_input, suite) in &parsed_suites {
-        for scenario_idx in 0..suite.scenarios.len() {
-            let base_index = base_indices[flat_idx];
-            let total = scenario_total;
-            flat_idx += 1;
-            let sem = semaphore.clone();
-            let suite = suite.clone();
-            let exe_path = exe_path.clone();
-            let ws_config = workspace_config.clone();
-            let replacements = active_replacements.clone();
-
-            let handle = tokio::spawn(async move {
-                let Ok(_permit) = sem.acquire().await else {
-                    eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
-                    return TaskStatus::InfraFailed;
-                };
-                let log_prefix = make_log_prefix(base_index, total);
-                let label = suite.scenarios[scenario_idx]
-                    .label
-                    .as_deref()
-                    .or(suite.scenarios[scenario_idx].id.as_deref())
-                    .unwrap_or("unknown");
-                match exec_single_scenario(
-                    &exe_path,
-                    ScenarioRequest {
-                        test_suite: &suite,
-                        scenario: &suite.scenarios[scenario_idx],
-                        all_scenarios: &suite.scenarios,
-                        workspace_config: &ws_config,
-                        replacement_profile: &replacements,
-                        base_index,
-                        total,
-                    },
-                )
-                .await
-                {
-                    ScenarioOutcome::Passed => TaskStatus::Passed,
-                    ScenarioOutcome::PageFailed(e) => {
-                        // Page errors (timeout, not found, ...) are expected for a
-                        // visual regression tool — log and continue. The scenario
-                        // simply won't produce a reference screenshot this run.
-                        eprintln!(
-                            "{} {} Scenario '{}' failed: {:?}",
-                            log_prefix,
-                            "ERROR:".red(),
-                            label,
-                            e
-                        );
-                        TaskStatus::PageFailed
-                    }
-                    ScenarioOutcome::InfraFailed(e) => {
-                        eprintln!(
-                            "{} {} Scenario '{}' failed (infrastructure): {:?}",
-                            log_prefix,
-                            "ERROR:".red(),
-                            label,
-                            e
-                        );
-                        TaskStatus::InfraFailed
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-    }
+    // Flatten every scenario/viewport pair into an independent capture job (own
+    // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
+    // model where pairs are scaffolded upfront and run independently.
+    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref());
+    let handles = spawn_capture_jobs(
+        jobs,
+        &semaphore,
+        &exe_path,
+        &workspace_config,
+        &active_replacements,
+    );
 
     // Wait for all scenarios to complete. Only infrastructure failures (browser
     // launch) fail the command; page-level failures are reported but tolerated.

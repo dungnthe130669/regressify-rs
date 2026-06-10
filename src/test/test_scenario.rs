@@ -67,18 +67,24 @@ pub(crate) fn make_log_prefix(index: usize, total: usize) -> String {
     format!("[{index:>width$} of {total}]").yellow().to_string()
 }
 
-/// Count how many independent captures a scenario produces (one per resolved
-/// viewport, or 1 when no viewport file is configured). Each scenario/viewport
-/// pair is counted independently for the global log index/total.
-pub(crate) fn scenario_capture_count(
+/// Resolve the viewports a scenario captures, as a flat list of capture targets.
+/// Returns `[None]` when no viewport file is configured (capture once at the
+/// browser's default size) or one `Some(viewport)` per resolved viewport (in
+/// viewport-file order). Each entry becomes an independent capture job with its
+/// own browser and dedicated log index — mirroring the TS/BackstopJS model where
+/// every scenario/viewport pair is scaffolded upfront and runs independently.
+pub(crate) fn scenario_capture_viewports(
     workspace_config: &WorkspaceConfig,
     test_suite: &TestSuite,
     scenario: &TestScenario,
-) -> usize {
+) -> Vec<Option<config::viewports::ViewportDef>> {
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
-    resolve_scenario_viewports(&resolved)
-        .map(|v| v.len().max(1))
-        .unwrap_or(1)
+    let viewports = resolve_scenario_viewports(&resolved).unwrap_or_default();
+    if viewports.is_empty() {
+        vec![None]
+    } else {
+        viewports.into_iter().map(Some).collect()
+    }
 }
 
 /// Ordered screenshot name prefixes for a scenario — one `<scenario-id>_<viewport>`
@@ -107,8 +113,10 @@ pub(crate) fn scenario_capture_prefixes(
     }
 }
 
-/// Bundled inputs for executing one scenario. Grouping these avoids long
-/// argument lists across `exec_single_scenario` / `exec_test_scenario`.
+/// Bundled inputs for executing one capture (a single scenario/viewport pair).
+/// Grouping these avoids long argument lists across `exec_single_scenario` /
+/// `exec_test_scenario`. Each capture is an independent unit with its own browser
+/// and dedicated `index`, matching the TS/BackstopJS model.
 #[derive(Clone, Copy)]
 pub(crate) struct ScenarioRequest<'a> {
     pub test_suite: &'a TestSuite,
@@ -116,8 +124,10 @@ pub(crate) struct ScenarioRequest<'a> {
     pub all_scenarios: &'a [TestScenario],
     pub workspace_config: &'a WorkspaceConfig,
     pub replacement_profile: &'a [UrlReplacement],
-    /// 1-based index of this scenario's first capture in the global pair count.
-    pub base_index: usize,
+    /// The viewport to capture, or `None` to capture at the browser default size.
+    pub viewport: Option<&'a config::viewports::ViewportDef>,
+    /// 1-based dedicated index of this scenario/viewport pair in the global count.
+    pub index: usize,
     /// Total number of scenario/viewport capture pairs across the whole run.
     pub total: usize,
 }
@@ -141,9 +151,12 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
         all_scenarios,
         workspace_config,
         replacement_profile,
-        base_index,
+        viewport,
+        index,
         total,
     } = req;
+
+    let log_prefix = make_log_prefix(index, total);
 
     let label = scenario
         .label
@@ -153,7 +166,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
 
     eprintln!(
         "{} Executing scenario: {} ({})",
-        make_log_prefix(base_index, total),
+        log_prefix,
         label.cyan(),
         scenario.url
     );
@@ -169,80 +182,34 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
         replacement_profile,
     );
 
-    // Resolve the viewports to capture. When viewport config is present, each
-    // viewport is captured as a separate screenshot (BackstopJS-style) and the
-    // full page lifecycle (navigation + actions) is replayed per viewport so the
-    // layout and interactions reflect that size. With no viewport config we
-    // capture once at the browser's default size (backwards compatible).
-    let viewports = resolve_scenario_viewports(&resolved)?;
-
-    if viewports.is_empty() {
-        let log_prefix = make_log_prefix(base_index, total);
-        run_scenario_capture(
-            browser,
-            CaptureContext {
-                test_suite,
-                scenario,
-                all_scenarios,
-                resolved: &resolved,
-                url: &url,
-                viewport: None,
-                log_prefix: &log_prefix,
-            },
-        )
-        .await?;
-    } else {
-        // Each viewport is an independent capture (BackstopJS-style). A failure
-        // in one viewport (e.g. a timeout) must NOT stop the others from running,
-        // so errors are collected and reported after all viewports execute. Each
-        // failed viewport already gets its own error-placeholder screenshot.
-        // Each scenario/viewport pair is counted independently for the log prefix.
-        let mut failures: Vec<String> = Vec::new();
-        for (i, vp) in viewports.iter().enumerate() {
-            let log_prefix = make_log_prefix(base_index + i, total);
-            eprintln!(
-                "{} Capturing viewport '{}' ({}x{})...",
-                log_prefix,
-                vp.label.cyan(),
-                vp.width,
-                vp.height
-            );
-            if let Err(e) = run_scenario_capture(
-                browser,
-                CaptureContext {
-                    test_suite,
-                    scenario,
-                    all_scenarios,
-                    resolved: &resolved,
-                    url: &url,
-                    viewport: Some(vp),
-                    log_prefix: &log_prefix,
-                },
-            )
-            .await
-            {
-                eprintln!(
-                    "{} {} Viewport '{}' failed: {:?}",
-                    log_prefix,
-                    "ERROR:".red(),
-                    vp.label,
-                    e
-                );
-                failures.push(format!("{}: {:?}", vp.label, e));
-            }
-        }
-
-        if !failures.is_empty() {
-            return Err(anyhow!(
-                "{} of {} viewport(s) failed:\n  {}",
-                failures.len(),
-                viewports.len(),
-                failures.join("\n  ")
-            ));
-        }
+    // This request captures exactly one scenario/viewport pair. When a viewport
+    // is present the full page lifecycle (navigation + actions) is replayed at
+    // that size so layout and interactions reflect it; with no viewport we
+    // capture once at the browser's default size. Each pair is an independent
+    // task (own browser, own index), so a failure here only fails this pair.
+    if let Some(vp) = viewport {
+        eprintln!(
+            "{} Capturing viewport '{}' ({}x{})...",
+            log_prefix,
+            vp.label.cyan(),
+            vp.width,
+            vp.height
+        );
     }
 
-    Ok(())
+    run_scenario_capture(
+        browser,
+        CaptureContext {
+            test_suite,
+            scenario,
+            all_scenarios,
+            resolved: &resolved,
+            url: &url,
+            viewport,
+            log_prefix: &log_prefix,
+        },
+    )
+    .await
 }
 
 /// Load and filter the viewports configured for this scenario.

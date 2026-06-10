@@ -7,7 +7,7 @@ use crate::{
     snapshot::get_asset_version,
     test::{
         browsers::launch_browser,
-        test_scenario::{ScenarioRequest, exec_test_scenario},
+        test_scenario::{ScenarioRequest, exec_test_scenario, make_log_prefix},
     },
     types::{TestSuite, TestSuiteInput},
 };
@@ -106,9 +106,10 @@ pub async fn exec_single_scenario(
     exe_path: &Option<PathBuf>,
     req: ScenarioRequest<'_>,
 ) -> ScenarioOutcome {
+    let log_prefix = make_log_prefix(req.index, req.total);
     // Browser launch is infrastructure — if this fails the environment is
     // broken (e.g. Chrome not installed/launchable), so it must fail the run.
-    let (mut browser, handle, user_data_dir) = match launch_browser(exe_path).await {
+    let (mut browser, handle, user_data_dir) = match launch_browser(exe_path, &log_prefix).await {
         Ok(triple) => triple,
         Err(e) => {
             return ScenarioOutcome::InfraFailed(anyhow!("Failed to launch browser: {:?}", e));
@@ -119,23 +120,26 @@ pub async fn exec_single_scenario(
     // a page-level failure that must not fail the command.
     let scenario_result = exec_test_scenario(&browser, req).await;
 
-    eprintln!("Closing browser...");
+    eprintln!("{} Closing browser...", log_prefix);
     if let Err(e) = browser.close().await {
-        eprintln!("Failed to close browser gracefully: {e}");
+        eprintln!("{} Failed to close browser gracefully: {e}", log_prefix);
     }
 
-    eprintln!("Waiting for handler to finish...");
+    eprintln!("{} Waiting for handler to finish...", log_prefix);
     let mut handle = handle;
     match tokio::time::timeout(std::time::Duration::from_secs(5), &mut handle).await {
         Ok(Err(e)) => {
-            eprintln!("Error waiting for browser handler task: {e}");
+            eprintln!("{} Error waiting for browser handler task: {e}", log_prefix);
         }
         Err(_) => {
-            eprintln!("Browser handler task did not finish within timeout, aborting.");
+            eprintln!(
+                "{} Browser handler task did not finish within timeout, aborting.",
+                log_prefix
+            );
             handle.abort();
         }
         Ok(Ok(())) => {
-            eprintln!("Browser handler finished cleanly.");
+            eprintln!("{} Browser handler finished cleanly.", log_prefix);
         }
     }
 
