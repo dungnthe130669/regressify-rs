@@ -108,6 +108,36 @@ fn screenshot_path(
     ))
 }
 
+/// Filename of the report ordering manifest written alongside the captured
+/// screenshots. It records the intended display order of screenshots (scenario
+/// order, then viewport order) so the comparison report does not fall back to
+/// alphabetical filename sorting.
+pub const REPORT_ORDER_FILE: &str = ".report-order.json";
+
+/// Write the report ordering manifest for a suite run. `prefixes` is the ordered
+/// list of screenshot name prefixes (`<scenario-id>[_<viewport>]`, the part of
+/// each filename before the `__<step|FINAL>` suffix) in the order the scenarios
+/// and their viewports are defined. The comparison report uses this to list
+/// screenshots in scenario-then-viewport order instead of alphabetically.
+pub fn write_report_order(test_suite: &TestSuite, prefixes: &[String]) -> Result<()> {
+    let test_suite_id = test_suite
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow!("Test suite ID is required to write the report order manifest"))?;
+    let test_date = test_suite
+        .test_date
+        .as_deref()
+        .ok_or_else(|| anyhow!("Test suite date is required to write the report order manifest"))?;
+
+    let test_dir = common::REGRESSIFY_DIR_NAME.get_required()?;
+    let run_dir = format!("{}/{}/bitmaps_test/{}", test_dir, test_suite_id, test_date);
+    create_dir_all(&run_dir)?;
+
+    let manifest = serde_json::to_vec_pretty(prefixes)?;
+    fs::write(format!("{}/{}", run_dir, REPORT_ORDER_FILE), manifest)?;
+    Ok(())
+}
+
 pub async fn save_screenshot(
     test_suite: &TestSuite,
     scenario: &TestScenario,

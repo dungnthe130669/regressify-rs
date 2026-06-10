@@ -16,7 +16,10 @@ use crate::{
     snapshot,
     test::{
         browsers::fetcher,
-        test_scenario::{ScenarioRequest, make_log_prefix, scenario_capture_count},
+        capture,
+        test_scenario::{
+            ScenarioRequest, make_log_prefix, scenario_capture_count, scenario_capture_prefixes,
+        },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
     types::{TestSuite, TestSuiteFormat, TestSuiteInput, UrlReplacement},
@@ -208,6 +211,28 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                 workspace_config.as_ref(),
                 suite,
                 &suite.scenarios[scenario_idx],
+            );
+        }
+    }
+
+    // Write the per-suite report ordering manifest so the comparison report lists
+    // screenshots in scenario-then-viewport order (matching the TS/BackstopJS
+    // behaviour) instead of alphabetically by filename.
+    for (input, suite) in &parsed_suites {
+        let mut order: Vec<String> = Vec::new();
+        for scenario in &suite.scenarios {
+            order.extend(scenario_capture_prefixes(
+                workspace_config.as_ref(),
+                suite,
+                scenario,
+            ));
+        }
+        if let Err(e) = capture::write_report_order(suite, &order) {
+            eprintln!(
+                "  {} Failed to write report ordering manifest for '{}': {:?}",
+                "WARNING:".yellow(),
+                input.name,
+                e
             );
         }
     }

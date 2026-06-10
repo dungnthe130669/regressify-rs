@@ -6,7 +6,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
-use crate::test::capture::read_error_marker;
+use crate::test::capture::{REPORT_ORDER_FILE, read_error_marker};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -55,6 +55,29 @@ struct DimensionDiff {
     height: i64,
 }
 
+/// Read the report ordering manifest written during capture. Returns an empty
+/// vec when absent (older runs) so callers fall back to alphabetical ordering.
+fn read_report_order(tests_dir: &Path) -> Vec<String> {
+    let path = tests_dir.join(REPORT_ORDER_FILE);
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Vec<String>>(&content).ok())
+        .unwrap_or_default()
+}
+
+/// Position of a screenshot in the ordering manifest, derived from its filename
+/// prefix (`<scenario-id>[_<viewport>]`, the part before `__<step|FINAL>`).
+/// Screenshots not listed in the manifest sort after all listed ones.
+fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
+    let prefix = file_name
+        .strip_suffix(".png")
+        .unwrap_or(file_name)
+        .split("__")
+        .next()
+        .unwrap_or("");
+    order.iter().position(|p| p == prefix).unwrap_or(usize::MAX)
+}
+
 /// Generate a comparison report for a test suite.
 ///
 /// Directory structure:
@@ -93,7 +116,17 @@ pub fn generate_comparison_report(
             test_screenshots.push(file_name);
         }
     }
-    test_screenshots.sort();
+    // Order screenshots by the capture manifest (scenario order, then viewport
+    // order) so the report mirrors the test suite + viewport file definitions
+    // rather than alphabetical filename order. Any screenshot not present in the
+    // manifest (e.g. stale files or runs predating the manifest) sorts last, then
+    // alphabetically among themselves.
+    let order = read_report_order(&tests_dir);
+    test_screenshots.sort_by(|a, b| {
+        screenshot_order_key(a, &order)
+            .cmp(&screenshot_order_key(b, &order))
+            .then_with(|| a.cmp(b))
+    });
 
     let mut report_tests: Vec<ReportTest> = Vec::new();
 

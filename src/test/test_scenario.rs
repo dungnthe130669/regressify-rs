@@ -7,7 +7,7 @@ use colored::Colorize;
 use crate::{
     common,
     config::{self, ResolvedConfig, WorkspaceConfig},
-    helpers::OnceLockExtensions,
+    helpers::{OnceLockExtensions, slugify},
     test::{
         capture::{save_screenshot, write_error_screenshot},
         test_action::exec_test_action,
@@ -79,6 +79,32 @@ pub(crate) fn scenario_capture_count(
     resolve_scenario_viewports(&resolved)
         .map(|v| v.len().max(1))
         .unwrap_or(1)
+}
+
+/// Ordered screenshot name prefixes for a scenario — one `<scenario-id>_<viewport>`
+/// per resolved viewport (in viewport-file order), or a single bare
+/// `<scenario-id>` when no viewport file is configured. These mirror the filename
+/// prefixes produced by `capture` (the part before the `__<step|FINAL>` suffix)
+/// and feed the report ordering manifest so the comparison report lists
+/// screenshots in scenario-then-viewport order instead of alphabetically.
+pub(crate) fn scenario_capture_prefixes(
+    workspace_config: &WorkspaceConfig,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+) -> Vec<String> {
+    let Some(scenario_id) = scenario.id.as_deref() else {
+        return Vec::new();
+    };
+    let resolved = config::resolve_config(workspace_config, test_suite, scenario);
+    let viewports = resolve_scenario_viewports(&resolved).unwrap_or_default();
+    if viewports.is_empty() {
+        vec![scenario_id.to_string()]
+    } else {
+        viewports
+            .iter()
+            .map(|vp| format!("{}_{}", scenario_id, slugify(&vp.label)))
+            .collect()
+    }
 }
 
 /// Bundled inputs for executing one scenario. Grouping these avoids long
