@@ -28,12 +28,10 @@ pub struct ReplacementProfilesFile {
 
 /// Load replacement profiles from a YAML file.
 /// Looks for `common/_replacement-profiles.yaml` or `common/_replacement-profiles.yml`
-/// in the visual_tests dir.
-pub fn load_replacement_profiles(
-    visual_tests_dir: &Path,
-) -> Result<Option<ReplacementProfilesFile>> {
-    let yaml_path = visual_tests_dir.join("common/_replacement-profiles.yaml");
-    let yml_path = visual_tests_dir.join("common/_replacement-profiles.yml");
+/// relative to the workspace root.
+pub fn load_replacement_profiles(root_dir: &Path) -> Result<Option<ReplacementProfilesFile>> {
+    let yaml_path = root_dir.join("common/_replacement-profiles.yaml");
+    let yml_path = root_dir.join("common/_replacement-profiles.yml");
 
     let config_path = if yaml_path.exists() {
         Some(yaml_path)

@@ -120,7 +120,7 @@ fn create_ramped_semaphore(limit: usize) -> Arc<Semaphore> {
 }
 
 fn load_active_replacement_profile(
-    visual_tests_dir: &std::path::Path,
+    root_dir: &std::path::Path,
     cli_profile: Option<&str>,
 ) -> Result<Vec<UrlReplacement>> {
     let profile_name = replacements::get_profile_name(cli_profile);
@@ -129,11 +129,11 @@ fn load_active_replacement_profile(
             .map(|value| !value.is_empty())
             .unwrap_or(false);
 
-    let Some(profiles) = replacements::load_replacement_profiles(visual_tests_dir)? else {
+    let Some(profiles) = replacements::load_replacement_profiles(root_dir)? else {
         if explicit_profile {
             anyhow::bail!(
                 "Replacement profile file not found: {}",
-                visual_tests_dir
+                root_dir
                     .join("common/_replacement-profiles.yaml")
                     .display()
             );
@@ -162,7 +162,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // Load workspace config
     let workspace_config = config::load_workspace_config(root_dir)?;
     let active_replacements =
-        load_active_replacement_profile(&visual_tests_dir, replacement_profile.as_deref())?;
+        load_active_replacement_profile(root_dir, replacement_profile.as_deref())?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         Some(

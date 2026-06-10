@@ -243,10 +243,13 @@ async fn run_scenario_capture_inner(
         load_state(&page, state).await?;
     }
 
-    // Load cookies from cookiePath if configured
-    if let Some(ref cookie_path) = resolved.cookie_path {
-        load_cookie_path(&page, cookie_path).await?;
-    }
+    // Load cookies from cookiePath (defaults to common/_cookies.yaml; skipped
+    // if the file does not exist)
+    let cookie_path = resolved
+        .cookie_path
+        .as_deref()
+        .unwrap_or("common/_cookies.yaml");
+    load_cookie_path(&page, cookie_path).await?;
 
     // Apply CSS override if configured
     apply_css_override(&page, resolved).await?;
@@ -259,22 +262,9 @@ async fn run_scenario_capture_inner(
         inject_css(&page, sel, "display: none !important").await?;
     }
 
-    // Execute jsOnReadyPath script if configured
-    if let Some(ref js_path) = resolved.js_on_ready_path {
-        let root_dir = common::ROOT_DIR.get_required()?;
-        let visual_tests_dir = root_dir.join("visual_tests");
-        let full_path = visual_tests_dir.join(js_path);
-        let canonical = full_path
-            .canonicalize()
-            .map_err(|_| anyhow::anyhow!("jsOnReadyPath '{}' does not exist", js_path))?;
-        let canonical_base = visual_tests_dir.canonicalize()?;
-        if !canonical.starts_with(&canonical_base) {
-            anyhow::bail!("jsOnReadyPath '{}' escapes visual_tests directory", js_path);
-        }
-        let js_content = std::fs::read_to_string(&canonical)?;
-        page.evaluate(js_content).await?;
-        eprintln!("    Executed jsOnReady script: {}", js_path);
-    }
+    // Execute jsOnReadyPath script (defaults to common/_on-ready.js; skipped if
+    // the file does not exist)
+    apply_js_on_ready(&page, resolved).await?;
 
     // Execute prerequisite actions from `needs` dependencies
     let mut visited = Vec::new();
@@ -611,12 +601,7 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
 /// Load cookies from a YAML file.
 async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Result<()> {
     let Some(cookie_path) = resolve_work_dir_path(cookie_path)? else {
-        eprintln!(
-            "    {} Cookie file not found: {}",
-            "WARNING:".yellow(),
-            cookie_path
-        );
-        return Ok(());
+        return Ok(()); // No cookie file — that's fine
     };
 
     eprintln!("    Loading cookies from: {}", cookie_path.display());
@@ -707,6 +692,26 @@ async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfi
         css_json
     );
     page.evaluate(script).await?;
+
+    Ok(())
+}
+
+/// Execute the jsOnReady script from file if it exists.
+/// Defaults to `common/_on-ready.js` (resolved relative to the workspace root).
+/// Missing files are silently skipped, matching the TS engine-script behavior.
+async fn apply_js_on_ready(page: &chromiumoxide::Page, resolved: &ResolvedConfig) -> Result<()> {
+    let js_path = resolved
+        .js_on_ready_path
+        .as_deref()
+        .unwrap_or("common/_on-ready.js");
+
+    let Some(js_path) = resolve_work_dir_path(js_path)? else {
+        return Ok(()); // No script file — that's fine
+    };
+
+    eprintln!("    Executing jsOnReady script: {}", js_path.display());
+    let js_content = std::fs::read_to_string(&js_path)?;
+    page.evaluate(js_content).await?;
 
     Ok(())
 }
