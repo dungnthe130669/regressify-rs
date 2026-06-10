@@ -105,6 +105,11 @@ pub async fn exec_test_scenario(
         )
         .await?;
     } else {
+        // Each viewport is an independent capture (BackstopJS-style). A failure
+        // in one viewport (e.g. a timeout) must NOT stop the others from running,
+        // so errors are collected and reported after all viewports execute. Each
+        // failed viewport already gets its own error-placeholder screenshot.
+        let mut failures: Vec<String> = Vec::new();
         for vp in &viewports {
             eprintln!(
                 "  Capturing viewport '{}' ({}x{})...",
@@ -112,7 +117,7 @@ pub async fn exec_test_scenario(
                 vp.width,
                 vp.height
             );
-            run_scenario_capture(
+            if let Err(e) = run_scenario_capture(
                 browser,
                 test_suite,
                 scenario,
@@ -121,7 +126,25 @@ pub async fn exec_test_scenario(
                 &url,
                 Some(vp),
             )
-            .await?;
+            .await
+            {
+                eprintln!(
+                    "    {} Viewport '{}' failed: {:?}",
+                    "ERROR:".red(),
+                    vp.label,
+                    e
+                );
+                failures.push(format!("{}: {:?}", vp.label, e));
+            }
+        }
+
+        if !failures.is_empty() {
+            return Err(anyhow!(
+                "{} of {} viewport(s) failed:\n  {}",
+                failures.len(),
+                viewports.len(),
+                failures.join("\n  ")
+            ));
         }
     }
 
