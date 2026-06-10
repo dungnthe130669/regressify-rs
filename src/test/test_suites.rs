@@ -133,9 +133,7 @@ fn load_active_replacement_profile(
         if explicit_profile {
             anyhow::bail!(
                 "Replacement profile file not found: {}",
-                root_dir
-                    .join("common/_replacement-profiles.yaml")
-                    .display()
+                root_dir.join("common/_replacement-profiles.yaml").display()
             );
         }
         return Ok(Vec::new());
