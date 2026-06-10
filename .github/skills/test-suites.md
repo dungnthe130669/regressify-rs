@@ -3,6 +3,7 @@
 ## When to Use
 
 Use this skill when:
+
 - Writing new visual test suite YAML files
 - Adding scenarios to existing test suites
 - Understanding the test suite configuration structure
@@ -11,7 +12,8 @@ Use this skill when:
 ## Test Suite File Location
 
 All test suite files live in `visual_tests/` with the naming convention:
-```
+
+```text
 visual_tests/{name}.tests.yaml
 ```
 
@@ -144,6 +146,7 @@ scenarios:
 ```
 
 Multiple dependencies:
+
 ```yaml
 needs:
   - setup-data
@@ -153,6 +156,7 @@ needs:
 ## URL Matching in `wait`
 
 The `url` property in wait supports:
+
 - Exact match: `https://example.com/page`
 - Glob suffix: `**/page` (matches any URL ending with `/page`)
 - Glob contains: `**/dashboard` + `**` patterns

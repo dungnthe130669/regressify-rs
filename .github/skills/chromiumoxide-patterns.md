@@ -3,6 +3,7 @@
 ## When to Use
 
 Use this skill when:
+
 - Working with `chromiumoxide` API for browser automation
 - Need to understand CDP (Chrome DevTools Protocol) commands available
 - Implementing actions that need low-level browser control
@@ -11,6 +12,7 @@ Use this skill when:
 ## chromiumoxide Basics
 
 `chromiumoxide` is a Rust CDP client. It provides:
+
 - `Browser` — launches and manages Chromium processes
 - `Page` — represents a browser tab/page
 - `Element` — represents a DOM element found via selector

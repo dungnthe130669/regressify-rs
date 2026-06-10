@@ -3,6 +3,7 @@
 ## When to Use
 
 Use this skill when:
+
 - Creating a new browser automation action (e.g., `drag`, `type`, `doubleClick`)
 - Fixing an existing action that violates real-user behavior simulation
 - Adding pre-action validation (visibility, interactability, stability) to existing actions
@@ -58,6 +59,7 @@ Every interactive action (click, hover, check, uncheck, focus, input, press, sel
 ```
 
 **JavaScript for visibility check:**
+
 ```javascript
 (() => {
     const el = document.querySelector('{selector}');
@@ -77,6 +79,7 @@ Every interactive action (click, hover, check, uncheck, focus, input, press, sel
 ```
 
 **JavaScript for obscured check:**
+
 ```javascript
 (() => {
     const el = document.querySelector('{selector}');
@@ -94,6 +97,7 @@ Every interactive action (click, hover, check, uncheck, focus, input, press, sel
 ```
 
 **JavaScript for stability check:**
+
 ```javascript
 // Call this twice with ~100ms gap, compare results
 (() => {
@@ -186,6 +190,7 @@ actions:
 ## Action-Specific Implementation Notes
 
 ### click
+
 - Get element center coordinates from bounding rect
 - Use CDP `Input.dispatchMouseEvent` with type `mouseMoved` to center
 - Then `mousePressed` (button: 0, clickCount: 1)
@@ -193,18 +198,21 @@ actions:
 - Do NOT use JS `.click()` — it bypasses overlay detection
 
 ### hover
+
 - Get element center coordinates
 - Use CDP `Input.dispatchMouseEvent` with type `mouseMoved`
 - This properly triggers CSS `:hover` states
 - Do NOT use JS `mouseover` event dispatch — it won't activate `:hover` CSS
 
 ### check / uncheck
+
 - Verify element is `<input type="checkbox">` or `<input type="radio">`
 - For `check`: only click if `el.checked === false`
 - For `uncheck`: only click if `el.checked === true`
 - If already in desired state, the action is a no-op (not an error)
 
 ### input
+
 - Focus element first
 - If `append` is not true, clear value: `el.value = ''`
 - Use CDP `Input.dispatchKeyEvent` for each character (simulates real typing)
@@ -212,11 +220,13 @@ actions:
 - Dispatch `input` and `change` events for framework compatibility
 
 ### press
+
 - Must dispatch full key sequence: `keyDown` → `char` (for printable) → `keyUp`
 - Handle modifier keys (Shift, Ctrl, Alt, Meta)
 - Map key names to proper `code`, `key`, and `keyCode` values
 
 ### select
+
 - Verify element is `<select>`
 - Set option selected state via JS
 - Dispatch `input` and `change` events
