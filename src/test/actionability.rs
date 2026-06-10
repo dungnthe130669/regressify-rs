@@ -3,17 +3,13 @@ use chromiumoxide::Page;
 
 use crate::types::Frame;
 
-/// Information about an actionable element's position and size.
+/// Information about an actionable element's position.
 #[derive(Debug, Clone)]
 pub struct ElementInfo {
     /// X coordinate of element center relative to its document (frame or main).
     pub center_x: f64,
     /// Y coordinate of element center relative to its document (frame or main).
     pub center_y: f64,
-    /// Element width.
-    pub width: f64,
-    /// Element height.
-    pub height: f64,
 }
 
 /// Configuration for actionability timeouts.
@@ -309,9 +305,7 @@ pub async fn check_not_obscured(
                 return {{
                     ok: true,
                     center_x: cx,
-                    center_y: cy,
-                    width: rect.width,
-                    height: rect.height
+                    center_y: cy
                 }};
             }}
             // Element is obscured — report what's covering it
@@ -331,8 +325,6 @@ pub async fn check_not_obscured(
         return Ok(ElementInfo {
             center_x: val.get("center_x").and_then(|v| v.as_f64()).unwrap_or(0.0),
             center_y: val.get("center_y").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            width: val.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            height: val.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
         });
     }
 

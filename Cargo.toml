@@ -11,7 +11,7 @@ cloud = []
 [dependencies]
 anyhow = "1.0.100"
 base64 = "0.22.1"
-chromiumoxide = { version = "0.8.0", features = ["tokio-runtime", "bytes", "_fetcher-rustls-tokio" ] }
+chromiumoxide = { version = "0.9.1", features = ["bytes", "fetcher", "rustls", "zip8" ] }
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"

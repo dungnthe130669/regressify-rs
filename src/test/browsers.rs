@@ -5,7 +5,6 @@ use anyhow::anyhow;
 use base64::{Engine as _, engine::general_purpose};
 use chromiumoxide::{
     Browser, BrowserConfig,
-    browser::HeadlessMode,
     fetcher::{BrowserFetcher, BrowserFetcherOptions},
     handler::viewport::Viewport,
 };
@@ -115,7 +114,7 @@ pub async fn launch_browser(
     if debug {
         config_builder = config_builder.with_head();
     } else {
-        config_builder = config_builder.headless_mode(HeadlessMode::New);
+        config_builder = config_builder.new_headless_mode();
     }
 
     let config = config_builder
