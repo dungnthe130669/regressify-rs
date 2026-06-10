@@ -176,19 +176,19 @@ pub async fn exec_test_scenario(
     }
 
     // Apply postInteractionWait from resolved config
-    if let Some(wait_ms) = resolved.post_interaction_wait {
-        if wait_ms > 0.0 {
-            eprintln!("    Waiting for {} ms after interactions...", wait_ms);
-            tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
-        }
+    if let Some(wait_ms) = resolved.post_interaction_wait
+        && wait_ms > 0.0
+    {
+        eprintln!("    Waiting for {} ms after interactions...", wait_ms);
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
     // Apply delay before screenshot
-    if let Some(delay) = resolved.delay {
-        if delay > 0.0 {
-            eprintln!("    Delay: waiting {} ms before screenshot...", delay);
-            tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-        }
+    if let Some(delay) = resolved.delay
+        && delay > 0.0
+    {
+        eprintln!("    Delay: waiting {} ms before screenshot...", delay);
+        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
     // Scroll page top-to-bottom then back to top to trigger lazy-loaded images
@@ -355,23 +355,23 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
         let state: serde_json::Value = serde_json::from_str(&content)?;
 
         // Warn if state has unexpected shape
-        if let Some(c) = state.get("cookies") {
-            if !c.is_array() {
-                eprintln!(
-                    "    {} State '{}': 'cookies' is not an array; ignoring",
-                    "WARNING:".yellow(),
-                    name
-                );
-            }
+        if let Some(c) = state.get("cookies")
+            && !c.is_array()
+        {
+            eprintln!(
+                "    {} State '{}': 'cookies' is not an array; ignoring",
+                "WARNING:".yellow(),
+                name
+            );
         }
-        if let Some(ls) = state.get("localStorage") {
-            if !ls.is_object() {
-                eprintln!(
-                    "    {} State '{}': 'localStorage' is not an object; ignoring",
-                    "WARNING:".yellow(),
-                    name
-                );
-            }
+        if let Some(ls) = state.get("localStorage")
+            && !ls.is_object()
+        {
+            eprintln!(
+                "    {} State '{}': 'localStorage' is not an object; ignoring",
+                "WARNING:".yellow(),
+                name
+            );
         }
 
         // Restore cookies
@@ -400,10 +400,10 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
                         use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
                         param = param.expires(TimeSinceEpoch::new(expires));
                     }
-                    if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str()) {
-                        if let Some(ss) = parse_same_site(same_site) {
-                            param = param.same_site(ss);
-                        }
+                    if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str())
+                        && let Some(ss) = parse_same_site(same_site)
+                    {
+                        param = param.same_site(ss);
                     }
                     let _ = CookieSameSite::Strict; // ensure import is exercised even if no sameSite
 
@@ -483,10 +483,10 @@ async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Resu
                 use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
                 param = param.expires(TimeSinceEpoch::new(expires));
             }
-            if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str()) {
-                if let Some(ss) = parse_same_site(same_site) {
-                    param = param.same_site(ss);
-                }
+            if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str())
+                && let Some(ss) = parse_same_site(same_site)
+            {
+                param = param.same_site(ss);
             }
             let _ = CookieSameSite::Strict;
 
