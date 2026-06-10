@@ -83,19 +83,112 @@ pub async fn exec_test_scenario(
         replacement_profile,
     );
 
-    // Create page with about:blank first, apply CSP bypass, then navigate
-    let page = if resolved.bypass_csp {
-        let page = browser.new_page("about:blank").await?;
+    // Resolve the viewports to capture. When viewport config is present, each
+    // viewport is captured as a separate screenshot (BackstopJS-style) and the
+    // full page lifecycle (navigation + actions) is replayed per viewport so the
+    // layout and interactions reflect that size. With no viewport config we
+    // capture once at the browser's default size (backwards compatible).
+    let viewports = resolve_scenario_viewports(&resolved)?;
+
+    if viewports.is_empty() {
+        run_scenario_capture(
+            browser,
+            test_suite,
+            scenario,
+            all_scenarios,
+            &resolved,
+            &url,
+            None,
+        )
+        .await?;
+    } else {
+        for vp in &viewports {
+            eprintln!(
+                "  Capturing viewport '{}' ({}x{})...",
+                vp.label.cyan(),
+                vp.width,
+                vp.height
+            );
+            run_scenario_capture(
+                browser,
+                test_suite,
+                scenario,
+                all_scenarios,
+                &resolved,
+                &url,
+                Some(vp),
+            )
+            .await?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Load and filter the viewports configured for this scenario.
+/// Viewport definitions live in a YAML file resolved relative to `visual_tests/`
+/// (default `common/_viewports.yaml`). Returns an empty vec when no viewport file
+/// exists, which means "capture once at the default browser size".
+fn resolve_scenario_viewports(
+    resolved: &ResolvedConfig,
+) -> Result<Vec<config::viewports::ViewportDef>> {
+    let root_dir = common::ROOT_DIR.get_required()?;
+    let visual_tests_dir = root_dir.join("visual_tests");
+    let viewports_path = visual_tests_dir.join(&resolved.viewports_path);
+    let all = config::viewports::load_viewports(&viewports_path)?;
+    if all.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(config::viewports::resolve_viewports(
+        resolved.viewport_names.as_deref(),
+        &all,
+    ))
+}
+
+/// Apply a viewport size to the page via CDP device-metrics emulation.
+async fn apply_viewport(
+    page: &chromiumoxide::Page,
+    viewport: Option<&config::viewports::ViewportDef>,
+) -> Result<()> {
+    if let Some(vp) = viewport {
+        use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
+        let cmd = SetDeviceMetricsOverrideParams::builder()
+            .width(vp.width as i64)
+            .height(vp.height as i64)
+            .device_scale_factor(1.0)
+            .mobile(false)
+            .build()
+            .map_err(|e| anyhow!("Failed to build device metrics override: {:?}", e))?;
+        page.execute(cmd).await?;
+    }
+    Ok(())
+}
+
+/// Run a single capture of the scenario at an optional viewport size.
+#[allow(clippy::too_many_arguments)]
+async fn run_scenario_capture(
+    browser: &Browser,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+    resolved: &ResolvedConfig,
+    url: &str,
+    viewport: Option<&config::viewports::ViewportDef>,
+) -> Result<()> {
+    let viewport_label = viewport.map(|v| v.label.as_str());
+
+    // Create page with about:blank first, apply the viewport + CSP bypass, then
+    // navigate so layout is computed at the intended size from the first paint.
+    let page = browser.new_page("about:blank").await?;
+    if resolved.bypass_csp {
         let cmd = chromiumoxide::cdp::browser_protocol::page::SetBypassCspParams::builder()
             .enabled(true)
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build SetBypassCspParams: {}", e))?;
         page.execute(cmd).await?;
-        page.goto(url.as_str()).await?;
-        page
-    } else {
-        browser.new_page(url.as_str()).await?
-    };
+    }
+    apply_viewport(&page, viewport).await?;
+    page.goto(url).await?;
 
     // Load state (cookies + localStorage) if configured at suite level
     if let Some(ref state) = test_suite.state {
@@ -108,7 +201,7 @@ pub async fn exec_test_scenario(
     }
 
     // Apply CSS override if configured
-    apply_css_override(&page, &resolved).await?;
+    apply_css_override(&page, resolved).await?;
 
     for sel in &resolved.hide_selectors {
         inject_css(&page, sel, "visibility: hidden !important").await?;
@@ -144,7 +237,15 @@ pub async fn exec_test_scenario(
             needs_actions.len()
         );
         for action in &needs_actions {
-            exec_test_action(&page, test_suite, scenario, action, &resolved).await?;
+            exec_test_action(
+                &page,
+                test_suite,
+                scenario,
+                action,
+                resolved,
+                viewport_label,
+            )
+            .await?;
         }
     }
 
@@ -152,7 +253,15 @@ pub async fn exec_test_scenario(
     if let Some(actions) = &scenario.actions {
         eprintln!("    Executing {} actions...", actions.len());
         for action in actions {
-            exec_test_action(&page, test_suite, scenario, action, &resolved).await?;
+            exec_test_action(
+                &page,
+                test_suite,
+                scenario,
+                action,
+                resolved,
+                viewport_label,
+            )
+            .await?;
         }
     }
 
@@ -275,7 +384,14 @@ pub async fn exec_test_scenario(
     }
 
     eprintln!("    Capturing final screenshot...");
-    save_screenshot(test_suite, scenario, &page, ScreenshotType::Final).await?;
+    save_screenshot(
+        test_suite,
+        scenario,
+        &page,
+        ScreenshotType::Final,
+        viewport_label,
+    )
+    .await?;
 
     Ok(())
 }

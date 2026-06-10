@@ -46,7 +46,9 @@ pub fn escape_js_string(s: &str) -> String {
 }
 
 /// Escape a selector for safe insertion into CSS rule `innerHTML`.
-/// Prevents breaking out of CSS context or injecting HTML.
+/// Prevents breaking out of CSS context or injecting HTML. Also escapes
+/// control characters (newline/CR/tab/NUL) which would otherwise produce a JS
+/// syntax error when the selector is interpolated into a single-quoted string.
 pub fn escape_css_rule(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('\'', "\\'")
@@ -55,6 +57,10 @@ pub fn escape_css_rule(s: &str) -> String {
         .replace('}', "\\}")
         .replace('<', "\\<")
         .replace('>', "\\>")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+        .replace('\0', "")
 }
 
 // ─── Frame Helpers ───────────────────────────────────────────────────────────
@@ -93,6 +99,78 @@ fn build_element_js(selector: &str, frame_selectors: &Option<Vec<String>>) -> St
     }
 }
 
+/// Validate that every frame in the chain exists, is an `<iframe>`, and is
+/// same-origin (its `contentDocument` is reachable). Produces clear, actionable
+/// errors instead of the cryptic "Cannot read properties of null" that would
+/// otherwise surface deeper in visibility/obscured checks for cross-origin
+/// frames.
+pub async fn ensure_frame_accessible(page: &Page, frame: &Option<Frame>) -> Result<()> {
+    let Some(frame_selectors) = get_frame_selectors(frame) else {
+        return Ok(());
+    };
+
+    let selectors_js = frame_selectors
+        .iter()
+        .map(|s| format!("'{}'", escape_js_string(s)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let script = format!(
+        r#"(() => {{
+            let doc = document;
+            const selectors = [{selectors_js}];
+            for (const sel of selectors) {{
+                const frame = doc.querySelector(sel);
+                if (!frame) return {{ error: 'frame_not_found', selector: sel }};
+                if (frame.tagName !== 'IFRAME' && frame.tagName !== 'FRAME')
+                    return {{ error: 'not_a_frame', selector: sel, tag: frame.tagName }};
+                let inner = null;
+                try {{ inner = frame.contentDocument; }} catch (e) {{ inner = null; }}
+                if (!inner) return {{ error: 'cross_origin', selector: sel }};
+                doc = inner;
+            }}
+            return {{ ok: true }};
+        }})()"#
+    );
+
+    let result = page.evaluate(script).await?;
+    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+
+    if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Ok(());
+    }
+
+    let error = val
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let sel = val
+        .get("selector")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    match error {
+        "frame_not_found" => Err(anyhow!("Frame '{}' not found in the document", sel)),
+        "not_a_frame" => {
+            let tag = val
+                .get("tag")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_lowercase();
+            Err(anyhow!(
+                "Frame selector '{}' matches a <{}>, not an <iframe>",
+                sel,
+                tag
+            ))
+        }
+        "cross_origin" => Err(anyhow!(
+            "Cannot access cross-origin frame '{}' (its document is not reachable from the parent)",
+            sel
+        )),
+        _ => Err(anyhow!("Frame '{}' is not accessible: {}", sel, error)),
+    }
+}
+
 // ─── Actionability Checks ────────────────────────────────────────────────────
 
 /// Wait for an element to exist in the DOM. Polls with interval until timeout.
@@ -102,6 +180,10 @@ pub async fn wait_for_selector(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
+    // Validate the frame chain first so cross-origin / missing frames produce a
+    // clear error instead of a cryptic null dereference further down.
+    ensure_frame_accessible(page, frame).await?;
+
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     let script = format!("(() => {{ return !!({element_js}); }})()");
@@ -392,6 +474,10 @@ pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -
 
 /// Calculate the cumulative offset of nested iframes relative to the top-level viewport.
 /// Returns (offset_x, offset_y) that should be added to element coordinates within the frame.
+///
+/// NOTE: This sums each frame's `getBoundingClientRect()` and assumes intermediate
+/// frames are not independently scrolled. A scrolled outer frame would shift the
+/// inner content and could make the projected CDP coordinates inaccurate.
 pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64, f64)> {
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) => s,
@@ -463,6 +549,80 @@ pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64
     Ok((x, y))
 }
 
+/// When the target element lives inside an iframe, verify that the iframe itself
+/// is not obscured in the *parent* document at the point where the element will
+/// be clicked. `check_not_obscured` only inspects the frame's own document, so a
+/// parent-level overlay covering the whole iframe would otherwise go undetected
+/// and a CDP click would land on the overlay.
+///
+/// `center_x`/`center_y` are the element's center relative to its own frame
+/// document; this projects them to top-level viewport coordinates via the frame
+/// offset and checks `document.elementFromPoint` at the top level.
+async fn check_frame_not_obscured(
+    page: &Page,
+    frame: &Option<Frame>,
+    center_x: f64,
+    center_y: f64,
+) -> Result<()> {
+    let frame_selectors = match get_frame_selectors(frame) {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(()),
+    };
+
+    let offset = get_frame_offset(page, frame).await?;
+    let abs_x = offset.0 + center_x;
+    let abs_y = offset.1 + center_y;
+
+    // The top-level document only hit-tests down to the first-level iframe.
+    let top_frame = escape_js_string(&frame_selectors[0]);
+    let script = format!(
+        r#"(() => {{
+            const frame = document.querySelector('{top_frame}');
+            if (!frame) return {{ error: 'frame_not_found' }};
+            const topEl = document.elementFromPoint({abs_x}, {abs_y});
+            if (!topEl) return {{ error: 'no_element_at_point' }};
+            if (topEl === frame || frame.contains(topEl)) return {{ ok: true }};
+            const tag = topEl.tagName.toLowerCase();
+            const id = topEl.id ? '#' + topEl.id : '';
+            const cls = topEl.className && typeof topEl.className === 'string'
+                ? '.' + topEl.className.trim().split(/\s+/).join('.')
+                : '';
+            return {{ error: 'obscured', by: tag + id + cls }};
+        }})()"#
+    );
+
+    let result = page.evaluate(script).await?;
+    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+
+    if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return Ok(());
+    }
+
+    match val
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown")
+    {
+        "obscured" => {
+            let by = val.get("by").and_then(|v| v.as_str()).unwrap_or("unknown");
+            Err(anyhow!(
+                "Element inside frame '{}' is obscured by parent-document element '{}'",
+                frame_selectors[0],
+                by
+            ))
+        }
+        "no_element_at_point" => Err(anyhow!(
+            "Frame '{}' is outside the viewport at the target point",
+            frame_selectors[0]
+        )),
+        other => Err(anyhow!(
+            "Parent-frame obscured check failed for '{}': {}",
+            frame_selectors[0],
+            other
+        )),
+    }
+}
+
 /// Full actionability check: wait for element to exist, be visible, stable,
 /// scroll into view, verify not obscured, and check enabled.
 /// Returns element center coordinates (relative to its document context).
@@ -489,6 +649,9 @@ pub async fn ensure_actionable(
 
     // 5. Check element is not obscured (also returns position info)
     let info = check_not_obscured(page, selector, frame).await?;
+
+    // 5b. If inside a frame, also ensure the frame isn't obscured in the parent.
+    check_frame_not_obscured(page, frame, info.center_x, info.center_y).await?;
 
     // 6. Check element is enabled (for form controls)
     check_enabled(page, selector, frame).await?;

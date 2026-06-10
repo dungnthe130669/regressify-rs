@@ -7,7 +7,7 @@ use chromiumoxide::{
 
 use crate::{
     common,
-    helpers::OnceLockExtensions,
+    helpers::{OnceLockExtensions, slugify},
     types::{ScreenshotType, TestScenario, TestSuite},
 };
 
@@ -58,6 +58,7 @@ pub async fn save_screenshot(
     scenario: &TestScenario,
     page: &Page,
     screenshot_type: ScreenshotType,
+    viewport_label: Option<&str>,
 ) -> Result<()> {
     let test_suite_id = test_suite
         .id
@@ -82,13 +83,20 @@ pub async fn save_screenshot(
     let params = ScreenshotParams::builder()
         .format(CaptureScreenshotFormat::Png)
         .full_page(true)
-        .omit_background(true)
+        .omit_background(false)
         .build();
 
+    // When capturing at a named viewport, include it in the filename so multiple
+    // viewports for the same scenario produce distinct (non-colliding) files.
+    let vp_suffix = viewport_label
+        .map(|l| format!("_{}", slugify(l)))
+        .unwrap_or_default();
+
     let path = format!(
-        "{}/{}__{}{}.png",
+        "{}/{}{}__{}{}.png",
         test_suite_dir,
         scenario_id,
+        vp_suffix,
         match screenshot_type {
             ScreenshotType::Step(_) => "$",
             ScreenshotType::Final => "",

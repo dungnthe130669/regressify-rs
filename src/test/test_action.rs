@@ -94,6 +94,7 @@ pub async fn exec_test_action(
     scenario: &TestScenario,
     action: &TestAction,
     config: &ResolvedConfig,
+    viewport_label: Option<&str>,
 ) -> Result<()> {
     let ac = actionability_config(config);
 
@@ -187,6 +188,10 @@ pub async fn exec_test_action(
 
         TestAction::Hide(HideAction { hide, frame }) => {
             eprintln!("    Hiding element: {}", hide);
+            // Wait for the element to exist so it is actually present (and hidden)
+            // in the captured screenshot; a typo'd selector fails clearly instead
+            // of silently leaving the element visible.
+            ensure_exists(page, hide, frame, &ac).await?;
             let frame_selectors = get_frame_selectors(frame);
             let css_escaped = escape_css_rule(hide);
 
@@ -250,43 +255,83 @@ pub async fn exec_test_action(
                 check_enabled(page, input, frame).await?;
 
                 let sel_escaped = escape_js_string(input);
-                let val_escaped = escape_js_string(value);
                 let doc = frame_selectors
                     .as_ref()
                     .map(|s| build_frame_document_js(s))
                     .unwrap_or_else(|| "document".to_string());
-
                 let append_mode = append.unwrap_or(false);
-                let clear_js = if !append_mode {
-                    format!(
-                        "{doc}.querySelector('{sel}').value = '';",
+
+                if frame.is_none() {
+                    // Top frame: drive the real editing pipeline via CDP so the
+                    // browser honours input filtering, maxlength and masking, and
+                    // fires the same events a real user would (beforeinput/input)
+                    // instead of just assigning `.value`.
+                    let clear_js = if !append_mode {
+                        "el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true }));"
+                    } else {
+                        ""
+                    };
+                    let focus_clear = format!(
+                        "(() => {{ var el = {doc}.querySelector('{sel}'); el.focus(); \
+                         try {{ el.setSelectionRange(el.value.length, el.value.length); }} catch (e) {{}} {clear} }})()",
+                        doc = doc,
+                        sel = sel_escaped,
+                        clear = clear_js
+                    );
+                    page.evaluate(focus_clear).await?;
+
+                    use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+                    let insert = InsertTextParams::builder()
+                        .text(value.clone())
+                        .build()
+                        .map_err(|e| anyhow!("Failed to build insert text: {:?}", e))?;
+                    page.execute(insert).await?;
+
+                    // insertText fires `input` but not `change`; dispatch `change`
+                    // so validation/frameworks relying on it still react.
+                    let change_js = format!(
+                        "(() => {{ var el = {doc}.querySelector('{sel}'); \
+                         el.dispatchEvent(new Event('change', {{ bubbles: true }})); }})()",
                         doc = doc,
                         sel = sel_escaped
-                    )
+                    );
+                    page.evaluate(change_js).await?;
                 } else {
-                    String::new()
-                };
+                    // Inside a frame, CDP text insertion targeting is unreliable, so
+                    // fall back to the native value-setter approach which still
+                    // triggers framework change detection (React/Vue/Angular).
+                    let val_escaped = escape_js_string(value);
+                    let clear_js = if !append_mode {
+                        format!(
+                            "{doc}.querySelector('{sel}').value = '';",
+                            doc = doc,
+                            sel = sel_escaped
+                        )
+                    } else {
+                        String::new()
+                    };
 
-                let script = format!(
-                    "(() => {{
-                        var el = {doc}.querySelector('{sel}');
-                        {clear}
-                        el.focus();
-                        var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                        if (nativeInputValueSetter) {{
-                            nativeInputValueSetter.set.call(el, el.value + '{val}');
-                        }} else {{
-                            el.value = el.value + '{val}';
-                        }}
-                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }})()",
-                    doc = doc,
-                    sel = sel_escaped,
-                    clear = clear_js,
-                    val = val_escaped
-                );
-                page.evaluate(script).await?;
+                    let script = format!(
+                        "(() => {{
+                            var el = {doc}.querySelector('{sel}');
+                            {clear}
+                            el.focus();
+                            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
+                            if (nativeInputValueSetter) {{
+                                nativeInputValueSetter.set.call(el, el.value + '{val}');
+                            }} else {{
+                                el.value = el.value + '{val}';
+                            }}
+                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        }})()",
+                        doc = doc,
+                        sel = sel_escaped,
+                        clear = clear_js,
+                        val = val_escaped
+                    );
+                    page.evaluate(script).await?;
+                }
             } else if let Some(file) = file {
                 eprintln!("    Uploading file to element: {}", input);
                 if frame.is_some() {
@@ -323,8 +368,26 @@ pub async fn exec_test_action(
                 let element = page.find_element(input).await?;
 
                 if use_file_chooser.unwrap_or(false) {
+                    use chromiumoxide::cdp::browser_protocol::page::SetInterceptFileChooserDialogParams;
+                    // Intercept the file chooser BEFORE clicking so the click does
+                    // not open the blocking native OS file-picker dialog (which
+                    // would hang the renderer). We still set the files via CDP.
+                    let enable = SetInterceptFileChooserDialogParams::builder()
+                        .enabled(true)
+                        .build()
+                        .map_err(|e| anyhow!("Failed to enable file chooser intercept: {:?}", e))?;
+                    page.execute(enable).await?;
+
                     cdp_click(page, info.center_x, info.center_y).await?;
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+                    let disable = SetInterceptFileChooserDialogParams::builder()
+                        .enabled(false)
+                        .build()
+                        .map_err(|e| {
+                            anyhow!("Failed to disable file chooser intercept: {:?}", e)
+                        })?;
+                    page.execute(disable).await?;
                 }
 
                 let cmd = SetFileInputFilesParams::builder()
@@ -382,62 +445,61 @@ pub async fn exec_test_action(
             let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, press, frame, &ac).await?;
 
+            // Focus the target element so the key events reach it. For elements
+            // inside same-origin frames this still works because CDP key events
+            // are delivered to the document's currently focused element.
             let sel_escaped = escape_js_string(press);
-            let key_escaped = escape_js_string(key);
-            let code_escaped = escape_js_string(&key_to_code(key));
             let doc = frame_selectors
                 .as_ref()
                 .map(|s| build_frame_document_js(s))
                 .unwrap_or_else(|| "document".to_string());
-
-            // Focus the element (in-frame via JS), then dispatch key events.
-            // We dispatch synthetic JS events that include the correct W3C `code`
-            // so framework handlers see realistic values.
-            let script = format!(
-                "(() => {{
-                    var el = {doc}.querySelector('{sel}');
-                    el.focus();
-                    var init = {{ key: '{key}', code: '{code}', bubbles: true, cancelable: true }};
-                    el.dispatchEvent(new KeyboardEvent('keydown', init));
-                    el.dispatchEvent(new KeyboardEvent('keypress', init));
-                    el.dispatchEvent(new KeyboardEvent('keyup', init));
-                }})()",
+            let focus_script = format!(
+                "(() => {{ var el = {doc}.querySelector('{sel}'); if (el) el.focus(); }})()",
                 doc = doc,
-                sel = sel_escaped,
-                key = key_escaped,
-                code = code_escaped
+                sel = sel_escaped
             );
-            page.evaluate(script).await?;
+            page.evaluate(focus_script).await?;
 
-            // Also dispatch a native CDP key event so the browser sees real input
-            // (e.g. form submission on Enter, Tab navigation). Only at the top
-            // frame — nested-frame native key targeting requires execution
-            // context resolution that chromiumoxide doesn't expose simply.
-            if frame.is_none() {
-                use chromiumoxide::cdp::browser_protocol::input::{
-                    DispatchKeyEventParams, DispatchKeyEventType,
-                };
-                let key_str = key.clone();
-                let code_str = key_to_code(key);
-                let down = DispatchKeyEventParams::builder()
-                    .r#type(DispatchKeyEventType::KeyDown)
-                    .key(key_str.clone())
-                    .code(code_str.clone())
-                    .build()
-                    .map_err(|e| anyhow!("Failed to build key down event: {:?}", e))?;
-                page.execute(down).await?;
-                let up = DispatchKeyEventParams::builder()
-                    .r#type(DispatchKeyEventType::KeyUp)
-                    .key(key_str)
-                    .code(code_str)
-                    .build()
-                    .map_err(|e| anyhow!("Failed to build key up event: {:?}", e))?;
-                page.execute(up).await?;
+            // Dispatch a single real CDP key event sequence. Using CDP (not
+            // synthetic JS events) makes the browser perform native behaviour:
+            // inserting printable characters, submitting forms on Enter, moving
+            // focus on Tab. We deliberately do NOT also dispatch synthetic JS
+            // events — that would deliver every event twice (e.g. double submit).
+            use chromiumoxide::cdp::browser_protocol::input::{
+                DispatchKeyEventParams, DispatchKeyEventType,
+            };
+            let code = key_to_code(key);
+            let is_printable = key.chars().count() == 1
+                && key.chars().next().map(|c| !c.is_control()).unwrap_or(false);
+
+            let mut down = DispatchKeyEventParams::builder()
+                .r#type(DispatchKeyEventType::KeyDown)
+                .key(key.clone())
+                .code(code.clone());
+            // For printable characters, `text` is what makes the browser insert
+            // the glyph (a bare keyDown for "a" produces no character otherwise).
+            if is_printable {
+                down = down.text(key.clone());
             }
+            let down = down
+                .build()
+                .map_err(|e| anyhow!("Failed to build key down event: {:?}", e))?;
+            page.execute(down).await?;
+
+            let up = DispatchKeyEventParams::builder()
+                .r#type(DispatchKeyEventType::KeyUp)
+                .key(key.clone())
+                .code(code)
+                .build()
+                .map_err(|e| anyhow!("Failed to build key up event: {:?}", e))?;
+            page.execute(up).await?;
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
             eprintln!("    Removing element: {}", remove);
+            // Wait for the element to exist before removing it so a typo'd selector
+            // fails clearly instead of silently leaving the element in the capture.
+            ensure_exists(page, remove, frame, &ac).await?;
             let frame_selectors = get_frame_selectors(frame);
             let css_escaped = escape_css_rule(remove);
 
@@ -484,6 +546,7 @@ pub async fn exec_test_action(
                 scenario,
                 page,
                 ScreenshotType::Step(save.to_string()),
+                viewport_label,
             )
             .await?
         }
@@ -541,7 +604,12 @@ pub async fn exec_test_action(
                     SelectValue::Single(v) => vec![v.clone()],
                     SelectValue::Multiple(v) => v.clone(),
                 };
-                let values_json = serde_json::to_string(&values)?;
+                // serde_json output is valid JS except for U+2028/U+2029 which are
+                // line terminators in JS string/source context; escape them so the
+                // array literal can be safely embedded in the evaluated script.
+                let values_json = serde_json::to_string(&values)?
+                    .replace('\u{2028}', "\\u2028")
+                    .replace('\u{2029}', "\\u2029");
                 eprintln!(
                     "    Selecting value(s) {} in element: {}",
                     values_json, select

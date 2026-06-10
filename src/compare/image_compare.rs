@@ -40,9 +40,160 @@ fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
     }
 }
 
+// ─── Perceptual comparison (pixelmatch-style) ────────────────────────────────
+
+/// Matching threshold (0 = exact, 1 = very loose). 0.1 mirrors pixelmatch's
+/// default and tolerates subpixel/anti-aliasing rendering noise.
+const MATCH_THRESHOLD: f64 = 0.1;
+/// Maximum possible YIQ color delta squared (pixelmatch constant).
+const MAX_YIQ_DELTA: f64 = 35215.0;
+
+#[inline]
+fn blend_channel(c: f64, a: f64) -> f64 {
+    255.0 + (c - 255.0) * a
+}
+
+/// Signed perceptual color delta (YIQ) between pixel `k` in `a` and `m` in `b`.
+/// When `y_only` is true, returns only the brightness delta (used for AA detection).
+fn color_delta(a: &[RGBA8], b: &[RGBA8], k: usize, m: usize, y_only: bool) -> f64 {
+    let (mut r1, mut g1, mut b1, a1) = (a[k].r as f64, a[k].g as f64, a[k].b as f64, a[k].a as f64);
+    let (mut r2, mut g2, mut b2, a2) = (b[m].r as f64, b[m].g as f64, b[m].b as f64, b[m].a as f64);
+
+    if (a1 - a2).abs() < f64::EPSILON && r1 == r2 && g1 == g2 && b1 == b2 {
+        return 0.0;
+    }
+
+    if a1 < 255.0 {
+        let a1n = a1 / 255.0;
+        r1 = blend_channel(r1, a1n);
+        g1 = blend_channel(g1, a1n);
+        b1 = blend_channel(b1, a1n);
+    }
+    if a2 < 255.0 {
+        let a2n = a2 / 255.0;
+        r2 = blend_channel(r2, a2n);
+        g2 = blend_channel(g2, a2n);
+        b2 = blend_channel(b2, a2n);
+    }
+
+    let y1 = r1 * 0.298_895_31 + g1 * 0.586_622_47 + b1 * 0.114_482_23;
+    let y2 = r2 * 0.298_895_31 + g2 * 0.586_622_47 + b2 * 0.114_482_23;
+    let y = y1 - y2;
+
+    if y_only {
+        return y;
+    }
+
+    let i = (r1 * 0.595_977_99 - g1 * 0.274_176_1 - b1 * 0.321_801_89)
+        - (r2 * 0.595_977_99 - g2 * 0.274_176_1 - b2 * 0.321_801_89);
+    let q = (r1 * 0.211_470_17 - g1 * 0.522_617_11 + b1 * 0.311_146_94)
+        - (r2 * 0.211_470_17 - g2 * 0.522_617_11 + b2 * 0.311_146_94);
+
+    let delta = 0.505_3 * y * y + 0.299 * i * i + 0.195_7 * q * q;
+
+    // Encode the sign of the brightness change for anti-alias detection.
+    if y1 > y2 { -delta } else { delta }
+}
+
+/// Count whether a pixel has at least 3 equal neighbours (used by AA detection).
+fn has_many_siblings(img: &[RGBA8], x1: usize, y1: usize, w: usize, h: usize) -> bool {
+    let x0 = x1.saturating_sub(1);
+    let y0 = y1.saturating_sub(1);
+    let x2 = (x1 + 1).min(w - 1);
+    let y2 = (y1 + 1).min(h - 1);
+    let pos = y1 * w + x1;
+    let mut zeroes = if x1 == 0 || y1 == 0 || x1 == w - 1 || y1 == h - 1 {
+        1
+    } else {
+        0
+    };
+
+    for y in y0..=y2 {
+        for x in x0..=x2 {
+            if x == x1 && y == y1 {
+                continue;
+            }
+            let q = y * w + x;
+            if img[pos].r == img[q].r
+                && img[pos].g == img[q].g
+                && img[pos].b == img[q].b
+                && img[pos].a == img[q].a
+            {
+                zeroes += 1;
+                if zeroes > 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Determine whether the pixel at (x1, y1) is likely anti-aliasing rather than a
+/// real difference (pixelmatch algorithm).
+fn is_antialiased(
+    img: &[RGBA8],
+    x1: usize,
+    y1: usize,
+    w: usize,
+    h: usize,
+    other: &[RGBA8],
+) -> bool {
+    let x0 = x1.saturating_sub(1);
+    let y0 = y1.saturating_sub(1);
+    let x2 = (x1 + 1).min(w - 1);
+    let y2 = (y1 + 1).min(h - 1);
+    let pos = y1 * w + x1;
+    let mut zeroes = if x1 == 0 || y1 == 0 || x1 == w - 1 || y1 == h - 1 {
+        1
+    } else {
+        0
+    };
+
+    let mut min = 0.0_f64;
+    let mut max = 0.0_f64;
+    let (mut min_x, mut min_y, mut max_x, mut max_y) = (0usize, 0usize, 0usize, 0usize);
+
+    for y in y0..=y2 {
+        for x in x0..=x2 {
+            if x == x1 && y == y1 {
+                continue;
+            }
+            let delta = color_delta(img, img, pos, y * w + x, true);
+            if delta == 0.0 {
+                zeroes += 1;
+                if zeroes > 2 {
+                    return false;
+                }
+            } else if delta < min {
+                min = delta;
+                min_x = x;
+                min_y = y;
+            } else if delta > max {
+                max = delta;
+                max_x = x;
+                max_y = y;
+            }
+        }
+    }
+
+    if min == 0.0 || max == 0.0 {
+        return false;
+    }
+
+    (has_many_siblings(img, min_x, min_y, w, h) && has_many_siblings(other, min_x, min_y, w, h))
+        || (has_many_siblings(img, max_x, max_y, w, h)
+            && has_many_siblings(other, max_x, max_y, w, h))
+}
+
 /// Compare two images and generate a diff image.
 ///
-/// Returns the comparison result and the diff image pixels (if images have the same dimensions).
+/// Uses a perceptual (YIQ) color metric with anti-aliasing detection to avoid
+/// false positives from subpixel/font rendering. When dimensions differ, a diff
+/// image sized to the union of both images is still produced: the overlapping
+/// region is compared pixel-by-pixel and the non-overlapping area is flagged.
+///
+/// Returns the comparison result and the diff image PNG bytes.
 pub fn compare_images(
     reference_path: &Path,
     test_path: &Path,
@@ -55,61 +206,47 @@ pub fn compare_images(
     let is_same_dimensions = ref_w == test_w && ref_h == test_h;
     let dimension_difference = (test_w as i64 - ref_w as i64, test_h as i64 - ref_h as i64);
 
-    if !is_same_dimensions {
-        let elapsed = start.elapsed().as_millis();
-        return Ok((
-            CompareResult {
-                is_same_dimensions: false,
-                dimension_difference,
-                ref_width: ref_w,
-                ref_height: ref_h,
-                test_width: test_w,
-                test_height: test_h,
-                raw_mis_match_percentage: 100.0,
-                mis_match_percentage: "100.00".to_string(),
-                analysis_time_ms: elapsed,
-            },
-            None,
-        ));
-    }
+    let max_delta = MAX_YIQ_DELTA * MATCH_THRESHOLD * MATCH_THRESHOLD;
 
-    let total_pixels = ref_w * ref_h;
+    let out_w = ref_w.max(test_w);
+    let out_h = ref_h.max(test_h);
+    let total_pixels = out_w * out_h;
     let mut diff_count: u64 = 0;
-
-    // RGBA diff image: same dimensions as the images
     let mut diff_pixels: Vec<u8> = Vec::with_capacity(total_pixels * 4);
 
-    // Per-pixel color distance threshold (0-255 per channel)
-    // A small tolerance avoids false positives from anti-aliasing/subpixel rendering
-    const CHANNEL_TOLERANCE: i16 = 3;
+    for y in 0..out_h {
+        for x in 0..out_w {
+            let in_ref = x < ref_w && y < ref_h;
+            let in_test = x < test_w && y < test_h;
 
-    for i in 0..total_pixels {
-        let rp = &ref_pixels[i];
-        let tp = &test_pixels[i];
+            // Outside the overlap of the two images → always a difference.
+            if !(in_ref && in_test) {
+                diff_count += 1;
+                diff_pixels.extend_from_slice(&[255, 0, 255, 200]);
+                continue;
+            }
 
-        let dr = (rp.r as i16 - tp.r as i16).abs();
-        let dg = (rp.g as i16 - tp.g as i16).abs();
-        let db = (rp.b as i16 - tp.b as i16).abs();
-        let da = (rp.a as i16 - tp.a as i16).abs();
+            let rk = y * ref_w + x;
+            let tk = y * test_w + x;
+            let delta = color_delta(&ref_pixels, &test_pixels, rk, tk, false);
 
-        let is_different = dr > CHANNEL_TOLERANCE
-            || dg > CHANNEL_TOLERANCE
-            || db > CHANNEL_TOLERANCE
-            || da > CHANNEL_TOLERANCE;
-
-        if is_different {
-            diff_count += 1;
-            // Highlight differences in magenta/pink
-            diff_pixels.push(255); // R
-            diff_pixels.push(0); // G
-            diff_pixels.push(255); // B
-            diff_pixels.push(200); // A
-        } else {
-            // Dimmed original pixel for context
-            diff_pixels.push(rp.r / 3);
-            diff_pixels.push(rp.g / 3);
-            diff_pixels.push(rp.b / 3);
-            diff_pixels.push(rp.a);
+            if delta.abs() > max_delta {
+                // Ignore differences that are anti-aliasing on either side. AA
+                // detection requires matching dimensions to compare neighbours.
+                let aa = is_same_dimensions
+                    && (is_antialiased(&ref_pixels, x, y, ref_w, ref_h, &test_pixels)
+                        || is_antialiased(&test_pixels, x, y, test_w, test_h, &ref_pixels));
+                if aa {
+                    let rp = &ref_pixels[rk];
+                    diff_pixels.extend_from_slice(&[rp.r / 3, rp.g / 3, rp.b / 3, rp.a]);
+                } else {
+                    diff_count += 1;
+                    diff_pixels.extend_from_slice(&[255, 0, 255, 200]);
+                }
+            } else {
+                let rp = &ref_pixels[rk];
+                diff_pixels.extend_from_slice(&[rp.r / 3, rp.g / 3, rp.b / 3, rp.a]);
+            }
         }
     }
 
@@ -120,13 +257,11 @@ pub fn compare_images(
     };
 
     let elapsed = start.elapsed().as_millis();
-
-    // Encode diff image to PNG
-    let diff_png = lodepng::encode32(&diff_pixels, ref_w, ref_h)?;
+    let diff_png = lodepng::encode32(&diff_pixels, out_w, out_h)?;
 
     Ok((
         CompareResult {
-            is_same_dimensions: true,
+            is_same_dimensions,
             dimension_difference,
             ref_width: ref_w,
             ref_height: ref_h,

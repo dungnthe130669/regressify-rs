@@ -110,8 +110,8 @@ pub async fn exec_single_scenario(
 ) -> ScenarioOutcome {
     // Browser launch is infrastructure — if this fails the environment is
     // broken (e.g. Chrome not installed/launchable), so it must fail the run.
-    let (mut browser, handle) = match launch_browser(exe_path).await {
-        Ok(pair) => pair,
+    let (mut browser, handle, user_data_dir) = match launch_browser(exe_path).await {
+        Ok(triple) => triple,
         Err(e) => {
             return ScenarioOutcome::InfraFailed(anyhow!("Failed to launch browser: {:?}", e));
         }
@@ -148,6 +148,11 @@ pub async fn exec_single_scenario(
             eprintln!("Browser handler finished cleanly.");
         }
     }
+
+    // Safety net: the handler task normally removes the per-launch user-data dir,
+    // but if it was aborted above that cleanup never ran. Remove it here so we
+    // don't leak a temp directory per scenario.
+    let _ = std::fs::remove_dir_all(&user_data_dir);
 
     match scenario_result {
         Ok(()) => ScenarioOutcome::Passed,

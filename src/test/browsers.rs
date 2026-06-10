@@ -72,7 +72,7 @@ const MAX_LAUNCH_RETRIES: u32 = 2;
 
 pub async fn launch_browser(
     exe_path: &Option<PathBuf>,
-) -> Result<(Browser, JoinHandle<()>), Box<dyn std::error::Error>> {
+) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
     let debug = common::DEBUG.get_bool();
 
     let mut config_builder = BrowserConfig::builder();
@@ -147,7 +147,7 @@ pub async fn launch_browser(
                     }
                     let _ = tokio::fs::remove_dir_all(&data_dir).await;
                 });
-                return Ok((browser, handle));
+                return Ok((browser, handle, user_data_dir));
             }
             Err(e) => {
                 eprintln!(
