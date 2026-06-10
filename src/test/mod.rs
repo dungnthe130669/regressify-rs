@@ -1,6 +1,6 @@
 pub mod actionability;
 mod browsers;
-mod capture;
+pub mod capture;
 mod test_action;
 mod test_scenario;
 mod test_suite;

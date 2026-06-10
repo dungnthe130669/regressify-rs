@@ -510,7 +510,17 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         for entry in fs::read_dir(&latest_test_dir)?.flatten() {
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.ends_with(".png") {
-                fs::copy(entry.path(), ref_dest.join(&file_name))?;
+                let src = entry.path();
+                let dst = ref_dest.join(&file_name);
+                fs::copy(&src, &dst)?;
+
+                // Carry over the error-marker sidecar so a reference captured
+                // from a failed scenario stays flagged for the comparison step.
+                let marker_src = crate::test::capture::error_marker_path(&src);
+                if marker_src.exists() {
+                    fs::copy(&marker_src, crate::test::capture::error_marker_path(&dst))?;
+                }
+
                 count += 1;
             }
         }

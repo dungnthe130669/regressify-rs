@@ -8,7 +8,10 @@ use crate::{
     common,
     config::{self, ResolvedConfig, WorkspaceConfig},
     helpers::OnceLockExtensions,
-    test::{capture::save_screenshot, test_action::exec_test_action},
+    test::{
+        capture::{save_screenshot, write_error_screenshot},
+        test_action::exec_test_action,
+    },
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
 };
 
@@ -165,8 +168,54 @@ async fn apply_viewport(
 }
 
 /// Run a single capture of the scenario at an optional viewport size.
-#[allow(clippy::too_many_arguments)]
+///
+/// On failure (the page under test errored before a screenshot was produced) an
+/// error-placeholder image is written to the scenario's screenshot path so the
+/// report and visual comparison still have an image to show. The original error
+/// is then propagated so the scenario is still recorded as failed.
 async fn run_scenario_capture(
+    browser: &Browser,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+    resolved: &ResolvedConfig,
+    url: &str,
+    viewport: Option<&config::viewports::ViewportDef>,
+) -> Result<()> {
+    let viewport_label = viewport.map(|v| v.label.as_str());
+    match run_scenario_capture_inner(
+        browser,
+        test_suite,
+        scenario,
+        all_scenarios,
+        resolved,
+        url,
+        viewport,
+    )
+    .await
+    {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            if let Err(write_err) =
+                write_error_screenshot(test_suite, scenario, viewport_label, &format!("{e:?}"))
+            {
+                eprintln!(
+                    "    {} Failed to write error placeholder screenshot: {:?}",
+                    "WARNING:".yellow(),
+                    write_err
+                );
+            } else {
+                eprintln!("    Wrote error placeholder screenshot for failed scenario.");
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Inner capture routine: drives the full page lifecycle and saves the
+/// screenshot. Errors are handled by the `run_scenario_capture` wrapper.
+#[allow(clippy::too_many_arguments)]
+async fn run_scenario_capture_inner(
     browser: &Browser,
     test_suite: &TestSuite,
     scenario: &TestScenario,

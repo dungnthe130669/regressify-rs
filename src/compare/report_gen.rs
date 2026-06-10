@@ -6,6 +6,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
+use crate::test::capture::read_error_marker;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -115,6 +116,44 @@ pub fn generate_comparison_report(
             .trim_end_matches(".png")
             .replace("__", " ")
             .replace('$', "");
+
+        // If either side is flagged as a capture failure (via its JSON error
+        // marker), the corresponding scenario never produced a real screenshot.
+        // Skip the visual comparison and report the failure directly — comparing
+        // against a placeholder is meaningless and would only produce noise.
+        let test_err = read_error_marker(&test_dst);
+        let ref_err = if reference_path.exists() {
+            read_error_marker(&reference_path)
+        } else {
+            None
+        };
+        if test_err.is_some() || ref_err.is_some() {
+            let msg = match (ref_err.as_deref(), test_err.as_deref()) {
+                (Some(r), Some(t)) => format!(
+                    "Both reference and test scenarios failed to capture (reference: {r}; test: {t})"
+                ),
+                (Some(r), None) => format!("Reference scenario failed to capture: {r}"),
+                (None, Some(t)) => format!("Test scenario failed to capture: {t}"),
+                (None, None) => unreachable!(),
+            };
+            eprintln!("    {} {} → {}", "FAIL:".red(), screenshot_name, msg);
+
+            report_tests.push(ReportTest {
+                pair: ReportPair {
+                    label,
+                    reference: format!("../bitmaps_reference/{}", screenshot_name),
+                    test: relative_test,
+                    diff_image: None,
+                    selector: "document".to_string(),
+                    file_name: screenshot_name.clone(),
+                    mis_match_threshold,
+                    diff: None,
+                    engine_error_msg: Some(msg),
+                },
+                status: "fail".to_string(),
+            });
+            continue;
+        }
 
         if !reference_path.exists() {
             // No reference image — first run or new scenario
@@ -277,7 +316,8 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
     let reference_dir = suite_dir.join("bitmaps_reference");
 
     if !bitmaps_test_dir.exists() {
-        anyhow::bail!("No test screenshots found in: {:?}", bitmaps_test_dir);
+        eprintln!("  {}", "No test screenshots found, skipping.".yellow());
+        return Ok(());
     }
 
     // Find the latest test run directory (sorted by name = date)
@@ -290,9 +330,13 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
     }
     test_runs.sort();
 
-    let latest_run = test_runs
-        .last()
-        .ok_or_else(|| anyhow::anyhow!("No test run directories found"))?;
+    let latest_run = match test_runs.last() {
+        Some(run) => run,
+        None => {
+            eprintln!("  {}", "No test run directories found, skipping.".yellow());
+            return Ok(());
+        }
+    };
 
     let latest_test_dir = bitmaps_test_dir.join(latest_run);
 
@@ -310,6 +354,17 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
             let src = entry.path();
             let dst = reference_dir.join(&file_name);
             fs::copy(&src, &dst)?;
+
+            // Promote the error-marker sidecar so the reference retains its
+            // failure flag; clear any stale marker when the new capture is good.
+            let marker_src = crate::test::capture::error_marker_path(&src);
+            let marker_dst = crate::test::capture::error_marker_path(&dst);
+            if marker_src.exists() {
+                fs::copy(&marker_src, &marker_dst)?;
+            } else if marker_dst.exists() {
+                fs::remove_file(&marker_dst)?;
+            }
+
             approved_count += 1;
             eprintln!("    Approved: {}", file_name.green());
         }

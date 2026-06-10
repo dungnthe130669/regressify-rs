@@ -1,9 +1,13 @@
 use std::fs::{self, create_dir_all};
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
     Page, cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
 };
+use rgb::RGBA8;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     common,
@@ -53,13 +57,15 @@ fn strip_png_metadata(png: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-pub async fn save_screenshot(
+/// Build the on-disk path for a scenario screenshot, creating the run directory.
+/// Shared by real captures and the error-placeholder writer so both land on the
+/// exact same filename (`<scenario-id>[_<viewport>]__<step|FINAL>.png`).
+fn screenshot_path(
     test_suite: &TestSuite,
     scenario: &TestScenario,
-    page: &Page,
-    screenshot_type: ScreenshotType,
+    screenshot_type: &ScreenshotType,
     viewport_label: Option<&str>,
-) -> Result<()> {
+) -> Result<String> {
     let test_suite_id = test_suite
         .id
         .as_ref()
@@ -80,19 +86,13 @@ pub async fn save_screenshot(
 
     create_dir_all(&test_suite_dir)?;
 
-    let params = ScreenshotParams::builder()
-        .format(CaptureScreenshotFormat::Png)
-        .full_page(true)
-        .omit_background(false)
-        .build();
-
     // When capturing at a named viewport, include it in the filename so multiple
     // viewports for the same scenario produce distinct (non-colliding) files.
     let vp_suffix = viewport_label
         .map(|l| format!("_{}", slugify(l)))
         .unwrap_or_default();
 
-    let path = format!(
+    Ok(format!(
         "{}/{}{}__{}{}.png",
         test_suite_dir,
         scenario_id,
@@ -101,15 +101,208 @@ pub async fn save_screenshot(
             ScreenshotType::Step(_) => "$",
             ScreenshotType::Final => "",
         },
-        match &screenshot_type {
-            ScreenshotType::Step(step) => step,
+        match screenshot_type {
+            ScreenshotType::Step(step) => step.as_str(),
             ScreenshotType::Final => "FINAL",
         }
-    );
+    ))
+}
+
+pub async fn save_screenshot(
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    page: &Page,
+    screenshot_type: ScreenshotType,
+    viewport_label: Option<&str>,
+) -> Result<()> {
+    let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)?;
+
+    let params = ScreenshotParams::builder()
+        .format(CaptureScreenshotFormat::Png)
+        .full_page(true)
+        .omit_background(false)
+        .build();
 
     let png_bytes = page.screenshot(params).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
     fs::write(&path, &clean_bytes)?;
 
     Ok(())
+}
+
+/// Deterministic error-placeholder PNG (a red warning triangle with an
+/// exclamation mark on a white background). Generated once and cached. The
+/// image is only for display in the report; failure detection is driven by the
+/// JSON error marker (see [`write_error_screenshot`] / [`read_error_marker`]).
+fn error_icon_png() -> &'static [u8] {
+    static ICON: OnceLock<Vec<u8>> = OnceLock::new();
+    ICON.get_or_init(generate_error_icon).as_slice()
+}
+
+/// Render the error placeholder as raw PNG bytes.
+fn generate_error_icon() -> Vec<u8> {
+    const W: usize = 512;
+    const H: usize = 512;
+
+    let red = RGBA8::new(214, 40, 40, 255);
+    let white = RGBA8::new(255, 255, 255, 255);
+    let dark = RGBA8::new(30, 30, 30, 255);
+
+    // White background.
+    let mut img = vec![white; W * H];
+
+    // Triangle vertices (outer red border) and an inwardly-scaled white interior.
+    let outer = [(256.0_f64, 48.0_f64), (40.0, 452.0), (472.0, 452.0)];
+    let cx = (outer[0].0 + outer[1].0 + outer[2].0) / 3.0;
+    let cy = (outer[0].1 + outer[1].1 + outer[2].1) / 3.0;
+    let shrink = 0.74;
+    let inner = [
+        (
+            cx + (outer[0].0 - cx) * shrink,
+            cy + (outer[0].1 - cy) * shrink,
+        ),
+        (
+            cx + (outer[1].0 - cx) * shrink,
+            cy + (outer[1].1 - cy) * shrink,
+        ),
+        (
+            cx + (outer[2].0 - cx) * shrink,
+            cy + (outer[2].1 - cy) * shrink,
+        ),
+    ];
+
+    let sign = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| -> f64 {
+        (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1)
+    };
+    let in_tri = |p: (f64, f64), t: &[(f64, f64); 3]| -> bool {
+        let d1 = sign(p, t[0], t[1]);
+        let d2 = sign(p, t[1], t[2]);
+        let d3 = sign(p, t[2], t[0]);
+        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+        !(has_neg && has_pos)
+    };
+
+    for y in 0..H {
+        for x in 0..W {
+            let p = (x as f64 + 0.5, y as f64 + 0.5);
+            if in_tri(p, &outer) {
+                img[y * W + x] = if in_tri(p, &inner) { white } else { red };
+            }
+        }
+    }
+
+    // Exclamation mark (bar + dot) painted dark over the white interior.
+    let bar_half = 20.0;
+    let bar_top = 205.0;
+    let bar_bottom = 350.0;
+    let dot_cy = 400.0;
+    let dot_r = 24.0;
+    for y in 0..H {
+        for x in 0..W {
+            let fx = x as f64 + 0.5;
+            let fy = y as f64 + 0.5;
+            let on_bar = (fx - cx).abs() <= bar_half && (bar_top..=bar_bottom).contains(&fy);
+            let on_dot = (fx - cx).powi(2) + (fy - dot_cy).powi(2) <= dot_r * dot_r;
+            if on_bar || on_dot {
+                img[y * W + x] = dark;
+            }
+        }
+    }
+
+    lodepng::encode32(&img, W, H).expect("failed to encode error placeholder PNG")
+}
+
+/// Sidecar JSON marker recording that a screenshot is a capture failure.
+#[derive(Debug, Serialize, Deserialize)]
+struct ErrorMarker {
+    error: bool,
+    #[serde(default)]
+    message: String,
+}
+
+/// Path of the JSON error-marker sidecar for a screenshot file.
+/// e.g. `scenario__FINAL.png` -> `scenario__FINAL.png.error.json`.
+pub fn error_marker_path(png_path: &Path) -> PathBuf {
+    let mut s = png_path.as_os_str().to_owned();
+    s.push(".error.json");
+    PathBuf::from(s)
+}
+
+/// Write the error placeholder image AND its JSON marker to the scenario's
+/// final screenshot path. Used when a scenario fails before producing a real
+/// screenshot, so the report has an image to show and the comparison can detect
+/// the failure via the marker flag instead of inspecting pixels.
+pub fn write_error_screenshot(
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    viewport_label: Option<&str>,
+    message: &str,
+) -> Result<()> {
+    let path = screenshot_path(test_suite, scenario, &ScreenshotType::Final, viewport_label)?;
+    fs::write(&path, error_icon_png())?;
+
+    let marker = ErrorMarker {
+        error: true,
+        message: message.to_string(),
+    };
+    let marker_json = serde_json::to_vec_pretty(&marker)?;
+    fs::write(error_marker_path(Path::new(&path)), marker_json)?;
+    Ok(())
+}
+
+/// Read the error marker for a screenshot. Returns the recorded failure message
+/// when the screenshot is flagged as a capture failure (`error: true`), or
+/// `None` when there is no marker or the flag is false.
+pub fn read_error_marker(png_path: &Path) -> Option<String> {
+    let bytes = fs::read(error_marker_path(png_path)).ok()?;
+    let marker: ErrorMarker = serde_json::from_slice(&bytes).ok()?;
+    marker.error.then_some(marker.message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn error_icon_is_deterministic_and_valid_png() {
+        const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+        let a = error_icon_png();
+        let b = generate_error_icon();
+        assert_eq!(a, b.as_slice(), "error icon must be byte-deterministic");
+        assert_eq!(&a[..8], &PNG_SIGNATURE, "error icon must be a valid PNG");
+    }
+
+    #[test]
+    fn error_marker_round_trips_and_reflects_flag() {
+        let dir = std::env::temp_dir().join(format!("regressify_err_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("scenario__FINAL.png");
+        fs::write(&png, error_icon_png()).unwrap();
+
+        // No marker yet.
+        assert!(read_error_marker(&png).is_none());
+
+        // error: true -> returns the message.
+        let marker = ErrorMarker {
+            error: true,
+            message: "boom".to_string(),
+        };
+        fs::write(
+            error_marker_path(&png),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_error_marker(&png).as_deref(), Some("boom"));
+
+        // error: false -> treated as no failure.
+        let ok = ErrorMarker {
+            error: false,
+            message: String::new(),
+        };
+        fs::write(error_marker_path(&png), serde_json::to_vec(&ok).unwrap()).unwrap();
+        assert!(read_error_marker(&png).is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
