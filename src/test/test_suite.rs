@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::{
-    config::WorkspaceConfig,
     helpers::{IOExtensions, slugify},
     snapshot::get_asset_version,
-    test::{browsers::launch_browser, test_scenario::exec_test_scenario},
-    types::{TestScenario, TestSuite, TestSuiteInput, UrlReplacement},
+    test::{
+        browsers::launch_browser,
+        test_scenario::{ScenarioRequest, exec_test_scenario},
+    },
+    types::{TestSuite, TestSuiteInput},
 };
 
 /// Parse a test suite file (YAML or JSON) and assign IDs to scenarios.
@@ -102,13 +104,7 @@ pub enum ScenarioOutcome {
 
 pub async fn exec_single_scenario(
     exe_path: &Option<PathBuf>,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-    all_scenarios: &[TestScenario],
-    workspace_config: &WorkspaceConfig,
-    replacement_profile: &[UrlReplacement],
-    base_index: usize,
-    total: usize,
+    req: ScenarioRequest<'_>,
 ) -> ScenarioOutcome {
     // Browser launch is infrastructure — if this fails the environment is
     // broken (e.g. Chrome not installed/launchable), so it must fail the run.
@@ -121,17 +117,7 @@ pub async fn exec_single_scenario(
 
     // Everything from here on interacts with the page under test. Any error is
     // a page-level failure that must not fail the command.
-    let scenario_result = exec_test_scenario(
-        &browser,
-        test_suite,
-        scenario,
-        all_scenarios,
-        workspace_config,
-        replacement_profile,
-        base_index,
-        total,
-    )
-    .await;
+    let scenario_result = exec_test_scenario(&browser, req).await;
 
     eprintln!("Closing browser...");
     if let Err(e) = browser.close().await {

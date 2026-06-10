@@ -251,7 +251,10 @@ pub async fn exec_test_action(
             let frame_selectors = get_frame_selectors(frame);
 
             if let Some(value) = value {
-                eprintln!("{} Typing into element: {} value: {}", log_prefix, input, value);
+                eprintln!(
+                    "{} Typing into element: {} value: {}",
+                    log_prefix, input, value
+                );
                 ensure_focusable(page, input, frame, &ac).await?;
                 check_enabled(page, input, frame).await?;
 
@@ -442,7 +445,10 @@ pub async fn exec_test_action(
         }
 
         TestAction::Press(PressAction { press, key, frame }) => {
-            eprintln!("{} Pressing key '{}' on element: {}", log_prefix, key, press);
+            eprintln!(
+                "{} Pressing key '{}' on element: {}",
+                log_prefix, key, press
+            );
             let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, press, frame, &ac).await?;
 
@@ -632,7 +638,10 @@ pub async fn exec_test_action(
                 page.evaluate(script).await?;
             } else if let Some(label) = label {
                 let label_escaped = escape_js_string(label);
-                eprintln!("{} Selecting label '{}' in element: {}", log_prefix, label, select);
+                eprintln!(
+                    "{} Selecting label '{}' in element: {}",
+                    log_prefix, label, select
+                );
                 let script = format!(
                     "(() => {{
                         var el = {doc}.querySelector('{sel}');

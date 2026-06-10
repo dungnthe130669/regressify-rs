@@ -16,7 +16,7 @@ use crate::{
     snapshot,
     test::{
         browsers::fetcher,
-        test_scenario::{make_log_prefix, scenario_capture_count},
+        test_scenario::{ScenarioRequest, make_log_prefix, scenario_capture_count},
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
     types::{TestSuite, TestSuiteFormat, TestSuiteInput, UrlReplacement},
@@ -237,13 +237,15 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                     .unwrap_or("unknown");
                 match exec_single_scenario(
                     &exe_path,
-                    &suite,
-                    &suite.scenarios[scenario_idx],
-                    &suite.scenarios,
-                    &ws_config,
-                    &replacements,
-                    base_index,
-                    total,
+                    ScenarioRequest {
+                        test_suite: &suite,
+                        scenario: &suite.scenarios[scenario_idx],
+                        all_scenarios: &suite.scenarios,
+                        workspace_config: &ws_config,
+                        replacement_profile: &replacements,
+                        base_index,
+                        total,
+                    },
                 )
                 .await
                 {
@@ -456,13 +458,15 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                     .unwrap_or("unknown");
                 match exec_single_scenario(
                     &exe_path,
-                    &suite,
-                    &suite.scenarios[scenario_idx],
-                    &suite.scenarios,
-                    &ws_config,
-                    &replacements,
-                    base_index,
-                    total,
+                    ScenarioRequest {
+                        test_suite: &suite,
+                        scenario: &suite.scenarios[scenario_idx],
+                        all_scenarios: &suite.scenarios,
+                        workspace_config: &ws_config,
+                        replacement_profile: &replacements,
+                        base_index,
+                        total,
+                    },
                 )
                 .await
                 {

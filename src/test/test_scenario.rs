@@ -81,16 +81,44 @@ pub(crate) fn scenario_capture_count(
         .unwrap_or(1)
 }
 
-pub async fn exec_test_scenario(
-    browser: &Browser,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-    all_scenarios: &[TestScenario],
-    workspace_config: &WorkspaceConfig,
-    replacement_profile: &[UrlReplacement],
-    base_index: usize,
-    total: usize,
-) -> Result<()> {
+/// Bundled inputs for executing one scenario. Grouping these avoids long
+/// argument lists across `exec_single_scenario` / `exec_test_scenario`.
+#[derive(Clone, Copy)]
+pub(crate) struct ScenarioRequest<'a> {
+    pub test_suite: &'a TestSuite,
+    pub scenario: &'a TestScenario,
+    pub all_scenarios: &'a [TestScenario],
+    pub workspace_config: &'a WorkspaceConfig,
+    pub replacement_profile: &'a [UrlReplacement],
+    /// 1-based index of this scenario's first capture in the global pair count.
+    pub base_index: usize,
+    /// Total number of scenario/viewport capture pairs across the whole run.
+    pub total: usize,
+}
+
+/// Bundled inputs for a single scenario/viewport capture.
+#[derive(Clone, Copy)]
+struct CaptureContext<'a> {
+    test_suite: &'a TestSuite,
+    scenario: &'a TestScenario,
+    all_scenarios: &'a [TestScenario],
+    resolved: &'a ResolvedConfig,
+    url: &'a str,
+    viewport: Option<&'a config::viewports::ViewportDef>,
+    log_prefix: &'a str,
+}
+
+pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> Result<()> {
+    let ScenarioRequest {
+        test_suite,
+        scenario,
+        all_scenarios,
+        workspace_config,
+        replacement_profile,
+        base_index,
+        total,
+    } = req;
+
     let label = scenario
         .label
         .as_deref()
@@ -123,15 +151,18 @@ pub async fn exec_test_scenario(
     let viewports = resolve_scenario_viewports(&resolved)?;
 
     if viewports.is_empty() {
+        let log_prefix = make_log_prefix(base_index, total);
         run_scenario_capture(
             browser,
-            test_suite,
-            scenario,
-            all_scenarios,
-            &resolved,
-            &url,
-            None,
-            &make_log_prefix(base_index, total),
+            CaptureContext {
+                test_suite,
+                scenario,
+                all_scenarios,
+                resolved: &resolved,
+                url: &url,
+                viewport: None,
+                log_prefix: &log_prefix,
+            },
         )
         .await?;
     } else {
@@ -152,13 +183,15 @@ pub async fn exec_test_scenario(
             );
             if let Err(e) = run_scenario_capture(
                 browser,
-                test_suite,
-                scenario,
-                all_scenarios,
-                &resolved,
-                &url,
-                Some(vp),
-                &log_prefix,
+                CaptureContext {
+                    test_suite,
+                    scenario,
+                    all_scenarios,
+                    resolved: &resolved,
+                    url: &url,
+                    viewport: Some(vp),
+                    log_prefix: &log_prefix,
+                },
             )
             .await
             {
@@ -230,44 +263,27 @@ async fn apply_viewport(
 /// error-placeholder image is written to the scenario's screenshot path so the
 /// report and visual comparison still have an image to show. The original error
 /// is then propagated so the scenario is still recorded as failed.
-async fn run_scenario_capture(
-    browser: &Browser,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-    all_scenarios: &[TestScenario],
-    resolved: &ResolvedConfig,
-    url: &str,
-    viewport: Option<&config::viewports::ViewportDef>,
-    log_prefix: &str,
-) -> Result<()> {
-    let viewport_label = viewport.map(|v| v.label.as_str());
-    match run_scenario_capture_inner(
-        browser,
-        test_suite,
-        scenario,
-        all_scenarios,
-        resolved,
-        url,
-        viewport,
-        log_prefix,
-    )
-    .await
-    {
+async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Result<()> {
+    let viewport_label = ctx.viewport.map(|v| v.label.as_str());
+    match run_scenario_capture_inner(browser, ctx).await {
         Ok(()) => Ok(()),
         Err(e) => {
-            if let Err(write_err) =
-                write_error_screenshot(test_suite, scenario, viewport_label, &format!("{e:?}"))
-            {
+            if let Err(write_err) = write_error_screenshot(
+                ctx.test_suite,
+                ctx.scenario,
+                viewport_label,
+                &format!("{e:?}"),
+            ) {
                 eprintln!(
                     "{} {} Failed to write error placeholder screenshot: {:?}",
-                    log_prefix,
+                    ctx.log_prefix,
                     "WARNING:".yellow(),
                     write_err
                 );
             } else {
                 eprintln!(
                     "{} Wrote error placeholder screenshot for failed scenario.",
-                    log_prefix
+                    ctx.log_prefix
                 );
             }
             Err(e)
@@ -277,17 +293,16 @@ async fn run_scenario_capture(
 
 /// Inner capture routine: drives the full page lifecycle and saves the
 /// screenshot. Errors are handled by the `run_scenario_capture` wrapper.
-#[allow(clippy::too_many_arguments)]
-async fn run_scenario_capture_inner(
-    browser: &Browser,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-    all_scenarios: &[TestScenario],
-    resolved: &ResolvedConfig,
-    url: &str,
-    viewport: Option<&config::viewports::ViewportDef>,
-    log_prefix: &str,
-) -> Result<()> {
+async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) -> Result<()> {
+    let CaptureContext {
+        test_suite,
+        scenario,
+        all_scenarios,
+        resolved,
+        url,
+        viewport,
+        log_prefix,
+    } = ctx;
     let viewport_label = viewport.map(|v| v.label.as_str());
 
     // Create page with about:blank first, apply the viewport + CSP bypass, then
@@ -394,7 +409,10 @@ async fn run_scenario_capture_inner(
     if let Some(wait_ms) = resolved.post_interaction_wait
         && wait_ms > 0.0
     {
-        eprintln!("{} Waiting for {} ms after interactions...", log_prefix, wait_ms);
+        eprintln!(
+            "{} Waiting for {} ms after interactions...",
+            log_prefix, wait_ms
+        );
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
@@ -402,7 +420,10 @@ async fn run_scenario_capture_inner(
     if let Some(delay) = resolved.delay
         && delay > 0.0
     {
-        eprintln!("{} Delay: waiting {} ms before screenshot...", log_prefix, delay);
+        eprintln!(
+            "{} Delay: waiting {} ms before screenshot...",
+            log_prefix, delay
+        );
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
@@ -679,7 +700,11 @@ async fn load_cookie_path(
         return Ok(()); // No cookie file — that's fine
     };
 
-    eprintln!("{} Loading cookies from: {}", log_prefix, cookie_path.display());
+    eprintln!(
+        "{} Loading cookies from: {}",
+        log_prefix,
+        cookie_path.display()
+    );
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
 
@@ -758,7 +783,11 @@ async fn apply_css_override(
         return Ok(()); // No override file — that's fine
     };
 
-    eprintln!("{} Applying CSS override: {}", log_prefix, css_path.display());
+    eprintln!(
+        "{} Applying CSS override: {}",
+        log_prefix,
+        css_path.display()
+    );
     let css_content = std::fs::read_to_string(&css_path)?;
     let css_json = serde_json::to_string(&css_content)?;
     let script = format!(
@@ -792,7 +821,11 @@ async fn apply_js_on_ready(
         return Ok(()); // No script file — that's fine
     };
 
-    eprintln!("{} Executing jsOnReady script: {}", log_prefix, js_path.display());
+    eprintln!(
+        "{} Executing jsOnReady script: {}",
+        log_prefix,
+        js_path.display()
+    );
     let js_content = std::fs::read_to_string(&js_path)?;
     page.evaluate(js_content).await?;
 
