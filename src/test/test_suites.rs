@@ -532,9 +532,19 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             latest_run
         );
 
-        // Run comparison so results show all scenarios as passed
+        // Run comparison so results show all scenarios as passed. A failing
+        // comparison here only means a scenario hit a page error (and produced
+        // an error placeholder); that must not fail the `ref` command, which is
+        // about capturing baselines, not asserting them.
         eprintln!("Running visual comparison...");
-        generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0)?;
+        if let Err(e) = generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0) {
+            eprintln!(
+                "{} Visual comparison for '{}' reported failures: {:?}",
+                "WARNING:".yellow(),
+                input.name,
+                e
+            );
+        }
     }
 
     generate_snapshot_reports()?;
