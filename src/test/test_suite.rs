@@ -107,6 +107,8 @@ pub async fn exec_single_scenario(
     all_scenarios: &[TestScenario],
     workspace_config: &WorkspaceConfig,
     replacement_profile: &[UrlReplacement],
+    base_index: usize,
+    total: usize,
 ) -> ScenarioOutcome {
     // Browser launch is infrastructure — if this fails the environment is
     // broken (e.g. Chrome not installed/launchable), so it must fail the run.
@@ -126,6 +128,8 @@ pub async fn exec_single_scenario(
         all_scenarios,
         workspace_config,
         replacement_profile,
+        base_index,
+        total,
     )
     .await;
 

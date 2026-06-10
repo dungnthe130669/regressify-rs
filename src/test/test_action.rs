@@ -95,12 +95,13 @@ pub async fn exec_test_action(
     action: &TestAction,
     config: &ResolvedConfig,
     viewport_label: Option<&str>,
+    log_prefix: &str,
 ) -> Result<()> {
     let ac = actionability_config(config);
 
     match action {
         TestAction::Check(CheckAction { check, frame }) => {
-            eprintln!("    Check element: {}", check);
+            eprintln!("{} Check element: {}", log_prefix, check);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, check, frame, &ac).await?;
 
@@ -152,7 +153,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Click(ClickAction { click, frame }) => {
-            eprintln!("    Clicking element: {}", click);
+            eprintln!("{} Clicking element: {}", log_prefix, click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame).await?;
             cdp_click(
@@ -164,7 +165,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Focus(FocusAction { focus, frame }) => {
-            eprintln!("    Focusing element: {}", focus);
+            eprintln!("{} Focusing element: {}", log_prefix, focus);
             let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, focus, frame, &ac).await?;
 
@@ -182,12 +183,12 @@ pub async fn exec_test_action(
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
-            eprintln!("    Navigating to URL: {}", goto);
+            eprintln!("{} Navigating to URL: {}", log_prefix, goto);
             page.goto(goto).await?;
         }
 
         TestAction::Hide(HideAction { hide, frame }) => {
-            eprintln!("    Hiding element: {}", hide);
+            eprintln!("{} Hiding element: {}", log_prefix, hide);
             // Wait for the element to exist so it is actually present (and hidden)
             // in the captured screenshot; a typo'd selector fails clearly instead
             // of silently leaving the element visible.
@@ -224,7 +225,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Hover(HoverAction { hover, frame }) => {
-            eprintln!("    Hovering over element: {}", hover);
+            eprintln!("{} Hovering over element: {}", log_prefix, hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame).await?;
             cdp_hover(
@@ -250,7 +251,7 @@ pub async fn exec_test_action(
             let frame_selectors = get_frame_selectors(frame);
 
             if let Some(value) = value {
-                eprintln!("    Typing into element: {} value: {}", input, value);
+                eprintln!("{} Typing into element: {} value: {}", log_prefix, input, value);
                 ensure_focusable(page, input, frame, &ac).await?;
                 check_enabled(page, input, frame).await?;
 
@@ -333,7 +334,7 @@ pub async fn exec_test_action(
                     page.evaluate(script).await?;
                 }
             } else if let Some(file) = file {
-                eprintln!("    Uploading file to element: {}", input);
+                eprintln!("{} Uploading file to element: {}", log_prefix, input);
                 if frame.is_some() {
                     anyhow::bail!(
                         "input file upload inside iframes is not supported yet; selector '{}' has a frame configured",
@@ -409,7 +410,7 @@ pub async fn exec_test_action(
                     persist
                 );
             }
-            eprintln!("    Persisting state: {}", persist);
+            eprintln!("{} Persisting state: {}", log_prefix, persist);
             let root_dir = ROOT_DIR
                 .get()
                 .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
@@ -437,11 +438,11 @@ pub async fn exec_test_action(
             std::fs::create_dir_all(&state_dir)?;
             let state_path = state_dir.join(format!("{}.json", persist));
             std::fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
-            eprintln!("    State saved to: {}", state_path.display());
+            eprintln!("{} State saved to: {}", log_prefix, state_path.display());
         }
 
         TestAction::Press(PressAction { press, key, frame }) => {
-            eprintln!("    Pressing key '{}' on element: {}", key, press);
+            eprintln!("{} Pressing key '{}' on element: {}", log_prefix, key, press);
             let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, press, frame, &ac).await?;
 
@@ -496,7 +497,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
-            eprintln!("    Removing element: {}", remove);
+            eprintln!("{} Removing element: {}", log_prefix, remove);
             // Wait for the element to exist before removing it so a typo'd selector
             // fails clearly instead of silently leaving the element in the capture.
             ensure_exists(page, remove, frame, &ac).await?;
@@ -539,7 +540,7 @@ pub async fn exec_test_action(
                     save
                 );
             }
-            eprintln!("    Saving screenshot: {}", save);
+            eprintln!("{} Saving screenshot: {}", log_prefix, save);
 
             save_screenshot(
                 test_suite,
@@ -552,7 +553,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Scroll(ScrollAction { scroll, frame }) => {
-            eprintln!("    Scrolling to element: {}", scroll);
+            eprintln!("{} Scrolling to element: {}", log_prefix, scroll);
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
             scroll_into_view(page, scroll, frame).await?;
@@ -611,8 +612,8 @@ pub async fn exec_test_action(
                     .replace('\u{2028}', "\\u2028")
                     .replace('\u{2029}', "\\u2029");
                 eprintln!(
-                    "    Selecting value(s) {} in element: {}",
-                    values_json, select
+                    "{} Selecting value(s) {} in element: {}",
+                    log_prefix, values_json, select
                 );
 
                 let script = format!(
@@ -631,7 +632,7 @@ pub async fn exec_test_action(
                 page.evaluate(script).await?;
             } else if let Some(label) = label {
                 let label_escaped = escape_js_string(label);
-                eprintln!("    Selecting label '{}' in element: {}", label, select);
+                eprintln!("{} Selecting label '{}' in element: {}", log_prefix, label, select);
                 let script = format!(
                     "(() => {{
                         var el = {doc}.querySelector('{sel}');
@@ -653,7 +654,7 @@ pub async fn exec_test_action(
         }
 
         TestAction::Uncheck(UncheckAction { uncheck, frame }) => {
-            eprintln!("    Unchecking element: {}", uncheck);
+            eprintln!("{} Unchecking element: {}", log_prefix, uncheck);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, uncheck, frame, &ac).await?;
 
@@ -705,7 +706,7 @@ pub async fn exec_test_action(
 
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
-                eprintln!("    Waiting for URL: {}", url);
+                eprintln!("{} Waiting for URL: {}", log_prefix, url);
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
                 let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
@@ -751,11 +752,11 @@ pub async fn exec_test_action(
 
             match wait {
                 Wait::Number(milliseconds) => {
-                    eprintln!("    Waiting for {} milliseconds", milliseconds);
+                    eprintln!("{} Waiting for {} milliseconds", log_prefix, milliseconds);
                     tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
-                    eprintln!("    Waiting for element: {}", selector);
+                    eprintln!("{} Waiting for element: {}", log_prefix, selector);
                     if let Some(doc) = doc_js {
                         let sel_escaped = escape_js_string(selector);
                         let script =

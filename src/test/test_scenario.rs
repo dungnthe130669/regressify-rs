@@ -59,6 +59,28 @@ fn collect_needs_actions<'a>(
     actions
 }
 
+/// Build a yellow `[index of total]` log prefix, padding the index to the width
+/// of `total` so prefixes line up. Mirrors the TS `actions.js` logPrefix so logs
+/// from scenarios/viewports running in parallel can be filtered by their pair.
+pub(crate) fn make_log_prefix(index: usize, total: usize) -> String {
+    let width = total.to_string().len();
+    format!("[{index:>width$} of {total}]").yellow().to_string()
+}
+
+/// Count how many independent captures a scenario produces (one per resolved
+/// viewport, or 1 when no viewport file is configured). Each scenario/viewport
+/// pair is counted independently for the global log index/total.
+pub(crate) fn scenario_capture_count(
+    workspace_config: &WorkspaceConfig,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+) -> usize {
+    let resolved = config::resolve_config(workspace_config, test_suite, scenario);
+    resolve_scenario_viewports(&resolved)
+        .map(|v| v.len().max(1))
+        .unwrap_or(1)
+}
+
 pub async fn exec_test_scenario(
     browser: &Browser,
     test_suite: &TestSuite,
@@ -66,6 +88,8 @@ pub async fn exec_test_scenario(
     all_scenarios: &[TestScenario],
     workspace_config: &WorkspaceConfig,
     replacement_profile: &[UrlReplacement],
+    base_index: usize,
+    total: usize,
 ) -> Result<()> {
     let label = scenario
         .label
@@ -73,7 +97,12 @@ pub async fn exec_test_scenario(
         .or(scenario.id.as_deref())
         .unwrap_or(&scenario.url);
 
-    eprintln!("  Executing scenario: {} ({})", label.cyan(), scenario.url);
+    eprintln!(
+        "{} Executing scenario: {} ({})",
+        make_log_prefix(base_index, total),
+        label.cyan(),
+        scenario.url
+    );
 
     // Resolve configuration cascade: scenario -> suite -> workspace -> defaults
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
@@ -102,6 +131,7 @@ pub async fn exec_test_scenario(
             &resolved,
             &url,
             None,
+            &make_log_prefix(base_index, total),
         )
         .await?;
     } else {
@@ -109,10 +139,13 @@ pub async fn exec_test_scenario(
         // in one viewport (e.g. a timeout) must NOT stop the others from running,
         // so errors are collected and reported after all viewports execute. Each
         // failed viewport already gets its own error-placeholder screenshot.
+        // Each scenario/viewport pair is counted independently for the log prefix.
         let mut failures: Vec<String> = Vec::new();
-        for vp in &viewports {
+        for (i, vp) in viewports.iter().enumerate() {
+            let log_prefix = make_log_prefix(base_index + i, total);
             eprintln!(
-                "  Capturing viewport '{}' ({}x{})...",
+                "{} Capturing viewport '{}' ({}x{})...",
+                log_prefix,
                 vp.label.cyan(),
                 vp.width,
                 vp.height
@@ -125,11 +158,13 @@ pub async fn exec_test_scenario(
                 &resolved,
                 &url,
                 Some(vp),
+                &log_prefix,
             )
             .await
             {
                 eprintln!(
-                    "    {} Viewport '{}' failed: {:?}",
+                    "{} {} Viewport '{}' failed: {:?}",
+                    log_prefix,
                     "ERROR:".red(),
                     vp.label,
                     e
@@ -203,6 +238,7 @@ async fn run_scenario_capture(
     resolved: &ResolvedConfig,
     url: &str,
     viewport: Option<&config::viewports::ViewportDef>,
+    log_prefix: &str,
 ) -> Result<()> {
     let viewport_label = viewport.map(|v| v.label.as_str());
     match run_scenario_capture_inner(
@@ -213,6 +249,7 @@ async fn run_scenario_capture(
         resolved,
         url,
         viewport,
+        log_prefix,
     )
     .await
     {
@@ -222,12 +259,16 @@ async fn run_scenario_capture(
                 write_error_screenshot(test_suite, scenario, viewport_label, &format!("{e:?}"))
             {
                 eprintln!(
-                    "    {} Failed to write error placeholder screenshot: {:?}",
+                    "{} {} Failed to write error placeholder screenshot: {:?}",
+                    log_prefix,
                     "WARNING:".yellow(),
                     write_err
                 );
             } else {
-                eprintln!("    Wrote error placeholder screenshot for failed scenario.");
+                eprintln!(
+                    "{} Wrote error placeholder screenshot for failed scenario.",
+                    log_prefix
+                );
             }
             Err(e)
         }
@@ -245,6 +286,7 @@ async fn run_scenario_capture_inner(
     resolved: &ResolvedConfig,
     url: &str,
     viewport: Option<&config::viewports::ViewportDef>,
+    log_prefix: &str,
 ) -> Result<()> {
     let viewport_label = viewport.map(|v| v.label.as_str());
 
@@ -263,7 +305,7 @@ async fn run_scenario_capture_inner(
 
     // Load state (cookies + localStorage) if configured at suite level
     if let Some(ref state) = test_suite.state {
-        load_state(&page, state).await?;
+        load_state(&page, state, log_prefix).await?;
     }
 
     // Load cookies from cookiePath (defaults to common/_cookies.yaml; skipped
@@ -272,10 +314,10 @@ async fn run_scenario_capture_inner(
         .cookie_path
         .as_deref()
         .unwrap_or("common/_cookies.yaml");
-    load_cookie_path(&page, cookie_path).await?;
+    load_cookie_path(&page, cookie_path, log_prefix).await?;
 
     // Apply CSS override if configured
-    apply_css_override(&page, resolved).await?;
+    apply_css_override(&page, resolved, log_prefix).await?;
 
     for sel in &resolved.hide_selectors {
         inject_css(&page, sel, "visibility: hidden !important").await?;
@@ -287,14 +329,15 @@ async fn run_scenario_capture_inner(
 
     // Execute jsOnReadyPath script (defaults to common/_on-ready.js; skipped if
     // the file does not exist)
-    apply_js_on_ready(&page, resolved).await?;
+    apply_js_on_ready(&page, resolved, log_prefix).await?;
 
     // Execute prerequisite actions from `needs` dependencies
     let mut visited = Vec::new();
     let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
     if !needs_actions.is_empty() {
         eprintln!(
-            "    Executing {} prerequisite actions from dependencies...",
+            "{} Executing {} prerequisite actions from dependencies...",
+            log_prefix,
             needs_actions.len()
         );
         for action in &needs_actions {
@@ -305,6 +348,7 @@ async fn run_scenario_capture_inner(
                 action,
                 resolved,
                 viewport_label,
+                log_prefix,
             )
             .await?;
         }
@@ -312,7 +356,7 @@ async fn run_scenario_capture_inner(
 
     // Execute this scenario's own actions
     if let Some(actions) = &scenario.actions {
-        eprintln!("    Executing {} actions...", actions.len());
+        eprintln!("{} Executing {} actions...", log_prefix, actions.len());
         for action in actions {
             exec_test_action(
                 &page,
@@ -321,6 +365,7 @@ async fn run_scenario_capture_inner(
                 action,
                 resolved,
                 viewport_label,
+                log_prefix,
             )
             .await?;
         }
@@ -328,7 +373,7 @@ async fn run_scenario_capture_inner(
 
     // Execute clickSelector if configured (clicks the element after all actions)
     if let Some(ref click_sel) = scenario.click_selector {
-        eprintln!("    Clicking selector: {}", click_sel);
+        eprintln!("{} Clicking selector: {}", log_prefix, click_sel);
         use crate::test::actionability::{self as act, ActionabilityConfig};
         let ac = ActionabilityConfig {
             element_timeout_ms: resolved.element_timeout_ms,
@@ -349,7 +394,7 @@ async fn run_scenario_capture_inner(
     if let Some(wait_ms) = resolved.post_interaction_wait
         && wait_ms > 0.0
     {
-        eprintln!("    Waiting for {} ms after interactions...", wait_ms);
+        eprintln!("{} Waiting for {} ms after interactions...", log_prefix, wait_ms);
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
@@ -357,13 +402,13 @@ async fn run_scenario_capture_inner(
     if let Some(delay) = resolved.delay
         && delay > 0.0
     {
-        eprintln!("    Delay: waiting {} ms before screenshot...", delay);
+        eprintln!("{} Delay: waiting {} ms before screenshot...", log_prefix, delay);
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
     // Scroll page top-to-bottom then back to top to trigger lazy-loaded images
     if !resolved.no_scroll_top {
-        eprintln!("    Scrolling page to load lazy images...");
+        eprintln!("{} Scrolling page to load lazy images...", log_prefix);
         page.evaluate(
             r#"(async () => {
                 const SCROLL_DISTANCE = 100;
@@ -444,7 +489,7 @@ async fn run_scenario_capture_inner(
         .await?;
     }
 
-    eprintln!("    Capturing final screenshot...");
+    eprintln!("{} Capturing final screenshot...", log_prefix);
     save_screenshot(
         test_suite,
         scenario,
@@ -498,7 +543,7 @@ fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
 }
 
 /// Load persisted state (cookies + localStorage) into the page.
-async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
+async fn load_state(page: &chromiumoxide::Page, state: &Needs, log_prefix: &str) -> Result<()> {
     let state_names = match state {
         Needs::String(s) => vec![s.clone()],
         Needs::StringArray(v) => v.clone(),
@@ -520,14 +565,15 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
 
         if !state_path.exists() {
             eprintln!(
-                "    {} State file not found: {}",
+                "{} {} State file not found: {}",
+                log_prefix,
                 "WARNING:".yellow(),
                 state_path.display()
             );
             continue;
         }
 
-        eprintln!("    Loading state: {}", name);
+        eprintln!("{} Loading state: {}", log_prefix, name);
         let content = std::fs::read_to_string(&state_path)?;
         let state: serde_json::Value = serde_json::from_str(&content)?;
 
@@ -536,7 +582,8 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
             && !c.is_array()
         {
             eprintln!(
-                "    {} State '{}': 'cookies' is not an array; ignoring",
+                "{} {} State '{}': 'cookies' is not an array; ignoring",
+                log_prefix,
                 "WARNING:".yellow(),
                 name
             );
@@ -545,7 +592,8 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
             && !ls.is_object()
         {
             eprintln!(
-                "    {} State '{}': 'localStorage' is not an object; ignoring",
+                "{} {} State '{}': 'localStorage' is not an object; ignoring",
+                log_prefix,
                 "WARNING:".yellow(),
                 name
             );
@@ -622,12 +670,16 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
 }
 
 /// Load cookies from a YAML file.
-async fn load_cookie_path(page: &chromiumoxide::Page, cookie_path: &str) -> Result<()> {
+async fn load_cookie_path(
+    page: &chromiumoxide::Page,
+    cookie_path: &str,
+    log_prefix: &str,
+) -> Result<()> {
     let Some(cookie_path) = resolve_work_dir_path(cookie_path)? else {
         return Ok(()); // No cookie file — that's fine
     };
 
-    eprintln!("    Loading cookies from: {}", cookie_path.display());
+    eprintln!("{} Loading cookies from: {}", log_prefix, cookie_path.display());
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
 
@@ -688,7 +740,11 @@ fn parse_same_site(
 }
 
 /// Apply CSS override from file if configured.
-async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfig) -> Result<()> {
+async fn apply_css_override(
+    page: &chromiumoxide::Page,
+    resolved: &ResolvedConfig,
+    log_prefix: &str,
+) -> Result<()> {
     if !resolved.use_css_override {
         return Ok(());
     }
@@ -702,7 +758,7 @@ async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfi
         return Ok(()); // No override file — that's fine
     };
 
-    eprintln!("    Applying CSS override: {}", css_path.display());
+    eprintln!("{} Applying CSS override: {}", log_prefix, css_path.display());
     let css_content = std::fs::read_to_string(&css_path)?;
     let css_json = serde_json::to_string(&css_content)?;
     let script = format!(
@@ -722,7 +778,11 @@ async fn apply_css_override(page: &chromiumoxide::Page, resolved: &ResolvedConfi
 /// Execute the jsOnReady script from file if it exists.
 /// Defaults to `common/_on-ready.js` (resolved relative to the workspace root).
 /// Missing files are silently skipped, matching the TS engine-script behavior.
-async fn apply_js_on_ready(page: &chromiumoxide::Page, resolved: &ResolvedConfig) -> Result<()> {
+async fn apply_js_on_ready(
+    page: &chromiumoxide::Page,
+    resolved: &ResolvedConfig,
+    log_prefix: &str,
+) -> Result<()> {
     let js_path = resolved
         .js_on_ready_path
         .as_deref()
@@ -732,7 +792,7 @@ async fn apply_js_on_ready(page: &chromiumoxide::Page, resolved: &ResolvedConfig
         return Ok(()); // No script file — that's fine
     };
 
-    eprintln!("    Executing jsOnReady script: {}", js_path.display());
+    eprintln!("{} Executing jsOnReady script: {}", log_prefix, js_path.display());
     let js_content = std::fs::read_to_string(&js_path)?;
     page.evaluate(js_content).await?;
 

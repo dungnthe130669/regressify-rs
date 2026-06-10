@@ -16,6 +16,7 @@ use crate::{
     snapshot,
     test::{
         browsers::fetcher,
+        test_scenario::{make_log_prefix, scenario_capture_count},
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
     types::{TestSuite, TestSuiteFormat, TestSuiteInput, UrlReplacement},
@@ -195,8 +196,28 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let active_replacements = Arc::new(active_replacements);
     let mut handles = Vec::new();
 
+    // Precompute the global log index/total over all scenario/viewport pairs so
+    // logs from scenarios running in parallel can be filtered. Each
+    // scenario/viewport pair is counted independently (matching the TS version).
+    let mut base_indices: Vec<usize> = Vec::new();
+    let mut scenario_total = 0usize;
     for (_input, suite) in &parsed_suites {
         for scenario_idx in 0..suite.scenarios.len() {
+            base_indices.push(scenario_total + 1);
+            scenario_total += scenario_capture_count(
+                workspace_config.as_ref(),
+                suite,
+                &suite.scenarios[scenario_idx],
+            );
+        }
+    }
+
+    let mut flat_idx = 0usize;
+    for (_input, suite) in &parsed_suites {
+        for scenario_idx in 0..suite.scenarios.len() {
+            let base_index = base_indices[flat_idx];
+            let total = scenario_total;
+            flat_idx += 1;
             let sem = semaphore.clone();
             let suite = suite.clone();
             let exe_path = exe_path.clone();
@@ -208,6 +229,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                     eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
                     return TaskStatus::InfraFailed;
                 };
+                let log_prefix = make_log_prefix(base_index, total);
                 let label = suite.scenarios[scenario_idx]
                     .label
                     .as_deref()
@@ -220,6 +242,8 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                     &suite.scenarios,
                     &ws_config,
                     &replacements,
+                    base_index,
+                    total,
                 )
                 .await
                 {
@@ -228,12 +252,19 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                         // Page errors (timeout, not found, ...) are expected for a
                         // visual regression tool — log and continue, the result is
                         // reflected in the comparison report.
-                        eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                        eprintln!(
+                            "{} {} Scenario '{}' failed: {:?}",
+                            log_prefix,
+                            "ERROR:".red(),
+                            label,
+                            e
+                        );
                         TaskStatus::PageFailed
                     }
                     ScenarioOutcome::InfraFailed(e) => {
                         eprintln!(
-                            "  {} Scenario '{}' failed (infrastructure): {:?}",
+                            "{} {} Scenario '{}' failed (infrastructure): {:?}",
+                            log_prefix,
                             "ERROR:".red(),
                             label,
                             e
@@ -384,8 +415,28 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let active_replacements = Arc::new(Vec::<UrlReplacement>::new());
     let mut handles = Vec::new();
 
+    // Precompute the global log index/total over all scenario/viewport pairs so
+    // logs from scenarios running in parallel can be filtered. Each
+    // scenario/viewport pair is counted independently (matching the TS version).
+    let mut base_indices: Vec<usize> = Vec::new();
+    let mut scenario_total = 0usize;
     for (_input, suite) in &parsed_suites {
         for scenario_idx in 0..suite.scenarios.len() {
+            base_indices.push(scenario_total + 1);
+            scenario_total += scenario_capture_count(
+                workspace_config.as_ref(),
+                suite,
+                &suite.scenarios[scenario_idx],
+            );
+        }
+    }
+
+    let mut flat_idx = 0usize;
+    for (_input, suite) in &parsed_suites {
+        for scenario_idx in 0..suite.scenarios.len() {
+            let base_index = base_indices[flat_idx];
+            let total = scenario_total;
+            flat_idx += 1;
             let sem = semaphore.clone();
             let suite = suite.clone();
             let exe_path = exe_path.clone();
@@ -397,6 +448,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                     eprintln!("  {} Scenario semaphore closed", "ERROR:".red());
                     return TaskStatus::InfraFailed;
                 };
+                let log_prefix = make_log_prefix(base_index, total);
                 let label = suite.scenarios[scenario_idx]
                     .label
                     .as_deref()
@@ -409,6 +461,8 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                     &suite.scenarios,
                     &ws_config,
                     &replacements,
+                    base_index,
+                    total,
                 )
                 .await
                 {
@@ -417,12 +471,19 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                         // Page errors (timeout, not found, ...) are expected for a
                         // visual regression tool — log and continue. The scenario
                         // simply won't produce a reference screenshot this run.
-                        eprintln!("  {} Scenario '{}' failed: {:?}", "ERROR:".red(), label, e);
+                        eprintln!(
+                            "{} {} Scenario '{}' failed: {:?}",
+                            log_prefix,
+                            "ERROR:".red(),
+                            label,
+                            e
+                        );
                         TaskStatus::PageFailed
                     }
                     ScenarioOutcome::InfraFailed(e) => {
                         eprintln!(
-                            "  {} Scenario '{}' failed (infrastructure): {:?}",
+                            "{} {} Scenario '{}' failed (infrastructure): {:?}",
+                            log_prefix,
                             "ERROR:".red(),
                             label,
                             e
