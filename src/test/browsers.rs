@@ -104,6 +104,25 @@ pub async fn launch_browser(
         "--disable-setuid-sandbox",
         "--no-sandbox",
         "--window-position=0,0",
+        // Rendering-determinism flags. Without these, consecutive captures of a
+        // visually-identical page differ by a handful of off-by-a-few color
+        // values on anti-aliased edges (e.g. a single white vs. cream pixel).
+        // Even a one-pixel change re-aligns the entire deflate stream, so git
+        // sees the whole PNG as changed and `ref` floods the baseline with
+        // noise. These flags pin color management and rasterization so the same
+        // pixels come out every run (matching Playwright's default screenshot
+        // behavior, which the Node.js version relied on).
+        //
+        // - force-color-profile=srgb: render into a fixed color space instead of
+        //   the host display's ICC profile (the main source of color drift).
+        // - disable-skia-runtime-opts: disable runtime CPU-feature detection so
+        //   the same SIMD rounding is used every run.
+        // - font-render-hinting=none: deterministic glyph rasterization.
+        // - disable-partial-raster: never reuse partially-rasterized tiles.
+        "--force-color-profile=srgb",
+        "--disable-skia-runtime-opts",
+        "--font-render-hinting=none",
+        "--disable-partial-raster",
     ];
     if options.ignore_ssl_errors {
         args.push("--ignore-certificate-errors");
