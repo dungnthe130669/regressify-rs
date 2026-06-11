@@ -18,6 +18,7 @@ mod compare;
 mod config;
 mod github;
 mod helpers;
+mod init;
 mod optimizer;
 mod snapshot;
 mod test;
@@ -60,6 +61,21 @@ async fn exec_commands(cli: Cli) -> Result<()> {
     set_global_vars(&cli)?;
 
     match cli.command {
+        Command::Init => init::init(),
+
+        Command::Install => {
+            let exe = test::fetcher()
+                .await
+                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
+            eprintln!("Browser executable: {}", exe.display());
+            Ok(())
+        }
+
+        Command::Version => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
+
         Command::Snapshot(args) => snapshot::snapshot(args),
 
         Command::Optimize(args) => optimizer::optimize(args),
@@ -87,6 +103,7 @@ fn set_global_vars(cli: &Cli) -> Result<()> {
     common::REGRESSIFY_DIR_NAME.set_value(regressify_dir_name)?;
     common::REGRESSIFY_DIR.set_value(regressify_dir)?;
     common::DEBUG.set_value(cli.debug)?;
+    common::REQUIRED_LOGIN.set_value(cli.required_login)?;
 
     common::ASYNC_CAPTURE_LIMIT.set_value((cli.async_capture_limit as usize).max(1))?;
     common::ASYNC_CAPTURE_RAMP_MS.set_value(cli.async_capture_ramp_ms)?;

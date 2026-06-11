@@ -31,6 +31,8 @@ scenarios:
 
 The purpose of these tests is to load the specified URLs and capture screenshots. For more complex test cases, you can utilize a combination of the properties provided below.
 
+Configuration is validated before browser capture starts. Malformed suite files, invalid viewport names, invalid replacement regexes, and unsupported browser settings stop the command early. Website failures during scenario execution are written to the reports instead of stopping sibling scenarios.
+
 ## Properties
 
 ### Required properties
@@ -71,7 +73,7 @@ asyncCompareLimit
 Type: `number`.  
 Default value: `50`.
 
-This parameter dictates the maximum number of screens that can be compared in parallel. Unlike `asyncCaptureLimit`, this value isn't dependent on your network connections or your website's capacity. Instead, it's contingent on your computer's hardware specifications. If your computer boasts robust hardware capabilities, increasing this value will result in quicker comparisons between reference and test results.
+This parameter is accepted for compatibility with older test libraries. The current Rust comparison pipeline does not use this value yet.
 
 {% end %}
 
@@ -83,9 +85,9 @@ browser
 
 Type: `string`.  
 Default value: `chromium`.  
-Allowed values: `chromium`, `firefox`, `webkit`.
+Allowed value: `chromium`.
 
-The browser used for the test.
+The browser used for the test. The Rust CLI currently uses Chromium through the Chrome DevTools Protocol. `firefox` and `webkit` are rejected as configuration errors until those backends are implemented.
 
 {% end %}
 
@@ -98,7 +100,7 @@ debug
 Type: `boolean`.  
 Default value: `false`.
 
-Should the tool displays the Chrome window as tests are running. This will allow you to visually see your app state at the time of your test.
+Should the tool display the Chromium window as tests are running. This will allow you to visually see your app state at the time of your test. The global `--debug` flag also enables headed mode.
 
 Example:
 
@@ -118,6 +120,19 @@ Type: `string`.
 
 CSS override path.  
 Default value: **common/_override.css**
+
+{% end %}
+
+{% spoiler() %}
+
+cookiePath
+
+:::::
+
+Type: `string`.
+Default value: `common/_cookies.yaml`.
+
+Path to a YAML cookie file. Relative paths are resolved from the project root and must stay inside the project. Cookies are loaded before the initial page navigation so they can affect the first request.
 
 {% end %}
 
@@ -172,7 +187,7 @@ postInteractionWait
 Type: `number`.  
 Default value: `1000`.  
 
-Wait for X miliseconds prior to screen shot.
+Wait for X milliseconds after actions and before the final screenshot. Scenario values override test-suite values, which override workspace values, which fall back to `1000`.
 
 {% end %}
 
@@ -199,7 +214,9 @@ state
 Type: `string | string[]`.  
 Default value: Empty.
 
-Loads a previously saved browser state before running tests. This should be used in conjunction with the [persist action][action-persist].
+Loads a previously saved browser state before running tests. This should be used in conjunction with the [persist action][action-persist]. State files are stored under the active output directory, for example `.regressify/states/user-aaaa.json` or `.regressify__staging/states/user-aaaa.json` when `--site-env staging` is used.
+
+Persisted cookies are restored before the first navigation. Persisted local storage is restored after the page origin exists, then the page is reloaded so application startup code can observe it.
 
 Example:
 
@@ -218,7 +235,7 @@ urlReplacements
 Type: `ReplacementModel[]`.  
 Default value: `[]`.
 
-Find/replace for the URLs in `test` command.
+Find/replace for URLs in the `test` command. Invalid regex replacements are treated as configuration errors before scenarios start.
 
 Example:
 
@@ -259,6 +276,7 @@ Type: `string | string[]`.
 Default value: all available viewports.
 
 Choose the viewports you want applied for the test suite.
+Unknown viewport names are configuration errors. Viewport labels are matched case-insensitively.
 
 Sample:
 
@@ -267,6 +285,19 @@ viewportNames:
   - tablet
   - desktop
 ```
+
+{% end %}
+
+{% spoiler() %}
+
+viewportsPath
+
+:::::
+
+Type: `string`.  
+Default value: `common/_viewports.yaml`.
+
+Path to the viewport definition file. Each viewport must have a non-empty label and non-zero `width` and `height`. Duplicate labels are rejected case-insensitively.
 
 {% end %}
 

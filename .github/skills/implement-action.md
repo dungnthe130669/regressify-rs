@@ -15,7 +15,7 @@ Use this skill when:
 - `src/test/test_action.rs` — Action execution (`exec_test_action`)
 - `src/test/test_scenario.rs` — Scenario orchestration (calls `exec_test_action`)
 - `src/test/test_suites.rs` — Top-level orchestration (runs all scenarios concurrently)
-- `docs/actions.md` — Action documentation
+- `docs/create-action.md` — Action documentation
 
 ## Error Handling Philosophy
 
@@ -24,8 +24,8 @@ Each scenario is an **independent test**:
 - If an action fails → the scenario fails immediately (return `Err`, do NOT continue remaining actions).
 - A failed scenario MUST NOT prevent other scenarios from running. The orchestrator catches errors per-scenario and logs them.
 - **Never** use `panic!`, `.unwrap()` on fallible ops, or `.ok()` to swallow errors inside action handlers.
-- Use `?` to propagate all errors. Use `anyhow::bail!()` for validation failures.
-- The user expects a full pass/fail report for ALL scenarios every run.
+- Use `?` to propagate all action errors. Use `anyhow::bail!()` for validation failures.
+- The orchestrator records page/action failures as report results and continues other scenarios; do not convert action failures into process exits.
 
 ## Implementation Checklist
 
@@ -164,7 +164,7 @@ anyhow::bail!(
 
 **NEVER use JS `el.click()` for the click action** — it bypasses overlay detection and doesn't simulate real user behavior. Use CDP `Input.dispatchMouseEvent` at the element's coordinates.
 
-### 6. Update Documentation (`docs/actions.md`)
+### 6. Update Documentation (`docs/create-action.md`)
 
 Add a section following the existing format:
 
@@ -215,8 +215,7 @@ actions:
 
 - Focus element first
 - If `append` is not true, clear value: `el.value = ''`
-- Use CDP `Input.dispatchKeyEvent` for each character (simulates real typing)
-- OR use `element.type_str()` from chromiumoxide
+- Use CDP `Input.insertText` for top-frame text insertion or the established native-value-setter fallback for same-origin frames
 - Dispatch `input` and `change` events for framework compatibility
 
 ### press

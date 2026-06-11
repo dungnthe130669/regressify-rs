@@ -4,6 +4,15 @@ use crate::cli::args::{ApproveArgs, CompareArgs, OptimizeArgs, RefArgs, Snapshot
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Initialize a Regressify test workspace
+    Init,
+
+    /// Fetch/install the Chromium browser used by this CLI
+    Install,
+
+    /// Print the CLI version
+    Version,
+
     /// Snapshot command
     Snapshot(SnapshotArgs),
 

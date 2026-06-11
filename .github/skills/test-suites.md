@@ -17,11 +17,13 @@ All test suite files live in `visual_tests/` with the naming convention:
 visual_tests/{name}.tests.yaml
 ```
 
+The Rust CLI also accepts `.tests.yml` and `.tests.json`. If multiple formats exist for the same suite name, discovery uses `.tests.yaml`, then `.tests.yml`, then `.tests.json`.
+
 ## YAML Structure
 
 ```yaml
 # Suite-level configuration (all optional except scenarios)
-postInteractionWait: 5000          # ms to wait after all actions (default: 0)
+postInteractionWait: 5000          # ms to wait after all actions (default: 1000)
 misMatchThreshold: 0.1             # Pixel diff tolerance (0-100, default: 0.1)
 cssOverridePath: common/_override.css  # CSS to inject into all scenarios
 hideSelectors:                     # Selectors to hide in ALL scenarios
@@ -30,7 +32,7 @@ hideSelectors:                     # Selectors to hide in ALL scenarios
 removeSelectors:                   # Selectors to remove in ALL scenarios
   - '.ads'
 state:                             # Load persisted state before scenarios
-  - signed-in                      # Matches .regressify/states/signed-in.json
+  - signed-in                      # Matches {REGRESSIFY_DIR}/states/signed-in.json
 urlReplacements:                   # URL variable substitution
   - ref: '{{BASE_URL}}'
     test: 'https://staging.example.com'
@@ -40,13 +42,15 @@ scenarios:
     label: Descriptive name         # Used for display and ID generation
     id: custom-id                   # Optional explicit ID (auto-generated from label if omitted)
     delay: 1000                     # ms to wait before screenshot
-    selectors:                      # What to capture (default: full document)
-      - viewport                    # Capture viewport size only
+    # selectors is accepted by the type model but not implemented yet;
+    # the Rust CLI captures full-page screenshots.
     hideSelectors:                  # Override suite-level hideSelectors
       - '.dynamic-content'
     removeSelectors:                # Override suite-level removeSelectors
       - '.timestamp'
     noScrollTop: true               # Skip auto-scroll to load lazy images
+    restore: signed-in              # Restore persisted state for this scenario
+    requiredLogin: true             # Exposed to jsOnReady scripts as context
     cookiePath: common/_cookies.yaml
     cssOverridePath: common/_override.css
     needs: other-scenario-id        # Run another scenario's actions first
@@ -158,8 +162,8 @@ needs:
 The `url` property in wait supports:
 
 - Exact match: `https://example.com/page`
-- Glob suffix: `**/page` (matches any URL ending with `/page`)
-- Glob contains: `**/dashboard` + `**` patterns
+- Simple `**` prefix/suffix patterns such as `**/page`
+- Other glob syntax (`*`, `?`, multiple wildcard segments) is not currently implemented
 
 ## Best Practices
 
@@ -170,3 +174,10 @@ The `url` property in wait supports:
 5. **Keep scenarios independent** — Use `needs` instead of ordering dependencies
 6. **Set `misMatchThreshold`** — Anti-aliasing differences cause false failures at 0
 7. **Use `noScrollTop: true`** for single-viewport captures — Avoids unnecessary scrolling
+
+## Config Validation Notes
+
+- Only `browser: chromium` is supported.
+- Unknown viewport names, duplicate viewport labels, empty labels, and zero dimensions are config errors.
+- Invalid regex URL replacements are config errors.
+- Website failures should be captured in reports and should not stop sibling scenarios.

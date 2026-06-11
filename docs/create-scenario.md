@@ -52,11 +52,14 @@ Provide the list of actions that the test browser should execute in sequence. Av
 | check   | Check a radio or checkbox                                |
 | click   | Click an element                                         |
 | focus   | Focus an element                                         |
+| goto    | Navigate to a URL                                        |
 | hide    | Hide an element - set `visibility: hidden !important`    |
 | hover   | Hover an element                                         |
 | input   | Type text in an element or upload files                  |
+| persist | Save cookies and local storage for later scenarios       |
 | press   | Press a key (or key combination) on an element           |
 | remove  | Remove an element - set `display: none !important`       |
+| save    | Capture an intermediate screenshot                       |
 | scroll  | Scroll to an element                                     |
 | select  | Select an option inside a `select` element               |
 | uncheck | Uncheck a radio or checkbox                              |
@@ -114,16 +117,9 @@ actions:
   - wait: .popup
 ```
 
-If the `actions` property is set, the following properties will be ignored:
+Actions are executed in the order listed. If `clickSelector` is also set, it runs after the action list; prefer the explicit `click` action for new suites. `postInteractionWait` still applies after actions.
 
-- `clickSelector`
-- `clickSelectors`
-- `hoverSelector`
-- `hoverSelectors`
-- `keyPressSelector`
-- `keyPressSelectors`
-- `scrollToSelector`
-- `postInteractionWait`
+Legacy properties such as `clickSelectors`, `hoverSelector`, `hoverSelectors`, `keyPressSelector`, `keyPressSelectors`, and `scrollToSelector` are not implemented by the Rust CLI.
 
 {% end %}
 
@@ -145,9 +141,9 @@ cookiePath
 :::::
 
 Type: `string`.  
-Default value: Test suite's value.
+Default value: Test suite's value, then workspace value, then `common/_cookies.yaml`.
 
-Import cookies in YAML format.
+Import cookies in YAML format. Cookies are loaded before the first navigation and the path must stay inside the project root.
 
 {% end %}
 
@@ -290,6 +286,8 @@ Default value: `false`.
 
 Disable scrollTop prior to screen capture.
 
+By default, Regressify scrolls the page down and back to the top before the final screenshot to trigger lazy-loaded images. Set this to `true` when that behavior is not wanted.
+
 {% end %}
 
 {% spoiler() %}
@@ -299,9 +297,45 @@ postInteractionWait
 :::::
 
 Type: `number`.  
-Default value: Test suite's value.  
+Default value: Test suite's value, then workspace value, then `1000`.
 
-Wait for X milliseconds before taking the screenshot.
+Wait for X milliseconds after actions and before taking the screenshot. Set this to `0` when the scenario should capture immediately after interactions.
+
+{% end %}
+
+{% spoiler() %}
+
+restore
+
+:::::
+
+Type: `string | string[]`.  
+Default value: Test suite `state`, then workspace `state`.
+
+Restore one or more persisted states for this scenario. Values are combined with suite/workspace `state` values and duplicates are removed while preserving order. State files are loaded from the active output directory, for example `.regressify/states/auth.json` or `.regressify__staging/states/auth.json`.
+
+Example:
+
+```yaml
+scenarios:
+  - url: https://www.domain.com/account
+    restore:
+      - auth
+      - preferences
+```
+
+{% end %}
+
+{% spoiler() %}
+
+requiredLogin
+
+:::::
+
+Type: `boolean`.  
+Default value: Workspace value, then `false`.
+
+Marks the scenario as requiring login in the resolved scenario context. The global `--requiredLogin` flag forces this value to `true` for every scenario. The Rust CLI exposes the value to custom page scripts as `window.__REGRESSIFY__.requiredLogin` and `window.regressify.requiredLogin`; the actual login flow should still be implemented through persisted `state`, `restore`, cookie files, or explicit actions.
 
 {% end %}
 
@@ -330,6 +364,7 @@ Default value: all available viewports.
 
 Choose the viewports you want applied for the scenario.  
 If this property is set at both the scenario and test suite levels, the scenario-level setting will take precedence.
+Unknown viewport names fail as configuration errors before any browser is launched.
 
 Sample:
 
@@ -343,6 +378,16 @@ scenarios:
     actions:
       - click: theme-toggle
 ```
+
+{% end %}
+
+{% spoiler(danger=true) %}
+
+selectors - *not implemented in the Rust CLI*
+
+:::::
+
+The type model accepts `selectors` for compatibility, but the Rust CLI currently captures the full page only. Use separate scenarios, CSS overrides, or hide/remove actions when you need a narrower visual target.
 
 {% end %}
 
@@ -360,7 +405,7 @@ Type: `string`.
 Default value: Empty.
 
 Click the specified DOM element prior to screen shot.  
-Notes: this property will be ignored if the [actions](#spoiler--actions) property is set.
+Notes: this legacy property runs after `actions` when both are configured. Prefer the explicit `click` action for new suites.
 
 {% end %}
 
@@ -376,7 +421,7 @@ Type: `string[]`.
 Default value: `[]`.
 
 Click the specified DOM elements prior to screen shot.  
-Notes: this property will be ignored if the [actions](#spoiler--actions) property is set.
+Notes: this legacy property is not implemented by the Rust CLI. Prefer the explicit `click` action for new suites.
 
 {% end %}
 
@@ -392,7 +437,7 @@ Type: `string[]`.
 Default value: Test suite's value.
 
 Array of selectors set to `visibility: hidden`  
-Notes: this property will be ignored if the [actions](#spoiler--actions) property is set.
+Notes: this property is applied through the config cascade before capture. Prefer the explicit `hide` action when the change belongs to a specific action sequence.
 
 {% end %}
 
@@ -408,7 +453,7 @@ Type: `string[]`.
 Default value: Test suite's value.
 
 Array of selectors set to `display: none`.  
-Notes: this property will be ignored if the [actions](#spoiler--actions) property is set.
+Notes: this property is applied through the config cascade before capture. Prefer the explicit `remove` action when the change belongs to a specific action sequence.
 
 {% end %}
 

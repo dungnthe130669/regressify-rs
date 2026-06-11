@@ -9,8 +9,8 @@ use crate::{
     config::{self, ResolvedConfig, WorkspaceConfig},
     helpers::{OnceLockExtensions, slugify},
     test::{
-        capture::{save_screenshot, write_error_screenshot},
-        test_action::exec_test_action,
+        capture::{save_screenshot, state_path, validate_state_name, write_error_screenshot},
+        test_action::{ActionExecutionContext, exec_test_action},
     },
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
 };
@@ -35,10 +35,11 @@ fn collect_needs_actions<'a>(
             continue; // Already processed — avoid cycles
         }
 
-        if let Some(dep_scenario) = all_scenarios
-            .iter()
-            .find(|s| s.id.as_deref() == Some(needed_id))
-        {
+        if let Some(dep_scenario) = all_scenarios.iter().find(|s| {
+            s.id.as_deref()
+                .map(|id| id.eq_ignore_ascii_case(needed_id))
+                .unwrap_or(false)
+        }) {
             visited.push(needed_id.to_string());
             // Recursively collect dependencies of this dependency first
             let dep_actions = collect_needs_actions(dep_scenario, all_scenarios, visited);
@@ -77,13 +78,13 @@ pub(crate) fn scenario_capture_viewports(
     workspace_config: &WorkspaceConfig,
     test_suite: &TestSuite,
     scenario: &TestScenario,
-) -> Vec<Option<config::viewports::ViewportDef>> {
+) -> Result<Vec<Option<config::viewports::ViewportDef>>> {
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
-    let viewports = resolve_scenario_viewports(&resolved).unwrap_or_default();
+    let viewports = resolve_scenario_viewports(&resolved)?;
     if viewports.is_empty() {
-        vec![None]
+        Ok(vec![None])
     } else {
-        viewports.into_iter().map(Some).collect()
+        Ok(viewports.into_iter().map(Some).collect())
     }
 }
 
@@ -97,19 +98,19 @@ pub(crate) fn scenario_capture_prefixes(
     workspace_config: &WorkspaceConfig,
     test_suite: &TestSuite,
     scenario: &TestScenario,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
     let Some(scenario_id) = scenario.id.as_deref() else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
-    let viewports = resolve_scenario_viewports(&resolved).unwrap_or_default();
+    let viewports = resolve_scenario_viewports(&resolved)?;
     if viewports.is_empty() {
-        vec![scenario_id.to_string()]
+        Ok(vec![scenario_id.to_string()])
     } else {
-        viewports
+        Ok(viewports
             .iter()
             .map(|vp| format!("{}_{}", scenario_id, slugify(&vp.label)))
-            .collect()
+            .collect())
     }
 }
 
@@ -124,6 +125,7 @@ pub(crate) struct ScenarioRequest<'a> {
     pub all_scenarios: &'a [TestScenario],
     pub workspace_config: &'a WorkspaceConfig,
     pub replacement_profile: &'a [UrlReplacement],
+    pub apply_url_replacements: bool,
     /// The viewport to capture, or `None` to capture at the browser default size.
     pub viewport: Option<&'a config::viewports::ViewportDef>,
     /// 1-based dedicated index of this scenario/viewport pair in the global count.
@@ -140,6 +142,7 @@ struct CaptureContext<'a> {
     all_scenarios: &'a [TestScenario],
     resolved: &'a ResolvedConfig,
     url: &'a str,
+    url_replacements: &'a [UrlReplacement],
     viewport: Option<&'a config::viewports::ViewportDef>,
     log_prefix: &'a str,
 }
@@ -151,6 +154,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
         all_scenarios,
         workspace_config,
         replacement_profile,
+        apply_url_replacements: should_apply_url_replacements,
         viewport,
         index,
         total,
@@ -174,13 +178,12 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
     // Resolve configuration cascade: scenario -> suite -> workspace -> defaults
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
 
-    // Apply urlReplacements to the scenario URL
-    let url = apply_url_replacements(
-        &scenario.url,
-        test_suite,
-        workspace_config,
-        replacement_profile,
-    );
+    let url_replacements = if should_apply_url_replacements {
+        collect_url_replacements(test_suite, workspace_config, replacement_profile)
+    } else {
+        Vec::new()
+    };
+    let url = apply_url_replacements(&scenario.url, &url_replacements);
 
     // This request captures exactly one scenario/viewport pair. When a viewport
     // is present the full page lifecycle (navigation + actions) is replayed at
@@ -205,6 +208,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
             all_scenarios,
             resolved: &resolved,
             url: &url,
+            url_replacements: &url_replacements,
             viewport,
             log_prefix: &log_prefix,
         },
@@ -225,10 +229,7 @@ fn resolve_scenario_viewports(
     if all.is_empty() {
         return Ok(Vec::new());
     }
-    Ok(config::viewports::resolve_viewports(
-        resolved.viewport_names.as_deref(),
-        &all,
-    ))
+    config::viewports::resolve_viewports(resolved.viewport_names.as_deref(), &all)
 }
 
 /// Apply a viewport size to the page via CDP device-metrics emulation.
@@ -293,6 +294,7 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         all_scenarios,
         resolved,
         url,
+        url_replacements,
         viewport,
         log_prefix,
     } = ctx;
@@ -309,20 +311,31 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         page.execute(cmd).await?;
     }
     apply_viewport(&page, viewport).await?;
-    page.goto(url).await?;
 
-    // Load state (cookies + localStorage) if configured at suite level
-    if let Some(ref state) = test_suite.state {
-        load_state(&page, state, log_prefix).await?;
+    // Load cookies before the first navigation so authenticated/session state
+    // can affect the initial request.
+    if let Some(ref state) = resolved.state {
+        load_state_cookies(&page, state, log_prefix).await?;
     }
-
-    // Load cookies from cookiePath (defaults to common/_cookies.yaml; skipped
-    // if the file does not exist)
     let cookie_path = resolved
         .cookie_path
         .as_deref()
         .unwrap_or("common/_cookies.yaml");
     load_cookie_path(&page, cookie_path, log_prefix).await?;
+
+    page.goto(url).await?;
+
+    // localStorage requires an origin, so it is restored after navigation. If
+    // anything was restored, reload so app code observes it during startup.
+    if let Some(ref state) = resolved.state
+        && load_state_local_storage(&page, state, log_prefix).await?
+    {
+        eprintln!(
+            "{} Reloading page after restoring localStorage...",
+            log_prefix
+        );
+        page.goto(url).await?;
+    }
 
     // Apply CSS override if configured
     apply_css_override(&page, resolved, log_prefix).await?;
@@ -334,6 +347,8 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
     for sel in &resolved.remove_selectors {
         inject_css(&page, sel, "display: none !important").await?;
     }
+
+    expose_scenario_context(&page, scenario, resolved).await?;
 
     // Execute jsOnReadyPath script (defaults to common/_on-ready.js; skipped if
     // the file does not exist)
@@ -350,13 +365,16 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         );
         for action in &needs_actions {
             exec_test_action(
-                &page,
-                test_suite,
-                scenario,
+                ActionExecutionContext {
+                    page: &page,
+                    test_suite,
+                    scenario,
+                    config: resolved,
+                    url_replacements,
+                    viewport_label,
+                    log_prefix,
+                },
                 action,
-                resolved,
-                viewport_label,
-                log_prefix,
             )
             .await?;
         }
@@ -367,13 +385,16 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         eprintln!("{} Executing {} actions...", log_prefix, actions.len());
         for action in actions {
             exec_test_action(
-                &page,
-                test_suite,
-                scenario,
+                ActionExecutionContext {
+                    page: &page,
+                    test_suite,
+                    scenario,
+                    config: resolved,
+                    url_replacements,
+                    viewport_label,
+                    log_prefix,
+                },
                 action,
-                resolved,
-                viewport_label,
-                log_prefix,
             )
             .await?;
         }
@@ -518,21 +539,24 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
 
 /// Apply urlReplacements from the test suite to a URL.
 /// Supports both literal string replacement and regex replacement.
-fn apply_url_replacements(
-    url: &str,
+fn collect_url_replacements(
     test_suite: &TestSuite,
     workspace_config: &WorkspaceConfig,
     replacement_profile: &[UrlReplacement],
-) -> String {
-    let mut result = url.to_string();
-    result = config::replacements::apply_replacements(&result, replacement_profile);
-    if let Some(ref replacements) = workspace_config.url_replacements {
-        result = config::replacements::apply_replacements(&result, replacements);
+) -> Vec<UrlReplacement> {
+    let mut combined = replacement_profile.to_vec();
+    if let Some(ref workspace_replacements) = workspace_config.url_replacements {
+        combined.extend(workspace_replacements.clone());
     }
-    if let Some(ref replacements) = test_suite.url_replacements {
-        result = config::replacements::apply_replacements(&result, replacements);
+    if let Some(ref suite_replacements) = test_suite.url_replacements {
+        combined.extend(suite_replacements.clone());
     }
-    result
+    combined
+}
+
+/// Apply URL replacements in declaration order.
+fn apply_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+    config::replacements::apply_replacements(url, replacements)
 }
 
 fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
@@ -556,26 +580,20 @@ fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
     Ok(Some(canonical_path))
 }
 
-/// Load persisted state (cookies + localStorage) into the page.
-async fn load_state(page: &chromiumoxide::Page, state: &Needs, log_prefix: &str) -> Result<()> {
+/// Load persisted state cookies before the first navigation.
+async fn load_state_cookies(
+    page: &chromiumoxide::Page,
+    state: &Needs,
+    log_prefix: &str,
+) -> Result<()> {
     let state_names = match state {
         Needs::String(s) => vec![s.clone()],
         Needs::StringArray(v) => v.clone(),
     };
 
     for name in &state_names {
-        if name.contains('/') || name.contains('\\') || name.contains("..") {
-            anyhow::bail!(
-                "Invalid state name '{}': must not contain path separators or '..'",
-                name
-            );
-        }
-
-        let root_dir = common::ROOT_DIR.get_required()?;
-        let state_path = root_dir
-            .join(".regressify")
-            .join("states")
-            .join(format!("{}.json", name));
+        validate_state_name(name)?;
+        let state_path = state_path(name)?;
 
         if !state_path.exists() {
             eprintln!(
@@ -602,17 +620,6 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs, log_prefix: &str)
                 name
             );
         }
-        if let Some(ls) = state.get("localStorage")
-            && !ls.is_object()
-        {
-            eprintln!(
-                "{} {} State '{}': 'localStorage' is not an object; ignoring",
-                log_prefix,
-                "WARNING:".yellow(),
-                name
-            );
-        }
-
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
             use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite};
@@ -655,9 +662,52 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs, log_prefix: &str)
                 }
             }
         }
+    }
+
+    Ok(())
+}
+
+/// Load persisted localStorage after navigation, once an origin exists.
+async fn load_state_local_storage(
+    page: &chromiumoxide::Page,
+    state: &Needs,
+    log_prefix: &str,
+) -> Result<bool> {
+    let state_names = match state {
+        Needs::String(s) => vec![s.clone()],
+        Needs::StringArray(v) => v.clone(),
+    };
+
+    let mut restored = false;
+
+    for name in &state_names {
+        validate_state_name(name)?;
+        let state_path = state_path(name)?;
+
+        if !state_path.exists() {
+            continue;
+        }
+
+        let content = std::fs::read_to_string(&state_path)?;
+        let state: serde_json::Value = serde_json::from_str(&content)?;
+
+        if let Some(ls) = state.get("localStorage")
+            && !ls.is_object()
+        {
+            eprintln!(
+                "{} {} State '{}': 'localStorage' is not an object; ignoring",
+                log_prefix,
+                "WARNING:".yellow(),
+                name
+            );
+        }
 
         // Restore localStorage
         if let Some(local_storage) = state.get("localStorage").and_then(|v| v.as_object()) {
+            if !local_storage.is_empty() {
+                eprintln!("{} Restoring localStorage from state: {}", log_prefix, name);
+                restored = true;
+            }
             for (key, value) in local_storage {
                 if let Some(val_str) = value.as_str() {
                     let script = format!(
@@ -680,7 +730,7 @@ async fn load_state(page: &chromiumoxide::Page, state: &Needs, log_prefix: &str)
         }
     }
 
-    Ok(())
+    Ok(restored)
 }
 
 /// Load cookies from a YAML file.
@@ -822,6 +872,30 @@ async fn apply_js_on_ready(
     let js_content = std::fs::read_to_string(&js_path)?;
     page.evaluate(js_content).await?;
 
+    Ok(())
+}
+
+async fn expose_scenario_context(
+    page: &chromiumoxide::Page,
+    scenario: &TestScenario,
+    resolved: &ResolvedConfig,
+) -> Result<()> {
+    let payload = serde_json::json!({
+        "requiredLogin": resolved.required_login,
+        "scenario": {
+            "id": scenario.id.as_deref(),
+            "label": scenario.label.as_deref(),
+            "description": scenario.description.as_deref(),
+            "url": scenario.url.as_str(),
+            "requiredLogin": resolved.required_login,
+        }
+    });
+    let payload_json = serde_json::to_string(&payload)?;
+    let script = format!(
+        "(() => {{ window.__REGRESSIFY__ = {payload}; window.regressify = window.__REGRESSIFY__; }})()",
+        payload = payload_json
+    );
+    page.evaluate(script).await?;
     Ok(())
 }
 

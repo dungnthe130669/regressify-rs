@@ -34,6 +34,8 @@ pub struct TestSuite {
 
     pub bypass_csp: Option<bool>,
 
+    pub cookie_path: Option<String>,
+
     pub css_override_path: Option<String>,
 
     pub debug: Option<bool>,
@@ -63,7 +65,7 @@ pub struct TestSuite {
     pub viewports_path: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Browser {
     Chromium,
@@ -108,6 +110,10 @@ pub struct TestScenario {
     pub post_interaction_wait: Option<f64>,
 
     pub remove_selectors: Option<Vec<String>>,
+
+    pub required_login: Option<bool>,
+
+    pub restore: Option<Needs>,
 
     /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
     /// the viewport size.

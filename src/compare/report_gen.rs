@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::path::Path;
 
@@ -6,7 +7,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
-use crate::test::capture::{REPORT_ORDER_FILE, read_error_marker};
+use crate::test::capture::{REPORT_ORDER_FILE, REPORT_THRESHOLDS_FILE, read_error_marker};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -65,16 +66,28 @@ fn read_report_order(tests_dir: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Position of a screenshot in the ordering manifest, derived from its filename
-/// prefix (`<scenario-id>[_<viewport>]`, the part before `__<step|FINAL>`).
-/// Screenshots not listed in the manifest sort after all listed ones.
-fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
-    let prefix = file_name
+fn read_report_thresholds(tests_dir: &Path) -> HashMap<String, f64> {
+    let path = tests_dir.join(REPORT_THRESHOLDS_FILE);
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<HashMap<String, f64>>(&content).ok())
+        .unwrap_or_default()
+}
+
+fn screenshot_prefix(file_name: &str) -> &str {
+    file_name
         .strip_suffix(".png")
         .unwrap_or(file_name)
         .split("__")
         .next()
-        .unwrap_or("");
+        .unwrap_or("")
+}
+
+/// Position of a screenshot in the ordering manifest, derived from its filename
+/// prefix (`<scenario-id>[_<viewport>]`, the part before `__<step|FINAL>`).
+/// Screenshots not listed in the manifest sort after all listed ones.
+fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
+    let prefix = screenshot_prefix(file_name);
     order.iter().position(|p| p == prefix).unwrap_or(usize::MAX)
 }
 
@@ -122,6 +135,7 @@ pub fn generate_comparison_report(
     // manifest (e.g. stale files or runs predating the manifest) sorts last, then
     // alphabetically among themselves.
     let order = read_report_order(&tests_dir);
+    let thresholds = read_report_thresholds(&tests_dir);
     test_screenshots.sort_by(|a, b| {
         screenshot_order_key(a, &order)
             .cmp(&screenshot_order_key(b, &order))
@@ -133,6 +147,10 @@ pub fn generate_comparison_report(
     for screenshot_name in &test_screenshots {
         let test_src = tests_dir.join(screenshot_name);
         let test_dst = bitmaps_test_dir.join(screenshot_name);
+        let threshold = thresholds
+            .get(screenshot_prefix(screenshot_name))
+            .copied()
+            .unwrap_or(mis_match_threshold);
 
         // Copy test screenshot to bitmaps_test/<date>/ (skip if already there)
         if test_src != test_dst {
@@ -179,7 +197,7 @@ pub fn generate_comparison_report(
                     diff_image: None,
                     selector: "document".to_string(),
                     file_name: screenshot_name.clone(),
-                    mis_match_threshold,
+                    mis_match_threshold: threshold,
                     diff: None,
                     engine_error_msg: Some(msg),
                 },
@@ -204,7 +222,7 @@ pub fn generate_comparison_report(
                     diff_image: None,
                     selector: "document".to_string(),
                     file_name: screenshot_name.clone(),
-                    mis_match_threshold,
+                    mis_match_threshold: threshold,
                     diff: None,
                     engine_error_msg: Some("Reference image not found".to_string()),
                 },
@@ -224,8 +242,8 @@ pub fn generate_comparison_report(
                     fs::write(&diff_image_path, diff_data)?;
                 }
 
-                let passed = result.raw_mis_match_percentage <= mis_match_threshold
-                    && result.is_same_dimensions;
+                let passed =
+                    result.raw_mis_match_percentage <= threshold && result.is_same_dimensions;
 
                 let status = if passed { "pass" } else { "fail" };
 
@@ -260,7 +278,7 @@ pub fn generate_comparison_report(
                         },
                         selector: "document".to_string(),
                         file_name: screenshot_name.clone(),
-                        mis_match_threshold,
+                        mis_match_threshold: threshold,
                         diff: Some(build_diff(&result)),
                         engine_error_msg: if !result.is_same_dimensions {
                             Some(format!(
@@ -292,7 +310,7 @@ pub fn generate_comparison_report(
                         diff_image: None,
                         selector: "document".to_string(),
                         file_name: screenshot_name.clone(),
-                        mis_match_threshold,
+                        mis_match_threshold: threshold,
                         diff: None,
                         engine_error_msg: Some(format!("Comparison error: {}", e)),
                     },
@@ -331,14 +349,6 @@ pub fn generate_comparison_report(
         },
         report.tests.len()
     );
-
-    if fail_count > 0 {
-        anyhow::bail!(
-            "Comparison failed: {} failed out of {} tests",
-            fail_count,
-            report.tests.len()
-        );
-    }
 
     Ok(())
 }
@@ -385,6 +395,14 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
         // Only copy actual test screenshots, not diff images
         if file_name.ends_with(".png") && !file_name.ends_with("_diff.png") {
             let src = entry.path();
+            if read_error_marker(&src).is_some() {
+                eprintln!(
+                    "    {} Skipped failed capture: {}",
+                    "SKIP:".yellow(),
+                    file_name
+                );
+                continue;
+            }
             let dst = reference_dir.join(&file_name);
             fs::copy(&src, &dst)?;
 

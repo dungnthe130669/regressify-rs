@@ -30,14 +30,17 @@ Note: This updates the library used for running tests, not the Visual Studio Cod
 
 Use the command line when you want the update steps to stay explicit and repeatable.
 
-1. Update the global Regressify package:
+1. Pull the latest CLI source and rebuild it:
 
 ```bash wrap
-npm i -g regressify@latest
+git pull
+cargo build --release
 ```
 
-1. From the root of your test project, refresh the generated files:
+1. If you installed the CLI with Cargo, reinstall the local build:
 
 ```bash wrap
-regressify init
+cargo install --path .
 ```
+
+The `init` command is non-destructive: it creates missing starter files but does not overwrite existing `visual_tests/` or `common/` files. Existing project-specific test data should still be reviewed and updated intentionally.

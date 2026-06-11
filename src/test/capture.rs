@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -113,6 +114,39 @@ fn screenshot_path(
 /// order, then viewport order) so the comparison report does not fall back to
 /// alphabetical filename sorting.
 pub const REPORT_ORDER_FILE: &str = ".report-order.json";
+pub const REPORT_THRESHOLDS_FILE: &str = ".report-thresholds.json";
+
+fn run_dir(test_suite: &TestSuite) -> Result<PathBuf> {
+    let test_suite_id = test_suite
+        .id
+        .as_ref()
+        .ok_or_else(|| anyhow!("Test suite ID is required"))?;
+    let test_date = test_suite
+        .test_date
+        .as_deref()
+        .ok_or_else(|| anyhow!("Test suite date is required"))?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+    Ok(regressify_dir
+        .join(test_suite_id)
+        .join("bitmaps_test")
+        .join(test_date))
+}
+
+pub fn validate_state_name(name: &str) -> Result<()> {
+    if name.contains('/') || name.contains('\\') || name.contains("..") {
+        anyhow::bail!(
+            "Invalid state name '{}': must not contain path separators or '..'",
+            name
+        );
+    }
+    Ok(())
+}
+
+pub fn state_path(name: &str) -> Result<PathBuf> {
+    validate_state_name(name)?;
+    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+    Ok(regressify_dir.join("states").join(format!("{}.json", name)))
+}
 
 /// Write the report ordering manifest for a suite run. `prefixes` is the ordered
 /// list of screenshot name prefixes (`<scenario-id>[_<viewport>]`, the part of
@@ -120,21 +154,21 @@ pub const REPORT_ORDER_FILE: &str = ".report-order.json";
 /// and their viewports are defined. The comparison report uses this to list
 /// screenshots in scenario-then-viewport order instead of alphabetically.
 pub fn write_report_order(test_suite: &TestSuite, prefixes: &[String]) -> Result<()> {
-    let test_suite_id = test_suite
-        .id
-        .as_ref()
-        .ok_or_else(|| anyhow!("Test suite ID is required to write the report order manifest"))?;
-    let test_date = test_suite
-        .test_date
-        .as_deref()
-        .ok_or_else(|| anyhow!("Test suite date is required to write the report order manifest"))?;
-
-    let test_dir = common::REGRESSIFY_DIR_NAME.get_required()?;
-    let run_dir = format!("{}/{}/bitmaps_test/{}", test_dir, test_suite_id, test_date);
+    let run_dir = run_dir(test_suite)?;
     create_dir_all(&run_dir)?;
 
     let manifest = serde_json::to_vec_pretty(prefixes)?;
-    fs::write(format!("{}/{}", run_dir, REPORT_ORDER_FILE), manifest)?;
+    fs::write(run_dir.join(REPORT_ORDER_FILE), manifest)?;
+    Ok(())
+}
+
+pub fn write_report_thresholds(test_suite: &TestSuite, thresholds: &[(String, f64)]) -> Result<()> {
+    let run_dir = run_dir(test_suite)?;
+    create_dir_all(&run_dir)?;
+
+    let map = thresholds.iter().cloned().collect::<HashMap<String, f64>>();
+    let manifest = serde_json::to_vec_pretty(&map)?;
+    fs::write(run_dir.join(REPORT_THRESHOLDS_FILE), manifest)?;
     Ok(())
 }
 

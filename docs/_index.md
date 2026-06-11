@@ -20,6 +20,7 @@ These pages are meant to help you move from first setup to reusable test suites 
 ## Start Here
 
 - [Get Started With Regressify Testing](@/optimizely-cms/testing/get-started.md) for the first local setup, initial installation, and your first working suite.
+- [Regressify CLI Commands](@/optimizely-cms/testing/commands.md) for command behavior, global flags, output directories, and exit-code rules.
 - [Create a test suite](@/optimizely-cms/testing/create-test-suite.md) for suite structure, grouping scenarios, and suite-level configuration.
 - [Create a Test Scenario](@/optimizely-cms/testing/create-scenario.md) for per-page behavior, actions, and scenario-specific settings.
 - [Create an action](@/optimizely-cms/testing/create-action.md) for the click, input, wait, navigation, and element-handling details that usually decide whether a suite feels solid or temperamental.

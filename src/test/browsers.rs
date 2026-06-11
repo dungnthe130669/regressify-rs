@@ -16,6 +16,12 @@ use crate::{
     helpers::{OnceLockBoolExtensions, OnceLockExtensions},
 };
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LaunchOptions {
+    pub debug: bool,
+    pub ignore_ssl_errors: bool,
+}
+
 pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
     let work_dir = common::ROOT_DIR.get_required()?;
 
@@ -73,8 +79,9 @@ const MAX_LAUNCH_RETRIES: u32 = 2;
 pub async fn launch_browser(
     exe_path: &Option<PathBuf>,
     log_prefix: &str,
+    options: LaunchOptions,
 ) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
-    let debug = common::DEBUG.get_bool();
+    let debug = common::DEBUG.get_bool() || options.debug;
 
     let mut config_builder = BrowserConfig::builder();
 
@@ -92,6 +99,17 @@ pub async fn launch_browser(
     let user_data_dir = std::env::temp_dir().join(format!("regressify-browser-{}", guid_base64url));
     config_builder = config_builder.user_data_dir(&user_data_dir);
 
+    let mut args = vec![
+        "--disable-infobars",
+        "--disable-setuid-sandbox",
+        "--no-sandbox",
+        "--window-position=0,0",
+    ];
+    if options.ignore_ssl_errors {
+        args.push("--ignore-certificate-errors");
+        args.push("--ignore-certificate-errors-spki-list");
+    }
+
     config_builder = config_builder
         .window_size(1920, 1080)
         .viewport(Some(Viewport {
@@ -103,14 +121,7 @@ pub async fn launch_browser(
             is_landscape: true,
         }))
         .launch_timeout(Duration::from_secs(45))
-        .args([
-            "--disable-infobars",
-            "--disable-setuid-sandbox",
-            "--ignore-certificate-errors",
-            "--ignore-certificate-errors-spki-list",
-            "--no-sandbox",
-            "--window-position=0,0",
-        ]);
+        .args(args);
 
     if debug {
         config_builder = config_builder.with_head();

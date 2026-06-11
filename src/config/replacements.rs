@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
 use crate::types::UrlReplacement;
@@ -91,4 +91,33 @@ pub fn apply_replacements(url: &str, replacements: &[UrlReplacement]) -> String 
         }
     }
     result
+}
+
+/// Validate replacement rules as configuration before browser scenarios start.
+pub fn validate_replacements(replacements: &[UrlReplacement], source: &str) -> Result<()> {
+    for replacement in replacements {
+        if replacement.ref_pattern.is_empty() {
+            return Err(anyhow!(
+                "URL replacement in {} has an empty `ref` pattern",
+                source
+            ));
+        }
+        if replacement.regex.unwrap_or(false) {
+            let flags = replacement.flags.as_deref().unwrap_or("");
+            let pattern = if flags.contains('i') {
+                format!("(?i){}", replacement.ref_pattern)
+            } else {
+                replacement.ref_pattern.clone()
+            };
+            regex::Regex::new(&pattern).map_err(|e| {
+                anyhow!(
+                    "Invalid regex URL replacement '{}' in {}: {}",
+                    replacement.ref_pattern,
+                    source,
+                    e
+                )
+            })?;
+        }
+    }
+    Ok(())
 }

@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::{
+    config,
     helpers::{IOExtensions, slugify},
     snapshot::get_asset_version,
     test::{
-        browsers::launch_browser,
+        browsers::{LaunchOptions, launch_browser},
         test_scenario::{ScenarioRequest, exec_test_scenario, make_log_prefix},
     },
     types::{TestSuite, TestSuiteInput},
@@ -14,13 +15,13 @@ use crate::{
 
 /// Parse a test suite file (YAML or JSON) and assign IDs to scenarios.
 pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Result<TestSuite> {
-    let TestSuiteInput {
-        name,
-        path: _,
-        format,
-    } = input;
+    let TestSuiteInput { name, path, format } = input;
 
-    let test_suite_path = visual_tests_dir.join(format!("{}.tests.yaml", name));
+    let test_suite_path = if path.is_absolute() {
+        path.clone()
+    } else {
+        visual_tests_dir.join(path)
+    };
     if !test_suite_path.exists() {
         return Err(anyhow!(
             "Test suite file '{}' does not exist.",
@@ -109,12 +110,18 @@ pub async fn exec_single_scenario(
     let log_prefix = make_log_prefix(req.index, req.total);
     // Browser launch is infrastructure — if this fails the environment is
     // broken (e.g. Chrome not installed/launchable), so it must fail the run.
-    let (mut browser, handle, user_data_dir) = match launch_browser(exe_path, &log_prefix).await {
-        Ok(triple) => triple,
-        Err(e) => {
-            return ScenarioOutcome::InfraFailed(anyhow!("Failed to launch browser: {:?}", e));
-        }
+    let resolved = config::resolve_config(req.workspace_config, req.test_suite, req.scenario);
+    let launch_options = LaunchOptions {
+        debug: resolved.debug,
+        ignore_ssl_errors: resolved.ignore_ssl_errors,
     };
+    let (mut browser, handle, user_data_dir) =
+        match launch_browser(exe_path, &log_prefix, launch_options).await {
+            Ok(triple) => triple,
+            Err(e) => {
+                return ScenarioOutcome::InfraFailed(anyhow!("Failed to launch browser: {:?}", e));
+            }
+        };
 
     // Everything from here on interacts with the page under test. Any error is
     // a page-level failure that must not fail the command.
@@ -151,5 +158,55 @@ pub async fn exec_single_scenario(
     match scenario_result {
         Ok(()) => ScenarioOutcome::Passed,
         Err(e) => ScenarioOutcome::PageFailed(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::TestSuiteFormat;
+
+    #[test]
+    fn parse_test_suite_uses_discovered_json_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("alloy.tests.json");
+        std::fs::write(
+            &path,
+            r#"{"scenarios":[{"url":"https://json.example.com"}]}"#,
+        )
+        .unwrap();
+
+        let suite = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "alloy".to_string(),
+                path,
+                format: TestSuiteFormat::Json,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(suite.id.as_deref(), Some("alloy"));
+        assert_eq!(suite.scenarios[0].url, "https://json.example.com");
+    }
+
+    #[test]
+    fn parse_test_suite_uses_discovered_yml_path() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("alloy.tests.yml");
+        std::fs::write(&path, "scenarios:\n  - url: https://yml.example.com\n").unwrap();
+
+        let suite = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "alloy".to_string(),
+                path,
+                format: TestSuiteFormat::Yaml,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(suite.id.as_deref(), Some("alloy"));
+        assert_eq!(suite.scenarios[0].url, "https://yml.example.com");
     }
 }

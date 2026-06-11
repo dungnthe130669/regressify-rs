@@ -50,6 +50,15 @@ pub struct Cli {
     #[clap(long, action, default_value = "false")]
     pub debug: bool,
 
+    /// Force scenarios into required-login mode for custom jsOnReady scripts
+    #[clap(
+        long = "requiredLogin",
+        visible_alias = "required-login",
+        action,
+        default_value = "false"
+    )]
+    pub required_login: bool,
+
     /// Subcommand to execute
     #[clap(subcommand)]
     pub command: Command,

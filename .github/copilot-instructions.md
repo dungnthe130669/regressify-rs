@@ -24,10 +24,11 @@ It launches a headless Chromium browser, executes test scenarios defined in YAML
 - `src/optimizer/` — Image optimization (oxipng, imagequant)
 - `src/cli/` — CLI argument parsing (clap derive)
 - `src/helpers/` — Utility modules (IO, HTTP, slugify, locks, etc.)
+- `src/init.rs` — Non-destructive starter-file generation for `regressify init`
 
 ## Documentation
 
-- **[docs/actions.md](docs/actions.md)** — Complete reference for all test actions
+- **[docs/commands.md](docs/commands.md)** — CLI command behavior, flags, outputs, and exit-code semantics
 - **[docs/create-action.md](docs/create-action.md)** — Guide for creating new actions
 - **[docs/create-scenario.md](docs/create-scenario.md)** — Guide for creating scenarios
 - **[docs/create-test-suite.md](docs/create-test-suite.md)** — Guide for creating test suites
@@ -35,13 +36,26 @@ It launches a headless Chromium browser, executes test scenarios defined in YAML
 ## Key Conventions
 
 - The browser is `chromiumoxide` (Rust CDP client), NOT Playwright. Use `Page::find_element`, `Element::click()`, `Page::evaluate()`, etc.
+- Only Chromium is currently supported. `firefox` and `webkit` config values must fail early as unsupported.
 - Actions inside iframes are handled by building JS expressions that traverse `contentDocument` chains.
 - All action structs use `#[serde(rename_all = "camelCase")]` for YAML/JSON compatibility.
 - The `TestAction` enum is `#[serde(untagged)]` — variant order matters for deserialization.
 - File paths in `input` file uploads are relative to the `visual_tests/` directory.
 - The `select` action uses JS evaluation since `chromiumoxide` has no native select API.
-- Persisted state is saved to `.regressify/states/{name}.json`.
+- Persisted state is saved to `{REGRESSIFY_DIR}/states/{name}.json`, so `--site-env staging` uses `.regressify__staging/states/`.
 - Feature flags: `local` (default, enables browser testing), `cloud`.
+
+## Command Exit Semantics
+
+- Config and infrastructure errors are process failures: malformed YAML/JSON, invalid viewport names, invalid replacement regexes, unsupported browser settings, browser fetch/install failures, browser launch failures, and report/artifact write failures.
+- Website/scenario/visual failures are report results with zero exit: navigation timeout, missing/obscured/disabled elements, failed actions, failed scenario captures, missing references, and visual mismatches.
+- `ref` captures baselines and promotes successful screenshots. Failed capture placeholders must not be promoted, and existing references should not be deleted before a successful capture.
+- `test` captures current screenshots and compares unless `--skip-compare` is set. Visual mismatch must not make the command non-zero.
+- `compare` regenerates comparison data from latest test screenshots. Visual failures are report data; artifact/report generation errors are process errors.
+- `approve` promotes only successful latest test screenshots and skips failed capture placeholders.
+- `init` creates missing starter files only and must not overwrite project-specific test data.
+- `install` fetches the Chromium browser binary and fails non-zero on fetch/install errors.
+- `version` prints the Cargo package version.
 
 ## Core Design Philosophy: Real-User Behavior Simulation
 
@@ -49,7 +63,7 @@ This tool simulates **real human interactions** with a browser. Every action imp
 
 ### Pre-Action Validation (MANDATORY for all interactive actions)
 
-Before performing any interactive action (click, hover, check, uncheck, focus, input, press, select, scroll), the implementation MUST:
+Before performing any interactive action (click, hover, check, uncheck, focus, input, press, select), the implementation MUST:
 
 1. **Wait for element to exist** — Poll/wait for the selector to match a DOM element (with timeout).
 2. **Wait for element to be visible** — The element must have non-zero bounding box, not be `visibility: hidden`, not be `display: none`, and have `opacity > 0`.
@@ -65,8 +79,8 @@ Before performing any interactive action (click, hover, check, uncheck, focus, i
 - **check/uncheck**: Must verify the element is a checkbox/radio. `check` must only click if NOT already checked. `uncheck` must only click if currently checked.
 - **input**: Must focus the element first. Must clear existing value (unless `append: true`). Must dispatch `input` and `change` events to trigger frameworks (React, Vue, Angular).
 - **focus**: Must scroll into view. Must use CDP `DOM.focus` or equivalent.
-- **press**: Must target the correct element. Must dispatch full `keydown` → `keypress` → `keyup` sequence.
-- **select**: Must verify element is a `<select>`. Must dispatch `change` event after selection.
+- **press**: Must target the correct element. Use CDP `Input.dispatchKeyEvent` with `key`, `code`, modifier bitfield, and virtual key codes where known. Support documented combos like `Ctrl+A` and `Shift+Tab`.
+- **select**: Must verify element is a `<select>`. Must fail when no option matches. Multiple values require `<select multiple>`. Must dispatch `change` event after selection.
 - **scroll**: Does NOT require interactability checks (scrolling is not a user click).
 - **wait**: No pre-action validation needed. Can wait for time, selector, or URL.
 - **goto**: No pre-action validation needed.
@@ -81,7 +95,7 @@ Each scenario is an **independent test**. The execution model:
 - If an action within a scenario **fails**, that scenario fails immediately (no further actions in that scenario execute).
 - A failed scenario MUST NOT stop other scenarios from executing. All scenarios always run to completion (pass or fail) so the user sees the full test report.
 - Scenarios run concurrently (controlled by `asyncCaptureLimit`). Each gets its own browser instance.
-- Error propagation: `exec_test_action` returns `Err` → `exec_test_scenario` returns `Err` → the spawn block logs the error and continues.
+- Error propagation: `exec_test_action` returns `Err` → `exec_test_scenario` writes an error placeholder screenshot and returns `Err` → the spawn block logs the page failure and continues.
 - Never use `panic!`, `unwrap()` on fallible operations, or `process::exit()` inside action/scenario code — these would kill the entire process.
 
 ### Timeout & Retry
@@ -106,7 +120,7 @@ When `frame` is specified:
 2. Add the variant to the `TestAction` enum (order matters for untagged deserialization).
 3. Implement the handler in `src/test/test_action.rs` inside `exec_test_action`.
 4. Ensure all pre-action validations are implemented per the rules above.
-5. Update `docs/actions.md` with the new action's properties, examples, and implementation notes.
+5. Update `docs/create-action.md` with the new action's properties, examples, and implementation notes.
 
 ## Adversarial Code Review Checklist
 
@@ -123,21 +137,9 @@ When reviewing or modifying action implementations, verify:
 - [ ] Frame navigation validates each step
 - [ ] The action doesn't silently succeed when it should fail (e.g., clicking a covered element via JS `el.click()` bypasses overlay checks)
 
-## Known Issues in Current Implementation
+## Known Remaining Issues
 
-The current Rust implementation has several correctness issues that violate real-user simulation:
-
-1. **No visibility checks** — Actions proceed even if element is hidden or zero-sized
-2. **No interactability checks** — Click/hover work on covered elements (using JS `.click()` bypasses overlay detection)
-3. **No scroll-into-view before interaction** — Elements outside viewport are clicked directly
-4. **No element stability wait** — Animated elements may be interacted with mid-animation
-5. **check action uses `.click()` unconditionally** — Should verify element is not already checked
-6. **uncheck action uses `.click()` unconditionally** — Should verify element is currently checked
-7. **hover in iframe uses `mouseover` event** — Should use CDP mouse movement for proper `:hover` CSS activation
-8. **press action in iframe only dispatches keydown/keyup** — Missing `keypress` and proper `key`/`code`/`keyCode` values
-9. **Errors are silently swallowed** — `exec_test_action(...).await.ok()` in test_scenario.rs discards all errors
-10. **No `waitForSelector` equivalent** — Actions immediately fail if element is not in DOM (no retry/poll)
-11. **`wait` with URL uses `wait_for_navigation` before checking** — Race condition if navigation already completed
+See `OUTSTANDING_ISSUES.md` for the current list. As of the June 2026 fix pass, notable remaining gaps are: scenario `selectors` is accepted but full-page capture is always used; `asyncCompareLimit` is parsed but not used; wait URL matching only supports simple `**` prefix/suffix patterns; cross-origin iframe errors could be clearer.
 
 ## Reference: Node.js Version
 

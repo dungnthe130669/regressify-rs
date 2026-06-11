@@ -6,20 +6,20 @@ use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 
 use crate::{
     common::ROOT_DIR,
-    config::ResolvedConfig,
+    config::{self, ResolvedConfig},
     test::{
         actionability::{
             self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
             check_enabled, ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule,
             escape_js_string, get_frame_selectors, scroll_into_view, wait_for_selector,
         },
-        capture::save_screenshot,
+        capture::{save_screenshot, state_path, validate_state_name},
     },
     types::{
         CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
         InputAction, PersistAction, PressAction, RemoveAction, SaveAction, ScreenshotType,
         ScrollAction, SelectAction, SelectValue, TestAction, TestScenario, TestSuite,
-        UncheckAction, Wait, WaitAction,
+        UncheckAction, UrlReplacement, Wait, WaitAction,
     },
 };
 
@@ -68,7 +68,7 @@ fn actionability_config(config: &ResolvedConfig) -> ActionabilityConfig {
 /// Unknown keys fall back to the key itself.
 fn key_to_code(key: &str) -> String {
     match key {
-        " " => "Space".to_string(),
+        " " | "Space" => "Space".to_string(),
         "Enter" | "Escape" | "Tab" | "Backspace" | "Delete" | "Insert" | "Home" | "End"
         | "PageUp" | "PageDown" | "ArrowUp" | "ArrowDown" | "ArrowLeft" | "ArrowRight"
         | "Shift" | "Control" | "Alt" | "Meta" | "CapsLock" | "NumLock" | "ScrollLock" => {
@@ -88,15 +88,120 @@ fn key_to_code(key: &str) -> String {
     }
 }
 
-pub async fn exec_test_action(
-    page: &Page,
-    test_suite: &TestSuite,
-    scenario: &TestScenario,
-    action: &TestAction,
-    config: &ResolvedConfig,
-    viewport_label: Option<&str>,
-    log_prefix: &str,
-) -> Result<()> {
+#[derive(Debug, PartialEq, Eq)]
+struct KeyStroke {
+    key: String,
+    code: String,
+    modifiers: i64,
+    text: Option<String>,
+    virtual_key_code: Option<i64>,
+}
+
+fn modifier_bit(part: &str) -> Option<i64> {
+    match part.to_ascii_lowercase().as_str() {
+        "alt" | "option" => Some(1),
+        "ctrl" | "control" => Some(2),
+        "meta" | "cmd" | "command" | "super" => Some(4),
+        "shift" => Some(8),
+        _ => None,
+    }
+}
+
+fn normalize_key(key: &str) -> String {
+    match key {
+        "Space" => " ".to_string(),
+        _ => key.to_string(),
+    }
+}
+
+fn virtual_key_code(key: &str) -> Option<i64> {
+    match key {
+        " " | "Space" => Some(32),
+        "Enter" => Some(13),
+        "Escape" => Some(27),
+        "Tab" => Some(9),
+        "Backspace" => Some(8),
+        "Delete" => Some(46),
+        "Insert" => Some(45),
+        "Home" => Some(36),
+        "End" => Some(35),
+        "PageUp" => Some(33),
+        "PageDown" => Some(34),
+        "ArrowLeft" => Some(37),
+        "ArrowUp" => Some(38),
+        "ArrowRight" => Some(39),
+        "ArrowDown" => Some(40),
+        k if k.chars().count() == 1 => {
+            let c = k.chars().next()?;
+            if c.is_ascii_alphabetic() {
+                Some(c.to_ascii_uppercase() as i64)
+            } else if c.is_ascii_digit() {
+                Some(c as i64)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn parse_press_key(input: &str) -> Result<KeyStroke> {
+    let mut modifiers = 0_i64;
+    let mut key: Option<String> = None;
+
+    for part in input.split('+').map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(bit) = modifier_bit(part) {
+            modifiers |= bit;
+        } else if key.is_none() {
+            key = Some(normalize_key(part));
+        } else {
+            anyhow::bail!(
+                "Unsupported key combination '{}': only one non-modifier key is allowed",
+                input
+            );
+        }
+    }
+
+    let key = key.ok_or_else(|| anyhow!("Press action key must include a non-modifier key"))?;
+    let code = key_to_code(&key);
+    let printable =
+        key.chars().count() == 1 && key.chars().next().map(|c| !c.is_control()).unwrap_or(false);
+    let text = if printable && (modifiers & !8) == 0 {
+        Some(key.clone())
+    } else {
+        None
+    };
+    let virtual_key_code = virtual_key_code(&key);
+
+    Ok(KeyStroke {
+        key,
+        code,
+        modifiers,
+        text,
+        virtual_key_code,
+    })
+}
+
+pub(crate) struct ActionExecutionContext<'a> {
+    pub page: &'a Page,
+    pub test_suite: &'a TestSuite,
+    pub scenario: &'a TestScenario,
+    pub config: &'a ResolvedConfig,
+    pub url_replacements: &'a [UrlReplacement],
+    pub viewport_label: Option<&'a str>,
+    pub log_prefix: &'a str,
+}
+
+pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestAction) -> Result<()> {
+    let ActionExecutionContext {
+        page,
+        test_suite,
+        scenario,
+        config,
+        url_replacements,
+        viewport_label,
+        log_prefix,
+    } = ctx;
     let ac = actionability_config(config);
 
     match action {
@@ -406,17 +511,8 @@ pub async fn exec_test_action(
         }
 
         TestAction::Persist(PersistAction { persist, .. }) => {
-            // Validate persist name doesn't contain path separators
-            if persist.contains('/') || persist.contains('\\') || persist.contains("..") {
-                anyhow::bail!(
-                    "Invalid persist name '{}': must not contain path separators or '..'",
-                    persist
-                );
-            }
+            validate_state_name(persist)?;
             eprintln!("{} Persisting state: {}", log_prefix, persist);
-            let root_dir = ROOT_DIR
-                .get()
-                .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
 
             // Collect cookies
             let cookies = page.get_cookies().await?;
@@ -437,9 +533,10 @@ pub async fn exec_test_action(
                 "localStorage": local_storage,
             });
 
-            let state_dir = root_dir.join(".regressify").join("states");
-            std::fs::create_dir_all(&state_dir)?;
-            let state_path = state_dir.join(format!("{}.json", persist));
+            let state_path = state_path(persist)?;
+            if let Some(state_dir) = state_path.parent() {
+                std::fs::create_dir_all(state_dir)?;
+            }
             std::fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
             eprintln!("{} State saved to: {}", log_prefix, state_path.display());
         }
@@ -475,28 +572,41 @@ pub async fn exec_test_action(
             use chromiumoxide::cdp::browser_protocol::input::{
                 DispatchKeyEventParams, DispatchKeyEventType,
             };
-            let code = key_to_code(key);
-            let is_printable = key.chars().count() == 1
-                && key.chars().next().map(|c| !c.is_control()).unwrap_or(false);
+            let keystroke = parse_press_key(key)?;
 
             let mut down = DispatchKeyEventParams::builder()
                 .r#type(DispatchKeyEventType::KeyDown)
-                .key(key.clone())
-                .code(code.clone());
+                .key(keystroke.key.clone())
+                .code(keystroke.code.clone());
+            if keystroke.modifiers != 0 {
+                down = down.modifiers(keystroke.modifiers);
+            }
+            if let Some(vk) = keystroke.virtual_key_code {
+                down = down
+                    .windows_virtual_key_code(vk)
+                    .native_virtual_key_code(vk);
+            }
             // For printable characters, `text` is what makes the browser insert
             // the glyph (a bare keyDown for "a" produces no character otherwise).
-            if is_printable {
-                down = down.text(key.clone());
+            if let Some(text) = &keystroke.text {
+                down = down.text(text.clone()).unmodified_text(text.clone());
             }
             let down = down
                 .build()
                 .map_err(|e| anyhow!("Failed to build key down event: {:?}", e))?;
             page.execute(down).await?;
 
-            let up = DispatchKeyEventParams::builder()
+            let mut up = DispatchKeyEventParams::builder()
                 .r#type(DispatchKeyEventType::KeyUp)
-                .key(key.clone())
-                .code(code)
+                .key(keystroke.key.clone())
+                .code(keystroke.code.clone());
+            if keystroke.modifiers != 0 {
+                up = up.modifiers(keystroke.modifiers);
+            }
+            if let Some(vk) = keystroke.virtual_key_code {
+                up = up.windows_virtual_key_code(vk).native_virtual_key_code(vk);
+            }
+            let up = up
                 .build()
                 .map_err(|e| anyhow!("Failed to build key up event: {:?}", e))?;
             page.execute(up).await?;
@@ -626,16 +736,39 @@ pub async fn exec_test_action(
                     "(() => {{
                         var el = {doc}.querySelector('{sel}');
                         var values = {values};
+                        if (values.length > 1 && !el.multiple) {{
+                            return {{ ok: false, error: 'Cannot select multiple values on a non-multiple <select>' }};
+                        }}
+                        var missing = values.filter(function (value) {{
+                            return !Array.prototype.some.call(el.options, function (option) {{
+                                return option.value === value;
+                            }});
+                        }});
+                        if (missing.length > 0) {{
+                            return {{ ok: false, error: 'No option value matched: ' + missing.join(', ') }};
+                        }}
                         for (var i = 0; i < el.options.length; i++) {{
                             el.options[i].selected = values.includes(el.options[i].value);
                         }}
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return {{ ok: true }};
                     }})()",
                     doc = doc,
                     sel = sel_escaped,
                     values = values_json
                 );
-                page.evaluate(script).await?;
+                let result: serde_json::Value = page
+                    .evaluate(script)
+                    .await?
+                    .into_value()
+                    .unwrap_or_else(|_| serde_json::json!({ "ok": false, "error": "Select action returned no result" }));
+                if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let error = result
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Select action failed");
+                    anyhow::bail!("{}", error);
+                }
             } else if let Some(label) = label {
                 let label_escaped = escape_js_string(label);
                 eprintln!(
@@ -645,20 +778,37 @@ pub async fn exec_test_action(
                 let script = format!(
                     "(() => {{
                         var el = {doc}.querySelector('{sel}');
+                        var matched = false;
                         for (var i = 0; i < el.options.length; i++) {{
                             if (el.options[i].text.trim() === '{lbl}'.trim()) {{
                                 el.options[i].selected = true;
+                                matched = true;
                             }} else {{
                                 el.options[i].selected = false;
                             }}
                         }}
+                        if (!matched) {{
+                            return {{ ok: false, error: 'No option label matched: {lbl}' }};
+                        }}
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        return {{ ok: true }};
                     }})()",
                     doc = doc,
                     sel = sel_escaped,
                     lbl = label_escaped
                 );
-                page.evaluate(script).await?;
+                let result: serde_json::Value = page
+                    .evaluate(script)
+                    .await?
+                    .into_value()
+                    .unwrap_or_else(|_| serde_json::json!({ "ok": false, "error": "Select action returned no result" }));
+                if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    let error = result
+                        .get("error")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Select action failed");
+                    anyhow::bail!("{}", error);
+                }
             }
         }
 
@@ -715,7 +865,8 @@ pub async fn exec_test_action(
 
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
-                eprintln!("{} Waiting for URL: {}", log_prefix, url);
+                let target_url = apply_wait_url_replacements(url, url_replacements);
+                eprintln!("{} Waiting for URL: {}", log_prefix, target_url);
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
                 let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
@@ -727,17 +878,7 @@ pub async fn exec_test_action(
                         .await?
                         .ok_or_else(|| anyhow!("Failed to get current URL"))?;
 
-                    let matches = if url.contains("**") {
-                        // Glob-style matching
-                        let parts: Vec<&str> = url.splitn(2, "**").collect();
-                        let prefix = parts[0];
-                        let suffix = parts.get(1).copied().unwrap_or("");
-                        let prefix_ok = prefix.is_empty() || current_url.starts_with(prefix);
-                        let suffix_ok = suffix.is_empty() || current_url.ends_with(suffix);
-                        prefix_ok && suffix_ok
-                    } else {
-                        current_url == *url
-                    };
+                    let matches = url_matches(&current_url, &target_url);
 
                     if matches {
                         break;
@@ -747,7 +888,7 @@ pub async fn exec_test_action(
                         let current_url = page.url().await?.unwrap_or_default();
                         anyhow::bail!(
                             "Timeout waiting for URL '{}', current URL is '{}'",
-                            url,
+                            target_url,
                             current_url
                         );
                     }
@@ -802,4 +943,78 @@ pub async fn exec_test_action(
         }
     }
     Ok(())
+}
+
+fn apply_wait_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+    config::replacements::apply_replacements(url, replacements)
+}
+
+fn url_matches(current_url: &str, target_url: &str) -> bool {
+    if target_url.contains("**") {
+        let parts: Vec<&str> = target_url.splitn(2, "**").collect();
+        let prefix = parts[0];
+        let suffix = parts.get(1).copied().unwrap_or("");
+        let prefix_ok = prefix.is_empty() || current_url.starts_with(prefix);
+        let suffix_ok = suffix.is_empty() || current_url.ends_with(suffix);
+        prefix_ok && suffix_ok
+    } else {
+        current_url == target_url
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_press_key_supports_ctrl_shortcut() {
+        let key = parse_press_key("Ctrl+A").unwrap();
+        assert_eq!(key.key, "A");
+        assert_eq!(key.code, "KeyA");
+        assert_eq!(key.modifiers, 2);
+        assert_eq!(key.text, None);
+        assert_eq!(key.virtual_key_code, Some(65));
+    }
+
+    #[test]
+    fn parse_press_key_supports_shift_tab() {
+        let key = parse_press_key("Shift+Tab").unwrap();
+        assert_eq!(key.key, "Tab");
+        assert_eq!(key.code, "Tab");
+        assert_eq!(key.modifiers, 8);
+        assert_eq!(key.virtual_key_code, Some(9));
+    }
+
+    #[test]
+    fn parse_press_key_rejects_multiple_non_modifier_keys() {
+        let err = parse_press_key("Ctrl+A+B").unwrap_err();
+        assert!(err.to_string().contains("only one non-modifier key"));
+    }
+
+    #[test]
+    fn wait_url_replacements_apply_before_matching() {
+        let replacements = vec![UrlReplacement {
+            ref_pattern: "https://prod.example.com".to_string(),
+            test: "https://test.example.com".to_string(),
+            regex: None,
+            flags: None,
+        }];
+
+        assert_eq!(
+            apply_wait_url_replacements("https://prod.example.com/dashboard", &replacements),
+            "https://test.example.com/dashboard"
+        );
+    }
+
+    #[test]
+    fn url_matches_supports_double_star_prefix_suffix() {
+        assert!(url_matches(
+            "https://example.com/a/b/dashboard",
+            "https://example.com/**/dashboard"
+        ));
+        assert!(!url_matches(
+            "https://example.com/a/b/settings",
+            "https://example.com/**/dashboard"
+        ));
+    }
 }

@@ -146,7 +146,7 @@ When reviewing code, immediately flag these patterns:
 - [ ] `new MouseEvent('mouseover')` for hover (doesn't trigger CSS :hover)
 - [ ] No polling/retry loop before action (immediate fail if element not ready)
 - [ ] `.click()` without checking `.checked` state for check/uncheck
-- [ ] `keydown`/`keyup` without `keypress` for press action
+- [ ] `press` action bypasses CDP `Input.dispatchKeyEvent` or does not set documented modifier/key/code values
 - [ ] String interpolation of selectors without escaping
 - [ ] No timeout on any wait/poll loop
 - [ ] Action returns Ok(()) even when element wasn't found/visible

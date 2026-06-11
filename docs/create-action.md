@@ -20,6 +20,8 @@ extra:
 
 Each scenario can have zero, one or multiple actions. Each action must be one of the following types.
 
+Interactive actions wait for the target element to exist, be visible, become stable, scroll into view, and not be covered by another element before interacting. Form controls must also be enabled. These checks intentionally make actions fail when a real user could not perform them.
+
 {% spoiler() %}
 
 check
@@ -48,7 +50,7 @@ Click an element.
 
 > Important:
 >
-> If the click leads to a navigation to other URL, please ensure that the very next action is [wait](#spoiler--wait) for that URL to fully load before performing any other steps.
+> If the click leads to a navigation to another URL, ensure that the very next action is `wait` for that URL or an expected element before performing any other steps.
 
 Example:
 
@@ -148,19 +150,19 @@ actions:
   # Type `My Name` in an input element with `username` ID
   - input: 'input#username'
     value: My Name
-    # `append` is an optional property, with `fase` as the default value
+    # `append` is an optional property, with `false` as the default value
     append: false
 
   # Type `my-name@domain.com` in an input element with `email` ID
   - input: 'input#email'
     value: my-name@domain.com
-    # `append` is an optional property, with `fase` as the default value
+    # `append` is an optional property, with `false` as the default value
     append: true
   
   # Load `visual_tests/file1.txt` into the input with `file` ID
   - input: 'input#file'
     file: file1.txt
-    # `useFileChooser` is an optional property, with `fase` as the default value
+    # `useFileChooser` is an optional property, with `false` as the default value
     useFileChooser: true
   
   # Load `visual_tests/file1.txt` and `visual_tests/other/file2.pdf`
@@ -170,7 +172,7 @@ actions:
     file:
       - file1.txt
       - other/file2.pdf
-    # `useFileChooser` is an optional property, with `fase` as the default value
+    # `useFileChooser` is an optional property, with `false` as the default value
     useFileChooser: false
 ```
 
@@ -195,7 +197,7 @@ actions:
   - input: input#password
     value: pa$$w0rd
   - click: button#login-btn
-  - persit: user-aaaa
+  - persist: user-aaaa
 ```
 
 You can later reuse this saved state to test the site as if you are already logged in by [specifying the state name][test-suite-state] in your test suite:
@@ -203,6 +205,8 @@ You can later reuse this saved state to test the site as if you are already logg
 ```yaml wrap
 state: user-aaaa
 ```
+
+State names must not contain path separators or `..`. State files are written under the active Regressify output directory, so `--site-env staging` stores them under `.regressify__staging/states/`.
 
 {% end %}
 
@@ -214,9 +218,11 @@ press
 
 Press a key (or key combination) on an element.
 
+Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and `Meta`/`Cmd`/`Command`. A key combination may contain one non-modifier key, such as `Ctrl+A`, `Shift+Tab`, or `Meta+K`.
+
 > Important:
 >
-> If the press leads to a navigation to other URL, please ensure that the very next action is [wait](#spoiler--wait) for that URL to fully load before performing any other steps.
+> If the press leads to a navigation to another URL, ensure that the very next action is `wait` for that URL or an expected element before performing any other steps.
 
 Example:
 
@@ -307,6 +313,7 @@ actions:
 > Notes:
 >
 > The `select` action requires either `value` or `label` to be set, but not both. Omit or include both of them will leading to an error.
+> The selected value or label must match an existing option. Selecting multiple values requires a `<select multiple>` element.
 
 {% end %}
 
@@ -322,8 +329,8 @@ Example:
 
 ```yml
 actions:
-  # Uncheck the checkbox named `subscrible-email`
-  - uncheck: checkbox[name="subscrible-email"]
+  # Uncheck the checkbox named `subscribe-email`
+  - uncheck: checkbox[name="subscribe-email"]
 ```
 
 {% end %}
@@ -334,8 +341,10 @@ wait
 
 :::::
 
-Wait for X miliseconds or wait for an element to appears.  
-If there is a navigration, add the URL pattern of the target page also.
+Wait for X milliseconds or wait for an element to appear.  
+If there is navigation, add the URL pattern of the target page also.
+
+In `test` mode, URL replacements from the active replacement profile and suite/workspace `urlReplacements` are applied to `url` before matching. In `ref` mode, wait URLs are matched as written.
 
 > Important:
 >
@@ -348,7 +357,7 @@ actions:
   # Delay 2 seconds
   - wait: 2000
 
-  # Wait for an element with `popup` class to appears
+  # Wait for an element with `popup` class to appear
   - wait: .popup
 
   # Wait for the navigation to `/quote`, then delay 2 seconds
@@ -356,7 +365,7 @@ actions:
   - wait: 2000
     url: '**/quote'
 
-  # Wait for the navigation to `/quote`, then wait for `#my-form` element to appears
+  # Wait for the navigation to `/quote`, then wait for `#my-form` element to appear
   # `**` means a group of arbitrary characters
   - wait: '#my-form'
     url: '**/quote'
@@ -392,7 +401,7 @@ actions:
   - click: '#submit'
     frame:
       - .child
-      - '#granchild'
+      - '#grandchild'
 ```
 
 {% end %}
