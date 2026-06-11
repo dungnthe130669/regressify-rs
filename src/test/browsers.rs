@@ -109,6 +109,15 @@ pub async fn launch_browser(
         args.push("--ignore-certificate-errors");
         args.push("--ignore-certificate-errors-spki-list");
     }
+    if !debug {
+        // New headless mode (`--headless=new`) runs the full Chrome stack and
+        // initializes the Ozone platform, which on Linux defaults to the X11
+        // backend and therefore needs an X server / $DISPLAY. On headless CI
+        // agents this intermittently fails with "Missing X server or $DISPLAY"
+        // under concurrent launches. Pin the Ozone backend to `headless` so the
+        // browser never touches X11.
+        args.push("--ozone-platform=headless");
+    }
 
     config_builder = config_builder
         .window_size(1920, 1080)
