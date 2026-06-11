@@ -3,8 +3,16 @@ use std::path::PathBuf;
 
 use super::Command;
 
+/// Version string shown by `--version`, including the embedded git commit hash.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    " (",
+    env!("BINARY_GIT_HASH"),
+    ")"
+);
+
 #[derive(Parser)]
-#[clap(version, author, about)]
+#[clap(version = LONG_VERSION, author, about)]
 pub struct Cli {
     /// Directory to use as root of project
     #[clap(short = 'r', long, default_value = ".", allow_hyphen_values = true)]

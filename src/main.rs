@@ -72,7 +72,11 @@ async fn exec_commands(cli: Cli) -> Result<()> {
         }
 
         Command::Version => {
-            println!("{}", env!("CARGO_PKG_VERSION"));
+            println!(
+                "{} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("BINARY_GIT_HASH")
+            );
             Ok(())
         }
 

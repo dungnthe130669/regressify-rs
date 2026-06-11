@@ -13,7 +13,52 @@ fn generate_pe_header() {
     res.compile().expect("Failed to compile Windows resources!");
 }
 
+fn emit_git_hash() {
+    // Prefer an explicitly provided hash (set by CI, e.g. ci/make-release.sh)
+    // so release builds embed the exact source commit even when building from a
+    // tarball without a .git directory. Fall back to `git rev-parse HEAD`, then
+    // to "unknown".
+    let hash = std::env::var("BINARY_GIT_HASH")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var("GIT_HASH")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("GITHUB_SHA")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+
+    println!("cargo:rustc-env=BINARY_GIT_HASH={hash}");
+
+    // Rebuild when the embedded hash source changes.
+    println!("cargo:rerun-if-env-changed=BINARY_GIT_HASH");
+    println!("cargo:rerun-if-env-changed=GIT_HASH");
+    println!("cargo:rerun-if-env-changed=GITHUB_SHA");
+    for head in [".git/HEAD", ".git/refs/heads"] {
+        if std::path::Path::new(head).exists() {
+            println!("cargo:rerun-if-changed={head}");
+        }
+    }
+}
+
 fn main() {
+    // Always embed the git hash so it is available to every build profile.
+    emit_git_hash();
+
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows"
         && std::env::var("PROFILE").unwrap() != "release"
     {

@@ -55,6 +55,25 @@ fi
 
 export CARGO_PROFILE_RELEASE_LTO=true
 
+# Embed the source commit hash into the binary so `regressify --version` /
+# `regressify version` report exactly which build is running. Prefer an
+# explicitly provided hash, then the CI-provided GITHUB_SHA, then git.
+if [ -z "$BINARY_GIT_HASH" ]
+then
+  if [ -n "$GITHUB_SHA" ]
+  then
+    BINARY_GIT_HASH="$GITHUB_SHA"
+  elif command -v git &> /dev/null && git rev-parse HEAD &> /dev/null
+  then
+    BINARY_GIT_HASH="$(git rev-parse HEAD)"
+  else
+    BINARY_GIT_HASH="unknown"
+  fi
+fi
+
+export BINARY_GIT_HASH
+echo "Embedding git hash: $BINARY_GIT_HASH"
+
 if [ -z "$SKIP_BUILD" ]
 then
   if [ -z "$NO_DEFAULT_FEATURES" ]
