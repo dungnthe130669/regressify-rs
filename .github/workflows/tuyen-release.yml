@@ -125,14 +125,14 @@ jobs:
             add_to_matrix \
               "macos-latest" \
               "x86_64-apple-darwin" \
-              10
+              15
           fi
 
           if [ "${{ github.event.inputs.macosAarch64 }}" = "true" ]; then
             add_to_matrix \
               "macos-latest" \
               "aarch64-apple-darwin" \
-              10
+              15
           fi
 
           if [ "${{ github.event.inputs.windowsX86_64 }}" = "true" ]; then
