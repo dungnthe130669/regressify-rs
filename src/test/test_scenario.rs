@@ -630,6 +630,9 @@ async fn load_state_cookies(
                 ) {
                     let mut param = CookieParam::builder().name(name).value(value);
 
+                    if let Some(url) = cookie_url_from(cookie) {
+                        param = param.url(url);
+                    }
                     if let Some(domain) = cookie.get("domain").and_then(|v| v.as_str()) {
                         param = param.domain(domain);
                     }
@@ -759,6 +762,9 @@ async fn load_cookie_path(
         ) {
             let mut param = CookieParam::builder().name(name).value(value);
 
+            if let Some(url) = cookie_url_from(cookie) {
+                param = param.url(url);
+            }
             if let Some(domain) = cookie.get("domain").and_then(|v| v.as_str()) {
                 param = param.domain(domain);
             }
@@ -792,6 +798,31 @@ async fn load_cookie_path(
     }
 
     Ok(())
+}
+
+/// Derive a cookie `url` from its JSON definition.
+///
+/// Cookies are loaded before the first navigation, while the page is still at
+/// `about:blank`. chromiumoxide falls back to the current page URL when a
+/// cookie has no explicit `url`, and rejects `about:blank` with
+/// "Blank page can not have cookie". Supplying a `url` derived from the
+/// cookie's `domain` avoids that fallback. An explicit `url` field wins.
+fn cookie_url_from(cookie: &serde_json::Value) -> Option<String> {
+    if let Some(url) = cookie.get("url").and_then(|v| v.as_str()) {
+        return Some(url.to_string());
+    }
+    let domain = cookie.get("domain").and_then(|v| v.as_str())?;
+    let host = domain.trim_start_matches('.');
+    if host.is_empty() {
+        return None;
+    }
+    let secure = cookie
+        .get("secure")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let scheme = if secure { "https" } else { "http" };
+    let path = cookie.get("path").and_then(|v| v.as_str()).unwrap_or("/");
+    Some(format!("{scheme}://{host}{path}"))
 }
 
 /// Parse a SameSite string from cookie JSON into the CDP enum.
