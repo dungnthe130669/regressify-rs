@@ -25,17 +25,17 @@ Global flags are placed before the command:
 regressify --root ./my-tests --site-env staging test --test-suite alloy
 ```
 
-| Flag                          | Purpose                                                                                                           |
-| ----------------------------- | ----------------------------------------------------------------------------------------------------------------- |
-| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                  |
-| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. |
-| `--run-id`                    | Accepted by the CLI for run identification.                                                                       |
-| `--async-capture-limit`       | Maximum scenario/viewport captures running at once. Defaults to `5`.                                              |
-| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                       |
-| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this.                                 |
-| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.           |
-| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                   |
-| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                   |
+| Flag                          | Purpose                                                                                                                      |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                             |
+| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory.            |
+| `--run-id`                    | Accepted by the CLI for run identification.                                                                                  |
+| `--async-capture-limit`       | Maximum scenario/viewport captures running at once. Defaults to `5`.                                                         |
+| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                  |
+| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display). |
+| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.                      |
+| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                              |
+| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                              |
 
 ## Commands
 

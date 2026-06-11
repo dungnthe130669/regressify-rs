@@ -40,6 +40,8 @@ tokio::spawn(async move {
 });
 ```
 
+> **Headed vs headless / CI:** `debug: true` (suite) or `--debug` switches to `with_head()` (visible window). This must be forced off in CI — `launch_browser` in `src/test/browsers.rs` gates it with `common::is_ci()` (`CI=true`, Azure Pipelines, or GitHub Actions). CI agents have no display, so a headed launch fails with `Missing X server or $DISPLAY`. Always launch headless (`new_headless_mode()`) in CI; do not add X11-specific workarounds.
+
 ### Page Operations
 
 ```rust

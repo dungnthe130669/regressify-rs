@@ -102,6 +102,8 @@ Default value: `false`.
 
 Should the tool display the Chromium window as tests are running. This will allow you to visually see your app state at the time of your test. The global `--debug` flag also enables headed mode.
 
+> Debug (headed) mode is automatically disabled in CI environments (Azure Pipelines, GitHub Actions, or `CI=true`). CI agents have no display, so the browser always runs headless there even when `debug: true` is set; otherwise the launch would fail with `Missing X server or $DISPLAY`.
+
 Example:
 
 ```yaml
