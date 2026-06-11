@@ -119,10 +119,17 @@ pub async fn launch_browser(
         //   the same SIMD rounding is used every run.
         // - font-render-hinting=none: deterministic glyph rasterization.
         // - disable-partial-raster: never reuse partially-rasterized tiles.
+        // - disable-gpu + use-gl=swiftshader: force software (SwiftShader)
+        //   rasterization. GPU rasterization in the "new" headless mode produces
+        //   non-deterministic anti-aliasing (a pixel flips white<->cream between
+        //   runs); software rendering is deterministic, matching the rasterizer
+        //   Playwright uses for stable screenshots.
         "--force-color-profile=srgb",
         "--disable-skia-runtime-opts",
         "--font-render-hinting=none",
         "--disable-partial-raster",
+        "--disable-gpu",
+        "--use-gl=swiftshader",
     ];
     if options.ignore_ssl_errors {
         args.push("--ignore-certificate-errors");
