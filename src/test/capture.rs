@@ -5,7 +5,9 @@ use std::sync::OnceLock;
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
-    Page, cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
+    Page,
+    cdp::browser_protocol::page::{CaptureScreenshotFormat, Viewport},
+    page::ScreenshotParams,
 };
 use rgb::RGBA8;
 use serde::{Deserialize, Serialize};
@@ -181,9 +183,39 @@ pub async fn save_screenshot(
 ) -> Result<()> {
     let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)?;
 
+    // Full-page capture, matching Playwright's deterministic screenshot path.
+    //
+    // We deliberately do NOT use chromiumoxide's `.full_page(true)` helper. That
+    // helper calls `Page.setDeviceMetricsOverride` to resize the emulated
+    // viewport to the full document height, which forces a relayout + repaint at
+    // a new size right before the capture. That post-resize repaint is timing
+    // sensitive and not deterministic — anti-aliased edges settle to slightly
+    // different sub-pixel values between runs (e.g. a single white vs. cream
+    // pixel). Because PNG/deflate re-aligns the entire stream on any pixel
+    // change, even one drifting pixel makes the whole file differ, so `ref`
+    // floods git with "changed" baselines on every run.
+    //
+    // Instead we replicate Playwright exactly: read the document size from
+    // `Page.getLayoutMetrics`, then capture with an explicit clip and
+    // `captureBeyondViewport: true`. Chromium renders the whole page in a single
+    // compositor pass WITHOUT resizing the viewport (no relayout), which is
+    // reproducible run-over-run. `fromSurface: true` reads from the compositor
+    // surface for further stability.
+    let metrics = page.layout_metrics().await?;
+    let width = metrics.css_content_size.width;
+    let height = metrics.css_content_size.height;
+
     let params = ScreenshotParams::builder()
         .format(CaptureScreenshotFormat::Png)
-        .full_page(true)
+        .clip(Viewport {
+            x: 0.,
+            y: 0.,
+            width,
+            height,
+            scale: 1.,
+        })
+        .capture_beyond_viewport(true)
+        .from_surface(true)
         .omit_background(false)
         .build();
 

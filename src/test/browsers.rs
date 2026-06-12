@@ -100,36 +100,44 @@ pub async fn launch_browser(
     config_builder = config_builder.user_data_dir(&user_data_dir);
 
     let mut args = vec![
+        // The four explicit args the Node.js version passed to Playwright via
+        // `engineOptions.args` (its two "--ignore-certifcate-errors" flags were
+        // misspelled no-ops; we handle SSL correctly below).
         "--disable-infobars",
         "--disable-setuid-sandbox",
         "--no-sandbox",
         "--window-position=0,0",
-        // Rendering-determinism flags. Without these, consecutive captures of a
-        // visually-identical page differ by a handful of off-by-a-few color
-        // values on anti-aliased edges (e.g. a single white vs. cream pixel).
-        // Even a one-pixel change re-aligns the entire deflate stream, so git
-        // sees the whole PNG as changed and `ref` floods the baseline with
-        // noise. These flags pin color management and rasterization so the same
-        // pixels come out every run (matching Playwright's default screenshot
-        // behavior, which the Node.js version relied on).
+        // Rendering-determinism flags. The biggest determinism win is the
+        // capture method itself — see `save_screenshot` in capture.rs, which
+        // captures with `captureBeyondViewport` instead of resizing the
+        // viewport. These flags pin the remaining sources of pixel drift.
         //
-        // - force-color-profile=srgb: render into a fixed color space instead of
-        //   the host display's ICC profile (the main source of color drift).
-        // - disable-skia-runtime-opts: disable runtime CPU-feature detection so
-        //   the same SIMD rounding is used every run.
-        // - font-render-hinting=none: deterministic glyph rasterization.
-        // - disable-partial-raster: never reuse partially-rasterized tiles.
-        // - disable-gpu + use-gl=swiftshader: force software (SwiftShader)
-        //   rasterization. GPU rasterization in the "new" headless mode produces
-        //   non-deterministic anti-aliasing (a pixel flips white<->cream between
-        //   runs); software rendering is deterministic, matching the rasterizer
-        //   Playwright uses for stable screenshots.
-        "--force-color-profile=srgb",
-        "--disable-skia-runtime-opts",
+        // IMPORTANT: Chrome honors only the LAST `--enable-features` /
+        // `--disable-features` switch on the command line; duplicates are not
+        // merged. chromiumoxide's DEFAULT_ARGS already pass
+        // `--enable-features=NetworkService,NetworkServiceInProcess` and
+        // `--disable-features=TranslateUI`, and our args are appended after
+        // them — so we must restate those values here or they get dropped.
+        //
+        // - CDPScreenshotNewSurface: Playwright's screenshot determinism feature
+        //   — captures from a dedicated surface, independent of on-screen
+        //   compositing state.
+        // - PaintHolding (disabled): Playwright disables it so first paint is
+        //   not deferred, giving predictable paint timing before capture.
+        // - force-color-profile=srgb is already provided by chromiumoxide's
+        //   DEFAULT_ARGS, so we do not repeat it.
+        // - font-render-hinting / skia-runtime-opts / partial-raster pin glyph
+        //   rasterization and tile reuse (extra hardening beyond Playwright).
+        //
+        // NOTE: we intentionally do NOT pass --disable-gpu / --use-gl=swiftshader.
+        // Playwright keeps GPU rasterization enabled and is still deterministic;
+        // those flags are not what makes screenshots stable and can interfere
+        // with the new-surface capture path.
+        "--enable-features=NetworkService,NetworkServiceInProcess,CDPScreenshotNewSurface",
+        "--disable-features=TranslateUI,PaintHolding",
         "--font-render-hinting=none",
+        "--disable-skia-runtime-opts",
         "--disable-partial-raster",
-        "--disable-gpu",
-        "--use-gl=swiftshader",
     ];
     if options.ignore_ssl_errors {
         args.push("--ignore-certificate-errors");
