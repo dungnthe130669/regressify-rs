@@ -444,6 +444,7 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
     // Scroll page top-to-bottom then back to top to trigger lazy-loaded images
     if !resolved.no_scroll_top {
         eprintln!("{} Scrolling page to load lazy images...", log_prefix);
+        let scroll_start = std::time::Instant::now();
         page.evaluate(
             r#"(async () => {
                 const SCROLL_DISTANCE = 100;
@@ -522,9 +523,110 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
             })()"#,
         )
         .await?;
+        eprintln!(
+            "{} Lazy-load/scroll settled in {} ms.",
+            log_prefix,
+            scroll_start.elapsed().as_millis()
+        );
+    }
+
+    // Wait for the page to settle before capturing: fonts ready, then layout +
+    // DOM quiet for a short window. This prevents capturing while async content
+    // (lazy widgets, populated dropdowns, animations re-triggered by the scroll)
+    // is still rendering, which otherwise produces small non-deterministic diffs
+    // between runs. `settle_timeout_ms == 0` disables it.
+    if resolved.settle_timeout_ms > 0 {
+        let settle_start = std::time::Instant::now();
+        // Required quiet window: no DOM mutations and stable layout for this long.
+        let quiet_window_ms: u64 = 500;
+        let settle_js = format!(
+            r#"(async () => {{
+                const SETTLE_TIMEOUT = {settle_timeout};
+                const QUIET_WINDOW = {quiet_window};
+                const start = Date.now();
+
+                // 1. Wait for web fonts to finish loading (bounded by timeout).
+                if (document.fonts && document.fonts.ready) {{
+                    try {{
+                        await Promise.race([
+                            document.fonts.ready,
+                            new Promise((r) => setTimeout(r, SETTLE_TIMEOUT)),
+                        ]);
+                    }} catch (e) {{ /* ignore */ }}
+                }}
+
+                // 2. Track DOM mutations to detect a quiet window.
+                let lastMutation = Date.now();
+                const mo = new MutationObserver(() => {{ lastMutation = Date.now(); }});
+                mo.observe(document.documentElement, {{
+                    attributes: true, childList: true, subtree: true, characterData: true,
+                }});
+
+                const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
+                const sig = () => {{
+                    const de = document.documentElement;
+                    const b = document.body || de;
+                    return de.scrollHeight + 'x' + b.scrollWidth + 'x' + b.scrollHeight;
+                }};
+
+                // 3. Wait until layout is stable AND no mutations for QUIET_WINDOW,
+                //    confirmed across two consecutive animation frames. Bounded by
+                //    SETTLE_TIMEOUT.
+                let lastSig = '';
+                let settled = false;
+                while (Date.now() - start < SETTLE_TIMEOUT) {{
+                    await raf();
+                    const s = sig();
+                    const quiet = (Date.now() - lastMutation) >= QUIET_WINDOW;
+                    if (s === lastSig && quiet) {{
+                        await raf();
+                        if (sig() === s && (Date.now() - lastMutation) >= QUIET_WINDOW) {{
+                            settled = true;
+                            break;
+                        }}
+                    }}
+                    lastSig = s;
+                    await new Promise((r) => setTimeout(r, 50));
+                }}
+
+                mo.disconnect();
+                return {{ settled, elapsed: Date.now() - start }};
+            }})()"#,
+            settle_timeout = resolved.settle_timeout_ms,
+            quiet_window = quiet_window_ms,
+        );
+
+        match page.evaluate(settle_js.as_str()).await {
+            Ok(result) => {
+                let settled = result
+                    .value()
+                    .and_then(|v| v.get("settled"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if settled {
+                    eprintln!(
+                        "{} Page settled in {} ms before capture.",
+                        log_prefix,
+                        settle_start.elapsed().as_millis()
+                    );
+                } else {
+                    eprintln!(
+                        "{} Page did not settle within {} ms; capturing anyway.",
+                        log_prefix, resolved.settle_timeout_ms
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "{} Settle wait failed ({e}); capturing without settle.",
+                    log_prefix
+                );
+            }
+        }
     }
 
     eprintln!("{} Capturing final screenshot...", log_prefix);
+    let capture_start = std::time::Instant::now();
     save_screenshot(
         test_suite,
         scenario,
@@ -533,6 +635,11 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         viewport_label,
     )
     .await?;
+    eprintln!(
+        "{} Screenshot captured in {} ms.",
+        log_prefix,
+        capture_start.elapsed().as_millis()
+    );
 
     Ok(())
 }

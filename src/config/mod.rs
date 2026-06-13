@@ -45,6 +45,10 @@ pub struct WorkspaceConfig {
     pub element_timeout: Option<u64>,
     /// Timeout in ms for actionability checks (default: 5000)
     pub actionability_timeout: Option<u64>,
+    /// Max time in ms to wait for the page to settle (fonts ready, layout/DOM
+    /// quiet) right before capturing the screenshot. `0` disables the settle
+    /// wait. Default: 5000.
+    pub settle_timeout: Option<u64>,
 }
 
 /// Fully resolved configuration — all cascade levels merged with defaults applied.
@@ -72,6 +76,7 @@ pub struct ResolvedConfig {
     pub viewports_path: String,
     pub element_timeout_ms: u64,
     pub actionability_timeout_ms: u64,
+    pub settle_timeout_ms: u64,
 }
 
 impl Default for ResolvedConfig {
@@ -99,6 +104,7 @@ impl Default for ResolvedConfig {
             viewports_path: "common/_viewports.yaml".to_string(),
             element_timeout_ms: 30_000,
             actionability_timeout_ms: 5_000,
+            settle_timeout_ms: 5_000,
         }
     }
 }
@@ -287,6 +293,10 @@ pub fn resolve_config(
         actionability_timeout_ms: workspace
             .actionability_timeout
             .unwrap_or(defaults.actionability_timeout_ms),
+
+        settle_timeout_ms: workspace
+            .settle_timeout
+            .unwrap_or(defaults.settle_timeout_ms),
     }
 }
 
