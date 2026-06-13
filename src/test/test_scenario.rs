@@ -543,14 +543,16 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
             r#"(async () => {{
                 const SETTLE_TIMEOUT = {settle_timeout};
                 const QUIET_WINDOW = {quiet_window};
+                const POLL = 100;
                 const start = Date.now();
+                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
                 // 1. Wait for web fonts to finish loading (bounded by timeout).
                 if (document.fonts && document.fonts.ready) {{
                     try {{
                         await Promise.race([
                             document.fonts.ready,
-                            new Promise((r) => setTimeout(r, SETTLE_TIMEOUT)),
+                            sleep(SETTLE_TIMEOUT),
                         ]);
                     }} catch (e) {{ /* ignore */ }}
                 }}
@@ -562,7 +564,6 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
                     attributes: true, childList: true, subtree: true, characterData: true,
                 }});
 
-                const raf = () => new Promise((r) => requestAnimationFrame(() => r()));
                 const sig = () => {{
                     const de = document.documentElement;
                     const b = document.body || de;
@@ -570,23 +571,25 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
                 }};
 
                 // 3. Wait until layout is stable AND no mutations for QUIET_WINDOW,
-                //    confirmed across two consecutive animation frames. Bounded by
-                //    SETTLE_TIMEOUT.
+                //    confirmed across two consecutive polls. The loop is driven by
+                //    setTimeout (not requestAnimationFrame): rAF callbacks never
+                //    fire when the renderer is throttled/occluded, which would hang
+                //    this promise forever. Timers always fire, so the loop is
+                //    guaranteed to terminate within SETTLE_TIMEOUT.
                 let lastSig = '';
+                let stableCount = 0;
                 let settled = false;
                 while (Date.now() - start < SETTLE_TIMEOUT) {{
-                    await raf();
+                    await sleep(POLL);
                     const s = sig();
                     const quiet = (Date.now() - lastMutation) >= QUIET_WINDOW;
                     if (s === lastSig && quiet) {{
-                        await raf();
-                        if (sig() === s && (Date.now() - lastMutation) >= QUIET_WINDOW) {{
-                            settled = true;
-                            break;
-                        }}
+                        stableCount++;
+                        if (stableCount >= 2) {{ settled = true; break; }}
+                    }} else {{
+                        stableCount = 0;
                     }}
                     lastSig = s;
-                    await new Promise((r) => setTimeout(r, 50));
                 }}
 
                 mo.disconnect();
@@ -596,8 +599,14 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
             quiet_window = quiet_window_ms,
         );
 
-        match page.evaluate(settle_js.as_str()).await {
-            Ok(result) => {
+        // Hard safety net: never let a stuck evaluate hang the scenario task (and
+        // therefore the whole `ref`/`test` run). Even though the JS is bounded by
+        // SETTLE_TIMEOUT, a stalled CDP connection or throttled renderer could
+        // prevent the promise from resolving, so cap the wait on the Rust side too.
+        let settle_budget =
+            std::time::Duration::from_millis(resolved.settle_timeout_ms.saturating_add(2_000));
+        match tokio::time::timeout(settle_budget, page.evaluate(settle_js.as_str())).await {
+            Ok(Ok(result)) => {
                 let settled = result
                     .value()
                     .and_then(|v| v.get("settled"))
@@ -616,10 +625,17 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
                     );
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 eprintln!(
                     "{} Settle wait failed ({e}); capturing without settle.",
                     log_prefix
+                );
+            }
+            Err(_) => {
+                eprintln!(
+                    "{} Settle wait exceeded {} ms budget; capturing anyway.",
+                    log_prefix,
+                    settle_budget.as_millis()
                 );
             }
         }
