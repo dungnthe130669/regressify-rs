@@ -42,6 +42,10 @@ pub struct Cli {
     #[clap(long, allow_hyphen_values = true)]
     pub site_env: Option<String>,
 
+    /// Directory to use as regressify directory (overrides site_env)
+    #[clap(long, allow_hyphen_values = true)]
+    pub regressify_dir: Option<PathBuf>,
+
     /// Run ID
     #[clap(long, allow_hyphen_values = true)]
     pub run_id: Option<String>,

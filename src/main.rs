@@ -95,14 +95,22 @@ async fn exec_commands(cli: Cli) -> Result<()> {
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
-    let regressify_dir_name = if let Some(ref site_env) = cli.site_env {
-        format!(".regressify__{}", site_env)
-    } else {
-        ".regressify".to_string()
-    };
-
     let work_dir = common::ROOT_DIR.get_required()?;
-    let regressify_dir = work_dir.join(&regressify_dir_name);
+    let (regressify_dir_name, regressify_dir) = if let Some(regressify_dir) = &cli.regressify_dir {
+        (
+            regressify_dir.to_string_lossy().into_owned(),
+            work_dir.join(regressify_dir),
+        )
+    } else {
+        let regressify_dir_name = if let Some(ref site_env) = cli.site_env {
+            format!(".regressify__{}", site_env)
+        } else {
+            ".regressify".to_string()
+        };
+
+        let regressify_dir = work_dir.join(&regressify_dir_name);
+        (regressify_dir_name, regressify_dir)
+    };
 
     common::REGRESSIFY_DIR_NAME.set_value(regressify_dir_name)?;
     common::REGRESSIFY_DIR.set_value(regressify_dir)?;
