@@ -13,8 +13,8 @@ use crate::{
     helpers::OnceLockExtensions,
     test::{
         capture::{
-            final_screenshot_order_key, final_screenshot_types, save_screenshot,
-            screenshot_type_description, state_path, validate_state_name, write_error_screenshots,
+            final_screenshot_order_key, final_screenshot_types, load_persisted_state,
+            save_screenshot, screenshot_type_description, write_error_screenshots,
         },
         page_stability::{
             freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
@@ -638,37 +638,13 @@ async fn load_state_cookies(
     };
 
     for name in &state_names {
-        validate_state_name(name)?;
-        let state_path = state_path(name)?;
-
-        if !state_path.exists() {
-            eprintln!(
-                "{} {} State file not found: {}",
-                log_prefix,
-                "WARNING:".yellow(),
-                state_path.display()
-            );
-            continue;
-        }
+        let (_, state) = load_persisted_state(name)?;
 
         eprintln!("{} Loading state: {}", log_prefix, name);
-        let content = std::fs::read_to_string(&state_path)?;
-        let state: serde_json::Value = serde_json::from_str(&content)?;
 
-        // Warn if state has unexpected shape
-        if let Some(c) = state.get("cookies")
-            && !c.is_array()
-        {
-            eprintln!(
-                "{} {} State '{}': 'cookies' is not an array; ignoring",
-                log_prefix,
-                "WARNING:".yellow(),
-                name
-            );
-        }
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
-            use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite};
+            use chromiumoxide::cdp::browser_protocol::network::CookieParam;
             for cookie in cookies {
                 if let (Some(name), Some(value)) = (
                     cookie.get("name").and_then(|v| v.as_str()),
@@ -700,8 +676,6 @@ async fn load_state_cookies(
                     {
                         param = param.same_site(ss);
                     }
-                    let _ = CookieSameSite::Strict; // ensure import is exercised even if no sameSite
-
                     let cookie_param = param
                         .build()
                         .map_err(|e| anyhow::anyhow!("Failed to build cookie param: {:?}", e))?;
@@ -730,26 +704,7 @@ async fn load_state_local_storage(
     let mut restored = false;
 
     for name in &state_names {
-        validate_state_name(name)?;
-        let state_path = state_path(name)?;
-
-        if !state_path.exists() {
-            continue;
-        }
-
-        let content = std::fs::read_to_string(&state_path)?;
-        let state: serde_json::Value = serde_json::from_str(&content)?;
-
-        if let Some(ls) = state.get("localStorage")
-            && !ls.is_object()
-        {
-            eprintln!(
-                "{} {} State '{}': 'localStorage' is not an object; ignoring",
-                log_prefix,
-                "WARNING:".yellow(),
-                name
-            );
-        }
+        let (_, state) = load_persisted_state(name)?;
 
         // Restore localStorage
         if let Some(local_storage) = state.get("localStorage").and_then(|v| v.as_object()) {
@@ -758,23 +713,21 @@ async fn load_state_local_storage(
                 restored = true;
             }
             for (key, value) in local_storage {
-                if let Some(val_str) = value.as_str() {
-                    let script = format!(
-                        "localStorage.setItem({}, {})",
-                        serde_json::to_string(key)?,
-                        serde_json::to_string(val_str)?
-                    );
-                    page.evaluate(script).await.map_err(|e| {
-                        anyhow!("Failed to restore localStorage key '{}': {:?}", key, e)
-                    })?;
-                } else {
-                    eprintln!(
-                        "    {} State '{}': localStorage entry '{}' is not a string; skipping",
-                        "WARNING:".yellow(),
+                let val_str = value.as_str().ok_or_else(|| {
+                    anyhow!(
+                        "Persisted state '{}' localStorage key '{}' must have a string value",
                         name,
                         key
-                    );
-                }
+                    )
+                })?;
+                let script = format!(
+                    "localStorage.setItem({}, {})",
+                    serde_json::to_string(key)?,
+                    serde_json::to_string(val_str)?
+                );
+                page.evaluate(script).await.map_err(|e| {
+                    anyhow!("Failed to restore localStorage key '{}': {:?}", key, e)
+                })?;
             }
         }
     }

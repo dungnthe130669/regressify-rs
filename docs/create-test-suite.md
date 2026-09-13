@@ -48,6 +48,9 @@ An explicit `cookiePath`, `cssOverridePath`, or `jsOnReadyPath` must name an
 existing regular file inside the workspace; malformed cookie YAML also fails
 before Chromium launches. The default optional `common/_cookies.yaml`,
 `common/_override.css`, and `common/_on-ready.js` files may be absent.
+Configured persisted `state` and scenario `restore` files are likewise required
+to exist in the active Regressify output directory and must have valid state
+data before Chromium launches.
 
 ## Properties
 

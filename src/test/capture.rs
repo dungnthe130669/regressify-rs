@@ -28,6 +28,7 @@ const PRESERVED_PNG_CHUNKS: [&[u8; 4]; 9] = [
 const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 const MAX_SELECTOR_SLUG_LEN: usize = 48;
 const MAX_STEP_NAME_BYTES: usize = 100;
+const MAX_STATE_NAME_BYTES: usize = 80;
 
 /// Marker for failures while producing on-disk regression artifacts. These are
 /// tool failures, unlike a page that fails to render or perform an action.
@@ -344,10 +345,17 @@ fn run_dir(test_suite: &TestSuite) -> Result<PathBuf> {
 }
 
 pub fn validate_state_name(name: &str) -> Result<()> {
-    if name.contains('/') || name.contains('\\') || name.contains("..") {
+    if name.trim().is_empty()
+        || name != name.trim()
+        || name.len() > MAX_STATE_NAME_BYTES
+        || name.ends_with(['.', ' '])
+        || name.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
+        || name.chars().any(char::is_control)
+    {
         anyhow::bail!(
-            "Invalid state name '{}': must not contain path separators or '..'",
-            name
+            "Invalid state name '{}': use a non-empty portable filename component no longer than {} bytes",
+            name,
+            MAX_STATE_NAME_BYTES
         );
     }
     Ok(())
@@ -357,6 +365,106 @@ pub fn state_path(name: &str) -> Result<PathBuf> {
     validate_state_name(name)?;
     let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
     Ok(regressify_dir.join("states").join(format!("{}.json", name)))
+}
+
+/// Load a configured persisted state file and verify the data shape generated
+/// by the `persist` action before it alters browser state.
+pub fn load_persisted_state(name: &str) -> Result<(PathBuf, serde_json::Value)> {
+    let path = state_path(name)?;
+    let state = read_persisted_state_file(&path, name)?;
+    Ok((path, state))
+}
+
+pub(crate) fn read_persisted_state_file(path: &Path, name: &str) -> Result<serde_json::Value> {
+    let content = fs::read_to_string(path).map_err(|error| {
+        anyhow!(
+            "Failed to read persisted state '{}': {}",
+            path.display(),
+            error
+        )
+    })?;
+    let state: serde_json::Value = serde_json::from_str(&content)
+        .map_err(|error| anyhow!("Invalid persisted state '{}': {}", path.display(), error))?;
+    validate_persisted_state_value(&state, name)?;
+    Ok(state)
+}
+
+fn validate_persisted_state_value(state: &serde_json::Value, name: &str) -> Result<()> {
+    let object = state
+        .as_object()
+        .ok_or_else(|| anyhow!("Persisted state '{}' must be a JSON object", name))?;
+    if let Some(cookies) = object.get("cookies") {
+        let cookies = cookies.as_array().ok_or_else(|| {
+            anyhow!(
+                "Persisted state '{}' field 'cookies' must be an array",
+                name
+            )
+        })?;
+        for (index, cookie) in cookies.iter().enumerate() {
+            let cookie = cookie.as_object().ok_or_else(|| {
+                anyhow!(
+                    "Persisted state '{}' cookie {} must be an object",
+                    name,
+                    index
+                )
+            })?;
+            if cookie
+                .get("name")
+                .and_then(|value| value.as_str())
+                .is_none_or(str::is_empty)
+            {
+                anyhow::bail!(
+                    "Persisted state '{}' cookie {} requires a name",
+                    name,
+                    index
+                );
+            }
+            if cookie
+                .get("value")
+                .and_then(|value| value.as_str())
+                .is_none()
+            {
+                anyhow::bail!(
+                    "Persisted state '{}' cookie {} requires a string value",
+                    name,
+                    index
+                );
+            }
+            let has_url = cookie
+                .get("url")
+                .and_then(|value| value.as_str())
+                .is_some_and(|url| !url.is_empty());
+            let has_domain = cookie
+                .get("domain")
+                .and_then(|value| value.as_str())
+                .is_some_and(|domain| !domain.trim_start_matches('.').is_empty());
+            if !has_url && !has_domain {
+                anyhow::bail!(
+                    "Persisted state '{}' cookie {} requires a url or domain",
+                    name,
+                    index
+                );
+            }
+        }
+    }
+    if let Some(local_storage) = object.get("localStorage") {
+        let local_storage = local_storage.as_object().ok_or_else(|| {
+            anyhow!(
+                "Persisted state '{}' field 'localStorage' must be an object",
+                name
+            )
+        })?;
+        for (key, value) in local_storage {
+            if !value.is_string() {
+                anyhow::bail!(
+                    "Persisted state '{}' localStorage key '{}' must have a string value",
+                    name,
+                    key
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Write the report ordering manifest for a suite run. `prefixes` is the ordered
@@ -924,6 +1032,59 @@ mod tests {
         assert!(validate_screenshot_step_name(" progress").is_err());
         assert!(validate_screenshot_step_name("progress ").is_err());
         assert!(validate_screenshot_step_name("progress_diff").is_err());
+    }
+
+    #[test]
+    fn persisted_state_validation_rejects_missing_or_malformed_data() {
+        let valid = serde_json::json!({
+            "cookies": [{
+                "name": "session",
+                "value": "abc",
+                "domain": ".example.com"
+            }],
+            "localStorage": { "theme": "dark" }
+        });
+        assert!(validate_persisted_state_value(&valid, "auth").is_ok());
+
+        let invalid_cookies = serde_json::json!({ "cookies": {} });
+        assert!(
+            validate_persisted_state_value(&invalid_cookies, "auth")
+                .unwrap_err()
+                .to_string()
+                .contains("cookies' must be an array")
+        );
+
+        let invalid_storage = serde_json::json!({ "localStorage": { "theme": 1 } });
+        assert!(
+            validate_persisted_state_value(&invalid_storage, "auth")
+                .unwrap_err()
+                .to_string()
+                .contains("must have a string value")
+        );
+
+        assert!(validate_state_name("auth-staging").is_ok());
+        assert!(validate_state_name("../auth").is_err());
+        assert!(validate_state_name(" auth").is_err());
+    }
+
+    #[test]
+    fn persisted_state_file_parser_reports_missing_and_malformed_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        assert!(
+            read_persisted_state_file(&path, "auth")
+                .unwrap_err()
+                .to_string()
+                .contains("Failed to read persisted state")
+        );
+
+        fs::write(&path, "not json").unwrap();
+        assert!(
+            read_persisted_state_file(&path, "auth")
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid persisted state")
+        );
     }
 
     #[test]

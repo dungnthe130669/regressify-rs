@@ -214,7 +214,12 @@ You can later reuse this saved state to test the site as if you are already logg
 state: user-aaaa
 ```
 
-State names must not contain path separators or `..`. State files are written under the active Regressify output directory, so `--site-env staging` stores them under `.regressify__staging/states/`.
+State names must be non-empty portable filename components no longer than 80
+bytes. State files are written under the active Regressify output directory, so
+`--site-env staging` stores them under `.regressify__staging/states/`.
+Configured `state` and `restore` files are validated before Chromium launches;
+missing or malformed state files fail the command instead of silently using an
+empty session.
 
 {% end %}
 

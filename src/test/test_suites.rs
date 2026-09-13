@@ -657,7 +657,18 @@ fn validate_external_capture_files(
     workspace_config: &config::WorkspaceConfig,
     parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
 ) -> Result<()> {
+    let output_dir = common::REGRESSIFY_DIR.get_required()?;
+    validate_external_capture_files_in(root_dir, output_dir, workspace_config, parsed_suites)
+}
+
+fn validate_external_capture_files_in(
+    root_dir: &Path,
+    output_dir: &Path,
+    workspace_config: &config::WorkspaceConfig,
+    parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
+) -> Result<()> {
     let mut checked_cookie_files = HashSet::new();
+    let mut checked_state_files = HashSet::new();
 
     for (input, suite) in parsed_suites {
         for (index, scenario) in suite.scenarios.iter().enumerate() {
@@ -674,6 +685,23 @@ fn validate_external_capture_files(
                     })?;
                     let _: Vec<serde_json::Value> = serde_yaml::from_str(&content)
                         .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
+                }
+            }
+
+            if let Some(state) = resolved.state.as_ref() {
+                let state_names = match state {
+                    Needs::String(name) => vec![name.as_str()],
+                    Needs::StringArray(names) => names.iter().map(String::as_str).collect(),
+                };
+                for state_name in state_names {
+                    crate::test::capture::validate_state_name(state_name)?;
+                    let state_path = output_dir
+                        .join("states")
+                        .join(format!("{}.json", state_name));
+                    if checked_state_files.insert(state_path.clone()) {
+                        crate::test::capture::read_persisted_state_file(&state_path, state_name)
+                            .with_context(|| format!("Invalid persisted state for {}", context))?;
+                    }
                 }
             }
 
@@ -1491,6 +1519,7 @@ mod tests {
     #[test]
     fn explicit_external_capture_files_are_validated_before_browser_launch() {
         let workspace_root = tempfile::tempdir().unwrap();
+        let output_dir = workspace_root.path().join(".regressify");
         let cookies_path = workspace_root.path().join("common/cookies.yaml");
         std::fs::create_dir_all(cookies_path.parent().unwrap()).unwrap();
         std::fs::write(&cookies_path, "[]\n").unwrap();
@@ -1501,12 +1530,23 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            validate_external_capture_files(workspace_root.path(), &workspace, &parsed).is_ok()
+            validate_external_capture_files_in(
+                workspace_root.path(),
+                &output_dir,
+                &workspace,
+                &parsed,
+            )
+            .is_ok()
         );
 
         std::fs::write(&cookies_path, "not: a cookie list\n").unwrap();
-        let error = validate_external_capture_files(workspace_root.path(), &workspace, &parsed)
-            .unwrap_err();
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &parsed,
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Invalid cookie YAML"));
 
         let missing_css = config::WorkspaceConfig {
@@ -1514,10 +1554,15 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            validate_external_capture_files(workspace_root.path(), &missing_css, &parsed)
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid cssOverridePath")
+            validate_external_capture_files_in(
+                workspace_root.path(),
+                &output_dir,
+                &missing_css,
+                &parsed,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid cssOverridePath")
         );
 
         let missing_script = config::WorkspaceConfig {
@@ -1525,10 +1570,71 @@ mod tests {
             ..Default::default()
         };
         assert!(
-            validate_external_capture_files(workspace_root.path(), &missing_script, &parsed)
-                .unwrap_err()
-                .to_string()
-                .contains("Invalid jsOnReadyPath")
+            validate_external_capture_files_in(
+                workspace_root.path(),
+                &output_dir,
+                &missing_script,
+                &parsed,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid jsOnReadyPath")
         );
+    }
+
+    #[test]
+    fn configured_persisted_states_are_validated_before_browser_launch() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let output_dir = workspace_root.path().join(".regressify");
+        let mut configured_suite = suite(vec![scenario("home", None)]);
+        configured_suite.state = Some(Needs::String("auth".to_string()));
+        let parsed = vec![(input(), Arc::new(configured_suite))];
+        let workspace = config::WorkspaceConfig::default();
+
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &parsed,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Invalid persisted state"));
+
+        let state_path = output_dir.join("states/auth.json");
+        std::fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+        std::fs::write(&state_path, "not json").unwrap();
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &parsed,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("Invalid persisted state"));
+
+        std::fs::write(
+            &state_path,
+            r#"{"cookies":[],"localStorage":{"theme":"dark"}}"#,
+        )
+        .unwrap();
+        assert!(
+            validate_external_capture_files_in(
+                workspace_root.path(),
+                &output_dir,
+                &workspace,
+                &parsed,
+            )
+            .is_ok()
+        );
+
+        std::fs::write(&state_path, r#"{"cookies":{}}"#).unwrap();
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &parsed,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("cookies' must be an array"));
     }
 }
