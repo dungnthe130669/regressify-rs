@@ -15,7 +15,10 @@ use crate::{
             ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule, escape_js_string,
             get_frame_selectors, scroll_into_view, wait_for_selector,
         },
-        capture::{artifact_write_error, save_screenshot, state_path, validate_state_name},
+        capture::{
+            artifact_write_error, save_screenshot, state_path, validate_screenshot_step_name,
+            validate_state_name,
+        },
         page_stability::wait_for_dom_ready,
     },
     types::{
@@ -840,13 +843,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Save(SaveAction { save, .. }) => {
-            // Validate save name doesn't contain path separators
-            if save.contains('/') || save.contains('\\') || save.contains("..") {
-                anyhow::bail!(
-                    "Invalid save name '{}': must not contain path separators or '..'",
-                    save
-                );
-            }
+            validate_screenshot_step_name(save)?;
             eprintln!("{} Saving screenshot: {}", log_prefix, save);
 
             save_screenshot(

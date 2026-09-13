@@ -35,8 +35,10 @@ Configuration is validated before browser capture starts. Malformed suite files,
 invalid viewport names, invalid replacement regexes, unsupported browser
 settings, out-of-range mismatch thresholds, and negative or non-finite timing
 values stop the command early. Suite and scenario IDs must also be portable
-single path components. Website failures during scenario execution are written
-to the reports instead of stopping sibling scenarios.
+single path components no longer than 80 bytes. Viewport labels must produce
+unique screenshot suffixes no longer than 48 bytes. Website failures during
+scenario execution are written to the reports instead of stopping sibling
+scenarios.
 
 ## Properties
 

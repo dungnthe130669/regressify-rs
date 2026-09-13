@@ -68,14 +68,14 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
         }
     }
 
-    // Ensure all scenario IDs are unique
+    // Screenshot names must remain unique on case-insensitive filesystems.
     let mut scenario_ids = std::collections::HashSet::new();
     for scenario in test_suite.scenarios.iter() {
         let scenario_id = scenario
             .id
             .as_ref()
             .ok_or_else(|| anyhow!("Scenario ID is missing."))?;
-        if !scenario_ids.insert(scenario_id) {
+        if !scenario_ids.insert(scenario_id.to_lowercase()) {
             return Err(anyhow!(
                 "Duplicate scenario ID found: '{}'. Scenario IDs must be unique.",
                 scenario_id
@@ -269,6 +269,30 @@ mod tests {
         assert_eq!(first_id, "20231114_221320_000000123");
         assert_eq!(second_id, "20231114_221320_000000456");
         assert!(first_id < second_id);
+    }
+
+    #[test]
+    fn parse_test_suite_rejects_case_insensitive_scenario_id_collisions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("suite.tests.yaml");
+        std::fs::write(
+            &path,
+            "scenarios:\n  - id: Home\n    url: https://example.com/home\n  - id: home\n    url: https://example.com/other\n",
+        )
+        .unwrap();
+
+        let result = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "suite".to_string(),
+                path,
+                format: TestSuiteFormat::Yaml,
+            },
+        );
+
+        assert!(
+            matches!(result, Err(error) if error.to_string().contains("Duplicate scenario ID"))
+        );
     }
 
     #[tokio::test]

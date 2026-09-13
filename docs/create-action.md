@@ -260,6 +260,26 @@ actions:
 
 {% spoiler() %}
 
+save
+
+:::::
+
+Capture an intermediate full-page screenshot before the scenario's final
+capture. Names must be non-empty portable filename components no longer than
+100 bytes; path separators, reserved Windows filename characters, and the
+`_diff` suffix are rejected.
+
+Example:
+
+```yml
+actions:
+  - save: after-login
+```
+
+{% end %}
+
+{% spoiler() %}
+
 scroll
 
 :::::

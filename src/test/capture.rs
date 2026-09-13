@@ -17,7 +17,7 @@ use crate::{
     common,
     helpers::{OnceLockExtensions, slugify, write_file_atomically},
     snapshot::get_asset_version,
-    types::{ScreenshotType, Selectors, TestScenario, TestSuite},
+    types::{ScreenshotType, Selectors, TestAction, TestScenario, TestSuite},
 };
 
 /// Chunks retained by normalization. Color-management chunks affect rendered
@@ -27,6 +27,7 @@ const PRESERVED_PNG_CHUNKS: [&[u8; 4]; 9] = [
 ];
 const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 const MAX_SELECTOR_SLUG_LEN: usize = 48;
+const MAX_STEP_NAME_BYTES: usize = 100;
 
 /// Marker for failures while producing on-disk regression artifacts. These are
 /// tool failures, unlike a page that fails to render or perform an action.
@@ -150,6 +151,63 @@ pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotT
     Ok(captures)
 }
 
+/// Validate all artifact names a scenario can write before browser launch.
+/// This prevents overwrites on case-insensitive filesystems and keeps generated
+/// diff files distinct from intermediate step screenshots.
+pub fn validate_scenario_capture_names(scenario: &TestScenario) -> Result<()> {
+    let mut names = HashSet::new();
+    for screenshot_type in final_screenshot_types(scenario)? {
+        register_capture_name(&mut names, &screenshot_type)?;
+    }
+
+    if let Some(actions) = &scenario.actions {
+        for action in actions {
+            if let TestAction::Save(save) = action {
+                let screenshot_type = ScreenshotType::Step(save.save.clone());
+                register_capture_name(&mut names, &screenshot_type)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate a name used by the `save` action before it becomes part of a PNG
+/// filename. The `_diff` suffix is reserved for comparison artifacts.
+pub fn validate_screenshot_step_name(name: &str) -> Result<()> {
+    if name.trim().is_empty()
+        || name != name.trim()
+        || name.len() > MAX_STEP_NAME_BYTES
+        || name.ends_with(['.', ' '])
+        || name.ends_with("_diff")
+        || name.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
+        || name.chars().any(char::is_control)
+    {
+        anyhow::bail!(
+            "Invalid save name '{}': use a non-empty portable filename component no longer than {} bytes and do not end it with '_diff'",
+            name,
+            MAX_STEP_NAME_BYTES
+        );
+    }
+    Ok(())
+}
+
+fn register_capture_name(
+    names: &mut HashSet<String>,
+    screenshot_type: &ScreenshotType,
+) -> Result<()> {
+    if let ScreenshotType::Step(name) = screenshot_type {
+        validate_screenshot_step_name(name)?;
+    }
+    let name = screenshot_type_name(screenshot_type);
+    if !names.insert(name.to_lowercase()) {
+        anyhow::bail!(
+            "Scenario capture targets produce duplicate filename '{}'.",
+            name
+        );
+    }
+    Ok(())
+}
+
 /// Return a manifest key matching a screenshot filename without its `.png`
 /// suffix. The key is stable across runs and selector declaration order.
 pub fn final_screenshot_order_key(
@@ -223,6 +281,9 @@ fn screenshot_path_in(
     screenshot_type: &ScreenshotType,
     viewport_label: Option<&str>,
 ) -> Result<PathBuf> {
+    if let ScreenshotType::Step(name) = screenshot_type {
+        validate_screenshot_step_name(name)?;
+    }
     let test_suite_id = test_suite
         .id
         .as_ref()
@@ -822,6 +883,47 @@ mod tests {
                 .to_string()
                 .contains("empty value")
         );
+    }
+
+    #[test]
+    fn scenario_capture_names_reject_duplicate_or_unsafe_step_screenshots() {
+        let mut scenario = test_scenario();
+        scenario.actions = Some(vec![
+            TestAction::Save(crate::types::SaveAction {
+                save: "progress".to_string(),
+                frame: None,
+            }),
+            TestAction::Save(crate::types::SaveAction {
+                save: "Progress".to_string(),
+                frame: None,
+            }),
+        ]);
+        assert!(
+            validate_scenario_capture_names(&scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("duplicate filename")
+        );
+
+        scenario.actions = Some(vec![TestAction::Save(crate::types::SaveAction {
+            save: "result_diff".to_string(),
+            frame: None,
+        })]);
+        assert!(
+            validate_scenario_capture_names(&scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid save name")
+        );
+    }
+
+    #[test]
+    fn screenshot_step_names_reject_unsafe_filename_components() {
+        assert!(validate_screenshot_step_name("after-login").is_ok());
+        assert!(validate_screenshot_step_name("report:final").is_err());
+        assert!(validate_screenshot_step_name(" progress").is_err());
+        assert!(validate_screenshot_step_name("progress ").is_err());
+        assert!(validate_screenshot_step_name("progress_diff").is_err());
     }
 
     #[test]

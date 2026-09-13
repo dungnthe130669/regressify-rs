@@ -7,6 +7,10 @@ use std::collections::HashSet;
 use anyhow::{Result, anyhow};
 use serde::Deserialize;
 
+use crate::helpers::slugify;
+
+const MAX_CAPTURE_NAME_BYTES: usize = 48;
+
 /// A viewport definition with label and dimensions.
 #[derive(Deserialize, Clone, Debug)]
 pub struct ViewportDef {
@@ -40,6 +44,7 @@ pub fn load_viewports(path: &Path) -> Result<Vec<ViewportDef>> {
 
 fn validate_viewports(viewports: &[ViewportDef], path: &Path) -> Result<()> {
     let mut labels = HashSet::new();
+    let mut capture_names = HashSet::new();
     for viewport in viewports {
         let label = viewport.label.trim();
         if label.is_empty() {
@@ -61,6 +66,28 @@ fn validate_viewports(viewports: &[ViewportDef], path: &Path) -> Result<()> {
                 "Viewport file '{}' contains duplicate label '{}' (case-insensitive)",
                 path.display(),
                 viewport.label
+            ));
+        }
+        let capture_name = slugify(label);
+        if capture_name.is_empty() {
+            return Err(anyhow!(
+                "Viewport label '{}' in '{}' cannot produce a screenshot filename",
+                viewport.label,
+                path.display()
+            ));
+        }
+        if capture_name.len() > MAX_CAPTURE_NAME_BYTES {
+            return Err(anyhow!(
+                "Viewport label '{}' in '{}' produces a screenshot name longer than {} bytes",
+                viewport.label,
+                path.display(),
+                MAX_CAPTURE_NAME_BYTES
+            ));
+        }
+        if !capture_names.insert(capture_name) {
+            return Err(anyhow!(
+                "Viewport file '{}' contains labels that produce duplicate screenshot names",
+                path.display()
             ));
         }
     }
@@ -132,5 +159,25 @@ mod tests {
         ];
         let err = validate_viewports(&all, Path::new("common/_viewports.yaml")).unwrap_err();
         assert!(err.to_string().contains("duplicate label"));
+    }
+
+    #[test]
+    fn validate_viewports_rejects_colliding_or_empty_capture_names() {
+        let colliding = vec![viewport("mobile!", 375, 667), viewport("mobile?", 390, 844)];
+        let error =
+            validate_viewports(&colliding, Path::new("common/_viewports.yaml")).unwrap_err();
+        assert!(error.to_string().contains("duplicate screenshot names"));
+
+        let empty = vec![viewport("!!!", 375, 667)];
+        let error = validate_viewports(&empty, Path::new("common/_viewports.yaml")).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cannot produce a screenshot filename")
+        );
+
+        let long = vec![viewport(&"a".repeat(MAX_CAPTURE_NAME_BYTES + 1), 375, 667)];
+        let error = validate_viewports(&long, Path::new("common/_viewports.yaml")).unwrap_err();
+        assert!(error.to_string().contains("longer than"));
     }
 }

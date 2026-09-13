@@ -44,6 +44,8 @@ enum TaskStatus {
     InfraFailed,
 }
 
+const MAX_OUTPUT_IDENTIFIER_BYTES: usize = 80;
+
 /// One independent capture unit: a single scenario at a single viewport, with a
 /// dedicated global index. Built upfront (TS/BackstopJS-style) so every
 /// scenario/viewport pair runs as its own task with its own browser and index.
@@ -424,12 +426,14 @@ fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
     if value.trim().is_empty()
         || value == "."
         || value == ".."
+        || value.len() > MAX_OUTPUT_IDENTIFIER_BYTES
         || value.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
     {
         anyhow::bail!(
-            "{} '{}' is not a portable output path component",
+            "{} '{}' is not a portable output path component no longer than {} bytes",
             name,
-            value
+            value,
+            MAX_OUTPUT_IDENTIFIER_BYTES
         );
     }
     Ok(())
@@ -486,7 +490,7 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
             &format!("scenario '{}' postInteractionWait", scenario_name),
             scenario.post_interaction_wait,
         )?;
-        capture::final_screenshot_types(scenario).map_err(|error| {
+        capture::validate_scenario_capture_names(scenario).map_err(|error| {
             anyhow!(
                 "Invalid selectors for scenario '{}': {}",
                 scenario_name,
@@ -634,7 +638,28 @@ fn parse_test_suites(
     if parsed.is_empty() {
         anyhow::bail!("No matching test suites found");
     }
+    validate_unique_suite_output_ids(&parsed)?;
     Ok(parsed)
+}
+
+fn validate_unique_suite_output_ids(suites: &[(TestSuiteInput, Arc<TestSuite>)]) -> Result<()> {
+    let mut inputs_by_output_id = HashMap::new();
+    for (input, suite) in suites {
+        let suite_id = suite
+            .id
+            .as_deref()
+            .ok_or_else(|| anyhow!("Test suite '{}' is missing an ID", input.name))?;
+        let key = suite_id.to_lowercase();
+        if let Some(previous_input) = inputs_by_output_id.insert(key, input.name.as_str()) {
+            anyhow::bail!(
+                "Test suites '{}' and '{}' share output ID '{}' on case-insensitive filesystems",
+                previous_input,
+                input.name,
+                suite_id
+            );
+        }
+    }
+    Ok(())
 }
 
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
@@ -1353,5 +1378,44 @@ mod tests {
                 .to_string()
                 .contains("Scenario ID")
         );
+
+        let mut long_identifier_suite = suite(vec![scenario("home", None)]);
+        long_identifier_suite.id = Some("a".repeat(MAX_OUTPUT_IDENTIFIER_BYTES + 1));
+        assert!(
+            validate_test_suite_config(&input(), &long_identifier_suite)
+                .unwrap_err()
+                .to_string()
+                .contains("no longer than")
+        );
+    }
+
+    #[test]
+    fn rejects_suites_with_case_insensitive_output_id_collisions() {
+        let mut first = suite(vec![scenario("home", None)]);
+        first.id = Some("Production".to_string());
+        let mut second = suite(vec![scenario("home", None)]);
+        second.id = Some("production".to_string());
+        let inputs = vec![
+            (
+                TestSuiteInput {
+                    name: "first".to_string(),
+                    path: PathBuf::from("first.tests.yaml"),
+                    format: TestSuiteFormat::Yaml,
+                },
+                Arc::new(first),
+            ),
+            (
+                TestSuiteInput {
+                    name: "second".to_string(),
+                    path: PathBuf::from("second.tests.yaml"),
+                    format: TestSuiteFormat::Yaml,
+                },
+                Arc::new(second),
+            ),
+        ];
+
+        let error = validate_unique_suite_output_ids(&inputs).unwrap_err();
+
+        assert!(error.to_string().contains("share output ID"));
     }
 }
