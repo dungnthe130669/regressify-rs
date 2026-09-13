@@ -22,6 +22,7 @@ Each scenario can have zero, one or multiple actions. Each action must be one of
 
 Interactive actions wait for the target element to exist, be visible, become stable, scroll into view, and not be covered by another element before interacting. Form controls must also be enabled. These checks intentionally make actions fail when a real user could not perform them.
 Direct browser operations used by interactive actions are bounded by the configured actionability timeout, so an unresponsive page cannot hold a scenario indefinitely.
+Unknown action properties fail suite parsing instead of being ignored.
 
 {% spoiler() %}
 

@@ -182,6 +182,7 @@ The `url` property in wait supports:
 ## Config Validation Notes
 
 - Only `browser: chromium` is supported.
+- Unknown configuration and action properties are errors; use documented camelCase keys.
 - Unknown viewport names, duplicate viewport labels, empty labels, and zero dimensions are config errors.
 - Invalid regex URL replacements are config errors.
 - Website failures should be captured in reports and should not stop sibling scenarios.

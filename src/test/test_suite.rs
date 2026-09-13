@@ -315,6 +315,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn parse_test_suite_rejects_unknown_suite_or_scenario_properties() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("suite.tests.yaml");
+        std::fs::write(
+            &path,
+            "postinteractionwait: 5000\nscenarios:\n  - url: https://example.com\n    delayy: 10\n",
+        )
+        .unwrap();
+
+        let result = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "suite".to_string(),
+                path,
+                format: TestSuiteFormat::Yaml,
+            },
+        );
+
+        assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
+    }
+
+    #[test]
+    fn bundled_visual_suites_deserialize_with_the_strict_schema() {
+        let visual_tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("visual_tests");
+        for entry in std::fs::read_dir(&visual_tests_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            let is_yaml = path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension == "yaml" || extension == "yml");
+            if !is_yaml {
+                continue;
+            }
+
+            let result = parse_test_suite(
+                &visual_tests_dir,
+                &TestSuiteInput {
+                    name: entry.file_name().to_string_lossy().to_string(),
+                    path,
+                    format: TestSuiteFormat::Yaml,
+                },
+            );
+            if let Err(error) = result {
+                panic!("Bundled visual suite failed strict parsing: {}", error);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn timed_out_handler_is_aborted_before_returning() {
         let mut handle = tokio::spawn(std::future::pending::<()>());

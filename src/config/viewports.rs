@@ -13,6 +13,7 @@ const MAX_CAPTURE_NAME_BYTES: usize = 48;
 
 /// A viewport definition with label and dimensions.
 #[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
 pub struct ViewportDef {
     pub label: String,
     pub width: u32,
@@ -179,5 +180,20 @@ mod tests {
         let long = vec![viewport(&"a".repeat(MAX_CAPTURE_NAME_BYTES + 1), 375, 667)];
         let error = validate_viewports(&long, Path::new("common/_viewports.yaml")).unwrap_err();
         assert!(error.to_string().contains("longer than"));
+    }
+
+    #[test]
+    fn load_viewports_rejects_unknown_properties() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("viewports.yaml");
+        std::fs::write(
+            &path,
+            "- label: desktop\n  width: 1280\n  height: 720\n  deviceScaleFactor: 2\n",
+        )
+        .unwrap();
+
+        let error = load_viewports(&path).unwrap_err();
+
+        assert!(error.to_string().contains("unknown field"));
     }
 }

@@ -20,7 +20,7 @@ pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
 #[derive(Deserialize, Clone, Default)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub async_capture_limit: Option<usize>,
     pub async_compare_limit: Option<usize>,
@@ -517,5 +517,12 @@ mod tests {
             ),
             DEFAULT_ASYNC_CAPTURE_LIMIT
         );
+    }
+
+    #[test]
+    fn workspace_config_rejects_unknown_properties() {
+        let result = serde_yaml::from_str::<WorkspaceConfig>("postinteractionwait: 5000\n");
+
+        assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
     }
 }

@@ -1,4 +1,4 @@
-postinteractionwait: 5000
+postInteractionWait: 5000
 scenarios:
   - url: https://tuyen.blog/
     actions:
