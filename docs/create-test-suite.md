@@ -60,7 +60,11 @@ asyncCaptureLimit
 Type: `number`.  
 Default value: `5`.
 
-This parameter determines the maximum number of screens captured in parallel during testing. Increasing this value can accelerate the execution of your test suite. However, it's important to note that if your network connections or your website's capacity to handle concurrent requests is limited, raising this limit too high could result in less stable test results.
+This parameter determines the maximum number of screens from this suite captured
+in parallel during testing. The global `--async-capture-limit` remains a cap
+across all suites, so the effective limit is the lower of the two. Increasing
+this value can accelerate a suite, but a high value can make websites and
+network connections less stable.
 
 {% end %}
 

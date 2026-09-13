@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
 use colored::Colorize;
+use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
 use tokio::task::JoinHandle;
 use tokio::time::{Duration, sleep};
@@ -48,6 +49,7 @@ enum TaskStatus {
 /// scenario/viewport pair runs as its own task with its own browser and index.
 struct CaptureJob {
     suite: Arc<TestSuite>,
+    suite_semaphore: Arc<Semaphore>,
     scenario_idx: usize,
     viewport: Option<config::viewports::ViewportDef>,
     index: usize,
@@ -62,6 +64,10 @@ fn build_capture_jobs(
 ) -> Result<Vec<CaptureJob>> {
     let mut jobs = Vec::new();
     for (_input, suite) in parsed_suites {
+        let suite_semaphore = Arc::new(Semaphore::new(config::resolve_async_capture_limit(
+            workspace_config,
+            suite,
+        )));
         for scenario_idx in 0..suite.scenarios.len() {
             let viewports = scenario_capture_viewports(
                 workspace_config,
@@ -71,6 +77,7 @@ fn build_capture_jobs(
             for viewport in viewports {
                 jobs.push(CaptureJob {
                     suite: suite.clone(),
+                    suite_semaphore: suite_semaphore.clone(),
                     scenario_idx,
                     viewport,
                     index: 0,
@@ -102,17 +109,20 @@ fn spawn_capture_jobs(
     for job in jobs {
         let CaptureJob {
             suite,
+            suite_semaphore,
             scenario_idx,
             viewport,
             index,
         } = job;
         let sem = semaphore.clone();
+        let suite_sem = suite_semaphore.clone();
         let exe_path = exe_path.clone();
         let ws_config = workspace_config.clone();
         let replacements = active_replacements.clone();
 
         let handle = tokio::spawn(async move {
-            let Ok(_permit) = sem.acquire().await else {
+            let Ok((_suite_permit, _global_permit)) = acquire_capture_permits(suite_sem, sem).await
+            else {
                 eprintln!("  {} Capture semaphore closed", "ERROR:".red());
                 return TaskStatus::InfraFailed;
             };
@@ -169,6 +179,23 @@ fn spawn_capture_jobs(
     }
 
     handles
+}
+
+/// Acquire the suite limit before the global limit. This prevents a job that
+/// already exceeds its suite cap from occupying a global capture slot.
+async fn acquire_capture_permits(
+    suite_semaphore: Arc<Semaphore>,
+    global_semaphore: Arc<Semaphore>,
+) -> Result<(OwnedSemaphorePermit, OwnedSemaphorePermit)> {
+    let suite_permit = suite_semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow!("Suite capture semaphore closed"))?;
+    let global_permit = global_semaphore
+        .acquire_owned()
+        .await
+        .map_err(|_| anyhow!("Global capture semaphore closed"))?;
+    Ok((suite_permit, global_permit))
 }
 
 /// Discover available test suite files in the visual_tests/ directory.
@@ -308,6 +335,9 @@ fn load_active_replacement_profile(
 }
 
 fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Result<()> {
+    if workspace_config.async_capture_limit == Some(0) {
+        anyhow::bail!("workspace asyncCaptureLimit must be greater than zero");
+    }
     if workspace_config.async_compare_limit == Some(0) {
         anyhow::bail!("workspace asyncCompareLimit must be greater than zero");
     }
@@ -325,6 +355,12 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
 }
 
 fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
+    if suite.async_capture_limit == Some(0) {
+        anyhow::bail!(
+            "Test suite '{}' asyncCaptureLimit must be greater than zero",
+            input.name
+        );
+    }
     if suite.async_compare_limit == Some(0) {
         anyhow::bail!(
             "Test suite '{}' asyncCompareLimit must be greater than zero",
@@ -1060,6 +1096,58 @@ mod tests {
                 .to_string()
                 .contains("asyncCompareLimit")
         );
+    }
+
+    #[test]
+    fn rejects_zero_async_capture_limit_before_browser_launch() {
+        let workspace = config::WorkspaceConfig {
+            async_capture_limit: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            validate_workspace_config(&workspace)
+                .unwrap_err()
+                .to_string()
+                .contains("asyncCaptureLimit")
+        );
+
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.async_capture_limit = Some(0);
+        assert!(
+            validate_test_suite_config(&input(), &suite)
+                .unwrap_err()
+                .to_string()
+                .contains("asyncCaptureLimit")
+        );
+    }
+
+    #[tokio::test]
+    async fn suite_capture_limit_blocks_only_its_own_jobs() {
+        let global = Arc::new(Semaphore::new(2));
+        let suite_a = Arc::new(Semaphore::new(1));
+        let suite_b = Arc::new(Semaphore::new(1));
+        let first_a = acquire_capture_permits(suite_a.clone(), global.clone())
+            .await
+            .unwrap();
+
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(1),
+                acquire_capture_permits(suite_a, global.clone()),
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(1),
+                acquire_capture_permits(suite_b, global),
+            )
+            .await
+            .is_ok()
+        );
+
+        drop(first_a);
     }
 
     #[test]

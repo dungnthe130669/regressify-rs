@@ -15,6 +15,7 @@ use crate::{
 
 pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
 pub const DEFAULT_ASYNC_COMPARE_LIMIT: usize = 2;
+pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
@@ -90,7 +91,7 @@ pub struct ResolvedConfig {
 impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
-            async_capture_limit: 5,
+            async_capture_limit: DEFAULT_ASYNC_CAPTURE_LIMIT,
             async_compare_limit: DEFAULT_ASYNC_COMPARE_LIMIT,
             browser: Browser::Chromium,
             bypass_csp: false,
@@ -187,6 +188,16 @@ pub fn resolve_async_compare_limit(workspace: &WorkspaceConfig, suite: &TestSuit
         .max(1)
 }
 
+/// Resolve the per-suite capture cap. The CLI-level global cap is applied by
+/// the scheduler separately, so each suite cannot consume all capture slots.
+pub fn resolve_async_capture_limit(workspace: &WorkspaceConfig, suite: &TestSuite) -> usize {
+    suite
+        .async_capture_limit
+        .or(workspace.async_capture_limit)
+        .unwrap_or(DEFAULT_ASYNC_CAPTURE_LIMIT)
+        .max(1)
+}
+
 /// Resolve configuration by cascading: scenario -> suite -> workspace -> defaults.
 /// For most fields: first non-None value wins (scenario overrides suite overrides workspace).
 /// For selectors (hide/remove): scenario replaces suite (no merge).
@@ -198,10 +209,7 @@ pub fn resolve_config(
     let defaults = ResolvedConfig::default();
 
     ResolvedConfig {
-        async_capture_limit: suite
-            .async_capture_limit
-            .or(workspace.async_capture_limit)
-            .unwrap_or(defaults.async_capture_limit),
+        async_capture_limit: resolve_async_capture_limit(workspace, suite),
 
         async_compare_limit: resolve_async_compare_limit(workspace, suite),
 
@@ -485,6 +493,29 @@ mod tests {
                 }
             ),
             DEFAULT_ASYNC_COMPARE_LIMIT
+        );
+    }
+
+    #[test]
+    fn async_capture_limit_uses_suite_workspace_and_default_order() {
+        let workspace = WorkspaceConfig {
+            async_capture_limit: Some(3),
+            ..Default::default()
+        };
+        let mut suite = suite();
+
+        assert_eq!(resolve_async_capture_limit(&workspace, &suite), 3);
+        suite.async_capture_limit = Some(4);
+        assert_eq!(resolve_async_capture_limit(&workspace, &suite), 4);
+        assert_eq!(
+            resolve_async_capture_limit(
+                &WorkspaceConfig::default(),
+                &TestSuite {
+                    async_capture_limit: None,
+                    ..suite
+                }
+            ),
+            DEFAULT_ASYNC_CAPTURE_LIMIT
         );
     }
 }
