@@ -1,9 +1,11 @@
-use std::path::Path;
 use std::time::Instant;
+use std::{fs::File, io::Read, path::Path};
 
 use anyhow::{Result, anyhow};
 use lodepng::Image;
 use rgb::RGBA8;
+
+use crate::test::capture::{MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PIXELS};
 
 /// Result of comparing two images.
 pub struct CompareResult {
@@ -20,6 +22,7 @@ pub struct CompareResult {
 
 /// Load a PNG file as RGBA pixels.
 fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
+    let (expected_width, expected_height) = read_png_dimensions(path)?;
     let mut decoder = lodepng::Decoder::new();
     decoder.color_convert(true);
     decoder.info_raw_mut().colortype = lodepng::ColorType::RGBA;
@@ -30,6 +33,16 @@ fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
         Image::RGBA(img) => {
             let width = img.width;
             let height = img.height;
+            if (width, height) != (expected_width, expected_height) {
+                return Err(anyhow!(
+                    "PNG '{}' decoded to dimensions {}x{} instead of its {}x{} IHDR dimensions",
+                    path.display(),
+                    width,
+                    height,
+                    expected_width,
+                    expected_height
+                ));
+            }
             let pixels: Vec<RGBA8> = img.buffer.to_vec();
             Ok((pixels, width, height))
         }
@@ -38,6 +51,46 @@ fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
             path.display()
         )),
     }
+}
+
+/// Read and bound PNG IHDR dimensions before the decoder allocates an RGBA buffer.
+fn read_png_dimensions(path: &Path) -> Result<(usize, usize)> {
+    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+    let mut header = [0_u8; 24];
+    let mut file = File::open(path)?;
+    file.read_exact(&mut header)
+        .map_err(|error| anyhow!("Failed to read PNG header '{}': {}", path.display(), error))?;
+
+    if header[..8] != PNG_SIGNATURE {
+        anyhow::bail!("Invalid PNG signature in '{}'", path.display());
+    }
+    if header[8..12] != [0, 0, 0, 13] || header[12..16] != *b"IHDR" {
+        anyhow::bail!("PNG '{}' has no valid IHDR header", path.display());
+    }
+
+    let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
+    let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
+    let pixel_count = u64::from(width)
+        .checked_mul(u64::from(height))
+        .ok_or_else(|| anyhow!("PNG '{}' dimensions overflow", path.display()))?;
+    if width == 0
+        || height == 0
+        || width > MAX_CAPTURE_DIMENSION
+        || height > MAX_CAPTURE_DIMENSION
+        || pixel_count > MAX_CAPTURE_PIXELS
+    {
+        anyhow::bail!(
+            "Cannot compare PNG '{}': dimensions {}x{} exceed the {}x{} / {} pixel limit",
+            path.display(),
+            width,
+            height,
+            MAX_CAPTURE_DIMENSION,
+            MAX_CAPTURE_DIMENSION,
+            MAX_CAPTURE_PIXELS
+        );
+    }
+
+    Ok((width as usize, height as usize))
 }
 
 // ─── Perceptual comparison (pixelmatch-style) ────────────────────────────────
@@ -367,6 +420,15 @@ mod tests {
     use super::*;
     use std::fs;
 
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut header = vec![137, 80, 78, 71, 13, 10, 26, 10];
+        header.extend_from_slice(&13_u32.to_be_bytes());
+        header.extend_from_slice(b"IHDR");
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header
+    }
+
     #[test]
     fn test_compare_identical_images() {
         let dir = tempfile::tempdir().unwrap();
@@ -452,5 +514,20 @@ mod tests {
 
         assert_eq!(result.raw_mis_match_percentage, 0.0);
         assert!(diff.is_none());
+    }
+
+    #[test]
+    fn oversized_pngs_are_rejected_before_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("oversized.png");
+        fs::write(
+            &path,
+            png_header(MAX_CAPTURE_DIMENSION, MAX_CAPTURE_DIMENSION),
+        )
+        .unwrap();
+
+        let error = load_png(&path).unwrap_err();
+
+        assert!(error.to_string().contains("pixel limit"));
     }
 }
