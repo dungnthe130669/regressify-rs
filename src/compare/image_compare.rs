@@ -186,7 +186,91 @@ fn is_antialiased(
             && has_many_siblings(other, max_x, max_y, w, h))
 }
 
-/// Compare two images and generate a diff image.
+#[derive(Clone, Copy)]
+struct ImageView<'a> {
+    pixels: &'a [RGBA8],
+    width: usize,
+    height: usize,
+}
+
+fn pixel_is_different(
+    reference: ImageView<'_>,
+    test: ImageView<'_>,
+    x: usize,
+    y: usize,
+    max_delta: f64,
+) -> bool {
+    let in_reference = x < reference.width && y < reference.height;
+    let in_test = x < test.width && y < test.height;
+    if !(in_reference && in_test) {
+        return true;
+    }
+
+    let reference_index = y * reference.width + x;
+    let test_index = y * test.width + x;
+    let delta = color_delta(
+        reference.pixels,
+        test.pixels,
+        reference_index,
+        test_index,
+        false,
+    );
+    if delta.abs() <= max_delta {
+        return false;
+    }
+
+    let same_dimensions = reference.width == test.width && reference.height == test.height;
+    !same_dimensions
+        || !(is_antialiased(
+            reference.pixels,
+            x,
+            y,
+            reference.width,
+            reference.height,
+            test.pixels,
+        ) || is_antialiased(test.pixels, x, y, test.width, test.height, reference.pixels))
+}
+
+fn count_differences(reference: ImageView<'_>, test: ImageView<'_>, max_delta: f64) -> u64 {
+    let width = reference.width.max(test.width);
+    let height = reference.height.max(test.height);
+    let mut count = 0;
+
+    for y in 0..height {
+        for x in 0..width {
+            if pixel_is_different(reference, test, x, y, max_delta) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn render_diff(
+    reference: ImageView<'_>,
+    test: ImageView<'_>,
+    max_delta: f64,
+    capacity: usize,
+) -> Vec<u8> {
+    let width = reference.width.max(test.width);
+    let height = reference.height.max(test.height);
+    let mut pixels = Vec::with_capacity(capacity);
+
+    for y in 0..height {
+        for x in 0..width {
+            if pixel_is_different(reference, test, x, y, max_delta) {
+                pixels.extend_from_slice(&[255, 0, 255, 200]);
+            } else {
+                let reference_index = y * reference.width + x;
+                let pixel = &reference.pixels[reference_index];
+                pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
+            }
+        }
+    }
+    pixels
+}
+
+/// Compare two images and generate a diff image only for visual mismatches.
 ///
 /// Uses a perceptual (YIQ) color metric with anti-aliasing detection to avoid
 /// false positives from subpixel/font rendering. When dimensions differ, a diff
@@ -227,53 +311,23 @@ pub fn compare_images(
     }
 
     let max_delta = MAX_YIQ_DELTA * MATCH_THRESHOLD * MATCH_THRESHOLD;
+    let reference = ImageView {
+        pixels: &ref_pixels,
+        width: ref_w,
+        height: ref_h,
+    };
+    let test = ImageView {
+        pixels: &test_pixels,
+        width: test_w,
+        height: test_h,
+    };
 
     let out_w = ref_w.max(test_w);
     let out_h = ref_h.max(test_h);
     let total_pixels = out_w
         .checked_mul(out_h)
         .ok_or_else(|| anyhow!("Image dimensions are too large to compare safely"))?;
-    let diff_capacity = total_pixels
-        .checked_mul(4)
-        .ok_or_else(|| anyhow!("Image dimensions are too large to build a diff safely"))?;
-    let mut diff_count: u64 = 0;
-    let mut diff_pixels: Vec<u8> = Vec::with_capacity(diff_capacity);
-
-    for y in 0..out_h {
-        for x in 0..out_w {
-            let in_ref = x < ref_w && y < ref_h;
-            let in_test = x < test_w && y < test_h;
-
-            // Outside the overlap of the two images → always a difference.
-            if !(in_ref && in_test) {
-                diff_count += 1;
-                diff_pixels.extend_from_slice(&[255, 0, 255, 200]);
-                continue;
-            }
-
-            let rk = y * ref_w + x;
-            let tk = y * test_w + x;
-            let delta = color_delta(&ref_pixels, &test_pixels, rk, tk, false);
-
-            if delta.abs() > max_delta {
-                // Ignore differences that are anti-aliasing on either side. AA
-                // detection requires matching dimensions to compare neighbours.
-                let aa = is_same_dimensions
-                    && (is_antialiased(&ref_pixels, x, y, ref_w, ref_h, &test_pixels)
-                        || is_antialiased(&test_pixels, x, y, test_w, test_h, &ref_pixels));
-                if aa {
-                    let rp = &ref_pixels[rk];
-                    diff_pixels.extend_from_slice(&[rp.r / 3, rp.g / 3, rp.b / 3, rp.a]);
-                } else {
-                    diff_count += 1;
-                    diff_pixels.extend_from_slice(&[255, 0, 255, 200]);
-                }
-            } else {
-                let rp = &ref_pixels[rk];
-                diff_pixels.extend_from_slice(&[rp.r / 3, rp.g / 3, rp.b / 3, rp.a]);
-            }
-        }
-    }
+    let diff_count = count_differences(reference, test, max_delta);
 
     let raw_mis_match = if total_pixels > 0 {
         (diff_count as f64 / total_pixels as f64) * 100.0
@@ -281,12 +335,16 @@ pub fn compare_images(
         0.0
     };
 
-    let elapsed = start.elapsed().as_millis();
     let diff_png = if diff_count == 0 {
         None
     } else {
+        let diff_capacity = total_pixels
+            .checked_mul(4)
+            .ok_or_else(|| anyhow!("Image dimensions are too large to build a diff safely"))?;
+        let diff_pixels = render_diff(reference, test, max_delta, diff_capacity);
         Some(lodepng::encode32(&diff_pixels, out_w, out_h)?)
     };
+    let elapsed = start.elapsed().as_millis();
 
     Ok((
         CompareResult {
@@ -372,5 +430,27 @@ mod tests {
         assert_eq!(result.dimension_difference, (1, 0));
         assert_eq!(result.raw_mis_match_percentage, 50.0);
         assert!(diff.is_some());
+    }
+
+    #[test]
+    fn test_compare_ignores_sub_threshold_pixel_noise() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&[100_u8, 100, 100, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&[101_u8, 101, 101, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(result.raw_mis_match_percentage, 0.0);
+        assert!(diff.is_none());
     }
 }
