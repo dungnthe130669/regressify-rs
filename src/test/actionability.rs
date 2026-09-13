@@ -708,8 +708,8 @@ fn frame_offset_script(frame_selectors: &[String]) -> String {
     )
 }
 
-/// When the target element lives inside an iframe, verify that the iframe itself
-/// is not obscured at any point in the nested parent-document chain.
+/// When the target element lives inside an iframe, verify that each iframe is
+/// rendered and not obscured in its parent-document chain.
 /// `check_not_obscured` only inspects the target frame's own document, so an
 /// overlay covering an outer or intermediate iframe would otherwise go
 /// undetected and a CDP click would land on that overlay.
@@ -773,6 +773,7 @@ fn parse_frame_coverage_result(
             "Frame '{}' is outside its parent viewport at the target point",
             frame_selector
         )),
+        "frame_not_visible" => Err(anyhow!("Frame '{}' is not visible", frame_selector)),
         "not_a_frame" => Err(anyhow!(
             "Frame selector '{}' matches a <{}>, not an <iframe>",
             frame_selector,
@@ -806,6 +807,19 @@ fn frame_coverage_script(frame_selectors: &[String], center_x: f64, center_y: f6
                 if (frame.tagName !== 'IFRAME' && frame.tagName !== 'FRAME')
                     return {{ error: 'not_a_frame', frame: selector, tag: frame.tagName }};
                 const rect = frame.getBoundingClientRect();
+                const view = currentDocument.defaultView;
+                if (!view) return {{ error: 'no_window', frame: selector }};
+                if (rect.width === 0 || rect.height === 0)
+                    return {{ error: 'frame_not_visible', frame: selector }};
+                for (let current = frame; current; current = current.parentElement) {{
+                    const style = view.getComputedStyle(current);
+                    if (style.display === 'none'
+                        || style.visibility === 'hidden' || style.visibility === 'collapse'
+                        || style.contentVisibility === 'hidden'
+                        || parseFloat(style.opacity) === 0) {{
+                        return {{ error: 'frame_not_visible', frame: selector }};
+                    }}
+                }}
                 if (!frame.contentDocument)
                     return {{ error: 'cross_origin', frame: selector }};
                 frames.push({{ selector, frame, document: currentDocument, rect }});
@@ -1293,6 +1307,7 @@ const inner = {
 const outerDocument = {
     querySelector: (selector) => selector === '#inner' ? inner : null,
     elementFromPoint: () => overlay,
+    defaultView: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', contentVisibility: 'visible', opacity: '1' }) },
 };
 const outer = {
     tagName: 'IFRAME', contentDocument: outerDocument, clientLeft: 0, clientTop: 0,
@@ -1302,6 +1317,7 @@ const outer = {
 global.document = {
     querySelector: (selector) => selector === '#outer' ? outer : null,
     elementFromPoint: () => outer,
+    defaultView: { getComputedStyle: () => ({ display: 'block', visibility: 'visible', contentVisibility: 'visible', opacity: '1' }) },
 };
 const result =
 "#;
@@ -1310,6 +1326,48 @@ if (result.error !== 'obscured' || result.frame !== '#inner' || result.by !== 'd
     throw new Error(JSON.stringify(result));
 "#;
         fs::write(&script_path, format!("{setup}{coverage_script}{assertion}")).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn frame_coverage_script_rejects_hidden_frame_ancestors() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("frame-coverage-hidden-runtime.js");
+        let coverage_script = frame_coverage_script(&["#embedded".to_string()], 5.0, 6.0);
+        let runtime = format!(
+            r#"const hiddenContainer = {{ parentElement: null }};
+const frame = {{
+    tagName: 'IFRAME', contentDocument: {{}}, clientLeft: 0, clientTop: 0,
+    parentElement: hiddenContainer,
+    getBoundingClientRect: () => ({{ left: 10, top: 20, width: 100, height: 100 }}),
+}};
+global.document = {{
+    querySelector: () => frame,
+    defaultView: {{
+        getComputedStyle: (element) => ({{
+            display: 'block',
+            visibility: 'visible',
+            contentVisibility: 'visible',
+            opacity: element === hiddenContainer ? '0' : '1',
+        }}),
+    }},
+}};
+const result = {coverage_script};
+if (result.error !== 'frame_not_visible' || result.frame !== '#embedded')
+    throw new Error(JSON.stringify(result));
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
         let output = Command::new("node").arg(&script_path).output().unwrap();
 
         assert!(
@@ -1343,6 +1401,13 @@ if (result.error !== 'obscured' || result.frame !== '#inner' || result.by !== 'd
                 .to_string()
                 .contains("cross-origin frame '#embed'")
         );
+
+        let hidden = parse_frame_coverage_result(
+            &frames,
+            &serde_json::json!({ "error": "frame_not_visible", "frame": "#embed" }),
+        )
+        .unwrap_err();
+        assert!(hidden.to_string().contains("Frame '#embed' is not visible"));
     }
 
     #[test]
