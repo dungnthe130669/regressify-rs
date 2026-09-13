@@ -425,7 +425,8 @@ Default: empty.
 
 This property specifies the selector for the target iframe within which the current action should be executed.
 Frames wait for the configured element timeout while loading, must be visible and
-same-origin, and an array must contain at least one selector.
+same-origin, and an array must contain at least one selector. Regressify checks
+every parent frame boundary for overlays before interacting with a nested target.
 
 Example:
 

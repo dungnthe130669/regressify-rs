@@ -541,7 +541,10 @@ pub async fn check_not_obscured(
 
     match error {
         "obscured" => {
-            let by = val.get("by").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let by = val
+                .get("by")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown");
             Err(anyhow!(
                 "Element '{}' is obscured by '{}' at its center point",
                 selector,
@@ -673,14 +676,14 @@ pub async fn get_frame_offset(
 }
 
 /// When the target element lives inside an iframe, verify that the iframe itself
-/// is not obscured in the *parent* document at the point where the element will
-/// be clicked. `check_not_obscured` only inspects the frame's own document, so a
-/// parent-level overlay covering the whole iframe would otherwise go undetected
-/// and a CDP click would land on the overlay.
+/// is not obscured at any point in the nested parent-document chain.
+/// `check_not_obscured` only inspects the target frame's own document, so an
+/// overlay covering an outer or intermediate iframe would otherwise go
+/// undetected and a CDP click would land on that overlay.
 ///
 /// `center_x`/`center_y` are the element's center relative to its own frame
-/// document; this projects them to top-level viewport coordinates via the frame
-/// offset and checks `document.elementFromPoint` at the top level.
+/// document; this projects them through each frame boundary and runs
+/// `elementFromPoint` in every parent document.
 async fn check_frame_not_obscured(
     page: &Page,
     frame: &Option<Frame>,
@@ -693,63 +696,112 @@ async fn check_frame_not_obscured(
         _ => return Ok(()),
     };
 
-    let offset = get_frame_offset(page, frame, config).await?;
-    let abs_x = offset.0 + center_x;
-    let abs_y = offset.1 + center_y;
-
-    // The top-level document only hit-tests down to the first-level iframe.
-    let top_frame = escape_js_string(&frame_selectors[0]);
-    let script = format!(
-        r#"(() => {{
-            const frame = document.querySelector('{top_frame}');
-            if (!frame) return {{ error: 'frame_not_found' }};
-            const topEl = document.elementFromPoint({abs_x}, {abs_y});
-            if (!topEl) return {{ error: 'no_element_at_point' }};
-            if (topEl === frame || frame.contains(topEl)) return {{ ok: true }};
-            const tag = topEl.tagName.toLowerCase();
-            const id = topEl.id ? '#' + topEl.id : '';
-            const cls = topEl.className && typeof topEl.className === 'string'
-                ? '.' + topEl.className.trim().split(/\s+/).join('.')
-                : '';
-            return {{ error: 'obscured', by: tag + id + cls }};
-        }})()"#
-    );
-
+    let script = frame_coverage_script(&frame_selectors, center_x, center_y);
     let val = evaluate_value(
         page,
         script,
         actionability_timeout(config),
-        "checking whether iframe is obscured",
+        "checking whether iframe chain is obscured",
     )
     .await?;
 
-    if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+    parse_frame_coverage_result(&frame_selectors, &val)
+}
+
+fn parse_frame_coverage_result(
+    frame_selectors: &[String],
+    value: &serde_json::Value,
+) -> Result<()> {
+    if value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         return Ok(());
     }
 
-    match val
+    let frame_selector = value
+        .get("frame")
+        .and_then(|value| value.as_str())
+        .unwrap_or(&frame_selectors[0]);
+    match value
         .get("error")
         .and_then(|v| v.as_str())
         .unwrap_or("unknown")
     {
         "obscured" => {
-            let by = val.get("by").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let by = value
+                .get("by")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown");
             Err(anyhow!(
-                "Element inside frame '{}' is obscured by parent-document element '{}'",
-                frame_selectors[0],
+                "Element inside frame '{}' is obscured in its parent document by '{}'",
+                frame_selector,
                 by
             ))
         }
         "no_element_at_point" => Err(anyhow!(
-            "Frame '{}' is outside the viewport at the target point",
-            frame_selectors[0]
+            "Frame '{}' is outside its parent viewport at the target point",
+            frame_selector
         )),
-        other => Err(anyhow!(
-            "Parent-frame obscured check failed for '{}': {}",
-            frame_selectors[0],
-            other
+        "not_a_frame" => Err(anyhow!(
+            "Frame selector '{}' matches a <{}>, not an <iframe>",
+            frame_selector,
+            value
+                .get("tag")
+                .and_then(|value| value.as_str())
+                .unwrap_or("unknown")
+                .to_lowercase()
+        )),
+        "cross_origin" => Err(anyhow!(
+            "Cannot access cross-origin frame '{}' for coverage checking",
+            frame_selector
+        )),
+        error => Err(anyhow!(
+            "Frame coverage check failed for '{}': {}",
+            frame_selector,
+            error
         )),
     }
+}
+
+fn frame_coverage_script(frame_selectors: &[String], center_x: f64, center_y: f64) -> String {
+    format!(
+        r#"(() => {{
+            const selectors = [{}];
+            const frames = [];
+            let currentDocument = document;
+            for (const selector of selectors) {{
+                const frame = currentDocument.querySelector(selector);
+                if (!frame) return {{ error: 'frame_not_found', frame: selector }};
+                if (frame.tagName !== 'IFRAME' && frame.tagName !== 'FRAME')
+                    return {{ error: 'not_a_frame', frame: selector, tag: frame.tagName }};
+                const rect = frame.getBoundingClientRect();
+                if (!frame.contentDocument)
+                    return {{ error: 'cross_origin', frame: selector }};
+                frames.push({{ selector, frame, document: currentDocument, rect }});
+                currentDocument = frame.contentDocument;
+            }}
+
+            let x = {};
+            let y = {};
+            for (let index = frames.length - 1; index >= 0; index--) {{
+                const entry = frames[index];
+                x += entry.rect.left + entry.frame.clientLeft;
+                y += entry.rect.top + entry.frame.clientTop;
+                const topElement = entry.document.elementFromPoint(x, y);
+                if (!topElement)
+                    return {{ error: 'no_element_at_point', frame: entry.selector }};
+                if (topElement === entry.frame || entry.frame.contains(topElement)) continue;
+                const tag = topElement.tagName.toLowerCase();
+                const id = topElement.id ? '#' + topElement.id : '';
+                const cls = topElement.className && typeof topElement.className === 'string'
+                    ? '.' + topElement.className.trim().split(/\s+/).join('.')
+                    : '';
+                return {{ error: 'obscured', frame: entry.selector, by: tag + id + cls }};
+            }}
+            return {{ ok: true }};
+        }})()"#,
+        frame_selectors_js(frame_selectors),
+        center_x,
+        center_y,
+    )
 }
 
 /// Full actionability check: wait for element to exist, be visible, stable,
@@ -1075,6 +1127,79 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn frame_coverage_script_detects_an_intermediate_frame_overlay() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("frame-coverage-runtime.js");
+        let coverage_script =
+            frame_coverage_script(&["#outer".to_string(), "#inner".to_string()], 5.0, 6.0);
+        let setup = r#"
+const overlay = { tagName: 'DIV', id: 'overlay', className: 'modal' };
+const innerDocument = {};
+const inner = {
+    tagName: 'IFRAME', contentDocument: innerDocument, clientLeft: 0, clientTop: 0,
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 100 }),
+    contains: () => false,
+};
+const outerDocument = {
+    querySelector: (selector) => selector === '#inner' ? inner : null,
+    elementFromPoint: () => overlay,
+};
+const outer = {
+    tagName: 'IFRAME', contentDocument: outerDocument, clientLeft: 0, clientTop: 0,
+    getBoundingClientRect: () => ({ left: 100, top: 200, width: 300, height: 200 }),
+    contains: () => false,
+};
+global.document = {
+    querySelector: (selector) => selector === '#outer' ? outer : null,
+    elementFromPoint: () => outer,
+};
+const result =
+"#;
+        let assertion = r#";
+if (result.error !== 'obscured' || result.frame !== '#inner' || result.by !== 'div#overlay.modal')
+    throw new Error(JSON.stringify(result));
+"#;
+        fs::write(&script_path, format!("{setup}{coverage_script}{assertion}")).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn frame_coverage_result_reports_invalid_frame_boundaries() {
+        let frames = vec!["#embed".to_string()];
+        let non_frame = parse_frame_coverage_result(
+            &frames,
+            &serde_json::json!({
+                "error": "not_a_frame",
+                "frame": "#embed",
+                "tag": "DIV"
+            }),
+        )
+        .unwrap_err();
+        assert!(non_frame.to_string().contains("matches a <div>"));
+
+        let cross_origin = parse_frame_coverage_result(
+            &frames,
+            &serde_json::json!({ "error": "cross_origin", "frame": "#embed" }),
+        )
+        .unwrap_err();
+        assert!(
+            cross_origin
+                .to_string()
+                .contains("cross-origin frame '#embed'")
         );
     }
 
