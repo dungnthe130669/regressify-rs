@@ -44,6 +44,11 @@ Unknown workspace, suite, scenario, viewport, URL replacement, and action
 properties also fail parsing. Use the documented camelCase property names so a
 typo cannot silently change a capture.
 
+An explicit `cookiePath`, `cssOverridePath`, or `jsOnReadyPath` must name an
+existing regular file inside the workspace; malformed cookie YAML also fails
+before Chromium launches. The default optional `common/_cookies.yaml`,
+`common/_override.css`, and `common/_on-ready.js` files may be absent.
+
 ## Properties
 
 ### Required properties

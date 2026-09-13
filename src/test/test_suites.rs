@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use tokio::sync::OwnedSemaphorePermit;
 use tokio::sync::Semaphore;
@@ -652,6 +652,47 @@ fn parse_test_suites(
     Ok(parsed)
 }
 
+fn validate_external_capture_files(
+    root_dir: &Path,
+    workspace_config: &config::WorkspaceConfig,
+    parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
+) -> Result<()> {
+    let mut checked_cookie_files = HashSet::new();
+
+    for (input, suite) in parsed_suites {
+        for (index, scenario) in suite.scenarios.iter().enumerate() {
+            let resolved = config::resolve_config(workspace_config, suite, scenario);
+            let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
+            let context = format!("test suite '{}' scenario '{}'", input.name, scenario_name);
+
+            if let Some(cookie_path) = resolved.cookie_path.as_deref() {
+                let path = config::resolve_workspace_file(root_dir, cookie_path, "cookiePath")
+                    .with_context(|| format!("Invalid cookiePath for {}", context))?;
+                if checked_cookie_files.insert(path.clone()) {
+                    let content = std::fs::read_to_string(&path).with_context(|| {
+                        format!("Failed to read cookiePath '{}'", path.display())
+                    })?;
+                    let _: Vec<serde_json::Value> = serde_yaml::from_str(&content)
+                        .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
+                }
+            }
+
+            if resolved.use_css_override
+                && let Some(css_path) = resolved.css_override_path.as_deref()
+            {
+                config::resolve_workspace_file(root_dir, css_path, "cssOverridePath")
+                    .with_context(|| format!("Invalid cssOverridePath for {}", context))?;
+            }
+
+            if let Some(script_path) = resolved.js_on_ready_path.as_deref() {
+                config::resolve_workspace_file(root_dir, script_path, "jsOnReadyPath")
+                    .with_context(|| format!("Invalid jsOnReadyPath for {}", context))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_unique_suite_output_ids(suites: &[(TestSuiteInput, Arc<TestSuite>)]) -> Result<()> {
     let mut inputs_by_output_id = HashMap::new();
     for (input, suite) in suites {
@@ -695,6 +736,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
 
@@ -871,6 +913,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
 
@@ -1442,5 +1485,49 @@ mod tests {
         let error = validate_unique_suite_output_ids(&inputs).unwrap_err();
 
         assert!(error.to_string().contains("share output ID"));
+    }
+
+    #[test]
+    fn explicit_external_capture_files_are_validated_before_browser_launch() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let cookies_path = workspace_root.path().join("common/cookies.yaml");
+        std::fs::create_dir_all(cookies_path.parent().unwrap()).unwrap();
+        std::fs::write(&cookies_path, "[]\n").unwrap();
+        let parsed = vec![(input(), Arc::new(suite(vec![scenario("home", None)])))];
+
+        let workspace = config::WorkspaceConfig {
+            cookie_path: Some("common/cookies.yaml".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            validate_external_capture_files(workspace_root.path(), &workspace, &parsed).is_ok()
+        );
+
+        std::fs::write(&cookies_path, "not: a cookie list\n").unwrap();
+        let error = validate_external_capture_files(workspace_root.path(), &workspace, &parsed)
+            .unwrap_err();
+        assert!(error.to_string().contains("Invalid cookie YAML"));
+
+        let missing_css = config::WorkspaceConfig {
+            css_override_path: Some("common/missing.css".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            validate_external_capture_files(workspace_root.path(), &missing_css, &parsed)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid cssOverridePath")
+        );
+
+        let missing_script = config::WorkspaceConfig {
+            js_on_ready_path: Some("common/missing.js".to_string()),
+            ..Default::default()
+        };
+        assert!(
+            validate_external_capture_files(workspace_root.path(), &missing_script, &parsed)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid jsOnReadyPath")
+        );
     }
 }

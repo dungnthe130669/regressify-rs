@@ -623,13 +623,7 @@ fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
 
-    let canonical_root = root_dir.canonicalize()?;
-    let canonical_path = candidate.canonicalize()?;
-    if !canonical_path.starts_with(&canonical_root) {
-        anyhow::bail!("Path '{}' escapes the workspace root", path);
-    }
-
-    Ok(Some(canonical_path))
+    config::resolve_workspace_file(root_dir, path, "workspace file").map(Some)
 }
 
 /// Load persisted state cookies before the first navigation.

@@ -3,9 +3,9 @@
 pub mod replacements;
 pub mod viewports;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
 
 use crate::{
@@ -142,6 +142,45 @@ pub fn load_workspace_config(root_dir: &Path) -> Result<WorkspaceConfig> {
         }
         None => Ok(WorkspaceConfig::default()),
     }
+}
+
+/// Resolve an explicitly configured file and ensure it remains inside the
+/// workspace, including after symlink resolution.
+pub fn resolve_workspace_file(
+    root_dir: &Path,
+    configured_path: &str,
+    label: &str,
+) -> Result<PathBuf> {
+    let candidate = if Path::new(configured_path).is_absolute() {
+        PathBuf::from(configured_path)
+    } else {
+        root_dir.join(configured_path)
+    };
+    if !candidate.exists() {
+        anyhow::bail!("Configured {} '{}' does not exist", label, configured_path);
+    }
+
+    let canonical_root = root_dir
+        .canonicalize()
+        .with_context(|| format!("Failed to resolve workspace root '{}'", root_dir.display()))?;
+    let canonical_path = candidate.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve configured {} '{}'",
+            label, configured_path
+        )
+    })?;
+    if !canonical_path.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "Configured {} '{}' escapes workspace root '{}'",
+            label,
+            configured_path,
+            canonical_root.display()
+        );
+    }
+    if !canonical_path.is_file() {
+        anyhow::bail!("Configured {} '{}' is not a file", label, configured_path);
+    }
+    Ok(canonical_path)
 }
 
 fn selectors_to_vec(s: &Option<Selectors>) -> Option<Vec<String>> {
@@ -524,5 +563,30 @@ mod tests {
         let result = serde_yaml::from_str::<WorkspaceConfig>("postinteractionwait: 5000\n");
 
         assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
+    }
+
+    #[test]
+    fn workspace_file_resolution_requires_an_in_workspace_file() {
+        let workspace = tempfile::tempdir().unwrap();
+        let file = workspace.path().join("common/cookies.yaml");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "[]\n").unwrap();
+
+        assert_eq!(
+            resolve_workspace_file(workspace.path(), "common/cookies.yaml", "cookiePath").unwrap(),
+            file.canonicalize().unwrap()
+        );
+        assert!(
+            resolve_workspace_file(workspace.path(), "missing.yaml", "cookiePath")
+                .unwrap_err()
+                .to_string()
+                .contains("does not exist")
+        );
+        assert!(
+            resolve_workspace_file(workspace.path(), "common", "cookiePath")
+                .unwrap_err()
+                .to_string()
+                .contains("is not a file")
+        );
     }
 }
