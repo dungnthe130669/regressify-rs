@@ -549,6 +549,10 @@ pub async fn save_screenshot(
 }
 
 async fn capture_png(page: &Page, screenshot_type: &ScreenshotType) -> Result<Vec<u8>> {
+    if let ScreenshotType::Selector(selector) = screenshot_type {
+        return capture_selector_png(page, selector).await;
+    }
+
     let params = match screenshot_type {
         ScreenshotType::Step(_) | ScreenshotType::Final => full_page_params(page).await?,
         ScreenshotType::Viewport => ScreenshotParams::builder()
@@ -556,13 +560,7 @@ async fn capture_png(page: &Page, screenshot_type: &ScreenshotType) -> Result<Ve
             .from_surface(true)
             .omit_background(false)
             .build(),
-        ScreenshotType::Selector(selector) => ScreenshotParams::builder()
-            .format(CaptureScreenshotFormat::Png)
-            .clip(selector_capture_clip(page, selector).await?)
-            .capture_beyond_viewport(true)
-            .from_surface(true)
-            .omit_background(false)
-            .build(),
+        ScreenshotType::Selector(_) => unreachable!("selector capture is handled above"),
     };
 
     page.screenshot(params).await.map_err(|error| {
@@ -572,6 +570,42 @@ async fn capture_png(page: &Page, screenshot_type: &ScreenshotType) -> Result<Ve
             error
         )
     })
+}
+
+struct SelectorCapture {
+    clip: Viewport,
+    restore_x: f64,
+    restore_y: f64,
+}
+
+async fn capture_selector_png(page: &Page, selector: &str) -> Result<Vec<u8>> {
+    let capture = prepare_selector_capture(page, selector).await?;
+    let params = ScreenshotParams::builder()
+        .format(CaptureScreenshotFormat::Png)
+        .clip(capture.clip)
+        .capture_beyond_viewport(true)
+        .from_surface(true)
+        .omit_background(false)
+        .build();
+    let screenshot_result = page.screenshot(params).await.map_err(|error| {
+        anyhow!(
+            "Failed to capture {} screenshot: {}",
+            screenshot_type_description(&ScreenshotType::Selector(selector.to_string())),
+            error
+        )
+    });
+    let restore_result = restore_page_scroll(page, capture.restore_x, capture.restore_y).await;
+
+    match (screenshot_result, restore_result) {
+        (Ok(png), Ok(())) => Ok(png),
+        (Err(screenshot_error), Ok(())) => Err(screenshot_error),
+        (Ok(_), Err(restore_error)) => Err(restore_error),
+        (Err(screenshot_error), Err(restore_error)) => Err(anyhow!(
+            "{}; additionally failed to restore page scroll: {}",
+            screenshot_error,
+            restore_error
+        )),
+    }
 }
 
 /// Build a full-page capture that avoids resizing the emulated viewport.
@@ -597,7 +631,7 @@ async fn full_page_params(page: &Page) -> Result<ScreenshotParams> {
         .build())
 }
 
-async fn selector_capture_clip(page: &Page, selector: &str) -> Result<Viewport> {
+async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<SelectorCapture> {
     let script = selector_capture_script(selector)?;
     let result = tokio::time::timeout(Duration::from_secs(5), page.evaluate(script))
         .await
@@ -638,13 +672,29 @@ async fn selector_capture_clip(page: &Page, selector: &str) -> Result<Viewport> 
         anyhow::bail!("Selector '{}' has an empty capture rectangle", selector);
     }
 
-    Ok(Viewport {
-        x: coordinate("x")?,
-        y: coordinate("y")?,
-        width,
-        height,
-        scale: 1.0,
+    Ok(SelectorCapture {
+        clip: Viewport {
+            x: coordinate("x")?,
+            y: coordinate("y")?,
+            width,
+            height,
+            scale: 1.0,
+        },
+        restore_x: coordinate("restoreX")?,
+        restore_y: coordinate("restoreY")?,
     })
+}
+
+async fn restore_page_scroll(page: &Page, x: f64, y: f64) -> Result<()> {
+    let script = format!(
+        "(() => {{ window.scrollTo({}, {}); return true; }})()",
+        serde_json::to_string(&x)?,
+        serde_json::to_string(&y)?
+    );
+    tokio::time::timeout(Duration::from_secs(5), page.evaluate(script))
+        .await
+        .map_err(|_| anyhow!("Timed out restoring page scroll after selector capture"))??;
+    Ok(())
 }
 
 fn selector_capture_script(selector: &str) -> Result<String> {
@@ -675,13 +725,19 @@ fn selector_capture_script(selector: &str) -> Result<String> {
             let found = find();
             if (found.error) return found;
             if (!found.element) return {{ error: 'not_found' }};
+            const restoreX = window.scrollX;
+            const restoreY = window.scrollY;
+            const restoreAndFail = (error) => {{
+                window.scrollTo(restoreX, restoreY);
+                return {{ error }};
+            }};
             found.element.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
             await new Promise((resolve) => setTimeout(resolve, {settle_ms}));
             found = find();
-            if (found.error) return found;
-            if (!found.element) return {{ error: 'detached' }};
+            if (found.error) return restoreAndFail(found.error);
+            if (!found.element) return restoreAndFail('detached');
             const reason = visibleReason(found.element);
-            if (reason) return {{ error: reason }};
+            if (reason) return restoreAndFail(reason);
             const rect = found.element.getBoundingClientRect();
             return {{
                 ok: true,
@@ -689,6 +745,8 @@ fn selector_capture_script(selector: &str) -> Result<String> {
                 y: window.scrollY + rect.top,
                 width: rect.width,
                 height: rect.height,
+                restoreX,
+                restoreY,
             }};
         }})()"#,
         settle_ms = SELECTOR_SCROLL_SETTLE.as_millis(),
@@ -1205,6 +1263,49 @@ mod tests {
             .arg(&script_path)
             .output()
             .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn selector_capture_script_preserves_and_restores_scroll_on_failure() {
+        use std::process::Command;
+
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("selector-scroll-runtime.js");
+        let capture_script = selector_capture_script("#target").unwrap();
+        let runtime = format!(
+            r#"global.window = {{
+    scrollX: 12,
+    scrollY: 34,
+    scrollTo(x, y) {{ this.scrollX = x; this.scrollY = y; }},
+}};
+const element = {{
+    ownerDocument: {{ defaultView: {{ getComputedStyle: () => ({{ display: 'block', visibility: 'visible', opacity: '1' }}) }} }},
+    scrollIntoView() {{ window.scrollTo(0, 500); }},
+    getBoundingClientRect() {{ return {{ left: 20, top: 30, width: 40, height: 50 }}; }},
+}};
+let calls = 0;
+global.document = {{
+    querySelector() {{ return ++calls === 1 ? element : null; }},
+}};
+(async () => {{
+    const result = await {capture_script};
+    if (result.error !== 'detached' || window.scrollX !== 12 || window.scrollY !== 34)
+        throw new Error(JSON.stringify({{ result, scrollX: window.scrollX, scrollY: window.scrollY }}));
+}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
 
         assert!(
             output.status.success(),

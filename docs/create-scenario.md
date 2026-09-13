@@ -411,7 +411,9 @@ separate screenshot. Use the special value `viewport` to capture the currently
 visible viewport. Omit `selectors` to retain the default full-page capture.
 
 Targets are captured in declaration order, must be non-empty and unique, and
-must resolve to a visible element when captured.
+must resolve to a visible element when captured. Regressify restores the prior
+page scroll position after each selector capture so one target does not alter a
+later viewport, selector, or full-page capture.
 
 ```yaml
 scenarios:
