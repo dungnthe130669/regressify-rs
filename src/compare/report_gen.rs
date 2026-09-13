@@ -200,7 +200,13 @@ fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
             continue;
         }
 
-        let file_name = entry.file_name().to_string_lossy().to_string();
+        let file_name = entry.file_name().into_string().map_err(|name| {
+            anyhow!(
+                "Capture file name in '{}' is not valid UTF-8: {:?}",
+                tests_dir.display(),
+                name
+            )
+        })?;
         if is_capture_screenshot(&file_name) {
             screenshots.push(file_name);
         }
@@ -322,7 +328,14 @@ pub fn select_capture_run(
     for entry in fs::read_dir(tests_dir)? {
         let entry = entry?;
         if entry.file_type()?.is_dir() {
-            run_ids.push(entry.file_name().to_string_lossy().to_string());
+            let run_id = entry.file_name().into_string().map_err(|name| {
+                anyhow!(
+                    "Capture run directory in '{}' is not valid UTF-8: {:?}",
+                    tests_dir.display(),
+                    name
+                )
+            })?;
+            run_ids.push(run_id);
         }
     }
     run_ids.sort();
@@ -1006,6 +1019,29 @@ mod tests {
         let error = select_capture_run(&runs, Some("linked-run")).unwrap_err();
 
         assert!(error.to_string().contains("not a real directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_discovery_rejects_non_utf8_file_and_run_names() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let capture_dir = temp.path().join("captures");
+        fs::create_dir_all(&capture_dir).unwrap();
+        let invalid_file = std::ffi::OsString::from_vec(b"capture-\xff.png".to_vec());
+        fs::write(capture_dir.join(invalid_file), []).unwrap();
+
+        let file_error = collect_capture_screenshots(&capture_dir).unwrap_err();
+        assert!(file_error.to_string().contains("not valid UTF-8"));
+
+        let run_dir = temp.path().join("runs");
+        fs::create_dir_all(&run_dir).unwrap();
+        let invalid_run = std::ffi::OsString::from_vec(b"run-\xff".to_vec());
+        fs::create_dir(run_dir.join(invalid_run)).unwrap();
+
+        let run_error = select_capture_run(&run_dir, None).unwrap_err();
+        assert!(run_error.to_string().contains("not valid UTF-8"));
     }
 
     #[test]
