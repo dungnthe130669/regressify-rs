@@ -183,6 +183,25 @@ pub fn resolve_workspace_file(
     Ok(canonical_path)
 }
 
+/// Resolve an optional default file. Missing defaults are allowed, but a file
+/// that exists must satisfy the same containment and regular-file checks as an
+/// explicitly configured path.
+pub fn resolve_optional_workspace_file(
+    root_dir: &Path,
+    configured_path: &str,
+    label: &str,
+) -> Result<Option<PathBuf>> {
+    let candidate = if Path::new(configured_path).is_absolute() {
+        PathBuf::from(configured_path)
+    } else {
+        root_dir.join(configured_path)
+    };
+    if !candidate.exists() {
+        return Ok(None);
+    }
+    resolve_workspace_file(root_dir, configured_path, label).map(Some)
+}
+
 fn selectors_to_vec(s: &Option<Selectors>) -> Option<Vec<String>> {
     match s {
         Some(Selectors::String(s)) => Some(vec![s.clone()]),
@@ -587,6 +606,21 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("is not a file")
+        );
+    }
+
+    #[test]
+    fn optional_workspace_file_resolution_allows_missing_defaults() {
+        let workspace = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            resolve_optional_workspace_file(
+                workspace.path(),
+                "common/missing.css",
+                "cssOverridePath",
+            )
+            .unwrap(),
+            None
         );
     }
 }

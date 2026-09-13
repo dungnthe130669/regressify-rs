@@ -698,22 +698,31 @@ fn validate_external_capture_files_in(
             let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
             let context = format!("test suite '{}' scenario '{}'", input.name, scenario_name);
 
-            if let Some(cookie_path) = resolved.cookie_path.as_deref() {
-                let path = config::resolve_workspace_file(root_dir, cookie_path, "cookiePath")
-                    .with_context(|| format!("Invalid cookiePath for {}", context))?;
-                if checked_cookie_files.insert(path.clone()) {
-                    let content = std::fs::read_to_string(&path).with_context(|| {
-                        format!("Failed to read cookiePath '{}'", path.display())
-                    })?;
-                    let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)
-                        .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
-                    for (index, cookie) in cookies.iter().enumerate() {
-                        crate::test::capture::validate_cookie_value(
-                            cookie,
-                            &format!("cookiePath '{}' cookie {}", path.display(), index),
-                        )
-                        .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
-                    }
+            let cookie_path = match resolved.cookie_path.as_deref() {
+                Some(cookie_path) => Some(
+                    config::resolve_workspace_file(root_dir, cookie_path, "cookiePath")
+                        .with_context(|| format!("Invalid cookiePath for {}", context))?,
+                ),
+                None => config::resolve_optional_workspace_file(
+                    root_dir,
+                    "common/_cookies.yaml",
+                    "default cookiePath",
+                )
+                .with_context(|| format!("Invalid default cookiePath for {}", context))?,
+            };
+            if let Some(path) = cookie_path
+                && checked_cookie_files.insert(path.clone())
+            {
+                let content = std::fs::read_to_string(&path)
+                    .with_context(|| format!("Failed to read cookiePath '{}'", path.display()))?;
+                let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)
+                    .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
+                for (index, cookie) in cookies.iter().enumerate() {
+                    crate::test::capture::validate_cookie_value(
+                        cookie,
+                        &format!("cookiePath '{}' cookie {}", path.display(), index),
+                    )
+                    .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
                 }
             }
 
@@ -734,16 +743,38 @@ fn validate_external_capture_files_in(
                 }
             }
 
-            if resolved.use_css_override
-                && let Some(css_path) = resolved.css_override_path.as_deref()
-            {
-                config::resolve_workspace_file(root_dir, css_path, "cssOverridePath")
-                    .with_context(|| format!("Invalid cssOverridePath for {}", context))?;
+            if resolved.use_css_override {
+                match resolved.css_override_path.as_deref() {
+                    Some(css_path) => {
+                        config::resolve_workspace_file(root_dir, css_path, "cssOverridePath")
+                            .with_context(|| format!("Invalid cssOverridePath for {}", context))?;
+                    }
+                    None => {
+                        config::resolve_optional_workspace_file(
+                            root_dir,
+                            "common/_override.css",
+                            "default cssOverridePath",
+                        )
+                        .with_context(|| {
+                            format!("Invalid default cssOverridePath for {}", context)
+                        })?;
+                    }
+                }
             }
 
-            if let Some(script_path) = resolved.js_on_ready_path.as_deref() {
-                config::resolve_workspace_file(root_dir, script_path, "jsOnReadyPath")
-                    .with_context(|| format!("Invalid jsOnReadyPath for {}", context))?;
+            match resolved.js_on_ready_path.as_deref() {
+                Some(script_path) => {
+                    config::resolve_workspace_file(root_dir, script_path, "jsOnReadyPath")
+                        .with_context(|| format!("Invalid jsOnReadyPath for {}", context))?;
+                }
+                None => {
+                    config::resolve_optional_workspace_file(
+                        root_dir,
+                        "common/_on-ready.js",
+                        "default jsOnReadyPath",
+                    )
+                    .with_context(|| format!("Invalid default jsOnReadyPath for {}", context))?;
+                }
             }
         }
     }
@@ -1724,6 +1755,26 @@ mod tests {
             .to_string()
             .contains("Invalid jsOnReadyPath")
         );
+    }
+
+    #[test]
+    fn present_default_cookie_file_is_validated_before_browser_launch() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let output_dir = workspace_root.path().join(".regressify");
+        let cookie_path = workspace_root.path().join("common/_cookies.yaml");
+        std::fs::create_dir_all(cookie_path.parent().unwrap()).unwrap();
+        std::fs::write(&cookie_path, "- name: session\n  value: token\n").unwrap();
+        let parsed = vec![(input(), Arc::new(suite(vec![scenario("home", None)])))];
+
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &config::WorkspaceConfig::default(),
+            &parsed,
+        )
+        .unwrap_err();
+
+        assert!(format!("{error:#}").contains("requires a url or domain"));
     }
 
     #[test]

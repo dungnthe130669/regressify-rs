@@ -1,7 +1,4 @@
-use std::{
-    future::Future,
-    path::{Path, PathBuf},
-};
+use std::{future::Future, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{Browser, Page};
@@ -634,17 +631,7 @@ fn apply_url_replacements(url: &str, replacements: &[UrlReplacement]) -> Result<
 
 fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
     let root_dir = common::ROOT_DIR.get_required()?;
-    let candidate = if Path::new(path).is_absolute() {
-        PathBuf::from(path)
-    } else {
-        root_dir.join(path)
-    };
-
-    if !candidate.exists() {
-        return Ok(None);
-    }
-
-    config::resolve_workspace_file(root_dir, path, "workspace file").map(Some)
+    config::resolve_optional_workspace_file(root_dir, path, "workspace file")
 }
 
 /// Load persisted state cookies before the first navigation.
