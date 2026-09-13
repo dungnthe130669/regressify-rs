@@ -178,6 +178,33 @@ fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
     Ok(screenshots)
 }
 
+pub fn select_capture_run(
+    tests_dir: &Path,
+    requested_run_id: Option<&str>,
+) -> Result<Option<String>> {
+    if let Some(run_id) = requested_run_id {
+        let requested_dir = tests_dir.join(run_id);
+        if !requested_dir.is_dir() {
+            anyhow::bail!(
+                "Requested capture run '{}' does not exist: {}",
+                run_id,
+                requested_dir.display()
+            );
+        }
+        return Ok(Some(run_id.to_string()));
+    }
+
+    let mut run_ids = Vec::new();
+    for entry in fs::read_dir(tests_dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            run_ids.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    run_ids.sort();
+    Ok(run_ids.pop())
+}
+
 fn report_pair(
     label: String,
     screenshot_name: &str,
@@ -479,7 +506,7 @@ pub fn generate_comparison_report(
 }
 
 /// Promote test screenshots to reference (approve).
-pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
+pub fn approve_screenshots(suite_dir: &Path, requested_run_id: Option<&str>) -> Result<()> {
     let bitmaps_test_dir = suite_dir.join("bitmaps_test");
     let reference_dir = suite_dir.join("bitmaps_reference");
 
@@ -488,17 +515,7 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
         return Ok(());
     }
 
-    // Find the latest test run directory (sorted by name = date)
-    let mut test_runs: Vec<String> = Vec::new();
-    for entry in fs::read_dir(&bitmaps_test_dir)? {
-        let entry = entry?;
-        if entry.path().is_dir() {
-            test_runs.push(entry.file_name().to_string_lossy().to_string());
-        }
-    }
-    test_runs.sort();
-
-    let latest_run = match test_runs.last() {
+    let selected_run = match select_capture_run(&bitmaps_test_dir, requested_run_id)? {
         Some(run) => run,
         None => {
             eprintln!("  {}", "No test run directories found, skipping.".yellow());
@@ -506,9 +523,9 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
         }
     };
 
-    let latest_test_dir = bitmaps_test_dir.join(latest_run);
+    let latest_test_dir = bitmaps_test_dir.join(&selected_run);
 
-    eprintln!("  Approving screenshots from run: {}", latest_run.cyan());
+    eprintln!("  Approving screenshots from run: {}", selected_run.cyan());
 
     create_dir_all(&reference_dir)?;
 
@@ -687,7 +704,7 @@ mod tests {
         .unwrap();
         fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
 
-        approve_screenshots(&suite_dir).unwrap();
+        approve_screenshots(&suite_dir, None).unwrap();
 
         assert_eq!(fs::read(reference).unwrap(), png_bytes(200));
         assert!(
@@ -713,7 +730,7 @@ mod tests {
         )
         .unwrap();
 
-        approve_screenshots(&suite_dir).unwrap();
+        approve_screenshots(&suite_dir, None).unwrap();
 
         assert!(!reference_dir.join(screenshot_name).exists());
     }
@@ -751,5 +768,28 @@ mod tests {
         fs::write(test_dir.join(REPORT_THRESHOLDS_FILE), br#"{"home":101}"#).unwrap();
         let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
         assert!(error.to_string().contains("finite value between 0 and 100"));
+    }
+
+    #[test]
+    fn capture_run_selection_honors_explicit_id_before_latest_fallback() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join("bitmaps_test");
+        fs::create_dir_all(runs.join("20260913_120000_000000001")).unwrap();
+        fs::create_dir_all(runs.join("z-newer-name")).unwrap();
+
+        assert_eq!(
+            select_capture_run(&runs, Some("20260913_120000_000000001")).unwrap(),
+            Some("20260913_120000_000000001".to_string())
+        );
+        assert_eq!(
+            select_capture_run(&runs, None).unwrap(),
+            Some("z-newer-name".to_string())
+        );
+        assert!(
+            select_capture_run(&runs, Some("missing"))
+                .unwrap_err()
+                .to_string()
+                .contains("Requested capture run 'missing' does not exist")
+        );
     }
 }

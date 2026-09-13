@@ -29,7 +29,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--root`, `-r`                | Project root. Defaults to the current directory.                                                                             |
 | `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory.            |
-| `--run-id`                    | Portable explicit capture directory ID for `test` and `ref`, shared by all selected suites. Defaults to a sortable UTC timestamp when omitted. |
+| `--run-id`                    | Portable explicit capture directory ID shared by all selected suites. `test` and `ref` write to it; `compare` and `approve` select it. Defaults to a sortable UTC timestamp for capture and the lexically latest run for standalone compare/approve when omitted. |
 | `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap. |
 | `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                  |
 | `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display). |

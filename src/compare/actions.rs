@@ -6,7 +6,7 @@ use colored::Colorize;
 use crate::{
     cli::args::{ApproveArgs, CompareArgs},
     common,
-    compare::report_gen::{approve_screenshots, generate_comparison_report},
+    compare::report_gen::{approve_screenshots, generate_comparison_report, select_capture_run},
     helpers::OnceLockExtensions,
 };
 
@@ -21,6 +21,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
 
     let mis_match_threshold = args.mis_match_threshold;
     let async_compare_limit = args.async_compare_limit;
+    let requested_run_id = common::RUN_ID.get().map(String::as_str);
 
     let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
@@ -55,26 +56,17 @@ pub fn compare(args: CompareArgs) -> Result<()> {
             continue;
         }
 
-        // Find the latest test run
-        let mut test_runs: Vec<String> = Vec::new();
-        for run_entry in fs::read_dir(&tests_dir)?.flatten() {
-            if run_entry.path().is_dir() {
-                test_runs.push(run_entry.file_name().to_string_lossy().to_string());
-            }
-        }
-        test_runs.sort();
-
-        if let Some(latest_run) = test_runs.last() {
+        if let Some(selected_run) = select_capture_run(&tests_dir, requested_run_id)? {
             eprintln!(
                 "Comparing test suite: {} (run: {})",
                 suite_id.cyan(),
-                latest_run
+                selected_run
             );
 
             generate_comparison_report(
                 &path,
                 &suite_id,
-                latest_run,
+                &selected_run,
                 mis_match_threshold,
                 async_compare_limit,
             )?;
@@ -105,6 +97,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_approved = false;
+    let requested_run_id = common::RUN_ID.get().map(String::as_str);
 
     for entry in entries {
         let path = entry.path();
@@ -135,7 +128,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         }
 
         eprintln!("Approving test suite: {}", suite_id.cyan());
-        approve_screenshots(&path)?;
+        approve_screenshots(&path, requested_run_id)?;
         any_approved = true;
     }
 
