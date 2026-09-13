@@ -99,22 +99,66 @@ fn build_element_js(selector: &str, frame_selectors: &Option<Vec<String>>) -> St
     }
 }
 
-/// Validate that every frame in the chain exists, is an `<iframe>`, and is
-/// same-origin (its `contentDocument` is reachable). Produces clear, actionable
-/// errors instead of the cryptic "Cannot read properties of null" that would
-/// otherwise surface deeper in visibility/obscured checks for cross-origin
-/// frames.
-pub async fn ensure_frame_accessible(page: &Page, frame: &Option<Frame>) -> Result<()> {
-    let Some(frame_selectors) = get_frame_selectors(frame) else {
-        return Ok(());
-    };
-
-    let selectors_js = frame_selectors
+fn frame_selectors_js(selectors: &[String]) -> String {
+    selectors
         .iter()
-        .map(|s| format!("'{}'", escape_js_string(s)))
+        .map(|selector| format!("'{}'", escape_js_string(selector)))
         .collect::<Vec<_>>()
-        .join(", ");
+        .join(", ")
+}
 
+#[derive(Debug, PartialEq, Eq)]
+enum FrameAccess {
+    Ready,
+    WaitingForFrame(String),
+}
+
+fn parse_frame_access(value: &serde_json::Value) -> Result<FrameAccess> {
+    if value.get("ok").and_then(|field| field.as_bool()) == Some(true) {
+        return Ok(FrameAccess::Ready);
+    }
+
+    let error = value
+        .get("error")
+        .and_then(|field| field.as_str())
+        .unwrap_or("unknown");
+    let selector = value
+        .get("selector")
+        .and_then(|field| field.as_str())
+        .unwrap_or("unknown");
+
+    match error {
+        "frame_not_found" => Ok(FrameAccess::WaitingForFrame(selector.to_string())),
+        "not_a_frame" => {
+            let tag = value
+                .get("tag")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown")
+                .to_lowercase();
+            Err(anyhow!(
+                "Frame selector '{}' matches a <{}>, not an <iframe>",
+                selector,
+                tag
+            ))
+        }
+        "cross_origin" => Err(anyhow!(
+            "Cannot access cross-origin frame '{}' (its document is not reachable from the parent)",
+            selector
+        )),
+        _ => Err(anyhow!("Frame '{}' is not accessible: {}", selector, error)),
+    }
+}
+
+/// Check whether every frame in the chain is ready for target polling.
+async fn frame_access(page: &Page, frame: &Option<Frame>) -> Result<FrameAccess> {
+    let Some(frame_selectors) = get_frame_selectors(frame) else {
+        return Ok(FrameAccess::Ready);
+    };
+    if frame_selectors.is_empty() {
+        return Err(anyhow!("Frame selector chain cannot be empty"));
+    }
+
+    let selectors_js = frame_selectors_js(&frame_selectors);
     let script = format!(
         r#"(() => {{
             let doc = document;
@@ -134,41 +178,8 @@ pub async fn ensure_frame_accessible(page: &Page, frame: &Option<Frame>) -> Resu
     );
 
     let result = page.evaluate(script).await?;
-    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
-
-    if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
-        return Ok(());
-    }
-
-    let error = val
-        .get("error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let sel = val
-        .get("selector")
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    match error {
-        "frame_not_found" => Err(anyhow!("Frame '{}' not found in the document", sel)),
-        "not_a_frame" => {
-            let tag = val
-                .get("tag")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_lowercase();
-            Err(anyhow!(
-                "Frame selector '{}' matches a <{}>, not an <iframe>",
-                sel,
-                tag
-            ))
-        }
-        "cross_origin" => Err(anyhow!(
-            "Cannot access cross-origin frame '{}' (its document is not reachable from the parent)",
-            sel
-        )),
-        _ => Err(anyhow!("Frame '{}' is not accessible: {}", sel, error)),
-    }
+    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    parse_frame_access(&value)
 }
 
 // ─── Actionability Checks ────────────────────────────────────────────────────
@@ -180,10 +191,6 @@ pub async fn wait_for_selector(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    // Validate the frame chain first so cross-origin / missing frames produce a
-    // clear error instead of a cryptic null dereference further down.
-    ensure_frame_accessible(page, frame).await?;
-
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     let script = format!("(() => {{ return !!({element_js}); }})()");
@@ -193,11 +200,25 @@ pub async fn wait_for_selector(
     let start = std::time::Instant::now();
 
     loop {
-        let result = page.evaluate(script.as_str()).await?;
-        if result.into_value::<bool>().unwrap_or(false) {
-            return Ok(());
-        }
-        if start.elapsed() > timeout {
+        let waiting_for_frame = match frame_access(page, frame).await? {
+            FrameAccess::Ready => {
+                let result = page.evaluate(script.as_str()).await?;
+                if result.into_value::<bool>().unwrap_or(false) {
+                    return Ok(());
+                }
+                None
+            }
+            FrameAccess::WaitingForFrame(frame_selector) => Some(frame_selector),
+        };
+        if start.elapsed() >= timeout {
+            if let Some(frame_selector) = waiting_for_frame {
+                return Err(anyhow!(
+                    "Timed out after {}ms waiting for frame '{}' before finding element '{}'",
+                    config.element_timeout_ms,
+                    frame_selector,
+                    selector
+                ));
+            }
             return Err(anyhow!(
                 "Timed out after {}ms waiting for element '{}' to exist in the DOM",
                 config.element_timeout_ms,
@@ -222,15 +243,19 @@ pub async fn wait_for_visible(
             const el = {element_js};
             if (!el) return {{ visible: false, reason: 'not_found' }};
             const rect = el.getBoundingClientRect();
-            const style = window.getComputedStyle(el);
+            const view = el.ownerDocument.defaultView;
+            if (!view) return {{ visible: false, reason: 'no_window' }};
             if (rect.width === 0 || rect.height === 0)
                 return {{ visible: false, reason: 'zero_size' }};
-            if (style.visibility === 'hidden')
-                return {{ visible: false, reason: 'visibility_hidden' }};
-            if (style.display === 'none')
-                return {{ visible: false, reason: 'display_none' }};
-            if (parseFloat(style.opacity) === 0)
-                return {{ visible: false, reason: 'zero_opacity' }};
+            for (let current = el; current; current = current.parentElement) {{
+                const style = current.ownerDocument.defaultView.getComputedStyle(current);
+                if (style.visibility === 'hidden' || style.visibility === 'collapse')
+                    return {{ visible: false, reason: 'visibility_hidden' }};
+                if (style.display === 'none')
+                    return {{ visible: false, reason: 'display_none' }};
+                if (parseFloat(style.opacity) === 0)
+                    return {{ visible: false, reason: 'zero_opacity' }};
+            }}
             return {{ visible: true }};
         }})()"#
     );
@@ -335,21 +360,47 @@ pub async fn wait_for_stable(
 /// Scroll element into view (center of viewport).
 pub async fn scroll_into_view(page: &Page, selector: &str, frame: &Option<Frame>) -> Result<()> {
     let frame_selectors = get_frame_selectors(frame);
-    let element_js = build_element_js(selector, &frame_selectors);
+    let selectors_js = frame_selectors
+        .as_deref()
+        .map(frame_selectors_js)
+        .unwrap_or_default();
+    let target_selector = escape_js_string(selector);
     let script = format!(
         r#"(() => {{
-            const el = {element_js};
-            if (!el) return false;
-            el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
-            return true;
+            const options = {{ block: 'center', inline: 'center', behavior: 'instant' }};
+            const selectors = [{selectors_js}];
+            let doc = document;
+            for (const frameSelector of selectors) {{
+                const frame = doc.querySelector(frameSelector);
+                if (!frame) return {{ error: 'frame_not_found', selector: frameSelector }};
+                frame.scrollIntoView(options);
+                if (!frame.contentDocument)
+                    return {{ error: 'cross_origin', selector: frameSelector }};
+                doc = frame.contentDocument;
+            }}
+            const el = doc.querySelector('{target_selector}');
+            if (!el) return {{ error: 'not_found' }};
+            el.scrollIntoView(options);
+            return {{ ok: true }};
         }})()"#
     );
 
     let result = page.evaluate(script).await?;
-    if !result.into_value::<bool>().unwrap_or(false) {
+    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    if value.get("ok").and_then(|field| field.as_bool()) != Some(true) {
+        let error = value
+            .get("error")
+            .and_then(|field| field.as_str())
+            .unwrap_or("unknown");
+        let frame_selector = value
+            .get("selector")
+            .and_then(|field| field.as_str())
+            .unwrap_or("unknown");
         return Err(anyhow!(
-            "Cannot scroll element '{}' into view — element not found",
-            selector
+            "Cannot scroll element '{}' into view: {} ('{}')",
+            selector,
+            error,
+            frame_selector
         ));
     }
     // Brief wait for scroll to settle
@@ -448,7 +499,9 @@ pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -
         r#"(() => {{
             const el = {element_js};
             if (!el) return {{ error: 'not_found' }};
-            if (el.disabled === true) return {{ disabled: true }};
+            const disabled = el.matches(':disabled')
+                || el.getAttribute('aria-disabled') === 'true';
+            if (disabled) return {{ disabled: true }};
             return {{ disabled: false }};
         }})()"#
     );
@@ -472,12 +525,8 @@ pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -
     Ok(())
 }
 
-/// Calculate the cumulative offset of nested iframes relative to the top-level viewport.
-/// Returns (offset_x, offset_y) that should be added to element coordinates within the frame.
-///
-/// NOTE: This sums each frame's `getBoundingClientRect()` and assumes intermediate
-/// frames are not independently scrolled. A scrolled outer frame would shift the
-/// inner content and could make the projected CDP coordinates inaccurate.
+/// Calculate the cumulative content-box offset of nested iframes relative to the
+/// top-level viewport. Each frame has already been centered by `scroll_into_view`.
 pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64, f64)> {
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) => s,
@@ -485,27 +534,9 @@ pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64
     };
 
     if frame_selectors.is_empty() {
-        return Ok((0.0, 0.0));
+        return Err(anyhow!("Frame selector chain cannot be empty"));
     }
 
-    // Build JS that calculates cumulative offset through nested iframes
-    let mut js_parts = Vec::new();
-    let mut doc = "document".to_string();
-
-    for sel in &frame_selectors {
-        let escaped = escape_js_string(sel);
-        js_parts.push(format!(
-            r#"(() => {{
-                const frame = {doc}.querySelector('{escaped}');
-                if (!frame) return null;
-                const rect = frame.getBoundingClientRect();
-                return {{ x: rect.x, y: rect.y }};
-            }})()"#
-        ));
-        doc = format!("{}.querySelector('{}').contentDocument", doc, escaped);
-    }
-
-    // We need to evaluate each frame offset sequentially and sum them
     let script = format!(
         r#"(() => {{
             let totalX = 0, totalY = 0;
@@ -515,18 +546,20 @@ pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64
                 const frame = currentDoc.querySelector(sel);
                 if (!frame) return {{ error: 'frame_not_found', selector: sel }};
                 const rect = frame.getBoundingClientRect();
-                totalX += rect.x;
-                totalY += rect.y;
+                const style = currentDoc.defaultView.getComputedStyle(frame);
+                if (rect.width === 0 || rect.height === 0 || style.display === 'none'
+                    || style.visibility === 'hidden' || style.visibility === 'collapse'
+                    || parseFloat(style.opacity) === 0) {{
+                    return {{ error: 'frame_not_visible', selector: sel }};
+                }}
+                totalX += rect.x + frame.clientLeft;
+                totalY += rect.y + frame.clientTop;
                 currentDoc = frame.contentDocument;
                 if (!currentDoc) return {{ error: 'cross_origin_frame', selector: sel }};
             }}
             return {{ x: totalX, y: totalY }};
         }})()"#,
-        frame_selectors
-            .iter()
-            .map(|s| format!("'{}'", escape_js_string(s)))
-            .collect::<Vec<_>>()
-            .join(", ")
+        frame_selectors_js(&frame_selectors)
     );
 
     let result = page.evaluate(script).await?;
@@ -537,6 +570,9 @@ pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64
             .get("selector")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        if error == "frame_not_visible" {
+            return Err(anyhow!("Frame '{}' is not visible", sel));
+        }
         return Err(anyhow!(
             "Frame offset calculation failed: {} ('{}')",
             error,
@@ -659,19 +695,18 @@ pub async fn ensure_actionable(
     Ok(info)
 }
 
-/// Partial actionability check for focus: existence, visibility, scroll, enabled.
-/// No obscured check needed (focus doesn't require clicking).
+/// Full actionability check for focus, typing, key presses, and selection.
+/// These interactions must meet the same visibility, stability, viewport,
+/// coverage, and enabled-state requirements as a pointer interaction.
 pub async fn ensure_focusable(
     page: &Page,
     selector: &str,
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    wait_for_selector(page, selector, frame, config).await?;
-    wait_for_visible(page, selector, frame, config).await?;
-    scroll_into_view(page, selector, frame).await?;
-    check_enabled(page, selector, frame).await?;
-    Ok(())
+    ensure_actionable(page, selector, frame, config)
+        .await
+        .map(|_| ())
 }
 
 /// Minimal check: just wait for element to exist (for scroll, hide, remove).
@@ -741,4 +776,56 @@ pub async fn cdp_hover(page: &Page, x: f64, y: f64) -> Result<()> {
     page.execute(move_cmd).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frame_access_distinguishes_retryable_missing_frame() {
+        let value = serde_json::json!({
+            "error": "frame_not_found",
+            "selector": "#application-frame"
+        });
+
+        assert_eq!(
+            parse_frame_access(&value).unwrap(),
+            FrameAccess::WaitingForFrame("#application-frame".to_string())
+        );
+    }
+
+    #[test]
+    fn frame_access_rejects_non_frame_and_cross_origin_targets() {
+        let non_frame = serde_json::json!({
+            "error": "not_a_frame",
+            "selector": ".panel",
+            "tag": "DIV"
+        });
+        let cross_origin = serde_json::json!({
+            "error": "cross_origin",
+            "selector": "#external"
+        });
+
+        assert!(
+            parse_frame_access(&non_frame)
+                .unwrap_err()
+                .to_string()
+                .contains("matches a <div>")
+        );
+        assert!(
+            parse_frame_access(&cross_origin)
+                .unwrap_err()
+                .to_string()
+                .contains("cross-origin")
+        );
+    }
+
+    #[test]
+    fn frame_selector_literals_are_escaped() {
+        assert_eq!(
+            frame_selectors_js(&["iframe[name='checkout']".to_string()]),
+            "'iframe[name=\\'checkout\\']'"
+        );
+    }
 }

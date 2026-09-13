@@ -10,8 +10,8 @@ use crate::{
     test::{
         actionability::{
             self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
-            check_enabled, ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule,
-            escape_js_string, get_frame_selectors, scroll_into_view, wait_for_selector,
+            ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule, escape_js_string,
+            get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{save_screenshot, state_path, validate_state_name},
     },
@@ -31,6 +31,7 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
     };
 
     let mut paths = Vec::new();
+    let canonical_base = visual_tests_dir.canonicalize()?;
     for f in &files {
         if Path::new(f).is_absolute() {
             anyhow::bail!("`file` must be a relative path to the \"visual_tests\" folder");
@@ -39,7 +40,6 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
         if !full_path.exists() {
             anyhow::bail!("file does not exist: {}", f);
         }
-        let canonical_base = visual_tests_dir.canonicalize()?;
         let canonical_path = full_path.canonicalize()?;
         if !canonical_path.starts_with(&canonical_base) {
             anyhow::bail!("file '{}' escapes the visual_tests folder", f);
@@ -182,6 +182,109 @@ fn parse_press_key(input: &str) -> Result<KeyStroke> {
     })
 }
 
+/// Validate a checkable control and determine whether a user click is needed.
+fn checkable_click_required(action: &str, element_type: &str, is_checked: bool) -> Result<bool> {
+    if element_type != "checkbox" && element_type != "radio" {
+        anyhow::bail!(
+            "{} action requires a checkbox or radio element, got type='{}'",
+            action,
+            element_type
+        );
+    }
+    if action == "uncheck" && element_type == "radio" && is_checked {
+        anyhow::bail!(
+            "uncheck action cannot clear a checked radio button; select another radio in its group instead"
+        );
+    }
+
+    match action {
+        "check" => Ok(!is_checked),
+        "uncheck" => Ok(is_checked),
+        _ => anyhow::bail!("Unsupported checkable action '{}'", action),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum TextInputTarget {
+    Native,
+    ContentEditable,
+}
+
+fn parse_text_input_target(value: &serde_json::Value) -> Result<TextInputTarget> {
+    match value.get("kind").and_then(|field| field.as_str()) {
+        Some("native") => Ok(TextInputTarget::Native),
+        Some("contenteditable") => Ok(TextInputTarget::ContentEditable),
+        _ => {
+            let error = value
+                .get("error")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown");
+            let tag = value
+                .get("tag")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown")
+                .to_lowercase();
+            match error {
+                "readonly" => anyhow::bail!("input action target <{}> is read-only", tag),
+                "not_editable" => anyhow::bail!(
+                    "input action requires an editable <input>, <textarea>, or contenteditable element; got <{}>",
+                    tag
+                ),
+                _ => anyhow::bail!(
+                    "input action could not validate target <{}>: {}",
+                    tag,
+                    error
+                ),
+            }
+        }
+    }
+}
+
+async fn dispatch_key_stroke(page: &Page, keystroke: &KeyStroke) -> Result<()> {
+    use chromiumoxide::cdp::browser_protocol::input::{
+        DispatchKeyEventParams, DispatchKeyEventType,
+    };
+
+    let mut down = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyDown)
+        .key(keystroke.key.clone())
+        .code(keystroke.code.clone());
+    if keystroke.modifiers != 0 {
+        down = down.modifiers(keystroke.modifiers);
+    }
+    if let Some(virtual_key_code) = keystroke.virtual_key_code {
+        down = down
+            .windows_virtual_key_code(virtual_key_code)
+            .native_virtual_key_code(virtual_key_code);
+    }
+    if let Some(text) = &keystroke.text {
+        down = down.text(text.clone()).unmodified_text(text.clone());
+    }
+    let down = down
+        .build()
+        .map_err(|error| anyhow!("Failed to build key down event: {:?}", error))?;
+    page.execute(down).await?;
+
+    let mut up = DispatchKeyEventParams::builder()
+        .r#type(DispatchKeyEventType::KeyUp)
+        .key(keystroke.key.clone())
+        .code(keystroke.code.clone());
+    if keystroke.modifiers != 0 {
+        up = up.modifiers(keystroke.modifiers);
+    }
+    if let Some(virtual_key_code) = keystroke.virtual_key_code {
+        up = up
+            .windows_virtual_key_code(virtual_key_code)
+            .native_virtual_key_code(virtual_key_code);
+    }
+    let up = up
+        .build()
+        .map_err(|error| anyhow!("Failed to build key up event: {:?}", error))?;
+    page.execute(up).await?;
+
+    Ok(())
+}
+
 pub(crate) struct ActionExecutionContext<'a> {
     pub page: &'a Page,
     pub test_suite: &'a TestSuite,
@@ -226,14 +329,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .await?
                 .into_value()
                 .unwrap_or_default();
-            if el_type != "checkbox" && el_type != "radio" {
-                anyhow::bail!(
-                    "check action requires a checkbox or radio element, got type='{}'",
-                    el_type
-                );
-            }
-
-            // Check if already checked
             let checked_script = format!(
                 "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
                 doc = doc,
@@ -245,8 +340,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .into_value()
                 .unwrap_or(false);
 
-            if !is_checked {
-                // Click to check it
+            if checkable_click_required("check", &el_type, is_checked)? {
                 let frame_offset = actionability::get_frame_offset(page, frame).await?;
                 cdp_click(
                     page,
@@ -361,7 +455,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     log_prefix, input, value
                 );
                 ensure_focusable(page, input, frame, &ac).await?;
-                check_enabled(page, input, frame).await?;
 
                 let sel_escaped = escape_js_string(input);
                 let doc = frame_selectors
@@ -369,77 +462,137 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     .map(|s| build_frame_document_js(s))
                     .unwrap_or_else(|| "document".to_string());
                 let append_mode = append.unwrap_or(false);
+                let target_script = format!(
+                    "(() => {{
+                        const el = {doc}.querySelector('{sel}');
+                        if (!el) return {{ error: 'not_found' }};
+                        const tag = el.tagName;
+                        const blockedTypes = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit']);
+                        const native = tag === 'INPUT' && !blockedTypes.has(el.type)
+                            || tag === 'TEXTAREA';
+                        if (!native && !el.isContentEditable)
+                            return {{ error: 'not_editable', tag }};
+                        if (el.readOnly === true || el.getAttribute('aria-readonly') === 'true')
+                            return {{ error: 'readonly', tag }};
+                        return {{ kind: native ? 'native' : 'contenteditable' }};
+                    }})()",
+                    doc = doc,
+                    sel = sel_escaped
+                );
+                let target_value: serde_json::Value = page
+                    .evaluate(target_script)
+                    .await?
+                    .into_value()
+                    .unwrap_or(serde_json::Value::Null);
+                let target = parse_text_input_target(&target_value)?;
 
                 if frame.is_none() {
-                    // Top frame: drive the real editing pipeline via CDP so the
-                    // browser honours input filtering, maxlength and masking, and
-                    // fires the same events a real user would (beforeinput/input)
-                    // instead of just assigning `.value`.
-                    let clear_js = if !append_mode {
-                        "el.value = ''; el.dispatchEvent(new Event('input', { bubbles: true }));"
-                    } else {
-                        ""
-                    };
-                    let focus_clear = format!(
-                        "(() => {{ var el = {doc}.querySelector('{sel}'); el.focus(); \
-                         try {{ el.setSelectionRange(el.value.length, el.value.length); }} catch (e) {{}} {clear} }})()",
-                        doc = doc,
-                        sel = sel_escaped,
-                        clear = clear_js
-                    );
-                    page.evaluate(focus_clear).await?;
-
-                    use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
-                    let insert = InsertTextParams::builder()
-                        .text(value.clone())
-                        .build()
-                        .map_err(|e| anyhow!("Failed to build insert text: {:?}", e))?;
-                    page.execute(insert).await?;
-
-                    // insertText fires `input` but not `change`; dispatch `change`
-                    // so validation/frameworks relying on it still react.
-                    let change_js = format!(
-                        "(() => {{ var el = {doc}.querySelector('{sel}'); \
-                         el.dispatchEvent(new Event('change', {{ bubbles: true }})); }})()",
+                    // CDP key/text events use Chromium's editing pipeline and
+                    // therefore honor maxlength, input filtering, and beforeinput.
+                    let focus_script = format!(
+                        "(() => {{ const el = {doc}.querySelector('{sel}'); el.focus(); }})()",
                         doc = doc,
                         sel = sel_escaped
                     );
-                    page.evaluate(change_js).await?;
-                } else {
-                    // Inside a frame, CDP text insertion targeting is unreliable, so
-                    // fall back to the native value-setter approach which still
-                    // triggers framework change detection (React/Vue/Angular).
-                    let val_escaped = escape_js_string(value);
-                    let clear_js = if !append_mode {
-                        format!(
-                            "{doc}.querySelector('{sel}').value = '';",
+                    page.evaluate(focus_script).await?;
+
+                    if !append_mode {
+                        let select_all = if cfg!(target_os = "macos") {
+                            parse_press_key("Meta+A")?
+                        } else {
+                            parse_press_key("Ctrl+A")?
+                        };
+                        dispatch_key_stroke(page, &select_all).await?;
+                        dispatch_key_stroke(page, &parse_press_key("Backspace")?).await?;
+                    }
+
+                    use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
+                    if !value.is_empty() {
+                        let insert = InsertTextParams::builder()
+                            .text(value.clone())
+                            .build()
+                            .map_err(|error| anyhow!("Failed to build insert text: {:?}", error))?;
+                        page.execute(insert).await?;
+                    }
+
+                    if matches!(target, TextInputTarget::Native) {
+                        // CDP text insertion fires input but not change.
+                        let change_script = format!(
+                            "(() => {{ const el = {doc}.querySelector('{sel}'); \
+                             el.dispatchEvent(new Event('change', {{ bubbles: true }})); }})()",
                             doc = doc,
                             sel = sel_escaped
-                        )
-                    } else {
-                        String::new()
+                        );
+                        page.evaluate(change_script).await?;
+                    }
+                } else {
+                    // CDP text targeting inside a frame is unreliable. Mutate via
+                    // the frame's own DOM realm while preserving framework events.
+                    let value_json = serde_json::to_string(value)?
+                        .replace('\u{2028}', "\\u2028")
+                        .replace('\u{2029}', "\\u2029");
+                    let kind = match target {
+                        TextInputTarget::Native => "native",
+                        TextInputTarget::ContentEditable => "contenteditable",
                     };
 
                     let script = format!(
                         "(() => {{
-                            var el = {doc}.querySelector('{sel}');
-                            {clear}
+                            const el = {doc}.querySelector('{sel}');
+                            const view = el.ownerDocument.defaultView;
+                            const kind = '{kind}';
+                            const value = {value};
+                            const beforeInput = (inputType, data) => el.dispatchEvent(
+                                new view.InputEvent('beforeinput', {{
+                                    bubbles: true, cancelable: true, inputType, data
+                                }})
+                            );
+                            const fireInput = (inputType, data) => el.dispatchEvent(
+                                new view.InputEvent('input', {{ bubbles: true, inputType, data }})
+                            );
+                            const setNativeValue = (nextValue) => {{
+                                const constructor = el.tagName === 'TEXTAREA'
+                                    ? view.HTMLTextAreaElement : view.HTMLInputElement;
+                                const setter = Object.getOwnPropertyDescriptor(constructor.prototype, 'value').set;
+                                setter.call(el, nextValue);
+                            }};
                             el.focus();
-                            var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value') || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value');
-                            if (nativeInputValueSetter) {{
-                                nativeInputValueSetter.set.call(el, el.value + '{val}');
-                            }} else {{
-                                el.value = el.value + '{val}';
+                            if (!{append}) {{
+                                if (!beforeInput('deleteContentBackward', null))
+                                    return {{ ok: false, error: 'beforeinput_prevented' }};
+                                if (kind === 'native') setNativeValue('');
+                                else el.textContent = '';
+                                fireInput('deleteContentBackward', null);
                             }}
-                            el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                            el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            if (value.length > 0) {{
+                                if (!beforeInput('insertText', value))
+                                    return {{ ok: false, error: 'beforeinput_prevented' }};
+                                if (kind === 'native') setNativeValue(el.value + value);
+                                else el.textContent = el.textContent + value;
+                                fireInput('insertText', value);
+                            }}
+                            if (kind === 'native')
+                                el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                            return {{ ok: true }};
                         }})()",
                         doc = doc,
                         sel = sel_escaped,
-                        clear = clear_js,
-                        val = val_escaped
+                        kind = kind,
+                        value = value_json,
+                        append = append_mode
                     );
-                    page.evaluate(script).await?;
+                    let result: serde_json::Value = page
+                        .evaluate(script)
+                        .await?
+                        .into_value()
+                        .unwrap_or(serde_json::Value::Null);
+                    if result.get("ok").and_then(|field| field.as_bool()) != Some(true) {
+                        let error = result
+                            .get("error")
+                            .and_then(|field| field.as_str())
+                            .unwrap_or("unknown");
+                        anyhow::bail!("input action failed: {}", error);
+                    }
                 }
             } else if let Some(file) = file {
                 eprintln!("{} Uploading file to element: {}", log_prefix, input);
@@ -485,18 +638,23 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         .enabled(true)
                         .build()
                         .map_err(|e| anyhow!("Failed to enable file chooser intercept: {:?}", e))?;
-                    page.execute(enable).await?;
-
-                    cdp_click(page, info.center_x, info.center_y).await?;
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
                     let disable = SetInterceptFileChooserDialogParams::builder()
                         .enabled(false)
                         .build()
                         .map_err(|e| {
                             anyhow!("Failed to disable file chooser intercept: {:?}", e)
                         })?;
-                    page.execute(disable).await?;
+                    page.execute(enable).await?;
+
+                    let click_result = async {
+                        cdp_click(page, info.center_x, info.center_y).await?;
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    .await;
+                    let disable_result = page.execute(disable).await;
+                    click_result?;
+                    disable_result?;
                 }
 
                 let cmd = SetFileInputFilesParams::builder()
@@ -564,52 +722,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             );
             page.evaluate(focus_script).await?;
 
-            // Dispatch a single real CDP key event sequence. Using CDP (not
-            // synthetic JS events) makes the browser perform native behaviour:
-            // inserting printable characters, submitting forms on Enter, moving
-            // focus on Tab. We deliberately do NOT also dispatch synthetic JS
-            // events — that would deliver every event twice (e.g. double submit).
-            use chromiumoxide::cdp::browser_protocol::input::{
-                DispatchKeyEventParams, DispatchKeyEventType,
-            };
             let keystroke = parse_press_key(key)?;
-
-            let mut down = DispatchKeyEventParams::builder()
-                .r#type(DispatchKeyEventType::KeyDown)
-                .key(keystroke.key.clone())
-                .code(keystroke.code.clone());
-            if keystroke.modifiers != 0 {
-                down = down.modifiers(keystroke.modifiers);
-            }
-            if let Some(vk) = keystroke.virtual_key_code {
-                down = down
-                    .windows_virtual_key_code(vk)
-                    .native_virtual_key_code(vk);
-            }
-            // For printable characters, `text` is what makes the browser insert
-            // the glyph (a bare keyDown for "a" produces no character otherwise).
-            if let Some(text) = &keystroke.text {
-                down = down.text(text.clone()).unmodified_text(text.clone());
-            }
-            let down = down
-                .build()
-                .map_err(|e| anyhow!("Failed to build key down event: {:?}", e))?;
-            page.execute(down).await?;
-
-            let mut up = DispatchKeyEventParams::builder()
-                .r#type(DispatchKeyEventType::KeyUp)
-                .key(keystroke.key.clone())
-                .code(keystroke.code.clone());
-            if keystroke.modifiers != 0 {
-                up = up.modifiers(keystroke.modifiers);
-            }
-            if let Some(vk) = keystroke.virtual_key_code {
-                up = up.windows_virtual_key_code(vk).native_virtual_key_code(vk);
-            }
-            let up = up
-                .build()
-                .map_err(|e| anyhow!("Failed to build key up event: {:?}", e))?;
-            page.execute(up).await?;
+            dispatch_key_stroke(page, &keystroke).await?;
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
@@ -690,7 +804,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
             let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, select, frame, &ac).await?;
-            check_enabled(page, select, frame).await?;
 
             // Verify it's a <select> element
             let sel_escaped = escape_js_string(select);
@@ -750,6 +863,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         for (var i = 0; i < el.options.length; i++) {{
                             el.options[i].selected = values.includes(el.options[i].value);
                         }}
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return {{ ok: true }};
                     }})()",
@@ -790,6 +904,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         if (!matched) {{
                             return {{ ok: false, error: 'No option label matched: {lbl}' }};
                         }}
+                        el.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         el.dispatchEvent(new Event('change', {{ bubbles: true }}));
                         return {{ ok: true }};
                     }})()",
@@ -833,14 +948,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .await?
                 .into_value()
                 .unwrap_or_default();
-            if el_type != "checkbox" && el_type != "radio" {
-                anyhow::bail!(
-                    "uncheck action requires a checkbox or radio element, got type='{}'",
-                    el_type
-                );
-            }
-
-            // Only click if currently checked
             let checked_script = format!(
                 "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
                 doc = doc,
@@ -852,7 +959,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .into_value()
                 .unwrap_or(false);
 
-            if is_checked {
+            if checkable_click_required("uncheck", &el_type, is_checked)? {
                 let frame_offset = actionability::get_frame_offset(page, frame).await?;
                 cdp_click(
                     page,
@@ -897,9 +1004,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 }
             }
 
-            let frame_selectors = get_frame_selectors(frame);
-            let doc_js = frame_selectors.as_ref().map(|s| build_frame_document_js(s));
-
             match wait {
                 Wait::Number(milliseconds) => {
                     eprintln!("{} Waiting for {} milliseconds", log_prefix, milliseconds);
@@ -907,37 +1011,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 }
                 Wait::String(selector) => {
                     eprintln!("{} Waiting for element: {}", log_prefix, selector);
-                    if let Some(doc) = doc_js {
-                        let sel_escaped = escape_js_string(selector);
-                        let script =
-                            format!("{doc}.querySelector('{sel}')", doc = doc, sel = sel_escaped);
-                        let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
-                        let start = std::time::Instant::now();
-                        loop {
-                            let result = page.evaluate(script.as_str()).await?;
-                            if !result
-                                .into_value::<serde_json::Value>()
-                                .unwrap_or(serde_json::Value::Null)
-                                .is_null()
-                            {
-                                break;
-                            }
-                            if start.elapsed() > timeout {
-                                anyhow::bail!(
-                                    "Timeout waiting for element '{}' in frame after {}ms",
-                                    selector,
-                                    ac.element_timeout_ms
-                                );
-                            }
-                            tokio::time::sleep(std::time::Duration::from_millis(
-                                ac.poll_interval_ms,
-                            ))
-                            .await;
-                        }
-                    } else {
-                        // Use the actionability module's wait_for_selector
-                        wait_for_selector(page, selector, frame, &ac).await?;
-                    }
+                    wait_for_selector(page, selector, frame, &ac).await?;
                 }
             }
         }
@@ -1016,5 +1090,54 @@ mod tests {
             "https://example.com/a/b/settings",
             "https://example.com/**/dashboard"
         ));
+    }
+
+    #[test]
+    fn checkable_click_required_only_clicks_when_state_needs_change() {
+        assert!(checkable_click_required("check", "checkbox", false).unwrap());
+        assert!(!checkable_click_required("check", "radio", true).unwrap());
+        assert!(checkable_click_required("uncheck", "checkbox", true).unwrap());
+        assert!(!checkable_click_required("uncheck", "checkbox", false).unwrap());
+    }
+
+    #[test]
+    fn checkable_click_required_rejects_checked_radio_uncheck() {
+        let error = checkable_click_required("uncheck", "radio", true).unwrap_err();
+        assert!(error.to_string().contains("cannot clear a checked radio"));
+    }
+
+    #[test]
+    fn checkable_click_required_rejects_non_checkable_elements() {
+        let error = checkable_click_required("check", "text", false).unwrap_err();
+        assert!(error.to_string().contains("checkbox or radio"));
+    }
+
+    #[test]
+    fn text_input_target_accepts_editable_target_types() {
+        assert_eq!(
+            parse_text_input_target(&serde_json::json!({ "kind": "native" })).unwrap(),
+            TextInputTarget::Native
+        );
+        assert_eq!(
+            parse_text_input_target(&serde_json::json!({ "kind": "contenteditable" })).unwrap(),
+            TextInputTarget::ContentEditable
+        );
+    }
+
+    #[test]
+    fn text_input_target_reports_non_editable_and_readonly_failures() {
+        let non_editable = parse_text_input_target(&serde_json::json!({
+            "error": "not_editable",
+            "tag": "DIV"
+        }))
+        .unwrap_err();
+        let read_only = parse_text_input_target(&serde_json::json!({
+            "error": "readonly",
+            "tag": "INPUT"
+        }))
+        .unwrap_err();
+
+        assert!(non_editable.to_string().contains("contenteditable"));
+        assert!(read_only.to_string().contains("read-only"));
     }
 }

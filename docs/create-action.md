@@ -3,7 +3,7 @@ title: Create an action
 description: Reference for creating Optimizely CMS test actions such as click, input, select, wait, scroll, upload files, and frame handling.
 guid: ba348ca1-eb67-4c0f-8461-8f36979aea18
 date: 2023-07-03T17:00:00+00:00
-updated: 2026-04-17T17:00:00+00:00
+updated: 2026-09-13T00:00:00+00:00
 draft: false
 hidden: false
 weight: 40000
@@ -141,7 +141,8 @@ input
 
 :::::
 
-Type text in an element.
+Type text in an editable `<input>`, `<textarea>`, or contenteditable element.
+Read-only and non-editable targets fail instead of silently succeeding.
 
 Example:
 
@@ -323,7 +324,8 @@ uncheck
 
 :::::
 
-Uncheck a checkbox or radio element.
+Uncheck a checkbox element. A checked radio button cannot be cleared through a
+real user click; select another radio in its group instead.
 
 Example:
 
@@ -387,6 +389,8 @@ Type: `string | string[]`.
 Default: empty.
 
 This property specifies the selector for the target iframe within which the current action should be executed.
+Frames wait for the configured element timeout while loading, must be visible and
+same-origin, and an array must contain at least one selector.
 
 Example:
 
