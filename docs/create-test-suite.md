@@ -334,6 +334,9 @@ Type: `string`.
 Default value: `common/_viewports.yaml`.
 
 Path to the viewport definition file. Each viewport must have a non-empty label and non-zero `width` and `height`. Duplicate labels are rejected case-insensitively.
+An explicit path must name an existing regular file inside the workspace. The
+default file may be absent, in which case captures use Chromium's default
+viewport.
 
 {% end %}
 

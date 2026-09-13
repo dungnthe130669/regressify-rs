@@ -263,12 +263,31 @@ fn resolve_scenario_viewports(
     resolved: &ResolvedConfig,
 ) -> Result<Vec<config::viewports::ViewportDef>> {
     let root_dir = common::ROOT_DIR.get_required()?;
-    let viewports_path = root_dir.join(&resolved.viewports_path);
+    let Some(viewports_path) = resolve_viewports_file(
+        root_dir,
+        &resolved.viewports_path,
+        resolved.viewports_path_is_explicit,
+    )?
+    else {
+        return Ok(Vec::new());
+    };
     let all = config::viewports::load_viewports(&viewports_path)?;
     if all.is_empty() {
         return Ok(Vec::new());
     }
     config::viewports::resolve_viewports(resolved.viewport_names.as_deref(), &all)
+}
+
+fn resolve_viewports_file(
+    root_dir: &std::path::Path,
+    configured_path: &str,
+    is_explicit: bool,
+) -> Result<Option<PathBuf>> {
+    if is_explicit {
+        config::resolve_workspace_file(root_dir, configured_path, "viewportsPath").map(Some)
+    } else {
+        config::resolve_optional_workspace_file(root_dir, configured_path, "default viewportsPath")
+    }
 }
 
 /// Apply a viewport size to the page via CDP device-metrics emulation.
@@ -947,6 +966,41 @@ async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_viewports_files_must_exist_inside_the_workspace() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let viewport_path = workspace.path().join("common/viewports.yaml");
+        std::fs::create_dir_all(viewport_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &viewport_path,
+            "- label: desktop\n  width: 1280\n  height: 720\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_viewports_file(workspace.path(), "common/viewports.yaml", true).unwrap(),
+            Some(viewport_path.canonicalize().unwrap())
+        );
+        assert!(
+            resolve_viewports_file(workspace.path(), "common/missing.yaml", false)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            resolve_viewports_file(workspace.path(), outside.path().to_str().unwrap(), true,)
+                .unwrap_err()
+                .to_string()
+                .contains("escapes workspace root")
+        );
+        assert!(
+            resolve_viewports_file(workspace.path(), "common/missing.yaml", true)
+                .unwrap_err()
+                .to_string()
+                .contains("does not exist")
+        );
+    }
 
     fn scenario(id: &str, yaml: &str) -> TestScenario {
         serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()

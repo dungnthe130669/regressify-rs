@@ -82,6 +82,7 @@ pub struct ResolvedConfig {
     pub use_css_override: bool,
     pub viewport_names: Option<Vec<String>>,
     pub viewports_path: String,
+    pub viewports_path_is_explicit: bool,
     pub element_timeout_ms: u64,
     pub actionability_timeout_ms: u64,
     pub settle_timeout_ms: u64,
@@ -112,6 +113,7 @@ impl Default for ResolvedConfig {
             use_css_override: true,
             viewport_names: None,
             viewports_path: "common/_viewports.yaml".to_string(),
+            viewports_path_is_explicit: false,
             element_timeout_ms: 30_000,
             actionability_timeout_ms: 5_000,
             settle_timeout_ms: 5_000,
@@ -265,6 +267,10 @@ pub fn resolve_config(
     scenario: &TestScenario,
 ) -> ResolvedConfig {
     let defaults = ResolvedConfig::default();
+    let configured_viewports_path = suite
+        .viewports_path
+        .clone()
+        .or(workspace.viewports_path.clone());
 
     ResolvedConfig {
         async_capture_limit: resolve_async_capture_limit(workspace, suite),
@@ -366,11 +372,11 @@ pub fn resolve_config(
             .or(selectors_to_vec(&suite.viewport_names))
             .or(selectors_to_vec(&workspace.viewport_names)),
 
-        viewports_path: suite
-            .viewports_path
+        viewports_path: configured_viewports_path
             .clone()
-            .or(workspace.viewports_path.clone())
             .unwrap_or(defaults.viewports_path),
+
+        viewports_path_is_explicit: configured_viewports_path.is_some(),
 
         element_timeout_ms: workspace
             .element_timeout

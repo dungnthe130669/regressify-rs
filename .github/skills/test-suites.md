@@ -188,6 +188,7 @@ The `url` property in wait supports:
 - Only `browser: chromium` is supported.
 - Unknown configuration and action properties are errors; use documented camelCase keys.
 - Unknown viewport names, duplicate viewport labels, empty labels, and zero dimensions are config errors.
+- An explicit `viewportsPath` must name an existing regular file inside the workspace; the default viewport file may be absent.
 - Invalid regex URL replacements are config errors.
 - Website failures should be captured in reports and should not stop sibling scenarios.
 - `debug: true` (suite-level) and the global `--debug` flag launch a headed (visible) Chromium window. This is automatically forced off in CI environments (Azure Pipelines, GitHub Actions, or `CI=true`) via `common::is_ci()`, because CI agents have no display — a headed launch there fails with `Missing X server or $DISPLAY`. See `LaunchOptions`/`launch_browser` in `src/test/browsers.rs`.
