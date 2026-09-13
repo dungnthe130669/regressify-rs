@@ -89,3 +89,7 @@ An unreadable PNG or failed file replacement makes `optimize` fail rather than s
 ## Scenario timeouts
 
 Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify records a failed-capture placeholder and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
+
+## Capture stability
+
+Regressify waits for an interactive DOM after navigation, decodes fonts and images before capture, and uses one `settleTimeout` budget for resource readiness plus DOM/layout quiet. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret. Set `freezeAnimations: false` only when a scenario intentionally captures an animated intermediate state.

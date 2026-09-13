@@ -14,6 +14,7 @@ use crate::{
             get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{save_screenshot, state_path, validate_state_name},
+        page_stability::wait_for_dom_ready,
     },
     types::{
         CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
@@ -384,6 +385,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Goto(GotoAction { goto, .. }) => {
             eprintln!("{} Navigating to URL: {}", log_prefix, goto);
             page.goto(goto).await?;
+            wait_for_dom_ready(
+                page,
+                std::time::Duration::from_millis(config.element_timeout_ms),
+            )
+            .await?;
         }
 
         TestAction::Hide(HideAction { hide, frame }) => {

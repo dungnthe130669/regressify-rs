@@ -28,6 +28,8 @@ pub struct WorkspaceConfig {
     pub css_override_path: Option<String>,
     pub debug: Option<bool>,
     pub delay: Option<f64>,
+    /// Freeze active CSS and Web Animations before capture. Default: true.
+    pub freeze_animations: Option<bool>,
     pub hide_selectors: Option<Vec<String>>,
     pub ignore_ssl_errors: Option<bool>,
     pub js_on_ready_path: Option<String>,
@@ -65,6 +67,7 @@ pub struct ResolvedConfig {
     pub css_override_path: Option<String>,
     pub debug: bool,
     pub delay: Option<f64>,
+    pub freeze_animations: bool,
     pub hide_selectors: Vec<String>,
     pub ignore_ssl_errors: bool,
     pub js_on_ready_path: Option<String>,
@@ -94,6 +97,7 @@ impl Default for ResolvedConfig {
             css_override_path: None,
             debug: false,
             delay: None,
+            freeze_animations: true,
             hide_selectors: Vec::new(),
             ignore_ssl_errors: false,
             js_on_ready_path: None,
@@ -221,6 +225,10 @@ pub fn resolve_config(
         debug: suite.debug.or(workspace.debug).unwrap_or(defaults.debug),
 
         delay: scenario.delay.or(workspace.delay),
+
+        freeze_animations: workspace
+            .freeze_animations
+            .unwrap_or(defaults.freeze_animations),
 
         hide_selectors: scenario
             .hide_selectors
@@ -435,5 +443,18 @@ mod tests {
         };
         let resolved = resolve_config(&workspace, &suite(), &scenario());
         assert_eq!(resolved.scenario_timeout_ms, 42_000);
+    }
+
+    #[test]
+    fn freeze_animations_defaults_on_and_can_be_disabled() {
+        let default = resolve_config(&WorkspaceConfig::default(), &suite(), &scenario());
+        assert!(default.freeze_animations);
+
+        let workspace = WorkspaceConfig {
+            freeze_animations: Some(false),
+            ..Default::default()
+        };
+        let resolved = resolve_config(&workspace, &suite(), &scenario());
+        assert!(!resolved.freeze_animations);
     }
 }

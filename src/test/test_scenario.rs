@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use chromiumoxide::Browser;
+use chromiumoxide::{Browser, Page};
 use colored::Colorize;
 
 use crate::{
@@ -13,6 +13,9 @@ use crate::{
     helpers::{OnceLockExtensions, slugify},
     test::{
         capture::{save_screenshot, state_path, validate_state_name, write_error_screenshot},
+        page_stability::{
+            freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
+        },
         test_action::{ActionExecutionContext, exec_test_action},
     },
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
@@ -314,6 +317,17 @@ where
     }
 }
 
+async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<()> {
+    let (completed, frozen) = freeze_animations(page).await?;
+    if completed > 0 || frozen > 0 {
+        eprintln!(
+            "{} Stabilized {} finite and {} infinite animation(s).",
+            log_prefix, completed, frozen
+        );
+    }
+    Ok(())
+}
+
 /// Inner capture routine: drives the full page lifecycle and saves the
 /// screenshot. Errors are handled by the `run_scenario_capture` wrapper.
 async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) -> Result<()> {
@@ -353,6 +367,11 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
     load_cookie_path(&page, cookie_path, log_prefix).await?;
 
     page.goto(url).await?;
+    wait_for_dom_ready(
+        &page,
+        std::time::Duration::from_millis(resolved.element_timeout_ms),
+    )
+    .await?;
 
     // localStorage requires an origin, so it is restored after navigation. If
     // anything was restored, reload so app code observes it during startup.
@@ -364,6 +383,11 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
             log_prefix
         );
         page.goto(url).await?;
+        wait_for_dom_ready(
+            &page,
+            std::time::Duration::from_millis(resolved.element_timeout_ms),
+        )
+        .await?;
     }
 
     // Apply CSS override if configured
@@ -470,204 +494,52 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
-    // Scroll page top-to-bottom then back to top to trigger lazy-loaded images
     if !resolved.no_scroll_top {
         eprintln!("{} Scrolling page to load lazy images...", log_prefix);
         let scroll_start = std::time::Instant::now();
-        page.evaluate(
-            r#"(async () => {
-                const SCROLL_DISTANCE = 100;
-                const SCROLL_DOWN_MAX = 100;
-                const SCROLL_TOP_MAX = 100;
-
-                if (!!window.visualTestScrollingBottom) return;
-
-                const scrollToBottom = async () => {
-                    window.visualTestScrollingBottom = true;
-                    let counter = 0;
-                    let lastScrollY = 0;
-                    await new Promise((resolve) => {
-                        const timer = setInterval(() => {
-                            if (window.innerHeight + Math.ceil(window.scrollY) >= document.body.offsetHeight || counter > SCROLL_DOWN_MAX) {
-                                clearInterval(timer);
-                                window.visualTestScrollingBottom = false;
-                                resolve();
-                                return;
-                            }
-                            if (lastScrollY >= Math.ceil(window.scrollY)) {
-                                counter++;
-                            } else {
-                                lastScrollY = Math.ceil(window.scrollY);
-                                counter = 0;
-                            }
-                            window.scrollBy(0, SCROLL_DISTANCE);
-                        }, 100);
-                    });
-                };
-
-                const scrollToTop = async () => {
-                    await new Promise((resolve) => {
-                        const timer = setInterval(() => {
-                            if (!window.visualTestScrollingBottom) {
-                                clearInterval(timer);
-                                resolve();
-                                return;
-                            }
-                        }, 100);
-                    });
-                    await new Promise((resolve) => {
-                        let counter = 0;
-                        const timer = setInterval(() => {
-                            if (window.scrollY === 0 || counter > SCROLL_TOP_MAX) {
-                                clearInterval(timer);
-                                resolve();
-                                return;
-                            }
-                            counter++;
-                            window.scrollTo(0, 0);
-                        }, 100);
-                    });
-                };
-
-                await scrollToBottom();
-                await scrollToTop();
-
-                // Wait for all images to be fully loaded or errored
-                const IMG_TIMEOUT = 30000;
-                const start = Date.now();
-                const images = Array.from(document.querySelectorAll('img'));
-                if (images.length > 0) {
-                    await Promise.all(images.map(img => {
-                        if (img.complete) return Promise.resolve();
-                        return new Promise((resolve) => {
-                            img.addEventListener('load', resolve, { once: true });
-                            img.addEventListener('error', resolve, { once: true });
-                            // Per-image timeout fallback
-                            const remaining = IMG_TIMEOUT - (Date.now() - start);
-                            if (remaining <= 0) { resolve(); return; }
-                            setTimeout(resolve, remaining);
-                        });
-                    }));
-                }
-            })()"#,
-        )
-        .await?;
+        trigger_lazy_loading(&page).await?;
         eprintln!(
-            "{} Lazy-load/scroll settled in {} ms.",
+            "{} Lazy-load scroll completed in {} ms.",
             log_prefix,
             scroll_start.elapsed().as_millis()
         );
     }
 
-    // Wait for the page to settle before capturing: fonts ready, then layout +
-    // DOM quiet for a short window. This prevents capturing while async content
-    // (lazy widgets, populated dropdowns, animations re-triggered by the scroll)
-    // is still rendering, which otherwise produces small non-deterministic diffs
-    // between runs. `settle_timeout_ms == 0` disables it.
+    if resolved.freeze_animations {
+        stabilize_capture_animations(&page, log_prefix).await?;
+    }
+
     if resolved.settle_timeout_ms > 0 {
-        let settle_start = std::time::Instant::now();
-        // Required quiet window: no DOM mutations and stable layout for this long.
-        let quiet_window_ms: u64 = 500;
-        let settle_js = format!(
-            r#"(async () => {{
-                const SETTLE_TIMEOUT = {settle_timeout};
-                const QUIET_WINDOW = {quiet_window};
-                const POLL = 100;
-                const start = Date.now();
-                const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-                // 1. Wait for web fonts to finish loading (bounded by timeout).
-                if (document.fonts && document.fonts.ready) {{
-                    try {{
-                        await Promise.race([
-                            document.fonts.ready,
-                            sleep(SETTLE_TIMEOUT),
-                        ]);
-                    }} catch (e) {{ /* ignore */ }}
-                }}
-
-                // 2. Track DOM mutations to detect a quiet window.
-                let lastMutation = Date.now();
-                const mo = new MutationObserver(() => {{ lastMutation = Date.now(); }});
-                mo.observe(document.documentElement, {{
-                    attributes: true, childList: true, subtree: true, characterData: true,
-                }});
-
-                const sig = () => {{
-                    const de = document.documentElement;
-                    const b = document.body || de;
-                    return de.scrollHeight + 'x' + b.scrollWidth + 'x' + b.scrollHeight;
-                }};
-
-                // 3. Wait until layout is stable AND no mutations for QUIET_WINDOW,
-                //    confirmed across two consecutive polls. The loop is driven by
-                //    setTimeout (not requestAnimationFrame): rAF callbacks never
-                //    fire when the renderer is throttled/occluded, which would hang
-                //    this promise forever. Timers always fire, so the loop is
-                //    guaranteed to terminate within SETTLE_TIMEOUT.
-                let lastSig = '';
-                let stableCount = 0;
-                let settled = false;
-                while (Date.now() - start < SETTLE_TIMEOUT) {{
-                    await sleep(POLL);
-                    const s = sig();
-                    const quiet = (Date.now() - lastMutation) >= QUIET_WINDOW;
-                    if (s === lastSig && quiet) {{
-                        stableCount++;
-                        if (stableCount >= 2) {{ settled = true; break; }}
-                    }} else {{
-                        stableCount = 0;
-                    }}
-                    lastSig = s;
-                }}
-
-                mo.disconnect();
-                return {{ settled, elapsed: Date.now() - start }};
-            }})()"#,
-            settle_timeout = resolved.settle_timeout_ms,
-            quiet_window = quiet_window_ms,
-        );
-
-        // Hard safety net: never let a stuck evaluate hang the scenario task (and
-        // therefore the whole `ref`/`test` run). Even though the JS is bounded by
-        // SETTLE_TIMEOUT, a stalled CDP connection or throttled renderer could
-        // prevent the promise from resolving, so cap the wait on the Rust side too.
-        let settle_budget =
-            std::time::Duration::from_millis(resolved.settle_timeout_ms.saturating_add(2_000));
-        match tokio::time::timeout(settle_budget, page.evaluate(settle_js.as_str())).await {
-            Ok(Ok(result)) => {
-                let settled = result
-                    .value()
-                    .and_then(|v| v.get("settled"))
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if settled {
-                    eprintln!(
-                        "{} Page settled in {} ms before capture.",
-                        log_prefix,
-                        settle_start.elapsed().as_millis()
-                    );
-                } else {
-                    eprintln!(
-                        "{} Page did not settle within {} ms; capturing anyway.",
-                        log_prefix, resolved.settle_timeout_ms
-                    );
-                }
-            }
-            Ok(Err(e)) => {
+        match wait_for_page_settle(
+            &page,
+            std::time::Duration::from_millis(resolved.settle_timeout_ms),
+        )
+        .await
+        {
+            Ok(result) if result.settled => {
                 eprintln!(
-                    "{} Settle wait failed ({e}); capturing without settle.",
+                    "{} Page settled in {} ms before capture.",
+                    log_prefix, result.elapsed_ms
+                );
+            }
+            Ok(result) => {
+                eprintln!(
+                    "{} Page did not settle within {} ms; capturing anyway.",
+                    log_prefix, result.elapsed_ms
+                );
+            }
+            Err(error) => {
+                eprintln!(
+                    "{} Settle wait failed ({error}); capturing without settle.",
                     log_prefix
                 );
             }
-            Err(_) => {
-                eprintln!(
-                    "{} Settle wait exceeded {} ms budget; capturing anyway.",
-                    log_prefix,
-                    settle_budget.as_millis()
-                );
-            }
         }
+    }
+
+    if resolved.freeze_animations {
+        // Resources that completed during settlement can start new animations.
+        stabilize_capture_animations(&page, log_prefix).await?;
     }
 
     eprintln!("{} Capturing final screenshot...", log_prefix);

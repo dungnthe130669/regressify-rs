@@ -89,6 +89,8 @@ goto
 Type: `string`.
 
 Go to specific URL.
+Regressify waits until the destination document is interactive before running the
+next action.
 
 Example:
 
