@@ -770,6 +770,45 @@ fn validate_unique_suite_output_ids(suites: &[(TestSuiteInput, Arc<TestSuite>)])
     Ok(())
 }
 
+fn validate_unique_capture_keys(
+    suite_name: &str,
+    capture_keys: impl IntoIterator<Item = (String, String)>,
+) -> Result<()> {
+    let mut owners_by_key = HashMap::new();
+    for (capture_key, owner) in capture_keys {
+        let normalized_key = capture_key.to_lowercase();
+        if let Some(previous_owner) = owners_by_key.insert(normalized_key, owner.clone()) {
+            anyhow::bail!(
+                "Test suite '{}' has colliding screenshot filename '{}' for scenarios '{}' and '{}'",
+                suite_name,
+                capture_key,
+                previous_owner,
+                owner
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_suite_capture_keys(
+    workspace_config: &config::WorkspaceConfig,
+    suites: &[(TestSuiteInput, Arc<TestSuite>)],
+) -> Result<()> {
+    for (input, suite) in suites {
+        let mut capture_keys = Vec::new();
+        for (index, scenario) in suite.scenarios.iter().enumerate() {
+            let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
+            for capture_key in
+                scenario_capture_order_keys(workspace_config, suite, scenario, &suite.scenarios)?
+            {
+                capture_keys.push((capture_key, scenario_name.clone()));
+            }
+        }
+        validate_unique_capture_keys(&input.name, capture_keys)?;
+    }
+    Ok(())
+}
+
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
@@ -793,6 +832,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_suite_capture_keys(&workspace_config, &parsed_suites)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
@@ -978,6 +1018,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_suite_capture_keys(&workspace_config, &parsed_suites)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
@@ -1514,6 +1555,35 @@ mod tests {
 
         std::fs::remove_dir_all(temp.path().join("alloy/bitmaps_test/ci-123")).unwrap();
         assert!(ensure_capture_run_directories_are_new(temp.path(), &parsed).is_ok());
+    }
+
+    #[test]
+    fn suite_capture_keys_reject_viewport_and_case_insensitive_collisions() {
+        let error = validate_unique_capture_keys(
+            "storefront",
+            vec![
+                (
+                    "home_mobile__FINAL".to_string(),
+                    "home at mobile".to_string(),
+                ),
+                (
+                    "home_mobile__FINAL".to_string(),
+                    "home_mobile default viewport".to_string(),
+                ),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("colliding screenshot filename"));
+
+        let error = validate_unique_capture_keys(
+            "storefront",
+            vec![
+                ("Home__FINAL".to_string(), "Home".to_string()),
+                ("home__final".to_string(), "home".to_string()),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("scenarios 'Home' and 'home'"));
     }
 
     #[test]

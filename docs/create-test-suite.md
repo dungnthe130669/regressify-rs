@@ -40,6 +40,10 @@ unique screenshot suffixes no longer than 48 bytes. Website failures during
 scenario execution are written to the reports instead of stopping sibling
 scenarios.
 
+Before capture, Regressify also resolves every scenario, viewport, saved step,
+and selector target to its actual screenshot filename. Any collision, including
+a collision that differs only by letter case, is a configuration error.
+
 Unknown workspace, suite, scenario, viewport, URL replacement, and action
 properties also fail parsing. Use the documented camelCase property names so a
 typo cannot silently change a capture.
