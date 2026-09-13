@@ -14,7 +14,7 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::{RefArgs, SnapshotArgs, TestArgs},
     common,
-    compare::report_gen::generate_comparison_report,
+    compare::report_gen::{generate_comparison_report, validate_capture_run_inventory},
     config::{self, replacements},
     helpers::{OnceLockExtensions, copy_file_atomically},
     snapshot,
@@ -1173,37 +1173,40 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             .as_deref()
             .ok_or_else(|| anyhow!("Test suite '{}' is missing a capture run ID", input.name))?;
         let latest_test_dir = current_capture_run_dir(&tests_dir, suite)?;
+        let screenshots = validate_capture_run_inventory(&latest_test_dir).map_err(|error| {
+            anyhow!(
+                "Failed to validate reference capture inventory for '{}': {}",
+                input.name,
+                error
+            )
+        })?;
         let ref_dest = suite_dir.join("bitmaps_reference");
         fs::create_dir_all(&ref_dest)?;
 
         let mut count = 0;
         let mut skipped_failed_count = 0;
-        for entry in fs::read_dir(&latest_test_dir)? {
-            let entry = entry?;
-            let file_name = entry.file_name().to_string_lossy().to_string();
-            if file_name.ends_with(".png") && !file_name.ends_with("_diff.png") {
-                let src = entry.path();
-                let marker_src = crate::test::capture::error_marker_path(&src);
-                if marker_src.exists() {
-                    skipped_failed_count += 1;
-                    eprintln!(
-                        "    {} Skipping failed capture: {}",
-                        "SKIP:".yellow(),
-                        file_name
-                    );
-                    continue;
-                }
-
-                let dst = ref_dest.join(&file_name);
-                copy_file_atomically(&src, &dst)?;
-
-                let marker_dst = crate::test::capture::error_marker_path(&dst);
-                if marker_dst.exists() {
-                    fs::remove_file(marker_dst)?;
-                }
-
-                count += 1;
+        for file_name in screenshots {
+            let src = latest_test_dir.join(&file_name);
+            let marker_src = crate::test::capture::error_marker_path(&src);
+            if marker_src.exists() {
+                skipped_failed_count += 1;
+                eprintln!(
+                    "    {} Skipping failed capture: {}",
+                    "SKIP:".yellow(),
+                    file_name
+                );
+                continue;
             }
+
+            let dst = ref_dest.join(&file_name);
+            copy_file_atomically(&src, &dst)?;
+
+            let marker_dst = crate::test::capture::error_marker_path(&dst);
+            if marker_dst.exists() {
+                fs::remove_file(marker_dst)?;
+            }
+
+            count += 1;
         }
 
         eprintln!(

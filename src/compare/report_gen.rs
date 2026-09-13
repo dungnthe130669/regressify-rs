@@ -271,6 +271,18 @@ fn validate_capture_inventory(
     );
 }
 
+/// Validate the exact screenshot inventory for a modern capture run. Legacy
+/// array manifests retain their historical order-only behavior.
+pub(crate) fn validate_capture_run_inventory(tests_dir: &Path) -> Result<Vec<String>> {
+    let screenshots = collect_capture_screenshots(tests_dir)?;
+    if let Some(report_order) = read_report_order(tests_dir)?
+        && report_order.is_complete_inventory
+    {
+        validate_capture_inventory(tests_dir, &report_order.captures, &screenshots)?;
+    }
+    Ok(screenshots)
+}
+
 pub fn select_capture_run(
     tests_dir: &Path,
     requested_run_id: Option<&str>,
@@ -387,7 +399,7 @@ pub fn generate_comparison_report(
 
     // Collect captured screenshots only. Diff images from an earlier report
     // regeneration share this directory and must not become test inputs.
-    let mut test_screenshots = collect_capture_screenshots(&tests_dir)?;
+    let mut test_screenshots = validate_capture_run_inventory(&tests_dir)?;
     // Order screenshots by the capture manifest (scenario order, then viewport
     // order) so the report mirrors the test suite + viewport file definitions
     // rather than alphabetical filename order. Any screenshot not present in the
@@ -406,9 +418,6 @@ pub fn generate_comparison_report(
             }
         }
     };
-    if report_order.is_complete_inventory {
-        validate_capture_inventory(&tests_dir, &report_order.captures, &test_screenshots)?;
-    }
     let order = report_order.captures;
     let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
     let mut order_index = HashMap::with_capacity(order.len() * 2);
@@ -641,12 +650,7 @@ pub fn approve_screenshots(suite_dir: &Path, requested_run_id: Option<&str>) -> 
 
     eprintln!("  Approving screenshots from run: {}", selected_run.cyan());
 
-    let screenshots = collect_capture_screenshots(&latest_test_dir)?;
-    if let Some(report_order) = read_report_order(&latest_test_dir)?
-        && report_order.is_complete_inventory
-    {
-        validate_capture_inventory(&latest_test_dir, &report_order.captures, &screenshots)?;
-    }
+    let screenshots = validate_capture_run_inventory(&latest_test_dir)?;
 
     create_dir_all(&reference_dir)?;
 
