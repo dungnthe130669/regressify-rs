@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
-use colored::*;
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 
 use crate::{
     cli::args::SnapshotArgs,
@@ -39,41 +39,17 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let index_bundle_content = include_str!("data/index_bundle.js");
     let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|e| e.file_name());
-
-    for entry in entries {
-        let path = entry.path().normalize()?;
-
-        if path.is_dir()
-            && let Some(dir_name) = path.file_name().and_then(|s| s.to_str())
+    for dir_name in snapshot_suite_directories(regressify_dir)? {
+        // Hash paths are relative to each suite's html_report directory;
+        // sharing them across suites can apply the wrong cache version.
+        let mut hashes = BTreeMap::new();
+        if let Some(summary) =
+            process_test_suite(regressify_dir, &dir_name, &mut hashes, &tera, &bundle_hash)
+                .map_err(|error| {
+                    anyhow::anyhow!("Failed to process snapshot suite '{}': {}", dir_name, error)
+                })?
         {
-            if dir_name
-                .chars()
-                .any(|c| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
-            {
-                eprintln!(
-                        "{}",
-                        format!("Skipping invalid test suite name: {}. Test suite names must be alphanumeric, underscores, or hyphens only.", dir_name).yellow()
-                    );
-                continue;
-            }
-
-            // Hash paths are relative to each suite's html_report directory;
-            // sharing them across suites can apply the wrong cache version.
-            let mut hashes = BTreeMap::new();
-            if let Some(summary) =
-                process_test_suite(regressify_dir, dir_name, &mut hashes, &tera, &bundle_hash)
-                    .map_err(|error| {
-                        anyhow::anyhow!(
-                            "Failed to process snapshot suite '{}': {}",
-                            dir_name,
-                            error
-                        )
-                    })?
-            {
-                summaries.push(summary);
-            }
+            summaries.push(summary);
         }
     }
 
@@ -88,4 +64,38 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     )?;
 
     Ok(())
+}
+
+/// List all UTF-8 output directories in stable order. Capture validation owns
+/// identifier policy; snapshot only needs to discover potential suite outputs.
+fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut directories = Vec::new();
+    for entry in entries {
+        let path = entry.path().normalize()?;
+        if path.is_dir()
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        {
+            directories.push(name.to_string());
+        }
+    }
+    Ok(directories)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_directory_discovery_accepts_portable_utf8_suite_ids() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("store.frontend")).unwrap();
+        std::fs::create_dir_all(temp.path().join("caf\u{00E9}")).unwrap();
+        std::fs::write(temp.path().join("not-a-suite.txt"), []).unwrap();
+
+        let directories = snapshot_suite_directories(temp.path()).unwrap();
+
+        assert_eq!(directories, vec!["caf\u{00E9}", "store.frontend"]);
+    }
 }
