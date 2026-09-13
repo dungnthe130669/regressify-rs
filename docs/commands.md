@@ -3,7 +3,7 @@ title: Regressify CLI Commands
 description: Command reference for the Rust Regressify CLI, including global flags, command behavior, output folders, and exit-code semantics.
 guid: 35858e8f-70fd-4c4d-a3cb-a0ba3c23210f
 date: 2026-06-11T00:00:00+00:00
-updated: 2026-06-11T00:00:00+00:00
+updated: 2026-09-13T00:00:00+00:00
 draft: false
 hidden: false
 weight: 15000
@@ -74,3 +74,18 @@ regressify test --test-suite alloy --replacement-profile staging
 ```
 
 Profile selection order is CLI `--replacement-profile`, then the `REPLACEMENT_PROFILE` environment variable, then `default`. The `test` command applies replacements to scenario URLs and action `wait.url` values. The `ref` command ignores replacements so references are captured from raw suite URLs.
+
+## Optimize
+
+`optimize` compresses PNGs only under the active Regressify output directory (`.regressify` or `.regressify__<site-env>`). It is lossless: it does not quantize colors, resize images, or remove color data, so decoded screenshot pixels remain unchanged.
+
+| Flag            | Purpose                                                        |
+| --------------- | -------------------------------------------------------------- |
+| `--speed`, `sp` | Compression speed from `1` (smallest files) to `10` (fastest). |
+| `--min-size-kb` | Skip files smaller than this many kilobytes. Defaults to `50`. |
+
+An unreadable PNG or failed file replacement makes `optimize` fail rather than silently leaving a partially processed output tree.
+
+## Scenario timeouts
+
+Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify records a failed-capture placeholder and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.

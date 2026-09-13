@@ -2,17 +2,9 @@ use anyhow::Result;
 
 #[derive(clap::Args)]
 pub struct OptimizeArgs {
-    /// Min quality for image optimization (0-100)
-    #[clap(long, visible_alias = "mq", default_value_t = 0, value_parser = quality_parser)]
-    pub min_quality: u8,
-
-    /// Max quality for image optimization (0-100)
-    #[clap(long, visible_alias = "Mq", default_value_t = 30, value_parser = quality_parser)]
-    pub max_quality: u8,
-
-    /// Speed for image optimization (1-10)
+    /// Compression speed (1 = smallest files, 10 = fastest)
     #[clap(long, visible_alias = "sp", default_value_t = 8, value_parser = speed_parser)]
-    pub speed: i32,
+    pub speed: u8,
 
     /// Minimum file size (in KB) to optimize
     #[clap(long, visible_alias = "mk", default_value_t = 50)]
@@ -90,25 +82,8 @@ pub struct ApproveArgs {
     pub test_suite: Vec<String>,
 }
 
-fn quality_parser(s: &str) -> Result<u8, String> {
+fn speed_parser(s: &str) -> Result<u8, String> {
     s.parse::<u8>()
-        .map_err(|_| {
-            format!(
-                "'{}' is not a valid number. Quality must be an integer between 0 and 100.",
-                s
-            )
-        })
-        .and_then(|value| {
-            if value <= 100 {
-                Ok(value)
-            } else {
-                Err(format!("Quality must be between 0 and 100, got {}", value))
-            }
-        })
-}
-
-fn speed_parser(s: &str) -> Result<i32, String> {
-    s.parse::<i32>()
         .map_err(|_| {
             format!(
                 "'{}' is not a valid number. Speed must be an integer between 1 and 10.",
@@ -122,4 +97,17 @@ fn speed_parser(s: &str) -> Result<i32, String> {
                 Err(format!("Speed must be between 1 and 10, got {}", value))
             }
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::speed_parser;
+
+    #[test]
+    fn optimization_speed_is_limited_to_supported_range() {
+        assert_eq!(speed_parser("1"), Ok(1));
+        assert_eq!(speed_parser("10"), Ok(10));
+        assert!(speed_parser("0").is_err());
+        assert!(speed_parser("11").is_err());
+    }
 }

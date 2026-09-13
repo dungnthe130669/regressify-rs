@@ -206,13 +206,38 @@ pub fn compare_images(
     let is_same_dimensions = ref_w == test_w && ref_h == test_h;
     let dimension_difference = (test_w as i64 - ref_w as i64, test_h as i64 - ref_h as i64);
 
+    // Decoding normalizes PNG encoding details such as palette layout and
+    // metadata. Most repeat captures reach this path, so avoid allocating and
+    // encoding a full-page diff image when their rendered pixels are identical.
+    if is_same_dimensions && ref_pixels == test_pixels {
+        return Ok((
+            CompareResult {
+                is_same_dimensions,
+                dimension_difference,
+                ref_width: ref_w,
+                ref_height: ref_h,
+                test_width: test_w,
+                test_height: test_h,
+                raw_mis_match_percentage: 0.0,
+                mis_match_percentage: "0.00".to_string(),
+                analysis_time_ms: start.elapsed().as_millis(),
+            },
+            None,
+        ));
+    }
+
     let max_delta = MAX_YIQ_DELTA * MATCH_THRESHOLD * MATCH_THRESHOLD;
 
     let out_w = ref_w.max(test_w);
     let out_h = ref_h.max(test_h);
-    let total_pixels = out_w * out_h;
+    let total_pixels = out_w
+        .checked_mul(out_h)
+        .ok_or_else(|| anyhow!("Image dimensions are too large to compare safely"))?;
+    let diff_capacity = total_pixels
+        .checked_mul(4)
+        .ok_or_else(|| anyhow!("Image dimensions are too large to build a diff safely"))?;
     let mut diff_count: u64 = 0;
-    let mut diff_pixels: Vec<u8> = Vec::with_capacity(total_pixels * 4);
+    let mut diff_pixels: Vec<u8> = Vec::with_capacity(diff_capacity);
 
     for y in 0..out_h {
         for x in 0..out_w {
@@ -257,7 +282,11 @@ pub fn compare_images(
     };
 
     let elapsed = start.elapsed().as_millis();
-    let diff_png = lodepng::encode32(&diff_pixels, out_w, out_h)?;
+    let diff_png = if diff_count == 0 {
+        None
+    } else {
+        Some(lodepng::encode32(&diff_pixels, out_w, out_h)?)
+    };
 
     Ok((
         CompareResult {
@@ -271,7 +300,7 @@ pub fn compare_images(
             mis_match_percentage: format!("{:.2}", raw_mis_match),
             analysis_time_ms: elapsed,
         },
-        Some(diff_png),
+        diff_png,
     ))
 }
 
@@ -295,6 +324,53 @@ mod tests {
         let (result, diff) = compare_images(&img_path, &img_path).unwrap();
         assert!(result.is_same_dimensions);
         assert_eq!(result.raw_mis_match_percentage, 0.0);
+        assert!(diff.is_none());
+    }
+
+    #[test]
+    fn test_compare_different_images_generates_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&[255_u8, 0, 0, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&[0_u8, 0, 255, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert!(result.is_same_dimensions);
+        assert_eq!(result.raw_mis_match_percentage, 100.0);
+        assert!(diff.is_some());
+    }
+
+    #[test]
+    fn test_compare_dimension_mismatch_generates_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&[10_u8, 20, 30, 255, 10, 20, 30, 255], 2, 1).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert!(!result.is_same_dimensions);
+        assert_eq!(result.dimension_difference, (1, 0));
+        assert_eq!(result.raw_mis_match_percentage, 50.0);
         assert!(diff.is_some());
     }
 }

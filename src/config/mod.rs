@@ -49,6 +49,9 @@ pub struct WorkspaceConfig {
     /// quiet) right before capturing the screenshot. `0` disables the settle
     /// wait. Default: 5000.
     pub settle_timeout: Option<u64>,
+    /// Max time in ms for one complete scenario/viewport capture. Default:
+    /// 600000 (ten minutes).
+    pub scenario_timeout: Option<u64>,
 }
 
 /// Fully resolved configuration — all cascade levels merged with defaults applied.
@@ -77,6 +80,7 @@ pub struct ResolvedConfig {
     pub element_timeout_ms: u64,
     pub actionability_timeout_ms: u64,
     pub settle_timeout_ms: u64,
+    pub scenario_timeout_ms: u64,
 }
 
 impl Default for ResolvedConfig {
@@ -105,6 +109,7 @@ impl Default for ResolvedConfig {
             element_timeout_ms: 30_000,
             actionability_timeout_ms: 5_000,
             settle_timeout_ms: 5_000,
+            scenario_timeout_ms: 600_000,
         }
     }
 }
@@ -297,6 +302,10 @@ pub fn resolve_config(
         settle_timeout_ms: workspace
             .settle_timeout
             .unwrap_or(defaults.settle_timeout_ms),
+
+        scenario_timeout_ms: workspace
+            .scenario_timeout
+            .unwrap_or(defaults.scenario_timeout_ms),
     }
 }
 
@@ -413,5 +422,18 @@ mod tests {
             }
             _ => panic!("expected merged state array"),
         }
+    }
+
+    #[test]
+    fn scenario_timeout_uses_workspace_value_or_default() {
+        let default = resolve_config(&WorkspaceConfig::default(), &suite(), &scenario());
+        assert_eq!(default.scenario_timeout_ms, 600_000);
+
+        let workspace = WorkspaceConfig {
+            scenario_timeout: Some(42_000),
+            ..Default::default()
+        };
+        let resolved = resolve_config(&workspace, &suite(), &scenario());
+        assert_eq!(resolved.scenario_timeout_ms, 42_000);
     }
 }

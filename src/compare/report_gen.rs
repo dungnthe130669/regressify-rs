@@ -91,6 +91,28 @@ fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
     order.iter().position(|p| p == prefix).unwrap_or(usize::MAX)
 }
 
+/// Generated diff images live beside captures, but are report artifacts rather
+/// than inputs to a later comparison.
+fn is_capture_screenshot(file_name: &str) -> bool {
+    file_name.ends_with(".png") && !file_name.ends_with("_diff.png")
+}
+
+fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
+    let mut screenshots = Vec::new();
+    for entry in fs::read_dir(tests_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if is_capture_screenshot(&file_name) {
+            screenshots.push(file_name);
+        }
+    }
+    Ok(screenshots)
+}
+
 /// Generate a comparison report for a test suite.
 ///
 /// Directory structure:
@@ -120,15 +142,9 @@ pub fn generate_comparison_report(
     create_dir_all(&bitmaps_test_dir)?;
     create_dir_all(&html_report_dir)?;
 
-    // Collect all PNG files from bitmaps_test/<date>/
-    let mut test_screenshots: Vec<String> = Vec::new();
-    for entry in fs::read_dir(&tests_dir)? {
-        let entry = entry?;
-        let file_name = entry.file_name().to_string_lossy().to_string();
-        if file_name.ends_with(".png") {
-            test_screenshots.push(file_name);
-        }
-    }
+    // Collect captured screenshots only. Diff images from an earlier report
+    // regeneration share this directory and must not become test inputs.
+    let mut test_screenshots = collect_capture_screenshots(&tests_dir)?;
     // Order screenshots by the capture manifest (scenario order, then viewport
     // order) so the report mirrors the test suite + viewport file definitions
     // rather than alphabetical filename order. Any screenshot not present in the
@@ -439,5 +455,41 @@ fn build_diff(result: &CompareResult) -> ReportDiff {
         raw_mis_match_percentage: result.raw_mis_match_percentage,
         mis_match_percentage: result.mis_match_percentage.clone(),
         analysis_time: result.analysis_time_ms,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    fn png_bytes(red: u8) -> Vec<u8> {
+        lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn regenerating_report_ignores_prior_diff_images() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let screenshot_name = "home__FINAL.png";
+        fs::write(reference_dir.join(screenshot_name), png_bytes(10)).unwrap();
+        fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
+
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        let tests = report["tests"].as_array().unwrap();
+
+        assert_eq!(tests.len(), 1);
+        assert_eq!(tests[0]["status"], "fail");
+        assert!(test_dir.join("home__FINAL_diff.png").exists());
     }
 }

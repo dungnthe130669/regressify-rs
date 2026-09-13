@@ -103,6 +103,33 @@ pub enum ScenarioOutcome {
     InfraFailed(anyhow::Error),
 }
 
+async fn wait_for_browser_handler(
+    handle: &mut tokio::task::JoinHandle<()>,
+    timeout: std::time::Duration,
+    log_prefix: &str,
+) -> bool {
+    match tokio::time::timeout(timeout, &mut *handle).await {
+        Ok(Ok(())) => {
+            eprintln!("{} Browser handler finished cleanly.", log_prefix);
+            true
+        }
+        Ok(Err(e)) => {
+            eprintln!("{} Error waiting for browser handler task: {e}", log_prefix);
+            false
+        }
+        Err(_) => {
+            eprintln!(
+                "{} Browser handler did not finish within {} ms; aborting.",
+                log_prefix,
+                timeout.as_millis()
+            );
+            handle.abort();
+            let _ = handle.await;
+            false
+        }
+    }
+}
+
 pub async fn exec_single_scenario(
     exe_path: &Option<PathBuf>,
     req: ScenarioRequest<'_>,
@@ -128,32 +155,39 @@ pub async fn exec_single_scenario(
     let scenario_result = exec_test_scenario(&browser, req).await;
 
     eprintln!("{} Closing browser...", log_prefix);
-    if let Err(e) = browser.close().await {
-        eprintln!("{} Failed to close browser gracefully: {e}", log_prefix);
-    }
+    let browser_closed =
+        match tokio::time::timeout(std::time::Duration::from_secs(10), browser.close()).await {
+            Ok(Ok(_)) => true,
+            Ok(Err(e)) => {
+                eprintln!("{} Failed to close browser gracefully: {e}", log_prefix);
+                false
+            }
+            Err(_) => {
+                eprintln!(
+                    "{} Browser close did not finish within 10000 ms.",
+                    log_prefix
+                );
+                false
+            }
+        };
 
     eprintln!("{} Waiting for handler to finish...", log_prefix);
     let mut handle = handle;
-    match tokio::time::timeout(std::time::Duration::from_secs(5), &mut handle).await {
-        Ok(Err(e)) => {
-            eprintln!("{} Error waiting for browser handler task: {e}", log_prefix);
-        }
-        Err(_) => {
-            eprintln!(
-                "{} Browser handler task did not finish within timeout, aborting.",
-                log_prefix
-            );
-            handle.abort();
-        }
-        Ok(Ok(())) => {
-            eprintln!("{} Browser handler finished cleanly.", log_prefix);
-        }
-    }
+    let handler_finished =
+        wait_for_browser_handler(&mut handle, std::time::Duration::from_secs(5), &log_prefix).await;
 
-    // Safety net: the handler task normally removes the per-launch user-data dir,
-    // but if it was aborted above that cleanup never ran. Remove it here so we
-    // don't leak a temp directory per scenario.
-    let _ = std::fs::remove_dir_all(&user_data_dir);
+    // The handler normally removes this directory. Only retry after either the
+    // browser or handler has confirmed shutdown; deleting it earlier can race a
+    // still-running Chromium process.
+    if browser_closed || handler_finished {
+        let _ = std::fs::remove_dir_all(&user_data_dir);
+    } else {
+        eprintln!(
+            "{} Keeping browser profile '{}' because shutdown was not confirmed.",
+            log_prefix,
+            user_data_dir.display()
+        );
+    }
 
     match scenario_result {
         Ok(()) => ScenarioOutcome::Passed,
@@ -208,5 +242,17 @@ mod tests {
 
         assert_eq!(suite.id.as_deref(), Some("alloy"));
         assert_eq!(suite.scenarios[0].url, "https://yml.example.com");
+    }
+
+    #[tokio::test]
+    async fn timed_out_handler_is_aborted_before_returning() {
+        let mut handle = tokio::spawn(std::future::pending::<()>());
+
+        let finished =
+            wait_for_browser_handler(&mut handle, std::time::Duration::from_millis(1), "[test]")
+                .await;
+
+        assert!(!finished);
+        assert!(handle.is_finished());
     }
 }

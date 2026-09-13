@@ -1,11 +1,11 @@
-use std::path::Path;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
-use lodepng::Image;
 use rayon::prelude::*;
-use rgb::Rgba;
 use walkdir::WalkDir;
 
 use crate::{
@@ -15,36 +15,25 @@ use crate::{
 };
 
 enum OptimizeResult {
-    Pair(usize, usize, u64, u64), // (width, height, original_size, optimized_size)
-    TooSmall(u64),                // original_size
-    TooLowQuality(usize, usize, u64), // (width, height, original_size)
-    AlreadyOptimized(usize, usize, u64), // (width, height, original_size)
+    Pair(u64, u64),        // (original_size, optimized_size)
+    TooSmall(u64),         // original_size
+    AlreadyOptimized(u64), // original_size
 }
 
 pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     eprintln!("Starting image optimization...");
-    let src_path = common::ROOT_DIR.get_required()?;
+    let output_dir = common::REGRESSIFY_DIR.get_required()?;
 
-    eprintln!("Searching for PNGs in: {:?}", src_path);
+    if !output_dir.exists() {
+        eprintln!(
+            "No Regressify output directory found: {}",
+            output_dir.display()
+        );
+        return Ok(());
+    }
 
-    let png_files: Vec<_> = WalkDir::new(src_path)
-        .into_iter()
-        .filter_map(|e| match e {
-            Ok(entry) => Some(entry),
-            Err(err) => {
-                eprintln!("Error scanning entry: {}", err);
-                None
-            }
-        })
-        .filter(|e| e.file_type().is_file())
-        .map(|e| e.path().to_owned())
-        .filter(|path| {
-            path.extension()
-                .and_then(|s| s.to_str())
-                .map(|s| s.eq_ignore_ascii_case("png"))
-                .unwrap_or(false)
-        })
-        .collect();
+    eprintln!("Searching for PNGs in: {}", output_dir.display());
+    let png_files = collect_png_files(output_dir)?;
 
     if png_files.is_empty() {
         eprintln!("No PNG files found.");
@@ -61,7 +50,6 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     let total_original_size = AtomicU64::new(0);
     let total_optimized_size = AtomicU64::new(0);
     let total_skipped_files = AtomicUsize::new(0);
-    let total_errors = AtomicUsize::new(0);
 
     let to_be_print_nth = match png_files.len() {
         n if n < 50 => 1,
@@ -71,131 +59,104 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
         _ => 20,
     };
     let nth_width = png_files.len().to_string().len();
-    png_files
-        .par_iter()
-        .try_for_each(|path| -> Result<()> {
-            let file_name = path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("unknown.png");
+    png_files.par_iter().try_for_each(|path| -> Result<()> {
+        let file_name = path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown.png");
 
-            let result = optimize_png(path, &args);
+        let result = optimize_png(path, &args);
 
-            let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            let should_print = idx.is_multiple_of(to_be_print_nth) || idx == total_files;
+        let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
+        let should_print = idx.is_multiple_of(to_be_print_nth) || idx == total_files;
 
-            match result {
-                Ok(OptimizeResult::Pair(width, height, original_size, optimized_size)) => {
-                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_optimized_size.fetch_add(optimized_size, Ordering::Relaxed);
+        match result {
+            Ok(OptimizeResult::Pair(original_size, optimized_size)) => {
+                total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                total_optimized_size.fetch_add(optimized_size, Ordering::Relaxed);
 
-                    if should_print {
-                        eprintln!(
-                            "{:>width$} of {}: {}: {} --> {} ({}x{})",
-                            idx,
-                            total_files,
-                            file_name,
-                            format_bytes(original_size).yellow(),
-                            format_bytes(optimized_size).green(),
-                            width,
-                            height,
-                            width = nth_width
-                        );
-                    }
+                if should_print {
+                    eprintln!(
+                        "{:>width$} of {}: {}: {} --> {}",
+                        idx,
+                        total_files,
+                        file_name,
+                        format_bytes(original_size).yellow(),
+                        format_bytes(optimized_size).green(),
+                        width = nth_width
+                    );
                 }
-                Ok(OptimizeResult::AlreadyOptimized(width, height, original_size)) => {
-                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(OptimizeResult::AlreadyOptimized(original_size)) => {
+                total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+                total_skipped_files.fetch_add(1, Ordering::Relaxed);
 
-                    if should_print {
-                        eprintln!(
-                            "{:>width$} of {}: {}: Already optimized: {} ({}x{}).",
-                            idx,
-                            total_files,
-                            file_name,
-                            format_bytes(original_size).yellow(),
-                            width,
-                            height,
-                            width = nth_width
-                        );
-                    }
+                if should_print {
+                    eprintln!(
+                        "{:>width$} of {}: {}: Already optimized: {}.",
+                        idx,
+                        total_files,
+                        file_name,
+                        format_bytes(original_size).yellow(),
+                        width = nth_width
+                    );
                 }
-                Ok(OptimizeResult::TooSmall(original_size)) => {
-                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+            }
+            Ok(OptimizeResult::TooSmall(original_size)) => {
+                total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+                total_skipped_files.fetch_add(1, Ordering::Relaxed);
 
-                    if should_print {
-                        eprintln!(
-                            "{:>width$} of {}: {}: {} ({}).",
-                            idx,
-                            total_files,
-                            file_name,
-                            "Too Small".cyan(),
-                            format_bytes(original_size),
-                            width = nth_width
-                        );
-                    }
+                if should_print {
+                    eprintln!(
+                        "{:>width$} of {}: {}: {} ({}).",
+                        idx,
+                        total_files,
+                        file_name,
+                        "Too Small".cyan(),
+                        format_bytes(original_size),
+                        width = nth_width
+                    );
                 }
-                Ok(OptimizeResult::TooLowQuality(width, height, original_size)) => {
-                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_skipped_files.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                let original_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-                    if should_print {
-                        eprintln!(
-                            "{:>width$} of {}: {}: {}: {} ({}x{}) - quality too low",
-                            idx,
-                            total_files,
-                            file_name,
-                            "Skipped".cyan(),
-                            format_bytes(original_size),
-                            width,
-                            height,
-                            width = nth_width
-                        );
-                    }
+                total_original_size.fetch_add(original_size, Ordering::Relaxed);
+                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
+
+                if should_print {
+                    eprintln!(
+                        "{:>width$} of {}: {}: {}: {}",
+                        idx,
+                        total_files,
+                        file_name,
+                        "Error".red(),
+                        e,
+                        width = nth_width
+                    );
                 }
-                Err(e) => {
-                    let original_size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
 
-                    total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                    total_errors.fetch_add(1, Ordering::Relaxed);
+                return Err(anyhow!("Failed to optimize '{}': {}", path.display(), e));
+            }
+        };
 
-                    if should_print {
-                        eprintln!(
-                            "{:>width$} of {}: {}: {}: {}",
-                            idx,
-                            total_files,
-                            file_name,
-                            "Error".red(),
-                            e,
-                            width = nth_width
-                        );
-                    }
-                }
-            };
-
-            Ok(())
-        })
-        .ok();
+        Ok(())
+    })?;
 
     // Report summary
     let final_original_size = total_original_size.load(Ordering::Relaxed);
     let final_optimized_size = total_optimized_size.load(Ordering::Relaxed);
     let final_skipped_files = total_skipped_files.load(Ordering::Relaxed);
-    let final_errors = total_errors.load(Ordering::Relaxed);
 
     eprintln!("\nOptimization Summary:");
     eprintln!("Total files processed: {}", total_files);
     eprintln!(
         "Total files optimized: {}",
-        total_files - final_skipped_files - final_errors
+        total_files - final_skipped_files
     );
     eprintln!("Total files skipped: {}", final_skipped_files);
-    eprintln!("Total errors: {}", final_errors);
     eprintln!(
         "Total original size: {}",
         format_bytes(final_original_size).yellow()
@@ -210,126 +171,174 @@ pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
     Ok(())
 }
 
+fn collect_png_files(output_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut png_files = Vec::new();
+    for entry in WalkDir::new(output_dir).into_iter() {
+        let entry = entry.with_context(|| {
+            format!(
+                "Failed to scan Regressify output directory '{}'",
+                output_dir.display()
+            )
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+
+        let path = entry.path();
+        let is_png = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("png"));
+        if is_png {
+            png_files.push(path.to_owned());
+        }
+    }
+    png_files.sort();
+    Ok(png_files)
+}
+
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
-    // 1. If the file siz is less than min file size, skip optimization
-    let metadata = std::fs::metadata(path)?;
+    let metadata = fs::metadata(path)?;
     let original_size = metadata.len();
-    if original_size < args.min_size_kb * 1024 {
+    if original_size < args.min_size_kb.saturating_mul(1024) {
         return Ok(OptimizeResult::TooSmall(original_size));
     }
 
-    // 2. Load the PNG file into an RGBA pixel buffer
-    let mut decoder = lodepng::Decoder::new();
-    let decoded = decoder.decode_file(path)?;
-    let image = match decoded {
-        Image::RGBA(img) => img,
-        _ => {
-            return Err(anyhow!(
-                "Only RGBA PNGs are supported in this sample. Current format: {:?}",
-                decoded
-            ));
-        }
-    };
+    let source =
+        fs::read(path).with_context(|| format!("Failed to read PNG '{}'", path.display()))?;
 
-    let width = image.width;
-    let height = image.height;
-    let resolution = width * height;
-
-    // Further reduction for large images
-    let quality_delta = match resolution {
-        n if n > 16_000_000 => 10, // > 16 megapixel
-        n if n > 8_000_000 => 7,   // > 8 megapixel
-        n if n > 4_000_000 => 5,   // > 4 megapixel
-        _ => 0,
-    };
-
-    // 3. Initialize imagequant library
-    let mut liq = imagequant::new();
-    liq.set_quality(
-        args.min_quality.saturating_sub(quality_delta),
-        args.max_quality.saturating_sub(quality_delta),
-    )?;
-    liq.set_speed(args.speed)?;
-    liq.set_min_posterization(4)?;
-    liq.set_max_colors(8)?;
-
-    // Create the imagequant image object
-    let mut liq_image = liq.new_image(image.buffer, image.width, image.height, 0.0)?;
-
-    // 4. Quantize the image
-    let mut res = match liq.quantize(&mut liq_image) {
-        Ok(res) => res,
-        Err(err) => {
-            if format!("{}", err).contains("QUALITY_TOO_LOW") {
-                return Ok(OptimizeResult::TooLowQuality(width, height, original_size));
-            }
-            return Err(err.into());
-        }
-    };
-
-    // 5. DISABLE DITHERING (Crucial for visual regression stability)
-    // 1.0 is default, 0.0 is no dithering.
-    res.set_dithering_level(0.0)?;
-
-    // 6. Get the result (palette and 8-bit pixels)
-    let (palette, pixels) = res.remapped(&mut liq_image)?;
-
-    // 7. Write the 8-bit PNG back to disk
-    let mut encoder = lodepng::Encoder::new();
-
-    // Configure encoder for Palette output
-    {
-        let info = encoder.info_png_mut();
-        info.color.colortype = lodepng::ColorType::PALETTE;
-        info.color.set_bitdepth(8);
-    }
-
-    // Configure input raw format (pixels are palette indices)
-    {
-        let info = encoder.info_raw_mut();
-        info.colortype = lodepng::ColorType::PALETTE;
-        info.set_bitdepth(8);
-    }
-
-    // Convert imagequant palette to lodepng palette
-    for color in palette {
-        let c = Rgba::new(color.r, color.g, color.b, color.a);
-        encoder.info_png_mut().color.palette_add(c)?;
-        encoder.info_raw_mut().palette_add(c)?;
-    }
-
-    // Generate PNG bytes in memory
-    let buffer = encoder.encode(&pixels, image.width, image.height)?;
-
-    // 8. Optimize with oxipng
-    // Level 6 is a good balance for compression/speed, but we want minimal size so we can go higher (max is 6 in oxipng API for "default" presets usually,
-    // or we can manually configure). `oxipng::Options::from_preset(6)` is robust.
-    // Calculate oxipng level based on speed arg. speed 1 = level 6 (slowest), speed 10 = level 0 (fastest)
+    // oxipng changes compression only. Do not quantize, resize, or strip color
+    // data: visual-regression artifacts must retain their decoded pixels.
     let oxipng_level = (10 - args.speed).clamp(0, 6) as u8;
-    let mut options = oxipng::Options::from_preset(oxipng_level);
-    options.strip = oxipng::StripChunks::All;
+    let options = oxipng::Options::from_preset(oxipng_level);
+    let optimized_buffer = oxipng::optimize_from_memory(&source, &options)
+        .with_context(|| format!("Failed to losslessly optimize PNG '{}'", path.display()))?;
 
-    let optimized_buffer = oxipng::optimize_from_memory(&buffer, &options)?;
-
-    // 9. Check file size reduction
     let optimized_size = optimized_buffer.len() as u64;
     if optimized_size >= original_size {
-        return Ok(OptimizeResult::AlreadyOptimized(
-            width,
-            height,
-            original_size,
-        )); // No size reduction, skip writing
+        return Ok(OptimizeResult::AlreadyOptimized(original_size));
     }
 
-    // 10. Write optimized PNG back to disk
-    // Overwrite the original file
-    std::fs::write(path, optimized_buffer)
-        .map_err(|e| anyhow!("Failed to write optimized PNG {}: {}", path.display(), e))?;
+    replace_file_atomically(path, &optimized_buffer)?;
 
-    Ok(OptimizeResult::Pair(
-        width,
-        height,
-        original_size,
-        optimized_size,
-    ))
+    Ok(OptimizeResult::Pair(original_size, optimized_size))
+}
+
+fn replace_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("PNG path '{}' has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("PNG path '{}' has no valid file name", path.display()))?;
+    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    let permissions = fs::metadata(path)?.permissions();
+
+    let write_result = (|| -> Result<()> {
+        let mut temporary_file = fs::File::create(&temporary_path).with_context(|| {
+            format!(
+                "Failed to create temporary optimized PNG '{}'",
+                temporary_path.display()
+            )
+        })?;
+        temporary_file.write_all(bytes).with_context(|| {
+            format!(
+                "Failed to write temporary optimized PNG '{}'",
+                temporary_path.display()
+            )
+        })?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        fs::set_permissions(&temporary_path, permissions)?;
+        fs::rename(&temporary_path, path).with_context(|| {
+            format!(
+                "Failed to replace PNG '{}' with its optimized version",
+                path.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn optimize_args(min_size_kb: u64) -> OptimizeArgs {
+        OptimizeArgs {
+            speed: 8,
+            min_size_kb,
+        }
+    }
+
+    fn decode_rgba(path: &Path) -> Vec<rgb::RGBA8> {
+        let mut decoder = lodepng::Decoder::new();
+        decoder.color_convert(true);
+        decoder.info_raw_mut().colortype = lodepng::ColorType::RGBA;
+        decoder.info_raw_mut().set_bitdepth(8);
+        match decoder.decode_file(path).unwrap() {
+            lodepng::Image::RGBA(image) => image.buffer.to_vec(),
+            image => panic!("expected RGBA image, got {image:?}"),
+        }
+    }
+
+    #[test]
+    fn lossless_optimization_preserves_decoded_pixels() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("capture.png");
+        let mut pixels = Vec::with_capacity(64 * 64 * 4);
+        for pixel_index in 0..(64 * 64) {
+            pixels.extend_from_slice(&[
+                (pixel_index % 251) as u8,
+                (pixel_index % 127) as u8,
+                (pixel_index % 61) as u8,
+                255,
+            ]);
+        }
+        fs::write(&path, lodepng::encode32(&pixels, 64, 64).unwrap()).unwrap();
+
+        let before = decode_rgba(&path);
+        optimize_png(&path, &optimize_args(0)).unwrap();
+        let after = decode_rgba(&path);
+
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn collect_png_files_is_sorted_and_ignores_other_files() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(temp.path().join("nested")).unwrap();
+        fs::write(temp.path().join("b.png"), []).unwrap();
+        fs::write(temp.path().join("nested/a.PNG"), []).unwrap();
+        fs::write(temp.path().join("not-a-capture.jpg"), []).unwrap();
+
+        let files = collect_png_files(temp.path()).unwrap();
+        let names: Vec<_> = files
+            .iter()
+            .map(|path| path.strip_prefix(temp.path()).unwrap().to_path_buf())
+            .collect();
+
+        assert_eq!(
+            names,
+            vec![PathBuf::from("b.png"), PathBuf::from("nested/a.PNG")]
+        );
+    }
+
+    #[test]
+    fn files_below_minimum_size_are_not_rewritten() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("small.png");
+        fs::write(&path, [1_u8, 2, 3]).unwrap();
+
+        let result = optimize_png(&path, &optimize_args(1)).unwrap();
+
+        assert!(matches!(result, OptimizeResult::TooSmall(3)));
+        assert_eq!(fs::read(path).unwrap(), [1_u8, 2, 3]);
+    }
 }

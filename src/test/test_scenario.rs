@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::Browser;
@@ -200,20 +203,17 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
         );
     }
 
-    run_scenario_capture(
-        browser,
-        CaptureContext {
-            test_suite,
-            scenario,
-            all_scenarios,
-            resolved: &resolved,
-            url: &url,
-            url_replacements: &url_replacements,
-            viewport,
-            log_prefix: &log_prefix,
-        },
-    )
-    .await
+    let capture_context = CaptureContext {
+        test_suite,
+        scenario,
+        all_scenarios,
+        resolved: &resolved,
+        url: &url,
+        url_replacements: &url_replacements,
+        viewport,
+        log_prefix: &log_prefix,
+    };
+    run_scenario_capture(browser, capture_context).await
 }
 
 /// Load and filter the viewports configured for this scenario.
@@ -259,7 +259,16 @@ async fn apply_viewport(
 /// is then propagated so the scenario is still recorded as failed.
 async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Result<()> {
     let viewport_label = ctx.viewport.map(|v| v.label.as_str());
-    match run_scenario_capture_inner(browser, ctx).await {
+    let label = ctx
+        .scenario
+        .label
+        .as_deref()
+        .or(ctx.scenario.id.as_deref())
+        .unwrap_or(&ctx.scenario.url);
+    let timeout = std::time::Duration::from_millis(ctx.resolved.scenario_timeout_ms);
+
+    match run_with_scenario_timeout(timeout, label, run_scenario_capture_inner(browser, ctx)).await
+    {
         Ok(()) => Ok(()),
         Err(e) => {
             if let Err(write_err) = write_error_screenshot(
@@ -282,6 +291,26 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
             }
             Err(e)
         }
+    }
+}
+
+/// Run an entire scenario lifecycle under a hard deadline so an unresponsive
+/// page or CDP operation cannot occupy a capture slot forever.
+async fn run_with_scenario_timeout<T, F>(
+    timeout: std::time::Duration,
+    label: &str,
+    operation: F,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    match tokio::time::timeout(timeout, operation).await {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "Scenario '{}' exceeded its {}ms timeout",
+            label,
+            timeout.as_millis()
+        )),
     }
 }
 
@@ -1070,4 +1099,26 @@ async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> R
     );
     page.evaluate(script).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn scenario_timeout_cancels_stalled_work() {
+        let result = run_with_scenario_timeout(
+            std::time::Duration::from_millis(1),
+            "stalled scenario",
+            std::future::pending::<Result<()>>(),
+        )
+        .await;
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("stalled scenario' exceeded its 1ms timeout")
+        );
+    }
 }
