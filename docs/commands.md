@@ -88,7 +88,7 @@ An unreadable PNG or failed file replacement makes `optimize` fail rather than s
 
 ## Scenario timeouts
 
-Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify records a failed-capture placeholder and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
+Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify preserves completed intermediate captures, records failed-capture placeholders for remaining expected targets, and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
 
 ## Capture stability
 

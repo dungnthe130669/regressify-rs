@@ -894,7 +894,7 @@ pub fn error_marker_path(png_path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Write error placeholders for every expected final capture target.
+/// Write error placeholders for every missing expected capture target.
 pub fn write_error_screenshots(
     test_suite: &TestSuite,
     scenario: &TestScenario,
@@ -917,13 +917,22 @@ pub fn write_error_screenshots(
         let path = screenshot_path(test_suite, scenario, screenshot_type, viewport_label).map_err(
             |error| artifact_write_error("Failed to create error screenshot output path", error),
         )?;
-        write_file_atomically(&error_marker_path(&path), &marker_json).map_err(|error| {
-            artifact_write_error("Failed to write screenshot error marker", error)
-        })?;
-        write_file_atomically(&path, error_icon_png())
-            .map_err(|error| artifact_write_error("Failed to write error screenshot", error))?;
+        write_error_screenshot_if_missing(&path, &marker_json)?;
     }
     Ok(())
+}
+
+/// Preserve a completed capture when a later action fails; otherwise create a
+/// marker-backed placeholder for the still-missing target.
+fn write_error_screenshot_if_missing(path: &Path, marker_json: &[u8]) -> Result<bool> {
+    if path.exists() {
+        return Ok(false);
+    }
+    write_file_atomically(&error_marker_path(path), marker_json)
+        .map_err(|error| artifact_write_error("Failed to write screenshot error marker", error))?;
+    write_file_atomically(path, error_icon_png())
+        .map_err(|error| artifact_write_error("Failed to write error screenshot", error))?;
+    Ok(true)
 }
 
 /// Read the error marker for a screenshot. Returns the recorded failure message
@@ -1037,6 +1046,40 @@ mod tests {
             read_error_marker(&png)
                 .unwrap()
                 .contains("Failed to parse capture error marker")
+        );
+    }
+
+    #[test]
+    fn error_placeholders_preserve_completed_screenshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let screenshot = temp.path().join("completed.png");
+        let marker_json = serde_json::to_vec(&ErrorMarker {
+            error: true,
+            message: "later action failed".to_string(),
+        })
+        .unwrap();
+        fs::write(&screenshot, b"completed screenshot").unwrap();
+
+        assert!(!write_error_screenshot_if_missing(&screenshot, &marker_json).unwrap());
+        assert_eq!(fs::read(&screenshot).unwrap(), b"completed screenshot");
+        assert!(!error_marker_path(&screenshot).exists());
+    }
+
+    #[test]
+    fn error_placeholders_mark_missing_screenshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let screenshot = temp.path().join("missing.png");
+        let marker_json = serde_json::to_vec(&ErrorMarker {
+            error: true,
+            message: "capture failed".to_string(),
+        })
+        .unwrap();
+
+        assert!(write_error_screenshot_if_missing(&screenshot, &marker_json).unwrap());
+        assert_eq!(fs::read(&screenshot).unwrap(), error_icon_png());
+        assert_eq!(
+            read_error_marker(&screenshot).as_deref(),
+            Some("capture failed")
         );
     }
 

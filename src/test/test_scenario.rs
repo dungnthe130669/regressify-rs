@@ -305,12 +305,13 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
         .or(ctx.scenario.id.as_deref())
         .unwrap_or(&ctx.scenario.url);
     let timeout = std::time::Duration::from_millis(ctx.resolved.scenario_timeout_ms);
-    let screenshot_types = final_screenshot_types(ctx.scenario)?;
+    let final_screenshot_types = final_screenshot_types(ctx.scenario)?;
+    let error_screenshot_types = scenario_screenshot_types(ctx.scenario, ctx.all_scenarios)?;
 
     match run_with_scenario_timeout(
         timeout,
         label,
-        run_scenario_capture_inner(browser, ctx, &screenshot_types),
+        run_scenario_capture_inner(browser, ctx, &final_screenshot_types),
     )
     .await
     {
@@ -319,7 +320,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
             if let Err(write_err) = write_error_screenshots(
                 ctx.test_suite,
                 ctx.scenario,
-                &screenshot_types,
+                &error_screenshot_types,
                 viewport_label,
                 &format!("{e:?}"),
             ) {
