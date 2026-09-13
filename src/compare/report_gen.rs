@@ -104,12 +104,24 @@ fn screenshot_prefix(file_name: &str) -> &str {
         .unwrap_or("")
 }
 
+fn screenshot_key(file_name: &str) -> &str {
+    file_name.strip_suffix(".png").unwrap_or(file_name)
+}
+
 /// Position of a screenshot in the ordering manifest, derived from its filename
 /// prefix (`<scenario-id>[_<viewport>]`, the part before `__<step|FINAL>`).
 /// Screenshots not listed in the manifest sort after all listed ones.
 fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
-    let prefix = screenshot_prefix(file_name);
-    order.iter().position(|p| p == prefix).unwrap_or(usize::MAX)
+    order
+        .iter()
+        .position(|key| key == screenshot_key(file_name))
+        // Older captures stored only the scenario/viewport prefix.
+        .or_else(|| {
+            order
+                .iter()
+                .position(|key| key == screenshot_prefix(file_name))
+        })
+        .unwrap_or(usize::MAX)
 }
 
 /// Generated diff images live beside captures, but are report artifacts rather
@@ -227,7 +239,8 @@ pub fn generate_comparison_report(
     for screenshot_name in test_screenshots {
         let test_path = tests_dir.join(&screenshot_name);
         let threshold = thresholds
-            .get(screenshot_prefix(&screenshot_name))
+            .get(screenshot_key(&screenshot_name))
+            .or_else(|| thresholds.get(screenshot_prefix(&screenshot_name)))
             .copied()
             .unwrap_or(mis_match_threshold);
 

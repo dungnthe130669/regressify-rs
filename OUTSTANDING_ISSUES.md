@@ -1,26 +1,8 @@
 # Outstanding Issues
 
-Issues identified during adversarial review that remain after the June 2026 high-priority fix pass.
+Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
-## 1. Scenario `selectors` Is Accepted But Not Implemented
-
-**Severity:** Medium  
-**File:** `src/types/regressify.rs`, `src/test/capture.rs`, `src/test/test_scenario.rs`
-
-**Problem:** `TestScenario` includes a `selectors` property, but screenshot capture always captures the full page. Users can accidentally configure `selectors` and receive full-page screenshots without a configuration error.
-
-**Fix options:** Implement element/viewport selector capture, or reject `selectors` during suite validation until selector capture is implemented.
-
-## 2. `asyncCompareLimit` Is Parsed But Not Used
-
-**Severity:** Low  
-**File:** `src/config/mod.rs`, `src/compare/report_gen.rs`
-
-**Problem:** Workspace/suite config supports `asyncCompareLimit`, but comparison currently runs through screenshots sequentially inside `generate_comparison_report`.
-
-**Fix options:** Parallelize image comparison with a bounded worker pool, or remove/deprecate the option.
-
-## 3. Wait URL Glob Matching Is Simplistic
+## 1. Wait URL Glob Matching Is Simplistic
 
 **Severity:** Low  
 **File:** `src/test/test_action.rs` (Wait action URL branch)
@@ -31,14 +13,14 @@ Issues identified during adversarial review that remain after the June 2026 high
 
 **Fix options:** Document the limitation only, or use a real glob matcher for URL patterns.
 
-## 4. Cross-Origin Iframe Errors Could Be Clearer
+## Resolved In September 2026 Hardening Pass
 
-**Severity:** Low  
-**File:** `src/test/actionability.rs`
-
-**Problem:** Frame traversal uses `contentDocument`, so cross-origin iframes fail as expected. The resulting JavaScript evaluation error can be less helpful than a direct message such as "cross-origin frame is not accessible".
-
-**Fix option:** Add explicit try/catch handling around frame traversal expressions and return a clearer error.
+- Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
+- `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.
+- Report regeneration ignores generated diffs and clears stale diff artifacts when a pair becomes a pass.
+- Screenshot output writes atomically, preserves color-management PNG chunks, and uses collision-resistant run IDs.
+- Capture waits for an interactive DOM, lazy-loaded resources, decoded fonts/images, and stable layout; capture-only animation freezing is configurable.
+- Interactive actions use full actionability validation, URL replacements apply to `goto`, and iframe waits/coordinates are hardened.
 
 ## Resolved In June 2026 Fix Pass
 

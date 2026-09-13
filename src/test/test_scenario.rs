@@ -10,9 +10,12 @@ use colored::Colorize;
 use crate::{
     common,
     config::{self, ResolvedConfig, WorkspaceConfig},
-    helpers::{OnceLockExtensions, slugify},
+    helpers::OnceLockExtensions,
     test::{
-        capture::{save_screenshot, state_path, validate_state_name, write_error_screenshot},
+        capture::{
+            final_screenshot_order_key, final_screenshot_types, save_screenshot,
+            screenshot_type_description, state_path, validate_state_name, write_error_screenshots,
+        },
         page_stability::{
             freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
         },
@@ -94,13 +97,10 @@ pub(crate) fn scenario_capture_viewports(
     }
 }
 
-/// Ordered screenshot name prefixes for a scenario — one `<scenario-id>_<viewport>`
-/// per resolved viewport (in viewport-file order), or a single bare
-/// `<scenario-id>` when no viewport file is configured. These mirror the filename
-/// prefixes produced by `capture` (the part before the `__<step|FINAL>` suffix)
-/// and feed the report ordering manifest so the comparison report lists
-/// screenshots in scenario-then-viewport order instead of alphabetically.
-pub(crate) fn scenario_capture_prefixes(
+/// Ordered final-capture keys for a scenario. Each configured viewport and
+/// selector target receives its own key, mirroring the screenshot filename
+/// without `.png` so reports remain in declaration order.
+pub(crate) fn scenario_capture_order_keys(
     workspace_config: &WorkspaceConfig,
     test_suite: &TestSuite,
     scenario: &TestScenario,
@@ -110,12 +110,20 @@ pub(crate) fn scenario_capture_prefixes(
     };
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
     let viewports = resolve_scenario_viewports(&resolved)?;
+    let screenshot_types = final_screenshot_types(scenario)?;
     if viewports.is_empty() {
-        Ok(vec![scenario_id.to_string()])
+        Ok(screenshot_types
+            .iter()
+            .map(|screenshot_type| final_screenshot_order_key(scenario_id, None, screenshot_type))
+            .collect())
     } else {
         Ok(viewports
             .iter()
-            .map(|vp| format!("{}_{}", scenario_id, slugify(&vp.label)))
+            .flat_map(|viewport| {
+                screenshot_types.iter().map(|screenshot_type| {
+                    final_screenshot_order_key(scenario_id, Some(&viewport.label), screenshot_type)
+                })
+            })
             .collect())
     }
 }
@@ -269,14 +277,21 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
         .or(ctx.scenario.id.as_deref())
         .unwrap_or(&ctx.scenario.url);
     let timeout = std::time::Duration::from_millis(ctx.resolved.scenario_timeout_ms);
+    let screenshot_types = final_screenshot_types(ctx.scenario)?;
 
-    match run_with_scenario_timeout(timeout, label, run_scenario_capture_inner(browser, ctx)).await
+    match run_with_scenario_timeout(
+        timeout,
+        label,
+        run_scenario_capture_inner(browser, ctx, &screenshot_types),
+    )
+    .await
     {
         Ok(()) => Ok(()),
         Err(e) => {
-            if let Err(write_err) = write_error_screenshot(
+            if let Err(write_err) = write_error_screenshots(
                 ctx.test_suite,
                 ctx.scenario,
+                &screenshot_types,
                 viewport_label,
                 &format!("{e:?}"),
             ) {
@@ -330,7 +345,11 @@ async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<(
 
 /// Inner capture routine: drives the full page lifecycle and saves the
 /// screenshot. Errors are handled by the `run_scenario_capture` wrapper.
-async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) -> Result<()> {
+async fn run_scenario_capture_inner(
+    browser: &Browser,
+    ctx: CaptureContext<'_>,
+    screenshot_types: &[ScreenshotType],
+) -> Result<()> {
     let CaptureContext {
         test_suite,
         scenario,
@@ -542,21 +561,28 @@ async fn run_scenario_capture_inner(browser: &Browser, ctx: CaptureContext<'_>) 
         stabilize_capture_animations(&page, log_prefix).await?;
     }
 
-    eprintln!("{} Capturing final screenshot...", log_prefix);
-    let capture_start = std::time::Instant::now();
-    save_screenshot(
-        test_suite,
-        scenario,
-        &page,
-        ScreenshotType::Final,
-        viewport_label,
-    )
-    .await?;
-    eprintln!(
-        "{} Screenshot captured in {} ms.",
-        log_prefix,
-        capture_start.elapsed().as_millis()
-    );
+    for screenshot_type in screenshot_types {
+        eprintln!(
+            "{} Capturing {} screenshot...",
+            log_prefix,
+            screenshot_type_description(screenshot_type)
+        );
+        let capture_start = std::time::Instant::now();
+        save_screenshot(
+            test_suite,
+            scenario,
+            &page,
+            screenshot_type.clone(),
+            viewport_label,
+        )
+        .await?;
+        eprintln!(
+            "{} {} screenshot captured in {} ms.",
+            log_prefix,
+            screenshot_type_description(screenshot_type),
+            capture_start.elapsed().as_millis()
+        );
+    }
 
     Ok(())
 }

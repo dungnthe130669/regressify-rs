@@ -42,8 +42,11 @@ scenarios:
     label: Descriptive name         # Used for display and ID generation
     id: custom-id                   # Optional explicit ID (auto-generated from label if omitted)
     delay: 1000                     # ms to wait before screenshot
-    # selectors is accepted by the type model but not implemented yet;
-    # the Rust CLI captures full-page screenshots.
+    # Capture named CSS targets instead of the full page. Each target creates
+    # its own screenshot; `viewport` captures the visible viewport.
+    selectors:
+      - viewport
+      - main .summary
     hideSelectors:                  # Override suite-level hideSelectors
       - '.dynamic-content'
     removeSelectors:                # Override suite-level removeSelectors

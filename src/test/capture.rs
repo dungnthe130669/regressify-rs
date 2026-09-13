@@ -1,7 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{
@@ -15,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common,
     helpers::{OnceLockExtensions, slugify, write_file_atomically},
-    types::{ScreenshotType, TestScenario, TestSuite},
+    snapshot::get_asset_version,
+    types::{ScreenshotType, Selectors, TestScenario, TestSuite},
 };
 
 /// Chunks retained by normalization. Color-management chunks affect rendered
@@ -23,6 +25,8 @@ use crate::{
 const PRESERVED_PNG_CHUNKS: [&[u8; 4]; 9] = [
     b"IHDR", b"PLTE", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"IDAT", b"IEND",
 ];
+const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
+const MAX_SELECTOR_SLUG_LEN: usize = 48;
 
 /// Strip non-essential metadata chunks from a PNG byte buffer so that
 /// identical pixel content always produces byte-identical files.
@@ -79,9 +83,94 @@ fn strip_png_metadata(png: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Resolve final capture targets for one scenario. Without `selectors`, a
+/// scenario continues to produce one full-page screenshot.
+pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotType>> {
+    let Some(selectors) = scenario.selectors.as_ref() else {
+        return Ok(vec![ScreenshotType::Final]);
+    };
+
+    let selectors: Vec<&str> = match selectors {
+        Selectors::String(selector) => vec![selector],
+        Selectors::StringArray(selectors) => selectors.iter().map(String::as_str).collect(),
+    };
+    if selectors.is_empty() {
+        anyhow::bail!("Scenario selectors must contain at least one capture target");
+    }
+
+    let mut captures = Vec::with_capacity(selectors.len());
+    let mut names = HashSet::with_capacity(selectors.len());
+    for selector in selectors {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            anyhow::bail!("Scenario selectors must not contain an empty value");
+        }
+        let capture = if selector == "viewport" {
+            ScreenshotType::Viewport
+        } else {
+            ScreenshotType::Selector(selector.to_string())
+        };
+        if !names.insert(screenshot_type_name(&capture)) {
+            anyhow::bail!(
+                "Scenario selectors contain duplicate capture target '{}'",
+                selector
+            );
+        }
+        captures.push(capture);
+    }
+    Ok(captures)
+}
+
+/// Return a manifest key matching a screenshot filename without its `.png`
+/// suffix. The key is stable across runs and selector declaration order.
+pub fn final_screenshot_order_key(
+    scenario_id: &str,
+    viewport_label: Option<&str>,
+    screenshot_type: &ScreenshotType,
+) -> String {
+    format!(
+        "{}{}__{}",
+        scenario_id,
+        viewport_label
+            .map(|label| format!("_{}", slugify(label)))
+            .unwrap_or_default(),
+        screenshot_type_name(screenshot_type)
+    )
+}
+
+/// Describe a target succinctly in capture logs and error messages.
+pub fn screenshot_type_description(screenshot_type: &ScreenshotType) -> String {
+    match screenshot_type {
+        ScreenshotType::Step(name) => format!("step '{}'", name),
+        ScreenshotType::Final => "full page".to_string(),
+        ScreenshotType::Viewport => "viewport".to_string(),
+        ScreenshotType::Selector(selector) => format!("selector '{}'", selector),
+    }
+}
+
+fn screenshot_type_name(screenshot_type: &ScreenshotType) -> String {
+    match screenshot_type {
+        ScreenshotType::Step(step) => format!("${step}"),
+        ScreenshotType::Final => "FINAL".to_string(),
+        ScreenshotType::Viewport => "VIEWPORT".to_string(),
+        ScreenshotType::Selector(selector) => selector_capture_name(selector),
+    }
+}
+
+fn selector_capture_name(selector: &str) -> String {
+    let slug = slugify(selector);
+    let readable = if slug.is_empty() {
+        "target"
+    } else {
+        &slug[..slug.len().min(MAX_SELECTOR_SLUG_LEN)]
+    };
+    let hash = get_asset_version(selector.as_bytes(), 8);
+    format!("SELECTOR-{readable}-{hash}")
+}
+
 /// Build the on-disk path for a scenario screenshot, creating the run directory.
 /// Shared by real captures and the error-placeholder writer so both land on the
-/// exact same filename (`<scenario-id>[_<viewport>]__<step|FINAL>.png`).
+/// exact same filename (`<scenario-id>[_<viewport>]__<target>.png`).
 fn screenshot_path(
     test_suite: &TestSuite,
     scenario: &TestScenario,
@@ -134,17 +223,10 @@ fn screenshot_path_in(
         .unwrap_or_default();
 
     Ok(test_suite_dir.join(format!(
-        "{}{}__{}{}.png",
+        "{}{}__{}.png",
         scenario_id,
         vp_suffix,
-        match screenshot_type {
-            ScreenshotType::Step(_) => "$",
-            ScreenshotType::Final => "",
-        },
-        match screenshot_type {
-            ScreenshotType::Step(step) => step.as_str(),
-            ScreenshotType::Final => "FINAL",
-        }
+        screenshot_type_name(screenshot_type)
     )))
 }
 
@@ -220,29 +302,52 @@ pub async fn save_screenshot(
 ) -> Result<()> {
     let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)?;
 
-    // Full-page capture, matching Playwright's deterministic screenshot path.
-    //
-    // We deliberately do NOT use chromiumoxide's `.full_page(true)` helper. That
-    // helper calls `Page.setDeviceMetricsOverride` to resize the emulated
-    // viewport to the full document height, which forces a relayout + repaint at
-    // a new size right before the capture. That post-resize repaint is timing
-    // sensitive and not deterministic — anti-aliased edges settle to slightly
-    // different sub-pixel values between runs (e.g. a single white vs. cream
-    // pixel). Because PNG/deflate re-aligns the entire stream on any pixel
-    // change, even one drifting pixel makes the whole file differ, so `ref`
-    // floods git with "changed" baselines on every run.
-    //
-    // Instead we replicate Playwright exactly: read the document size from
-    // `Page.getLayoutMetrics`, then capture with an explicit clip and
-    // `captureBeyondViewport: true`. Chromium renders the whole page in a single
-    // compositor pass WITHOUT resizing the viewport (no relayout), which is
-    // reproducible run-over-run. `fromSurface: true` reads from the compositor
-    // surface for further stability.
+    let png_bytes = capture_png(page, &screenshot_type).await?;
+    let clean_bytes = strip_png_metadata(&png_bytes)?;
+    write_file_atomically(&path, &clean_bytes)?;
+    let marker_path = error_marker_path(&path);
+    if marker_path.exists() {
+        fs::remove_file(marker_path)?;
+    }
+
+    Ok(())
+}
+
+async fn capture_png(page: &Page, screenshot_type: &ScreenshotType) -> Result<Vec<u8>> {
+    let params = match screenshot_type {
+        ScreenshotType::Step(_) | ScreenshotType::Final => full_page_params(page).await?,
+        ScreenshotType::Viewport => ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .from_surface(true)
+            .omit_background(false)
+            .build(),
+        ScreenshotType::Selector(selector) => ScreenshotParams::builder()
+            .format(CaptureScreenshotFormat::Png)
+            .clip(selector_capture_clip(page, selector).await?)
+            .capture_beyond_viewport(true)
+            .from_surface(true)
+            .omit_background(false)
+            .build(),
+    };
+
+    page.screenshot(params).await.map_err(|error| {
+        anyhow!(
+            "Failed to capture {} screenshot: {}",
+            screenshot_type_description(screenshot_type),
+            error
+        )
+    })
+}
+
+/// Build a full-page capture that avoids resizing the emulated viewport.
+/// Chromium captures the document in one compositor pass, preventing a
+/// timing-sensitive relayout immediately before the screenshot.
+async fn full_page_params(page: &Page) -> Result<ScreenshotParams> {
     let metrics = page.layout_metrics().await?;
     let width = metrics.css_content_size.width;
     let height = metrics.css_content_size.height;
 
-    let params = ScreenshotParams::builder()
+    Ok(ScreenshotParams::builder()
         .format(CaptureScreenshotFormat::Png)
         .clip(Viewport {
             x: 0.,
@@ -254,17 +359,105 @@ pub async fn save_screenshot(
         .capture_beyond_viewport(true)
         .from_surface(true)
         .omit_background(false)
-        .build();
+        .build())
+}
 
-    let png_bytes = page.screenshot(params).await?;
-    let clean_bytes = strip_png_metadata(&png_bytes)?;
-    write_file_atomically(&path, &clean_bytes)?;
-    let marker_path = error_marker_path(&path);
-    if marker_path.exists() {
-        fs::remove_file(marker_path)?;
+async fn selector_capture_clip(page: &Page, selector: &str) -> Result<Viewport> {
+    let script = selector_capture_script(selector)?;
+    let result = tokio::time::timeout(Duration::from_secs(5), page.evaluate(script))
+        .await
+        .map_err(|_| anyhow!("Timed out preparing selector '{}' for screenshot", selector))??;
+    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+
+    if value.get("ok").and_then(|field| field.as_bool()) != Some(true) {
+        let error = value
+            .get("error")
+            .and_then(|field| field.as_str())
+            .unwrap_or("unknown");
+        anyhow::bail!("Cannot capture selector '{}': {}", selector, error);
     }
 
-    Ok(())
+    let coordinate = |name: &str| -> Result<f64> {
+        let coordinate = value
+            .get(name)
+            .and_then(|field| field.as_f64())
+            .ok_or_else(|| {
+                anyhow!(
+                    "Selector '{}' returned no valid {} coordinate",
+                    selector,
+                    name
+                )
+            })?;
+        if !coordinate.is_finite() {
+            anyhow::bail!(
+                "Selector '{}' returned a non-finite {} coordinate",
+                selector,
+                name
+            );
+        }
+        Ok(coordinate)
+    };
+    let width = coordinate("width")?;
+    let height = coordinate("height")?;
+    if width <= 0.0 || height <= 0.0 {
+        anyhow::bail!("Selector '{}' has an empty capture rectangle", selector);
+    }
+
+    Ok(Viewport {
+        x: coordinate("x")?,
+        y: coordinate("y")?,
+        width,
+        height,
+        scale: 1.0,
+    })
+}
+
+fn selector_capture_script(selector: &str) -> Result<String> {
+    let selector = serde_json::to_string(selector)?
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
+    Ok(format!(
+        r#"(async () => {{
+            const selector = {selector};
+            const find = () => {{
+                try {{ return {{ element: document.querySelector(selector) }}; }}
+                catch (_) {{ return {{ error: 'invalid_selector' }}; }}
+            }};
+            const visibleReason = (element) => {{
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) return 'zero_size';
+                for (let current = element; current; current = current.parentElement) {{
+                    const view = current.ownerDocument.defaultView;
+                    if (!view) return 'no_window';
+                    const style = view.getComputedStyle(current);
+                    if (style.display === 'none') return 'display_none';
+                    if (style.visibility === 'hidden' || style.visibility === 'collapse')
+                        return 'visibility_hidden';
+                    if (parseFloat(style.opacity) === 0) return 'zero_opacity';
+                }}
+                return null;
+            }};
+            let found = find();
+            if (found.error) return found;
+            if (!found.element) return {{ error: 'not_found' }};
+            found.element.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+            await new Promise((resolve) => setTimeout(resolve, {settle_ms}));
+            found = find();
+            if (found.error) return found;
+            if (!found.element) return {{ error: 'detached' }};
+            const reason = visibleReason(found.element);
+            if (reason) return {{ error: reason }};
+            const rect = found.element.getBoundingClientRect();
+            return {{
+                ok: true,
+                x: window.scrollX + rect.left,
+                y: window.scrollY + rect.top,
+                width: rect.width,
+                height: rect.height,
+            }};
+        }})()"#,
+        settle_ms = SELECTOR_SCROLL_SETTLE.as_millis(),
+    ))
 }
 
 /// Deterministic error-placeholder PNG (a red warning triangle with an
@@ -366,25 +559,28 @@ pub fn error_marker_path(png_path: &Path) -> PathBuf {
     PathBuf::from(s)
 }
 
-/// Write the error placeholder image AND its JSON marker to the scenario's
-/// final screenshot path. Used when a scenario fails before producing a real
-/// screenshot, so the report has an image to show and the comparison can detect
-/// the failure via the marker flag instead of inspecting pixels.
-pub fn write_error_screenshot(
+/// Write error placeholders for every expected final capture target.
+pub fn write_error_screenshots(
     test_suite: &TestSuite,
     scenario: &TestScenario,
+    screenshot_types: &[ScreenshotType],
     viewport_label: Option<&str>,
     message: &str,
 ) -> Result<()> {
-    let path = screenshot_path(test_suite, scenario, &ScreenshotType::Final, viewport_label)?;
+    if screenshot_types.is_empty() {
+        anyhow::bail!("Cannot write an error screenshot without capture targets");
+    }
 
     let marker = ErrorMarker {
         error: true,
         message: message.to_string(),
     };
     let marker_json = serde_json::to_vec_pretty(&marker)?;
-    write_file_atomically(&error_marker_path(&path), &marker_json)?;
-    write_file_atomically(&path, error_icon_png())?;
+    for screenshot_type in screenshot_types {
+        let path = screenshot_path(test_suite, scenario, screenshot_type, viewport_label)?;
+        write_file_atomically(&error_marker_path(&path), &marker_json)?;
+        write_file_atomically(&path, error_icon_png())?;
+    }
     Ok(())
 }
 
@@ -532,6 +728,77 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("Invalid PNG IEND")
+        );
+    }
+
+    #[test]
+    fn final_capture_targets_default_to_full_page_and_validate_selectors() {
+        let mut scenario = test_scenario();
+        assert_eq!(
+            final_screenshot_types(&scenario).unwrap(),
+            vec![ScreenshotType::Final]
+        );
+
+        scenario.selectors = Some(Selectors::StringArray(vec![
+            "viewport".to_string(),
+            "main .hero".to_string(),
+        ]));
+        assert_eq!(
+            final_screenshot_types(&scenario).unwrap(),
+            vec![
+                ScreenshotType::Viewport,
+                ScreenshotType::Selector("main .hero".to_string()),
+            ]
+        );
+
+        scenario.selectors = Some(Selectors::StringArray(vec![" ".to_string()]));
+        assert!(
+            final_screenshot_types(&scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("empty value")
+        );
+    }
+
+    #[test]
+    fn selector_capture_names_are_readable_and_collision_resistant() {
+        let first = screenshot_type_name(&ScreenshotType::Selector("#checkout".to_string()));
+        let second = screenshot_type_name(&ScreenshotType::Selector(".checkout".to_string()));
+
+        assert!(first.starts_with("SELECTOR-checkout-"));
+        assert!(second.starts_with("SELECTOR-checkout-"));
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn final_capture_order_key_includes_the_target_name() {
+        assert_eq!(
+            final_screenshot_order_key("home", Some("Mobile Device"), &ScreenshotType::Viewport,),
+            "home_mobile-device__VIEWPORT"
+        );
+    }
+
+    #[test]
+    fn selector_capture_script_is_valid_javascript_when_node_is_available() {
+        use std::process::Command;
+
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("selector-capture.js");
+        fs::write(&script_path, selector_capture_script("main .hero").unwrap()).unwrap();
+        let output = Command::new("node")
+            .arg("--check")
+            .arg(&script_path)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }

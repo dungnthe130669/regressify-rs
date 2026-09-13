@@ -115,8 +115,8 @@ pub struct TestScenario {
 
     pub restore: Option<Needs>,
 
-    /// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
-    /// the viewport size.
+    /// CSS selectors to capture instead of the full page. Use "viewport" for
+    /// the visible viewport; each selector produces an independent screenshot.
     pub selectors: Option<Selectors>,
 
     pub url: String,
@@ -126,8 +126,8 @@ pub struct TestScenario {
     pub viewport_names: Option<Selectors>,
 }
 
-/// Array of selectors to capture. Defaults to document if omitted. Use "viewport" to capture
-/// the viewport size.
+/// One or more CSS selectors to capture. Use "viewport" for the visible
+/// viewport; omit the property for the full page.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum Selectors {

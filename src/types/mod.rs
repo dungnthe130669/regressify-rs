@@ -41,7 +41,10 @@ pub struct HtmlReportSummary {
     pub failed_class: Option<&'static str>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ScreenshotType {
     Step(String),
     Final,
+    Viewport,
+    Selector(String),
 }

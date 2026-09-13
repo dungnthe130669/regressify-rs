@@ -21,7 +21,8 @@ use crate::{
         browsers::fetcher,
         capture,
         test_scenario::{
-            ScenarioRequest, make_log_prefix, scenario_capture_prefixes, scenario_capture_viewports,
+            ScenarioRequest, make_log_prefix, scenario_capture_order_keys,
+            scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
@@ -344,6 +345,15 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
             &format!("test suite '{}' urlReplacements", input.name),
         )?;
     }
+    for (index, scenario) in suite.scenarios.iter().enumerate() {
+        capture::final_screenshot_types(scenario).map_err(|error| {
+            anyhow!(
+                "Invalid selectors for scenario '{}': {}",
+                scenario_identifier(scenario, &format!("<scenario:{}>", index + 1)),
+                error
+            )
+        })?;
+    }
     validate_scenario_dependencies(input, suite)?;
     Ok(())
 }
@@ -520,12 +530,13 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         let mut order: Vec<String> = Vec::new();
         let mut thresholds: Vec<(String, f64)> = Vec::new();
         for scenario in &suite.scenarios {
-            let prefixes = scenario_capture_prefixes(workspace_config.as_ref(), suite, scenario)?;
+            let order_keys =
+                scenario_capture_order_keys(workspace_config.as_ref(), suite, scenario)?;
             let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
-            for prefix in &prefixes {
-                thresholds.push((prefix.clone(), resolved.mis_match_threshold));
+            for order_key in &order_keys {
+                thresholds.push((order_key.clone(), resolved.mis_match_threshold));
             }
-            order.extend(prefixes);
+            order.extend(order_keys);
         }
         capture::write_report_order(suite, &order).map_err(|e| {
             anyhow!(
@@ -692,12 +703,13 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         let mut order: Vec<String> = Vec::new();
         let mut thresholds: Vec<(String, f64)> = Vec::new();
         for scenario in &suite.scenarios {
-            let prefixes = scenario_capture_prefixes(workspace_config.as_ref(), suite, scenario)?;
+            let order_keys =
+                scenario_capture_order_keys(workspace_config.as_ref(), suite, scenario)?;
             let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
-            for prefix in &prefixes {
-                thresholds.push((prefix.clone(), resolved.mis_match_threshold));
+            for order_key in &order_keys {
+                thresholds.push((order_key.clone(), resolved.mis_match_threshold));
             }
-            order.extend(prefixes);
+            order.extend(order_keys);
         }
         capture::write_report_order(suite, &order).map_err(|e| {
             anyhow!(
@@ -1048,5 +1060,20 @@ mod tests {
                 .to_string()
                 .contains("asyncCompareLimit")
         );
+    }
+
+    #[test]
+    fn rejects_empty_selector_capture_lists_before_browser_launch() {
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.scenarios[0].selectors = Some(crate::types::Selectors::StringArray(Vec::new()));
+
+        let error = validate_test_suite_config(&input(), &suite).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid selectors for scenario 'home'")
+        );
+        assert!(error.to_string().contains("at least one capture target"));
     }
 }

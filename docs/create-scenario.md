@@ -3,7 +3,7 @@ title: Create a Test Scenario
 description: Learn how to define Regressify test scenarios, set target URLs, add actions, and tune per-scenario options for reliable runs.
 guid: 620b9098-627b-4db5-bb0b-cd43b9949e35
 date: 2023-06-29T17:00:00+00:00
-updated: 2026-04-17T17:00:00+00:00
+updated: 2026-09-13T00:00:00+00:00
 draft: false
 hidden: false
 weight: 30000
@@ -381,13 +381,29 @@ scenarios:
 
 {% end %}
 
-{% spoiler(danger=true) %}
+{% spoiler() %}
 
-selectors - *not implemented in the Rust CLI*
+selectors
 
 :::::
 
-The type model accepts `selectors` for compatibility, but the Rust CLI currently captures the full page only. Use separate scenarios, CSS overrides, or hide/remove actions when you need a narrower visual target.
+Type: `string | string[]`.
+
+Capture one or more CSS selectors instead of the full page. Each target writes a
+separate screenshot. Use the special value `viewport` to capture the currently
+visible viewport. Omit `selectors` to retain the default full-page capture.
+
+Targets are captured in declaration order, must be non-empty and unique, and
+must resolve to a visible element when captured.
+
+```yaml
+scenarios:
+  - url: https://www.domain.com/dashboard
+    selectors:
+      - viewport
+      - main .summary
+      - '#activity-feed'
+```
 
 {% end %}
 
