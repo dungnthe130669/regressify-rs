@@ -1,9 +1,10 @@
-use std::path::Path;
+use std::{path::Path, time::Duration};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 use regex::Regex;
+use serde::de::DeserializeOwned;
 
 use crate::{
     common::ROOT_DIR,
@@ -63,6 +64,41 @@ fn actionability_config(config: &ResolvedConfig) -> ActionabilityConfig {
         actionability_timeout_ms: config.actionability_timeout_ms,
         ..Default::default()
     }
+}
+
+fn action_timeout(config: &ActionabilityConfig) -> Duration {
+    Duration::from_millis(config.actionability_timeout_ms)
+}
+
+async fn evaluate_action<T>(
+    page: &Page,
+    script: impl Into<chromiumoxide::js::Evaluation>,
+    config: &ActionabilityConfig,
+    operation: &str,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let result =
+        actionability::cdp_with_timeout(action_timeout(config), operation, page.evaluate(script))
+            .await?;
+    result
+        .into_value()
+        .map_err(|error| anyhow!("{} returned invalid data: {}", operation, error))
+}
+
+async fn execute_action<T>(
+    page: &Page,
+    command: T,
+    config: &ActionabilityConfig,
+    operation: &str,
+) -> Result<()>
+where
+    T: chromiumoxide::Command,
+{
+    actionability::cdp_with_timeout(action_timeout(config), operation, page.execute(command))
+        .await?;
+    Ok(())
 }
 
 /// Map a W3C `KeyboardEvent.key` value to the corresponding `code` value.
@@ -242,7 +278,11 @@ fn parse_text_input_target(value: &serde_json::Value) -> Result<TextInputTarget>
     }
 }
 
-async fn dispatch_key_stroke(page: &Page, keystroke: &KeyStroke) -> Result<()> {
+async fn dispatch_key_stroke(
+    page: &Page,
+    keystroke: &KeyStroke,
+    config: &ActionabilityConfig,
+) -> Result<()> {
     use chromiumoxide::cdp::browser_protocol::input::{
         DispatchKeyEventParams, DispatchKeyEventType,
     };
@@ -265,7 +305,7 @@ async fn dispatch_key_stroke(page: &Page, keystroke: &KeyStroke) -> Result<()> {
     let down = down
         .build()
         .map_err(|error| anyhow!("Failed to build key down event: {:?}", error))?;
-    page.execute(down).await?;
+    execute_action(page, down, config, "dispatching key down").await?;
 
     let mut up = DispatchKeyEventParams::builder()
         .r#type(DispatchKeyEventType::KeyUp)
@@ -282,7 +322,7 @@ async fn dispatch_key_stroke(page: &Page, keystroke: &KeyStroke) -> Result<()> {
     let up = up
         .build()
         .map_err(|error| anyhow!("Failed to build key up event: {:?}", error))?;
-    page.execute(up).await?;
+    execute_action(page, up, config, "dispatching key up").await?;
 
     Ok(())
 }
@@ -326,21 +366,16 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 doc = doc,
                 sel = sel_escaped
             );
-            let el_type: String = page
-                .evaluate(type_script)
-                .await?
-                .into_value()
-                .unwrap_or_default();
+            let el_type: String =
+                evaluate_action(page, type_script, &ac, "reading checkable control type").await?;
             let checked_script = format!(
                 "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
                 doc = doc,
                 sel = sel_escaped
             );
-            let is_checked: bool = page
-                .evaluate(checked_script)
-                .await?
-                .into_value()
-                .unwrap_or(false);
+            let is_checked: bool =
+                evaluate_action(page, checked_script, &ac, "reading checkable control state")
+                    .await?;
 
             if checkable_click_required("check", &el_type, is_checked)? {
                 let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
@@ -382,13 +417,19 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 doc = doc,
                 sel = sel_escaped
             );
-            page.evaluate(script).await?;
+            let _: serde_json::Value =
+                evaluate_action(page, script, &ac, "focusing the requested element").await?;
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
             let target_url = apply_action_url_replacements(goto, url_replacements);
             eprintln!("{} Navigating to URL: {}", log_prefix, target_url);
-            page.goto(target_url.as_str()).await?;
+            actionability::cdp_with_timeout(
+                Duration::from_millis(ac.element_timeout_ms),
+                "navigating to action URL",
+                page.goto(target_url.as_str()),
+            )
+            .await?;
             wait_for_dom_ready(
                 page,
                 std::time::Duration::from_millis(config.element_timeout_ms),
@@ -418,7 +459,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     doc = doc,
                     sel = css_escaped
                 );
-                page.evaluate(script).await?;
+                let _: serde_json::Value =
+                    evaluate_action(page, script, &ac, "hiding the requested element").await?;
             } else {
                 let script = format!(
                     "(() => {{
@@ -429,7 +471,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     }})()",
                     sel = css_escaped
                 );
-                page.evaluate(script.as_str()).await?;
+                let _: serde_json::Value =
+                    evaluate_action(page, script, &ac, "hiding the requested element").await?;
             }
         }
 
@@ -490,11 +533,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     doc = doc,
                     sel = sel_escaped
                 );
-                let target_value: serde_json::Value = page
-                    .evaluate(target_script)
-                    .await?
-                    .into_value()
-                    .unwrap_or(serde_json::Value::Null);
+                let target_value: serde_json::Value =
+                    evaluate_action(page, target_script, &ac, "validating text input target")
+                        .await?;
                 let target = parse_text_input_target(&target_value)?;
 
                 if frame.is_none() {
@@ -505,7 +546,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         doc = doc,
                         sel = sel_escaped
                     );
-                    page.evaluate(focus_script).await?;
+                    let _: serde_json::Value =
+                        evaluate_action(page, focus_script, &ac, "focusing text input target")
+                            .await?;
 
                     if !append_mode {
                         let select_all = if cfg!(target_os = "macos") {
@@ -513,8 +556,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         } else {
                             parse_press_key("Ctrl+A")?
                         };
-                        dispatch_key_stroke(page, &select_all).await?;
-                        dispatch_key_stroke(page, &parse_press_key("Backspace")?).await?;
+                        dispatch_key_stroke(page, &select_all, &ac).await?;
+                        dispatch_key_stroke(page, &parse_press_key("Backspace")?, &ac).await?;
                     }
 
                     use chromiumoxide::cdp::browser_protocol::input::InsertTextParams;
@@ -523,7 +566,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                             .text(value.clone())
                             .build()
                             .map_err(|error| anyhow!("Failed to build insert text: {:?}", error))?;
-                        page.execute(insert).await?;
+                        execute_action(page, insert, &ac, "inserting input text").await?;
                     }
 
                     if matches!(target, TextInputTarget::Native) {
@@ -534,7 +577,13 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                             doc = doc,
                             sel = sel_escaped
                         );
-                        page.evaluate(change_script).await?;
+                        let _: serde_json::Value = evaluate_action(
+                            page,
+                            change_script,
+                            &ac,
+                            "dispatching input change event",
+                        )
+                        .await?;
                     }
                 } else {
                     // CDP text targeting inside a frame is unreliable. Mutate via
@@ -592,11 +641,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         value = value_json,
                         append = append_mode
                     );
-                    let result: serde_json::Value = page
-                        .evaluate(script)
-                        .await?
-                        .into_value()
-                        .unwrap_or(serde_json::Value::Null);
+                    let result: serde_json::Value =
+                        evaluate_action(page, script, &ac, "updating text input inside iframe")
+                            .await?;
                     if result.get("ok").and_then(|field| field.as_bool()) != Some(true) {
                         let error = result
                             .get("error")
@@ -626,11 +673,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     "(() => {{ var el = document.querySelector('{sel}'); return el ? el.type : ''; }})()",
                     sel = sel_escaped
                 );
-                let input_type: String = page
-                    .evaluate(type_script)
-                    .await?
-                    .into_value()
-                    .unwrap_or_default();
+                let input_type: String =
+                    evaluate_action(page, type_script, &ac, "reading file input type").await?;
                 if input_type != "file" {
                     anyhow::bail!(
                         "input file upload requires an <input type='file'> element, got type='{}'",
@@ -638,7 +682,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     );
                 }
 
-                let element = page.find_element(input).await?;
+                let element = actionability::cdp_with_timeout(
+                    action_timeout(&ac),
+                    "resolving file input element",
+                    page.find_element(input),
+                )
+                .await?;
 
                 if use_file_chooser.unwrap_or(false) {
                     use chromiumoxide::cdp::browser_protocol::page::SetInterceptFileChooserDialogParams;
@@ -655,7 +704,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         .map_err(|e| {
                             anyhow!("Failed to disable file chooser intercept: {:?}", e)
                         })?;
-                    page.execute(enable).await?;
+                    execute_action(page, enable, &ac, "enabling file chooser interception").await?;
 
                     let click_result = async {
                         cdp_click(page, info.center_x, info.center_y, &ac).await?;
@@ -663,7 +712,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         Ok::<(), anyhow::Error>(())
                     }
                     .await;
-                    let disable_result = page.execute(disable).await;
+                    let disable_result =
+                        execute_action(page, disable, &ac, "disabling file chooser interception")
+                            .await;
                     click_result?;
                     disable_result?;
                 }
@@ -673,7 +724,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     .node_id(element.node_id)
                     .build()
                     .map_err(|e| anyhow!("Failed to build SetFileInputFilesParams: {}", e))?;
-                page.execute(cmd).await?;
+                execute_action(page, cmd, &ac, "setting file input contents").await?;
             } else {
                 anyhow::bail!("`input` action must have either `value` or `file`");
             }
@@ -684,16 +735,22 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             eprintln!("{} Persisting state: {}", log_prefix, persist);
 
             // Collect cookies
-            let cookies = page.get_cookies().await?;
+            let cookies = actionability::cdp_with_timeout(
+                action_timeout(&ac),
+                "reading browser cookies for persisted state",
+                page.get_cookies(),
+            )
+            .await?;
             let cookies_json = serde_json::to_value(&cookies)?;
 
             // Collect localStorage
-            let local_storage_result = page
-                .evaluate("JSON.stringify(Object.fromEntries(Object.entries(localStorage)))")
-                .await?;
-            let local_storage_str = local_storage_result
-                .into_value::<String>()
-                .unwrap_or_default();
+            let local_storage_str: String = evaluate_action(
+                page,
+                "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))",
+                &ac,
+                "reading localStorage for persisted state",
+            )
+            .await?;
             let local_storage: serde_json::Value = serde_json::from_str(&local_storage_str)
                 .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
@@ -737,10 +794,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 doc = doc,
                 sel = sel_escaped
             );
-            page.evaluate(focus_script).await?;
+            let _: serde_json::Value =
+                evaluate_action(page, focus_script, &ac, "focusing key press target").await?;
 
             let keystroke = parse_press_key(key)?;
-            dispatch_key_stroke(page, &keystroke).await?;
+            dispatch_key_stroke(page, &keystroke, &ac).await?;
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
@@ -764,7 +822,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     doc = doc,
                     sel = css_escaped
                 );
-                page.evaluate(script).await?;
+                let _: serde_json::Value =
+                    evaluate_action(page, script, &ac, "removing the requested element").await?;
             } else {
                 let script = format!(
                     "(() => {{
@@ -775,7 +834,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     }})()",
                     sel = css_escaped
                 );
-                page.evaluate(script.as_str()).await?;
+                let _: serde_json::Value =
+                    evaluate_action(page, script, &ac, "removing the requested element").await?;
             }
         }
 
@@ -834,11 +894,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 doc = doc,
                 sel = sel_escaped
             );
-            let tag_name: String = page
-                .evaluate(tag_script)
-                .await?
-                .into_value()
-                .unwrap_or_default();
+            let tag_name: String =
+                evaluate_action(page, tag_script, &ac, "reading select element tag").await?;
             if tag_name.to_uppercase() != "SELECT" {
                 anyhow::bail!(
                     "select action requires a <select> element, got <{}>",
@@ -888,11 +945,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     sel = sel_escaped,
                     values = values_json
                 );
-                let result: serde_json::Value = page
-                    .evaluate(script)
-                    .await?
-                    .into_value()
-                    .unwrap_or_else(|_| serde_json::json!({ "ok": false, "error": "Select action returned no result" }));
+                let result: serde_json::Value =
+                    evaluate_action(page, script, &ac, "selecting option values").await?;
                 if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
                     let error = result
                         .get("error")
@@ -929,11 +983,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     sel = sel_escaped,
                     lbl = label_escaped
                 );
-                let result: serde_json::Value = page
-                    .evaluate(script)
-                    .await?
-                    .into_value()
-                    .unwrap_or_else(|_| serde_json::json!({ "ok": false, "error": "Select action returned no result" }));
+                let result: serde_json::Value =
+                    evaluate_action(page, script, &ac, "selecting option label").await?;
                 if !result.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
                     let error = result
                         .get("error")
@@ -960,21 +1011,16 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 doc = doc,
                 sel = sel_escaped
             );
-            let el_type: String = page
-                .evaluate(type_script)
-                .await?
-                .into_value()
-                .unwrap_or_default();
+            let el_type: String =
+                evaluate_action(page, type_script, &ac, "reading checkable control type").await?;
             let checked_script = format!(
                 "(() => {{ return {doc}.querySelector('{sel}').checked; }})()",
                 doc = doc,
                 sel = sel_escaped
             );
-            let is_checked: bool = page
-                .evaluate(checked_script)
-                .await?
-                .into_value()
-                .unwrap_or(false);
+            let is_checked: bool =
+                evaluate_action(page, checked_script, &ac, "reading checkable control state")
+                    .await?;
 
             if checkable_click_required("uncheck", &el_type, is_checked)? {
                 let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
@@ -999,10 +1045,17 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 let start = std::time::Instant::now();
 
                 loop {
-                    let current_url = page
-                        .url()
-                        .await?
-                        .ok_or_else(|| anyhow!("Failed to get current URL"))?;
+                    let remaining = timeout.saturating_sub(start.elapsed());
+                    if remaining.is_zero() {
+                        anyhow::bail!("Timeout waiting for URL '{}'", target_url);
+                    }
+                    let current_url = actionability::cdp_with_timeout(
+                        remaining,
+                        "reading current URL",
+                        page.url(),
+                    )
+                    .await?
+                    .ok_or_else(|| anyhow!("Failed to get current URL"))?;
 
                     let matches = matcher.matches(&current_url);
 
@@ -1011,7 +1064,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     }
 
                     if start.elapsed() > timeout {
-                        let current_url = page.url().await?.unwrap_or_default();
                         anyhow::bail!(
                             "Timeout waiting for URL '{}', current URL is '{}'",
                             target_url,

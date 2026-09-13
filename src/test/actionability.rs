@@ -39,7 +39,11 @@ fn actionability_timeout(config: &ActionabilityConfig) -> Duration {
     Duration::from_millis(config.actionability_timeout_ms)
 }
 
-async fn cdp_with_timeout<T, E, F>(timeout: Duration, operation: &str, future: F) -> Result<T>
+pub(crate) async fn cdp_with_timeout<T, E, F>(
+    timeout: Duration,
+    operation: &str,
+    future: F,
+) -> Result<T>
 where
     E: std::fmt::Display,
     F: Future<Output = std::result::Result<T, E>>,
