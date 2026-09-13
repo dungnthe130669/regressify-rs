@@ -150,6 +150,41 @@ fn referenced_capture_runs(report: &RegressifyReport) -> Result<BTreeSet<String>
     Ok(runs)
 }
 
+fn validate_referenced_capture_runs(
+    bitmap_test_dir: &Path,
+    referenced_runs: &BTreeSet<String>,
+) -> Result<()> {
+    for run_id in referenced_runs {
+        let run_dir = bitmap_test_dir.join(run_id);
+        let metadata = fs::symlink_metadata(&run_dir).with_context(|| {
+            format!(
+                "Snapshot config references missing capture run directory '{}'",
+                run_dir.display()
+            )
+        })?;
+        if !metadata.file_type().is_dir() {
+            anyhow::bail!(
+                "Snapshot config references a non-directory capture run '{}'",
+                run_dir.display()
+            );
+        }
+        let report_path = run_dir.join("report.json");
+        let report_content = fs::read_to_string(&report_path).with_context(|| {
+            format!(
+                "Snapshot config references capture run '{}' without a readable report.json",
+                run_id
+            )
+        })?;
+        serde_json::from_str::<RegressifyReport>(&report_content).with_context(|| {
+            format!(
+                "Snapshot config references capture run '{}' with invalid report.json",
+                run_id
+            )
+        })?;
+    }
+    Ok(())
+}
+
 pub fn process_test_suite(
     regressify_dir: &Path,
     id: &str,
@@ -197,7 +232,23 @@ pub fn process_test_suite(
     }
 
     let config_text = fs::read_to_string(&config_path)?;
-    let referenced_runs = referenced_capture_runs(&parse_report_config(&config_text)?)?;
+    let config_report = parse_report_config(&config_text)?;
+    if config_report.id != id {
+        anyhow::bail!(
+            "Snapshot config suite ID '{}' does not match output directory '{}'",
+            config_report.id,
+            id
+        );
+    }
+    let referenced_runs = referenced_capture_runs(&config_report)?;
+    validate_referenced_capture_runs(&bitmap_test_dir, &referenced_runs)?;
+    if referenced_runs.len() != 1 {
+        anyhow::bail!(
+            "Snapshot config for '{}' references {} capture runs; expected exactly one",
+            id,
+            referenced_runs.len()
+        );
+    }
     let mut modified_config_text = config_text.clone();
 
     // Remove only run directories explicitly referenced by neither the parsed
@@ -233,99 +284,95 @@ pub fn process_test_suite(
                 "{}",
                 format!("Removed unreferenced snapshot directory: {:?}", path).yellow()
             );
-        } else {
-            let report_json_path = path.join("report.json");
-            if report_json_path.exists() {
-                let report_content = fs::read_to_string(&report_json_path)?;
-                let report: RegressifyReport = serde_json::from_str(&report_content)?;
-
-                let pass_count = report.tests.iter().filter(|t| t.status == "pass").count();
-                let fail_count = report.tests.iter().filter(|t| t.status == "fail").count();
-
-                for test in &report.tests {
-                    cache_report_image_hash(
-                        &test_dir,
-                        &html_report_dir,
-                        hashes,
-                        &test.pair.reference,
-                    )?;
-                    cache_report_image_hash(&test_dir, &html_report_dir, hashes, &test.pair.test)?;
-                    cache_report_image_hash(
-                        &test_dir,
-                        &html_report_dir,
-                        hashes,
-                        &test.pair.diff_image,
-                    )?;
-                }
-
-                // Apply hash versioning to config.js.
-                for (file_path, hash) in hashes.iter() {
-                    modified_config_text =
-                        version_report_image_path(modified_config_text, file_path, hash)?;
-                }
-                write_file_atomically(&config_path, modified_config_text.as_bytes())?;
-
-                // Handle index.html config.js versioning
-                let config_hash = get_asset_version(modified_config_text.as_bytes(), 20);
-
-                let mut context = tera::Context::new();
-                context.insert("test_suite_name", id);
-                context.insert("config_hash", &config_hash);
-                context.insert("index_bundle_hash", &bundle_hash);
-
-                let replaced_html = tera.render("test_suite_report.html", &context)?;
-
-                write_file_atomically(&html_index_path, replaced_html.as_bytes())?;
-
-                eprintln!(
-                    "Test suite: {}, Passed: {}, Failed: {}",
-                    id.cyan(),
-                    pass_count.to_string().green(),
-                    if fail_count > 0 {
-                        fail_count.to_string().red()
-                    } else {
-                        fail_count.to_string().normal()
-                    }
-                );
-
-                let status = if fail_count > 0 { "failed" } else { "passed" };
-                let percent = if !report.tests.is_empty() {
-                    let percent = (pass_count as f32 / report.tests.len() as f32) * 100.0;
-                    format!("{:.2}", percent)
-                } else {
-                    "0".to_string()
-                };
-
-                let passed_class = if fail_count == 0 {
-                    Some("success")
-                } else {
-                    None
-                };
-                let failed_class = if fail_count == 0 {
-                    None
-                } else {
-                    Some("danger")
-                };
-
-                return Ok(Some(HtmlReportSummary {
-                    id: report.id,
-                    total_tests: report.tests.len(),
-                    total_passed: pass_count,
-                    total_failed: fail_count,
-                    has_engine_errors: report
-                        .tests
-                        .iter()
-                        .any(|t| t.pair.engine_error_msg.is_some()),
-                    percent,
-                    status,
-                    passed_class,
-                    failed_class,
-                }));
-            }
         }
     }
 
-    Ok(None)
+    let run_id = referenced_runs
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("Snapshot config contains no capture runs"))?;
+    let report_json_path = bitmap_test_dir.join(run_id).join("report.json");
+    let report_content = fs::read_to_string(&report_json_path)?;
+    let report: RegressifyReport = serde_json::from_str(&report_content)?;
+
+    let pass_count = report
+        .tests
+        .iter()
+        .filter(|test| test.status == "pass")
+        .count();
+    let fail_count = report
+        .tests
+        .iter()
+        .filter(|test| test.status == "fail")
+        .count();
+
+    for test in &report.tests {
+        cache_report_image_hash(&test_dir, &html_report_dir, hashes, &test.pair.reference)?;
+        cache_report_image_hash(&test_dir, &html_report_dir, hashes, &test.pair.test)?;
+        cache_report_image_hash(&test_dir, &html_report_dir, hashes, &test.pair.diff_image)?;
+    }
+
+    // Apply hash versioning to config.js.
+    for (file_path, hash) in hashes.iter() {
+        modified_config_text = version_report_image_path(modified_config_text, file_path, hash)?;
+    }
+    write_file_atomically(&config_path, modified_config_text.as_bytes())?;
+
+    // Handle index.html config.js versioning
+    let config_hash = get_asset_version(modified_config_text.as_bytes(), 20);
+
+    let mut context = tera::Context::new();
+    context.insert("test_suite_name", id);
+    context.insert("config_hash", &config_hash);
+    context.insert("index_bundle_hash", &bundle_hash);
+
+    let replaced_html = tera.render("test_suite_report.html", &context)?;
+
+    write_file_atomically(&html_index_path, replaced_html.as_bytes())?;
+
+    eprintln!(
+        "Test suite: {}, Passed: {}, Failed: {}",
+        id.cyan(),
+        pass_count.to_string().green(),
+        if fail_count > 0 {
+            fail_count.to_string().red()
+        } else {
+            fail_count.to_string().normal()
+        }
+    );
+
+    let status = if fail_count > 0 { "failed" } else { "passed" };
+    let percent = if !report.tests.is_empty() {
+        let percent = (pass_count as f32 / report.tests.len() as f32) * 100.0;
+        format!("{:.2}", percent)
+    } else {
+        "0".to_string()
+    };
+
+    let passed_class = if fail_count == 0 {
+        Some("success")
+    } else {
+        None
+    };
+    let failed_class = if fail_count == 0 {
+        None
+    } else {
+        Some("danger")
+    };
+
+    Ok(Some(HtmlReportSummary {
+        id: report.id,
+        total_tests: report.tests.len(),
+        total_passed: pass_count,
+        total_failed: fail_count,
+        has_engine_errors: report
+            .tests
+            .iter()
+            .any(|test| test.pair.engine_error_msg.is_some()),
+        percent,
+        status,
+        passed_class,
+        failed_class,
+    }))
 }
 
 #[cfg(test)]
@@ -356,7 +403,7 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("expected ident"));
+        assert!(error.to_string().contains("invalid report.json"));
     }
 
     #[test]
@@ -404,18 +451,85 @@ mod tests {
             r#"report({"id":"suite","tests":[{"pair":{"test":"../bitmaps_test/current/home__FINAL.png"},"status":"pass"}]});"#,
         )
         .unwrap();
+        fs::write(
+            current_run.join("report.json"),
+            r#"{"id":"suite","tests":[]}"#,
+        )
+        .unwrap();
 
-        process_test_suite(
+        let mut tera = tera::Tera::default();
+        tera.add_raw_template("test_suite_report.html", "").unwrap();
+
+        process_test_suite(temp.path(), "suite", &mut BTreeMap::new(), &tera, "bundle").unwrap();
+
+        assert!(current_run.exists());
+        assert!(!prior_run.exists());
+    }
+
+    #[test]
+    fn stale_config_does_not_remove_capture_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("suite");
+        let html_report_dir = suite_dir.join("html_report");
+        let current_run = suite_dir.join("bitmaps_test/current");
+        let prior_run = suite_dir.join("bitmaps_test/prior");
+        fs::create_dir_all(&html_report_dir).unwrap();
+        fs::create_dir_all(&current_run).unwrap();
+        fs::create_dir_all(&prior_run).unwrap();
+        fs::write(
+            html_report_dir.join("config.js"),
+            r#"report({"id":"suite","tests":[{"pair":{"test":"../bitmaps_test/missing/home__FINAL.png"},"status":"pass"}]});"#,
+        )
+        .unwrap();
+
+        let error = process_test_suite(
             temp.path(),
             "suite",
             &mut BTreeMap::new(),
             &tera::Tera::default(),
             "bundle",
         )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("missing capture run directory"));
+        assert!(current_run.exists());
+        assert!(prior_run.exists());
+    }
+
+    #[test]
+    fn multi_run_config_does_not_remove_capture_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("suite");
+        let html_report_dir = suite_dir.join("html_report");
+        let first_run = suite_dir.join("bitmaps_test/first");
+        let second_run = suite_dir.join("bitmaps_test/second");
+        let prior_run = suite_dir.join("bitmaps_test/prior");
+        fs::create_dir_all(&html_report_dir).unwrap();
+        fs::create_dir_all(&first_run).unwrap();
+        fs::create_dir_all(&second_run).unwrap();
+        fs::create_dir_all(&prior_run).unwrap();
+        for run_dir in [&first_run, &second_run] {
+            fs::write(run_dir.join("report.json"), r#"{"id":"suite","tests":[]}"#).unwrap();
+        }
+        fs::write(
+            html_report_dir.join("config.js"),
+            r#"report({"id":"suite","tests":[{"pair":{"test":"../bitmaps_test/first/home.png"},"status":"pass"},{"pair":{"test":"../bitmaps_test/second/home.png"},"status":"pass"}]});"#,
+        )
         .unwrap();
 
-        assert!(current_run.exists());
-        assert!(!prior_run.exists());
+        let error = process_test_suite(
+            temp.path(),
+            "suite",
+            &mut BTreeMap::new(),
+            &tera::Tera::default(),
+            "bundle",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("references 2 capture runs"));
+        assert!(first_run.exists());
+        assert!(second_run.exists());
+        assert!(prior_run.exists());
     }
 
     #[test]
