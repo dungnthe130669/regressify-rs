@@ -335,6 +335,18 @@ fn load_active_replacement_profile(
 }
 
 fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Result<()> {
+    for (name, value) in [
+        ("elementTimeout", workspace_config.element_timeout),
+        (
+            "actionabilityTimeout",
+            workspace_config.actionability_timeout,
+        ),
+        ("scenarioTimeout", workspace_config.scenario_timeout),
+    ] {
+        if value == Some(0) {
+            anyhow::bail!("workspace {} must be greater than zero", name);
+        }
+    }
     if workspace_config.async_capture_limit == Some(0) {
         anyhow::bail!("workspace asyncCaptureLimit must be greater than zero");
     }
@@ -1119,6 +1131,31 @@ mod tests {
                 .to_string()
                 .contains("asyncCaptureLimit")
         );
+    }
+
+    #[test]
+    fn rejects_zero_operational_timeouts_before_browser_launch() {
+        for workspace in [
+            config::WorkspaceConfig {
+                element_timeout: Some(0),
+                ..Default::default()
+            },
+            config::WorkspaceConfig {
+                actionability_timeout: Some(0),
+                ..Default::default()
+            },
+            config::WorkspaceConfig {
+                scenario_timeout: Some(0),
+                ..Default::default()
+            },
+        ] {
+            assert!(
+                validate_workspace_config(&workspace)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("must be greater than zero")
+            );
+        }
     }
 
     #[tokio::test]

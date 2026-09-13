@@ -483,11 +483,12 @@ async fn run_scenario_capture_inner(
             ..Default::default()
         };
         let info = act::ensure_actionable(&page, click_sel, &None, &ac).await?;
-        let frame_offset = act::get_frame_offset(&page, &None).await?;
+        let frame_offset = act::get_frame_offset(&page, &None, &ac).await?;
         act::cdp_click(
             &page,
             frame_offset.0 + info.center_x,
             frame_offset.1 + info.center_y,
+            &ac,
         )
         .await?;
     }

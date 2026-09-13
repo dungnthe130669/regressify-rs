@@ -1,3 +1,5 @@
+use std::{future::Future, time::Duration};
+
 use anyhow::{Result, anyhow};
 use chromiumoxide::Page;
 
@@ -31,6 +33,35 @@ impl Default for ActionabilityConfig {
             poll_interval_ms: 100,
         }
     }
+}
+
+fn actionability_timeout(config: &ActionabilityConfig) -> Duration {
+    Duration::from_millis(config.actionability_timeout_ms)
+}
+
+async fn cdp_with_timeout<T, E, F>(timeout: Duration, operation: &str, future: F) -> Result<T>
+where
+    E: std::fmt::Display,
+    F: Future<Output = std::result::Result<T, E>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(result) => result.map_err(|error| anyhow!("{}: {}", operation, error)),
+        Err(_) => Err(anyhow!(
+            "Timed out after {}ms while {}",
+            timeout.as_millis(),
+            operation
+        )),
+    }
+}
+
+async fn evaluate_value(
+    page: &Page,
+    script: impl Into<chromiumoxide::js::Evaluation>,
+    timeout: Duration,
+    operation: &str,
+) -> Result<serde_json::Value> {
+    let result = cdp_with_timeout(timeout, operation, page.evaluate(script)).await?;
+    Ok(result.into_value().unwrap_or(serde_json::Value::Null))
 }
 
 // ─── Escaping Helpers ────────────────────────────────────────────────────────
@@ -150,7 +181,11 @@ fn parse_frame_access(value: &serde_json::Value) -> Result<FrameAccess> {
 }
 
 /// Check whether every frame in the chain is ready for target polling.
-async fn frame_access(page: &Page, frame: &Option<Frame>) -> Result<FrameAccess> {
+async fn frame_access(
+    page: &Page,
+    frame: &Option<Frame>,
+    timeout: Duration,
+) -> Result<FrameAccess> {
     let Some(frame_selectors) = get_frame_selectors(frame) else {
         return Ok(FrameAccess::Ready);
     };
@@ -177,8 +212,7 @@ async fn frame_access(page: &Page, frame: &Option<Frame>) -> Result<FrameAccess>
         }})()"#
     );
 
-    let result = page.evaluate(script).await?;
-    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let value = evaluate_value(page, script, timeout, "checking iframe accessibility").await?;
     parse_frame_access(&value)
 }
 
@@ -198,18 +232,10 @@ pub async fn wait_for_selector(
     let timeout = std::time::Duration::from_millis(config.element_timeout_ms);
     let poll = std::time::Duration::from_millis(config.poll_interval_ms);
     let start = std::time::Instant::now();
+    let exists_operation = format!("checking whether element '{}' exists", selector);
+    let mut waiting_for_frame = None;
 
     loop {
-        let waiting_for_frame = match frame_access(page, frame).await? {
-            FrameAccess::Ready => {
-                let result = page.evaluate(script.as_str()).await?;
-                if result.into_value::<bool>().unwrap_or(false) {
-                    return Ok(());
-                }
-                None
-            }
-            FrameAccess::WaitingForFrame(frame_selector) => Some(frame_selector),
-        };
         if start.elapsed() >= timeout {
             if let Some(frame_selector) = waiting_for_frame {
                 return Err(anyhow!(
@@ -225,6 +251,20 @@ pub async fn wait_for_selector(
                 selector
             ));
         }
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let command_timeout = remaining.min(actionability_timeout(config));
+        waiting_for_frame = match frame_access(page, frame, command_timeout).await? {
+            FrameAccess::Ready => {
+                let value =
+                    evaluate_value(page, script.as_str(), command_timeout, &exists_operation)
+                        .await?;
+                if value.as_bool().unwrap_or(false) {
+                    return Ok(());
+                }
+                None
+            }
+            FrameAccess::WaitingForFrame(frame_selector) => Some(frame_selector),
+        };
         tokio::time::sleep(poll).await;
     }
 }
@@ -263,10 +303,20 @@ pub async fn wait_for_visible(
     let timeout = std::time::Duration::from_millis(config.actionability_timeout_ms);
     let poll = std::time::Duration::from_millis(config.poll_interval_ms);
     let start = std::time::Instant::now();
+    let visible_operation = format!("checking visibility of element '{}'", selector);
+    let mut last_reason = "unknown".to_string();
 
     loop {
-        let result = page.evaluate(script.as_str()).await?;
-        let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+        if start.elapsed() >= timeout {
+            return Err(anyhow!(
+                "Element '{}' is not visible after {}ms (reason: {})",
+                selector,
+                config.actionability_timeout_ms,
+                last_reason
+            ));
+        }
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let val = evaluate_value(page, script.as_str(), remaining, &visible_operation).await?;
 
         if val
             .get("visible")
@@ -276,18 +326,11 @@ pub async fn wait_for_visible(
             return Ok(());
         }
 
-        if start.elapsed() > timeout {
-            let reason = val
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            return Err(anyhow!(
-                "Element '{}' is not visible after {}ms (reason: {})",
-                selector,
-                config.actionability_timeout_ms,
-                reason
-            ));
-        }
+        last_reason = val
+            .get("reason")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown")
+            .to_string();
         tokio::time::sleep(poll).await;
     }
 }
@@ -313,14 +356,22 @@ pub async fn wait_for_stable(
     let timeout = std::time::Duration::from_millis(config.actionability_timeout_ms);
     let poll = std::time::Duration::from_millis(config.poll_interval_ms);
     let start = std::time::Instant::now();
+    let stable_operation = format!("checking stability of element '{}'", selector);
 
     let mut prev_rect: Option<(f64, f64, f64, f64)> = None;
     let mut stable_streak: u32 = 0;
     const REQUIRED_STABLE_STREAK: u32 = 2;
 
     loop {
-        let result = page.evaluate(script.as_str()).await?;
-        let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+        if start.elapsed() >= timeout {
+            return Err(anyhow!(
+                "Element '{}' is not stable after {}ms (bounding box still changing)",
+                selector,
+                config.actionability_timeout_ms,
+            ));
+        }
+        let remaining = timeout.saturating_sub(start.elapsed());
+        let val = evaluate_value(page, script.as_str(), remaining, &stable_operation).await?;
 
         if let (Some(x), Some(y), Some(w), Some(h)) = (
             val.get("x").and_then(|v| v.as_f64()),
@@ -346,19 +397,17 @@ pub async fn wait_for_stable(
             stable_streak = 0;
         }
 
-        if start.elapsed() > timeout {
-            return Err(anyhow!(
-                "Element '{}' is not stable after {}ms (bounding box still changing)",
-                selector,
-                config.actionability_timeout_ms,
-            ));
-        }
         tokio::time::sleep(poll).await;
     }
 }
 
 /// Scroll element into view (center of viewport).
-pub async fn scroll_into_view(page: &Page, selector: &str, frame: &Option<Frame>) -> Result<()> {
+pub async fn scroll_into_view(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
     let frame_selectors = get_frame_selectors(frame);
     let selectors_js = frame_selectors
         .as_deref()
@@ -385,8 +434,8 @@ pub async fn scroll_into_view(page: &Page, selector: &str, frame: &Option<Frame>
         }})()"#
     );
 
-    let result = page.evaluate(script).await?;
-    let value: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let operation = format!("scrolling element '{}' into view", selector);
+    let value = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
     if value.get("ok").and_then(|field| field.as_bool()) != Some(true) {
         let error = value
             .get("error")
@@ -404,7 +453,7 @@ pub async fn scroll_into_view(page: &Page, selector: &str, frame: &Option<Frame>
         ));
     }
     // Brief wait for scroll to settle
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(Duration::from_millis(50).min(actionability_timeout(config))).await;
     Ok(())
 }
 
@@ -414,6 +463,7 @@ pub async fn check_not_obscured(
     page: &Page,
     selector: &str,
     frame: &Option<Frame>,
+    config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
@@ -451,8 +501,8 @@ pub async fn check_not_obscured(
         }})()"#
     );
 
-    let result = page.evaluate(script).await?;
-    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let operation = format!("checking whether element '{}' is obscured", selector);
+    let val = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
 
     if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         return Ok(ElementInfo {
@@ -492,7 +542,12 @@ pub async fn check_not_obscured(
 }
 
 /// Check that a form element is enabled (not disabled).
-pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -> Result<()> {
+pub async fn check_enabled(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     let script = format!(
@@ -506,8 +561,8 @@ pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -
         }})()"#
     );
 
-    let result = page.evaluate(script).await?;
-    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let operation = format!("checking whether element '{}' is enabled", selector);
+    let val = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
 
     if val
         .get("disabled")
@@ -527,7 +582,11 @@ pub async fn check_enabled(page: &Page, selector: &str, frame: &Option<Frame>) -
 
 /// Calculate the cumulative content-box offset of nested iframes relative to the
 /// top-level viewport. Each frame has already been centered by `scroll_into_view`.
-pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64, f64)> {
+pub async fn get_frame_offset(
+    page: &Page,
+    frame: &Option<Frame>,
+    config: &ActionabilityConfig,
+) -> Result<(f64, f64)> {
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) => s,
         None => return Ok((0.0, 0.0)),
@@ -562,8 +621,13 @@ pub async fn get_frame_offset(page: &Page, frame: &Option<Frame>) -> Result<(f64
         frame_selectors_js(&frame_selectors)
     );
 
-    let result = page.evaluate(script).await?;
-    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let val = evaluate_value(
+        page,
+        script,
+        actionability_timeout(config),
+        "calculating iframe offset",
+    )
+    .await?;
 
     if let Some(error) = val.get("error").and_then(|v| v.as_str()) {
         let sel = val
@@ -599,13 +663,14 @@ async fn check_frame_not_obscured(
     frame: &Option<Frame>,
     center_x: f64,
     center_y: f64,
+    config: &ActionabilityConfig,
 ) -> Result<()> {
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(()),
     };
 
-    let offset = get_frame_offset(page, frame).await?;
+    let offset = get_frame_offset(page, frame, config).await?;
     let abs_x = offset.0 + center_x;
     let abs_y = offset.1 + center_y;
 
@@ -627,8 +692,13 @@ async fn check_frame_not_obscured(
         }})()"#
     );
 
-    let result = page.evaluate(script).await?;
-    let val: serde_json::Value = result.into_value().unwrap_or(serde_json::Value::Null);
+    let val = evaluate_value(
+        page,
+        script,
+        actionability_timeout(config),
+        "checking whether iframe is obscured",
+    )
+    .await?;
 
     if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         return Ok(());
@@ -678,19 +748,16 @@ pub async fn ensure_actionable(
     wait_for_stable(page, selector, frame, config).await?;
 
     // 4. Scroll element into viewport
-    scroll_into_view(page, selector, frame).await?;
-
-    // Brief pause after scroll for re-render
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    scroll_into_view(page, selector, frame, config).await?;
 
     // 5. Check element is not obscured (also returns position info)
-    let info = check_not_obscured(page, selector, frame).await?;
+    let info = check_not_obscured(page, selector, frame, config).await?;
 
     // 5b. If inside a frame, also ensure the frame isn't obscured in the parent.
-    check_frame_not_obscured(page, frame, info.center_x, info.center_y).await?;
+    check_frame_not_obscured(page, frame, info.center_x, info.center_y, config).await?;
 
     // 6. Check element is enabled (for form controls)
-    check_enabled(page, selector, frame).await?;
+    check_enabled(page, selector, frame, config).await?;
 
     Ok(info)
 }
@@ -722,7 +789,7 @@ pub async fn ensure_exists(
 // ─── CDP Mouse Helpers ───────────────────────────────────────────────────────
 
 /// Perform a CDP click at the given viewport coordinates.
-pub async fn cdp_click(page: &Page, x: f64, y: f64) -> Result<()> {
+pub async fn cdp_click(page: &Page, x: f64, y: f64, config: &ActionabilityConfig) -> Result<()> {
     use chromiumoxide::cdp::browser_protocol::input::{
         DispatchMouseEventParams, DispatchMouseEventType, MouseButton,
     };
@@ -734,7 +801,12 @@ pub async fn cdp_click(page: &Page, x: f64, y: f64) -> Result<()> {
         .y(y)
         .build()
         .map_err(|e| anyhow!("Failed to build mouse move: {:?}", e))?;
-    page.execute(move_cmd).await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "dispatching mouse move for click",
+        page.execute(move_cmd),
+    )
+    .await?;
 
     // Press
     let press_cmd = DispatchMouseEventParams::builder()
@@ -745,7 +817,12 @@ pub async fn cdp_click(page: &Page, x: f64, y: f64) -> Result<()> {
         .click_count(1)
         .build()
         .map_err(|e| anyhow!("Failed to build mouse press: {:?}", e))?;
-    page.execute(press_cmd).await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "dispatching mouse press",
+        page.execute(press_cmd),
+    )
+    .await?;
 
     // Release
     let release_cmd = DispatchMouseEventParams::builder()
@@ -756,13 +833,18 @@ pub async fn cdp_click(page: &Page, x: f64, y: f64) -> Result<()> {
         .click_count(1)
         .build()
         .map_err(|e| anyhow!("Failed to build mouse release: {:?}", e))?;
-    page.execute(release_cmd).await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "dispatching mouse release",
+        page.execute(release_cmd),
+    )
+    .await?;
 
     Ok(())
 }
 
 /// Perform a CDP hover (mouse move) at the given viewport coordinates.
-pub async fn cdp_hover(page: &Page, x: f64, y: f64) -> Result<()> {
+pub async fn cdp_hover(page: &Page, x: f64, y: f64, config: &ActionabilityConfig) -> Result<()> {
     use chromiumoxide::cdp::browser_protocol::input::{
         DispatchMouseEventParams, DispatchMouseEventType,
     };
@@ -773,7 +855,12 @@ pub async fn cdp_hover(page: &Page, x: f64, y: f64) -> Result<()> {
         .y(y)
         .build()
         .map_err(|e| anyhow!("Failed to build mouse move: {:?}", e))?;
-    page.execute(move_cmd).await?;
+    cdp_with_timeout(
+        actionability_timeout(config),
+        "dispatching mouse move for hover",
+        page.execute(move_cmd),
+    )
+    .await?;
 
     Ok(())
 }
@@ -781,6 +868,23 @@ pub async fn cdp_hover(page: &Page, x: f64, y: f64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cdp_timeout_bounds_stalled_operations() {
+        let result = cdp_with_timeout(
+            Duration::from_millis(1),
+            "evaluating actionability",
+            std::future::pending::<std::result::Result<(), std::io::Error>>(),
+        )
+        .await;
+
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Timed out after 1ms while evaluating actionability")
+        );
+    }
 
     #[test]
     fn frame_access_distinguishes_retryable_missing_frame() {

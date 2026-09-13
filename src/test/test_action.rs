@@ -343,11 +343,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .unwrap_or(false);
 
             if checkable_click_required("check", &el_type, is_checked)? {
-                let frame_offset = actionability::get_frame_offset(page, frame).await?;
+                let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
                 cdp_click(
                     page,
                     frame_offset.0 + info.center_x,
                     frame_offset.1 + info.center_y,
+                    &ac,
                 )
                 .await?;
             }
@@ -356,11 +357,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Click(ClickAction { click, frame }) => {
             eprintln!("{} Clicking element: {}", log_prefix, click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
-            let frame_offset = actionability::get_frame_offset(page, frame).await?;
+            let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_click(
                 page,
                 frame_offset.0 + info.center_x,
                 frame_offset.1 + info.center_y,
+                &ac,
             )
             .await?;
         }
@@ -434,11 +436,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Hover(HoverAction { hover, frame }) => {
             eprintln!("{} Hovering over element: {}", log_prefix, hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
-            let frame_offset = actionability::get_frame_offset(page, frame).await?;
+            let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_hover(
                 page,
                 frame_offset.0 + info.center_x,
                 frame_offset.1 + info.center_y,
+                &ac,
             )
             .await?;
         }
@@ -655,7 +658,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     page.execute(enable).await?;
 
                     let click_result = async {
-                        cdp_click(page, info.center_x, info.center_y).await?;
+                        cdp_click(page, info.center_x, info.center_y, &ac).await?;
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                         Ok::<(), anyhow::Error>(())
                     }
@@ -800,7 +803,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             eprintln!("{} Scrolling to element: {}", log_prefix, scroll);
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
-            scroll_into_view(page, scroll, frame).await?;
+            scroll_into_view(page, scroll, frame, &ac).await?;
         }
 
         TestAction::Select(SelectAction {
@@ -974,11 +977,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 .unwrap_or(false);
 
             if checkable_click_required("uncheck", &el_type, is_checked)? {
-                let frame_offset = actionability::get_frame_offset(page, frame).await?;
+                let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
                 cdp_click(
                     page,
                     frame_offset.0 + info.center_x,
                     frame_offset.1 + info.center_y,
+                    &ac,
                 )
                 .await?;
             }
