@@ -8,6 +8,7 @@ use crate::{
     snapshot::get_asset_version,
     test::{
         browsers::{LaunchOptions, launch_browser},
+        capture::is_artifact_write_error,
         test_scenario::{ScenarioRequest, exec_test_scenario, make_log_prefix},
     },
     types::{TestSuite, TestSuiteInput},
@@ -107,8 +108,8 @@ pub enum ScenarioOutcome {
     /// The page under test caused the failure (timeout, element not found,
     /// navigation error, etc.). Expected — must NOT fail the command.
     PageFailed(anyhow::Error),
-    /// Our infrastructure failed (browser could not be launched). Must fail
-    /// the command with a non-zero exit code.
+    /// The browser or an output artifact failed. Must fail the command with a
+    /// non-zero exit code.
     InfraFailed(anyhow::Error),
 }
 
@@ -198,9 +199,14 @@ pub async fn exec_single_scenario(
         );
     }
 
-    match scenario_result {
+    classify_scenario_result(scenario_result)
+}
+
+fn classify_scenario_result(result: Result<()>) -> ScenarioOutcome {
+    match result {
         Ok(()) => ScenarioOutcome::Passed,
-        Err(e) => ScenarioOutcome::PageFailed(e),
+        Err(error) if is_artifact_write_error(&error) => ScenarioOutcome::InfraFailed(error),
+        Err(error) => ScenarioOutcome::PageFailed(error),
     }
 }
 
@@ -275,5 +281,19 @@ mod tests {
 
         assert!(!finished);
         assert!(handle.is_finished());
+    }
+
+    #[test]
+    fn artifact_write_failure_is_infrastructure_failure() {
+        let error = crate::test::capture::artifact_write_error("write screenshot", "disk full");
+
+        assert!(matches!(
+            classify_scenario_result(Err(error)),
+            ScenarioOutcome::InfraFailed(_)
+        ));
+        assert!(matches!(
+            classify_scenario_result(Err(anyhow!("page failed"))),
+            ScenarioOutcome::PageFailed(_)
+        ));
     }
 }

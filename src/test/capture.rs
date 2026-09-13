@@ -28,6 +28,35 @@ const PRESERVED_PNG_CHUNKS: [&[u8; 4]; 9] = [
 const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 const MAX_SELECTOR_SLUG_LEN: usize = 48;
 
+/// Marker for failures while producing on-disk regression artifacts. These are
+/// tool failures, unlike a page that fails to render or perform an action.
+#[derive(Debug)]
+pub struct ArtifactWriteError {
+    message: String,
+}
+
+impl std::fmt::Display for ArtifactWriteError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ArtifactWriteError {}
+
+pub(crate) fn artifact_write_error(
+    operation: &str,
+    error: impl std::fmt::Display,
+) -> anyhow::Error {
+    ArtifactWriteError {
+        message: format!("{}: {}", operation, error),
+    }
+    .into()
+}
+
+pub fn is_artifact_write_error(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ArtifactWriteError>().is_some()
+}
+
 /// Strip non-essential metadata chunks from a PNG byte buffer so that
 /// identical pixel content always produces byte-identical files.
 fn strip_png_metadata(png: &[u8]) -> Result<Vec<u8>> {
@@ -300,14 +329,18 @@ pub async fn save_screenshot(
     screenshot_type: ScreenshotType,
     viewport_label: Option<&str>,
 ) -> Result<()> {
-    let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)?;
+    let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)
+        .map_err(|error| artifact_write_error("Failed to create screenshot output path", error))?;
 
     let png_bytes = capture_png(page, &screenshot_type).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
-    write_file_atomically(&path, &clean_bytes)?;
+    write_file_atomically(&path, &clean_bytes)
+        .map_err(|error| artifact_write_error("Failed to write screenshot", error))?;
     let marker_path = error_marker_path(&path);
     if marker_path.exists() {
-        fs::remove_file(marker_path)?;
+        fs::remove_file(marker_path).map_err(|error| {
+            artifact_write_error("Failed to clear stale screenshot marker", error)
+        })?;
     }
 
     Ok(())
@@ -575,11 +608,18 @@ pub fn write_error_screenshots(
         error: true,
         message: message.to_string(),
     };
-    let marker_json = serde_json::to_vec_pretty(&marker)?;
+    let marker_json = serde_json::to_vec_pretty(&marker).map_err(|error| {
+        artifact_write_error("Failed to serialize screenshot error marker", error)
+    })?;
     for screenshot_type in screenshot_types {
-        let path = screenshot_path(test_suite, scenario, screenshot_type, viewport_label)?;
-        write_file_atomically(&error_marker_path(&path), &marker_json)?;
-        write_file_atomically(&path, error_icon_png())?;
+        let path = screenshot_path(test_suite, scenario, screenshot_type, viewport_label).map_err(
+            |error| artifact_write_error("Failed to create error screenshot output path", error),
+        )?;
+        write_file_atomically(&error_marker_path(&path), &marker_json).map_err(|error| {
+            artifact_write_error("Failed to write screenshot error marker", error)
+        })?;
+        write_file_atomically(&path, error_icon_png())
+            .map_err(|error| artifact_write_error("Failed to write error screenshot", error))?;
     }
     Ok(())
 }
@@ -800,5 +840,13 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn artifact_write_errors_remain_identifiable_through_anyhow() {
+        let error = artifact_write_error("Failed to write screenshot", "disk full");
+
+        assert!(is_artifact_write_error(&error));
+        assert_eq!(error.to_string(), "Failed to write screenshot: disk full");
     }
 }

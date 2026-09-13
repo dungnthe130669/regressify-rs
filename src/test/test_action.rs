@@ -14,7 +14,7 @@ use crate::{
             ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule, escape_js_string,
             get_frame_selectors, scroll_into_view, wait_for_selector,
         },
-        capture::{save_screenshot, state_path, validate_state_name},
+        capture::{artifact_write_error, save_screenshot, state_path, validate_state_name},
         page_stability::wait_for_dom_ready,
     },
     types::{
@@ -701,9 +701,15 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
             let state_path = state_path(persist)?;
             if let Some(state_dir) = state_path.parent() {
-                std::fs::create_dir_all(state_dir)?;
+                std::fs::create_dir_all(state_dir).map_err(|error| {
+                    artifact_write_error("Failed to create persisted-state directory", error)
+                })?;
             }
-            std::fs::write(&state_path, serde_json::to_string_pretty(&state)?)?;
+            let state_json = serde_json::to_string_pretty(&state).map_err(|error| {
+                artifact_write_error("Failed to serialize persisted state", error)
+            })?;
+            std::fs::write(&state_path, state_json)
+                .map_err(|error| artifact_write_error("Failed to write persisted state", error))?;
             eprintln!("{} State saved to: {}", log_prefix, state_path.display());
         }
 

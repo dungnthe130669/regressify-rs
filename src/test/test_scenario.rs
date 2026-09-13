@@ -301,6 +301,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
                     "WARNING:".yellow(),
                     write_err
                 );
+                return Err(write_err);
             } else {
                 eprintln!(
                     "{} Wrote error placeholder screenshot for failed scenario.",

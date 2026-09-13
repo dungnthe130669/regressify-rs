@@ -686,7 +686,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // regression run and must not produce a non-zero exit.
     if infra_failures > 0 {
         anyhow::bail!(
-            "Test run failed: {} scenario(s) could not launch the browser",
+            "Test run failed: {} scenario(s) had browser or artifact failures",
             infra_failures
         );
     }
@@ -822,7 +822,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     // command. Page errors must not produce a non-zero exit.
     if infra_failures > 0 {
         anyhow::bail!(
-            "Reference capture failed: {} scenario(s) could not launch the browser",
+            "Reference capture failed: {} scenario(s) had browser or artifact failures",
             infra_failures
         );
     }
