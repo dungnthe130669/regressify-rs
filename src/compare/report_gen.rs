@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use colored::Colorize;
+use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
@@ -39,6 +40,25 @@ struct ReportPair {
     diff: Option<ReportDiff>,
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_error_msg: Option<String>,
+}
+
+struct ComparisonJob {
+    pair: ReportPair,
+    reference_path: PathBuf,
+    test_path: PathBuf,
+}
+
+enum ReportWork {
+    Immediate(ReportTest),
+    Compare(ComparisonJob),
+}
+
+enum ComparisonOutcome {
+    Compared {
+        result: CompareResult,
+        diff_png: Option<Vec<u8>>,
+    },
+    Failed(anyhow::Error),
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +134,49 @@ fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
     Ok(screenshots)
 }
 
+fn report_pair(
+    label: String,
+    screenshot_name: &str,
+    relative_test: String,
+    threshold: f64,
+) -> ReportPair {
+    ReportPair {
+        label,
+        reference: format!("../bitmaps_reference/{}", screenshot_name),
+        test: relative_test,
+        diff_image: None,
+        selector: "document".to_string(),
+        file_name: screenshot_name.to_string(),
+        mis_match_threshold: threshold,
+        diff: None,
+        engine_error_msg: None,
+    }
+}
+
+fn compare_report_work(
+    work: &[ReportWork],
+    max_workers: usize,
+) -> Result<Vec<Option<ComparisonOutcome>>> {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(max_workers.max(1))
+        .build()
+        .map_err(|error| anyhow!("Failed to create comparison worker pool: {}", error))?;
+
+    Ok(pool.install(|| {
+        work.par_iter()
+            .map(|entry| match entry {
+                ReportWork::Immediate(_) => None,
+                ReportWork::Compare(job) => {
+                    Some(match compare_images(&job.reference_path, &job.test_path) {
+                        Ok((result, diff_png)) => ComparisonOutcome::Compared { result, diff_png },
+                        Err(error) => ComparisonOutcome::Failed(error),
+                    })
+                }
+            })
+            .collect()
+    }))
+}
+
 /// Generate a comparison report for a test suite.
 ///
 /// Directory structure:
@@ -129,6 +192,7 @@ pub fn generate_comparison_report(
     suite_id: &str,
     test_date: &str,
     mis_match_threshold: f64,
+    max_workers: usize,
 ) -> Result<()> {
     let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
     if !tests_dir.exists() {
@@ -159,22 +223,15 @@ pub fn generate_comparison_report(
             .then_with(|| a.cmp(b))
     });
 
-    let mut report_tests: Vec<ReportTest> = Vec::new();
-
-    for screenshot_name in &test_screenshots {
-        let test_src = tests_dir.join(screenshot_name);
-        let test_dst = bitmaps_test_dir.join(screenshot_name);
+    let mut report_work = Vec::with_capacity(test_screenshots.len());
+    for screenshot_name in test_screenshots {
+        let test_path = tests_dir.join(&screenshot_name);
         let threshold = thresholds
-            .get(screenshot_prefix(screenshot_name))
+            .get(screenshot_prefix(&screenshot_name))
             .copied()
             .unwrap_or(mis_match_threshold);
 
-        // Copy test screenshot to bitmaps_test/<date>/ (skip if already there)
-        if test_src != test_dst {
-            fs::copy(&test_src, &test_dst)?;
-        }
-
-        let reference_path = reference_dir.join(screenshot_name);
+        let reference_path = reference_dir.join(&screenshot_name);
 
         // Relative paths for the report (from html_report/ perspective)
         let relative_test = format!("../bitmaps_test/{}/{}", test_date, screenshot_name);
@@ -184,12 +241,13 @@ pub fn generate_comparison_report(
             .trim_end_matches(".png")
             .replace("__", " ")
             .replace('$', "");
+        let mut pair = report_pair(label, &screenshot_name, relative_test, threshold);
 
         // If either side is flagged as a capture failure (via its JSON error
         // marker), the corresponding scenario never produced a real screenshot.
         // Skip the visual comparison and report the failure directly — comparing
         // against a placeholder is meaningless and would only produce noise.
-        let test_err = read_error_marker(&test_dst);
+        let test_err = read_error_marker(&test_path);
         let ref_err = if reference_path.exists() {
             read_error_marker(&reference_path)
         } else {
@@ -206,20 +264,11 @@ pub fn generate_comparison_report(
             };
             eprintln!("    {} {} → {}", "FAIL:".red(), screenshot_name, msg);
 
-            report_tests.push(ReportTest {
-                pair: ReportPair {
-                    label,
-                    reference: format!("../bitmaps_reference/{}", screenshot_name),
-                    test: relative_test,
-                    diff_image: None,
-                    selector: "document".to_string(),
-                    file_name: screenshot_name.clone(),
-                    mis_match_threshold: threshold,
-                    diff: None,
-                    engine_error_msg: Some(msg),
-                },
+            pair.engine_error_msg = Some(msg);
+            report_work.push(ReportWork::Immediate(ReportTest {
+                pair,
                 status: "fail".to_string(),
-            });
+            }));
             continue;
         }
 
@@ -231,110 +280,109 @@ pub fn generate_comparison_report(
                 screenshot_name
             );
 
-            report_tests.push(ReportTest {
-                pair: ReportPair {
-                    label,
-                    reference: format!("../bitmaps_reference/{}", screenshot_name),
-                    test: relative_test,
-                    diff_image: None,
-                    selector: "document".to_string(),
-                    file_name: screenshot_name.clone(),
-                    mis_match_threshold: threshold,
-                    diff: None,
-                    engine_error_msg: Some("Reference image not found".to_string()),
-                },
+            pair.engine_error_msg = Some("Reference image not found".to_string());
+            report_work.push(ReportWork::Immediate(ReportTest {
+                pair,
                 status: "fail".to_string(),
-            });
+            }));
             continue;
         }
 
-        // Compare images
-        match compare_images(&reference_path, &test_dst) {
-            Ok((result, diff_png)) => {
-                let diff_image_name = screenshot_name.replace(".png", "_diff.png");
-                let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
+        report_work.push(ReportWork::Compare(ComparisonJob {
+            pair,
+            reference_path,
+            test_path,
+        }));
+    }
 
-                let diff_image = if let Some(diff_data) = diff_png {
-                    write_file_atomically(&diff_image_path, &diff_data)?;
-                    Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name))
-                } else {
-                    // A previous comparison in this run may have produced a
-                    // diff. Do not show that stale artifact for a current pass.
-                    if diff_image_path.exists() {
-                        fs::remove_file(&diff_image_path)?;
-                    }
-                    None
-                };
+    let comparison_count = report_work
+        .iter()
+        .filter(|entry| matches!(entry, ReportWork::Compare(_)))
+        .count();
+    if comparison_count > 0 {
+        eprintln!(
+            "  Comparing {} screenshot pair(s) with up to {} worker(s)...",
+            comparison_count,
+            max_workers.max(1)
+        );
+    }
+    let outcomes = compare_report_work(&report_work, max_workers)?;
+    let mut report_tests = Vec::with_capacity(report_work.len());
 
-                let passed =
-                    result.raw_mis_match_percentage <= threshold && result.is_same_dimensions;
+    for (entry, outcome) in report_work.into_iter().zip(outcomes) {
+        match entry {
+            ReportWork::Immediate(test) => report_tests.push(test),
+            ReportWork::Compare(job) => match outcome.ok_or_else(|| {
+                anyhow!(
+                    "Comparison worker did not return an outcome for '{}'",
+                    job.pair.file_name
+                )
+            })? {
+                ComparisonOutcome::Compared { result, diff_png } => {
+                    let mut pair = job.pair;
+                    let diff_image_name = pair.file_name.replace(".png", "_diff.png");
+                    let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
 
-                let status = if passed { "pass" } else { "fail" };
-
-                let status_text = if passed {
-                    format!("{:.2}%", result.raw_mis_match_percentage).green()
-                } else {
-                    format!("{:.2}%", result.raw_mis_match_percentage).red()
-                };
-
-                eprintln!(
-                    "    {} {} → mismatch: {}",
-                    if passed {
-                        "PASS:".green()
+                    pair.diff_image = if let Some(diff_data) = diff_png {
+                        write_file_atomically(&diff_image_path, &diff_data)?;
+                        Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name))
                     } else {
-                        "FAIL:".red()
-                    },
-                    screenshot_name,
-                    status_text,
-                );
+                        // A previous comparison in this run may have produced a
+                        // diff. Do not show that stale artifact for a current pass.
+                        if diff_image_path.exists() {
+                            fs::remove_file(&diff_image_path)?;
+                        }
+                        None
+                    };
+                    let passed = result.raw_mis_match_percentage <= pair.mis_match_threshold
+                        && result.is_same_dimensions;
+                    let status = if passed { "pass" } else { "fail" };
+                    let status_text = if passed {
+                        format!("{:.2}%", result.raw_mis_match_percentage).green()
+                    } else {
+                        format!("{:.2}%", result.raw_mis_match_percentage).red()
+                    };
 
-                report_tests.push(ReportTest {
-                    pair: ReportPair {
-                        label,
-                        reference: format!("../bitmaps_reference/{}", screenshot_name),
-                        test: relative_test,
-                        diff_image,
-                        selector: "document".to_string(),
-                        file_name: screenshot_name.clone(),
-                        mis_match_threshold: threshold,
-                        diff: Some(build_diff(&result)),
-                        engine_error_msg: if !result.is_same_dimensions {
-                            Some(format!(
-                                "Dimensions differ: reference {}x{} vs test {}x{}",
-                                result.ref_width,
-                                result.ref_height,
-                                result.test_width,
-                                result.test_height
-                            ))
+                    eprintln!(
+                        "    {} {} → mismatch: {}",
+                        if passed {
+                            "PASS:".green()
                         } else {
-                            None
+                            "FAIL:".red()
                         },
-                    },
-                    status: status.to_string(),
-                });
-            }
-            Err(e) => {
-                eprintln!(
-                    "    {} Failed to compare {}: {}",
-                    "ERROR:".red(),
-                    screenshot_name,
-                    e
-                );
-                report_tests.push(ReportTest {
-                    pair: ReportPair {
-                        label,
-                        reference: format!("../bitmaps_reference/{}", screenshot_name),
-                        test: relative_test,
-                        diff_image: None,
-                        selector: "document".to_string(),
-                        file_name: screenshot_name.clone(),
-                        mis_match_threshold: threshold,
-                        diff: None,
-                        engine_error_msg: Some(format!("Comparison error: {}", e)),
-                    },
-                    status: "fail".to_string(),
-                });
-            }
+                        pair.file_name,
+                        status_text,
+                    );
+                    pair.diff = Some(build_diff(&result));
+                    if !result.is_same_dimensions {
+                        pair.engine_error_msg = Some(format!(
+                            "Dimensions differ: reference {}x{} vs test {}x{}",
+                            result.ref_width,
+                            result.ref_height,
+                            result.test_width,
+                            result.test_height
+                        ));
+                    }
+                    report_tests.push(ReportTest {
+                        pair,
+                        status: status.to_string(),
+                    });
+                }
+                ComparisonOutcome::Failed(error) => {
+                    let mut pair = job.pair;
+                    eprintln!(
+                        "    {} Failed to compare {}: {}",
+                        "ERROR:".red(),
+                        pair.file_name,
+                        error
+                    );
+                    pair.engine_error_msg = Some(format!("Comparison error: {}", error));
+                    report_tests.push(ReportTest {
+                        pair,
+                        status: "fail".to_string(),
+                    });
+                }
+            },
         }
     }
 
@@ -483,8 +531,8 @@ mod tests {
         fs::write(reference_dir.join(screenshot_name), png_bytes(10)).unwrap();
         fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
 
-        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
-        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
 
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
@@ -507,17 +555,57 @@ mod tests {
         let screenshot_name = "home__FINAL.png";
         fs::write(reference_dir.join(screenshot_name), png_bytes(10)).unwrap();
         fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
-        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
         let diff_path = test_dir.join("home__FINAL_diff.png");
         assert!(diff_path.exists());
 
         fs::write(test_dir.join(screenshot_name), png_bytes(10)).unwrap();
-        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
 
         assert!(!diff_path.exists());
         let report: serde_json::Value =
             serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
         assert_eq!(report["tests"][0]["status"], "pass");
         assert!(report["tests"][0]["pair"].get("diffImage").is_none());
+    }
+
+    #[test]
+    fn parallel_comparison_preserves_manifest_order() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        for (index, name) in ["alpha__FINAL.png", "beta__FINAL.png", "gamma__FINAL.png"]
+            .iter()
+            .enumerate()
+        {
+            let png = png_bytes((index as u8) + 10);
+            fs::write(reference_dir.join(name), &png).unwrap();
+            fs::write(test_dir.join(name), png).unwrap();
+        }
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&["gamma", "alpha", "beta"]).unwrap(),
+        )
+        .unwrap();
+
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 2).unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        let file_names: Vec<_> = report["tests"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|test| test["pair"]["fileName"].as_str().unwrap())
+            .collect();
+
+        assert_eq!(
+            file_names,
+            vec!["gamma__FINAL.png", "alpha__FINAL.png", "beta__FINAL.png"]
+        );
     }
 }

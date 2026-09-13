@@ -94,4 +94,5 @@ Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one comp
 
 Regressify waits for an interactive DOM after navigation, decodes fonts and images before capture, and uses one `settleTimeout` budget for resource readiness plus DOM/layout quiet. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret. Set `freezeAnimations: false` only when a scenario intentionally captures an animated intermediate state.
 ## Comparison Reports
-Comparison reports retain diff artifacts only for current mismatches.
+
+Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.

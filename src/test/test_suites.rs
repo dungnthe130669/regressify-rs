@@ -307,6 +307,9 @@ fn load_active_replacement_profile(
 }
 
 fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Result<()> {
+    if workspace_config.async_compare_limit == Some(0) {
+        anyhow::bail!("workspace asyncCompareLimit must be greater than zero");
+    }
     if let Some(browser) = &workspace_config.browser
         && !matches!(browser, TestBrowser::Chromium)
     {
@@ -321,6 +324,12 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
 }
 
 fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
+    if suite.async_compare_limit == Some(0) {
+        anyhow::bail!(
+            "Test suite '{}' asyncCompareLimit must be greater than zero",
+            input.name
+        );
+    }
     if let Some(browser) = &suite.browser
         && !matches!(browser, TestBrowser::Chromium)
     {
@@ -591,9 +600,17 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             let suite_dir = regressify_dir.join(suite_id);
 
             let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
+            let async_compare_limit =
+                config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
 
             eprintln!("Running visual comparison for '{}'...", input.name);
-            if let Err(e) = generate_comparison_report(&suite_dir, suite_id, test_date, threshold) {
+            if let Err(e) = generate_comparison_report(
+                &suite_dir,
+                suite_id,
+                test_date,
+                threshold,
+                async_compare_limit,
+            ) {
                 eprintln!("Visual comparison failed for '{}': {:?}", input.name, e);
                 comparison_failures += 1;
             }
@@ -763,7 +780,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     }
 
     // Promote screenshots and run comparison per suite
-    for (input, _suite) in &parsed_suites {
+    for (input, suite) in &parsed_suites {
         let suite_dir = regressify_dir.join(&input.name);
         let tests_dir = suite_dir.join("bitmaps_test");
 
@@ -844,7 +861,15 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         // an error placeholder); that must not fail the `ref` command, which is
         // about capturing baselines, not asserting them.
         eprintln!("Running visual comparison...");
-        if let Err(e) = generate_comparison_report(&suite_dir, &input.name, &latest_run, 0.0) {
+        let async_compare_limit =
+            config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
+        if let Err(e) = generate_comparison_report(
+            &suite_dir,
+            &input.name,
+            &latest_run,
+            0.0,
+            async_compare_limit,
+        ) {
             eprintln!(
                 "{} Visual comparison for '{}' reported failures: {:?}",
                 "WARNING:".yellow(),
@@ -999,6 +1024,29 @@ mod tests {
         assert_eq!(
             suites[0].path.file_name().and_then(|name| name.to_str()),
             Some("alloy.tests.yml")
+        );
+    }
+
+    #[test]
+    fn rejects_zero_async_compare_limit_before_capture() {
+        let workspace = config::WorkspaceConfig {
+            async_compare_limit: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            validate_workspace_config(&workspace)
+                .unwrap_err()
+                .to_string()
+                .contains("asyncCompareLimit")
+        );
+
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.async_compare_limit = Some(0);
+        assert!(
+            validate_test_suite_config(&input(), &suite)
+                .unwrap_err()
+                .to_string()
+                .contains("asyncCompareLimit")
         );
     }
 }

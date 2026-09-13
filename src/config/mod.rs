@@ -14,6 +14,7 @@ use crate::{
 };
 
 pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
+pub const DEFAULT_ASYNC_COMPARE_LIMIT: usize = 2;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
@@ -21,7 +22,7 @@ pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceConfig {
     pub async_capture_limit: Option<usize>,
-    pub async_compare_limit: Option<f64>,
+    pub async_compare_limit: Option<usize>,
     pub browser: Option<Browser>,
     pub bypass_csp: Option<bool>,
     pub cookie_path: Option<String>,
@@ -60,7 +61,7 @@ pub struct WorkspaceConfig {
 #[derive(Clone)]
 pub struct ResolvedConfig {
     pub async_capture_limit: usize,
-    pub async_compare_limit: f64,
+    pub async_compare_limit: usize,
     pub browser: Browser,
     pub bypass_csp: bool,
     pub cookie_path: Option<String>,
@@ -90,7 +91,7 @@ impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
             async_capture_limit: 5,
-            async_compare_limit: 50.0,
+            async_compare_limit: DEFAULT_ASYNC_COMPARE_LIMIT,
             browser: Browser::Chromium,
             bypass_csp: false,
             cookie_path: None,
@@ -177,6 +178,15 @@ fn merge_state_and_restore(state: Option<Needs>, restore: Option<Needs>) -> Opti
     needs_from_vec(values)
 }
 
+/// Resolve the suite-wide CPU worker count used for image comparisons.
+pub fn resolve_async_compare_limit(workspace: &WorkspaceConfig, suite: &TestSuite) -> usize {
+    suite
+        .async_compare_limit
+        .or(workspace.async_compare_limit)
+        .unwrap_or(DEFAULT_ASYNC_COMPARE_LIMIT)
+        .max(1)
+}
+
 /// Resolve configuration by cascading: scenario -> suite -> workspace -> defaults.
 /// For most fields: first non-None value wins (scenario overrides suite overrides workspace).
 /// For selectors (hide/remove): scenario replaces suite (no merge).
@@ -193,10 +203,7 @@ pub fn resolve_config(
             .or(workspace.async_capture_limit)
             .unwrap_or(defaults.async_capture_limit),
 
-        async_compare_limit: suite
-            .async_compare_limit
-            .or(workspace.async_compare_limit)
-            .unwrap_or(defaults.async_compare_limit),
+        async_compare_limit: resolve_async_compare_limit(workspace, suite),
 
         browser: suite
             .browser
@@ -456,5 +463,28 @@ mod tests {
         };
         let resolved = resolve_config(&workspace, &suite(), &scenario());
         assert!(!resolved.freeze_animations);
+    }
+
+    #[test]
+    fn async_compare_limit_uses_suite_workspace_and_default_order() {
+        let workspace = WorkspaceConfig {
+            async_compare_limit: Some(3),
+            ..Default::default()
+        };
+        let mut suite = suite();
+
+        assert_eq!(resolve_async_compare_limit(&workspace, &suite), 3);
+        suite.async_compare_limit = Some(4);
+        assert_eq!(resolve_async_compare_limit(&workspace, &suite), 4);
+        assert_eq!(
+            resolve_async_compare_limit(
+                &WorkspaceConfig::default(),
+                &TestSuite {
+                    async_compare_limit: None,
+                    ..suite
+                }
+            ),
+            DEFAULT_ASYNC_COMPARE_LIMIT
+        );
     }
 }

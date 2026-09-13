@@ -20,6 +20,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
     }
 
     let mis_match_threshold = args.mis_match_threshold;
+    let async_compare_limit = args.async_compare_limit;
 
     let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
@@ -70,7 +71,13 @@ pub fn compare(args: CompareArgs) -> Result<()> {
                 latest_run
             );
 
-            generate_comparison_report(&path, &suite_id, latest_run, mis_match_threshold)?;
+            generate_comparison_report(
+                &path,
+                &suite_id,
+                latest_run,
+                mis_match_threshold,
+                async_compare_limit,
+            )?;
             any_compared = true;
         }
     }

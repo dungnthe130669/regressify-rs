@@ -71,9 +71,11 @@ asyncCompareLimit
 :::::
 
 Type: `number`.  
-Default value: `50`.
+Default value: `2`.
 
-This parameter is accepted for compatibility with older test libraries. The current Rust comparison pipeline does not use this value yet.
+This parameter determines the maximum number of CPU-bound image comparisons run
+in parallel. Keep it low for large full-page screenshots because each worker
+decodes both images and may hold a diff image in memory.
 
 {% end %}
 

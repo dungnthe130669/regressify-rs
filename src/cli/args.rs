@@ -73,6 +73,10 @@ pub struct CompareArgs {
     /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
     #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
     pub mis_match_threshold: f64,
+
+    /// Maximum image comparisons to run in parallel
+    #[clap(long, default_value_t = 2, value_parser = positive_usize_parser)]
+    pub async_compare_limit: usize,
 }
 
 #[derive(clap::Args)]
@@ -99,9 +103,21 @@ fn speed_parser(s: &str) -> Result<u8, String> {
         })
 }
 
+fn positive_usize_parser(s: &str) -> Result<usize, String> {
+    s.parse::<usize>()
+        .map_err(|_| format!("'{}' is not a positive integer.", s))
+        .and_then(|value| {
+            if value > 0 {
+                Ok(value)
+            } else {
+                Err("Value must be greater than zero.".to_string())
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::speed_parser;
+    use super::{positive_usize_parser, speed_parser};
 
     #[test]
     fn optimization_speed_is_limited_to_supported_range() {
@@ -109,5 +125,12 @@ mod tests {
         assert_eq!(speed_parser("10"), Ok(10));
         assert!(speed_parser("0").is_err());
         assert!(speed_parser("11").is_err());
+    }
+
+    #[test]
+    fn positive_worker_count_rejects_zero() {
+        assert_eq!(positive_usize_parser("1"), Ok(1));
+        assert!(positive_usize_parser("0").is_err());
+        assert!(positive_usize_parser("one").is_err());
     }
 }

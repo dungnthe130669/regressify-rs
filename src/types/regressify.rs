@@ -28,7 +28,7 @@ pub struct TestSuite {
 
     pub async_capture_limit: Option<usize>,
 
-    pub async_compare_limit: Option<f64>,
+    pub async_compare_limit: Option<usize>,
 
     pub browser: Option<Browser>,
 
