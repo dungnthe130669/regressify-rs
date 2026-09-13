@@ -184,6 +184,25 @@ fn parse_frame_access(value: &serde_json::Value) -> Result<FrameAccess> {
     }
 }
 
+fn required_finite_coordinate(
+    value: &serde_json::Value,
+    coordinate: &str,
+    operation: &str,
+) -> Result<f64> {
+    let value = value
+        .get(coordinate)
+        .and_then(|field| field.as_f64())
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| {
+            anyhow!(
+                "{} returned no finite '{}' coordinate",
+                operation,
+                coordinate
+            )
+        })?;
+    Ok(value)
+}
+
 /// Check whether every frame in the chain is ready for target polling.
 async fn frame_access(
     page: &Page,
@@ -510,8 +529,8 @@ pub async fn check_not_obscured(
 
     if val.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
         return Ok(ElementInfo {
-            center_x: val.get("center_x").and_then(|v| v.as_f64()).unwrap_or(0.0),
-            center_y: val.get("center_y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            center_x: required_finite_coordinate(&val, "center_x", "Obscured check")?,
+            center_y: required_finite_coordinate(&val, "center_y", "Obscured check")?,
         });
     }
 
@@ -648,8 +667,8 @@ pub async fn get_frame_offset(
         ));
     }
 
-    let x = val.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let y = val.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let x = required_finite_coordinate(&val, "x", "Frame offset calculation")?;
+    let y = required_finite_coordinate(&val, "y", "Frame offset calculation")?;
     Ok((x, y))
 }
 
@@ -1056,6 +1075,21 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn actionability_coordinates_must_be_present_and_finite() {
+        let value = serde_json::json!({ "x": 12.5, "y": 7.0 });
+        assert_eq!(
+            required_finite_coordinate(&value, "x", "test operation").unwrap(),
+            12.5
+        );
+        assert!(
+            required_finite_coordinate(&value, "center_x", "test operation")
+                .unwrap_err()
+                .to_string()
+                .contains("no finite 'center_x' coordinate")
         );
     }
 }
