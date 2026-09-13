@@ -380,6 +380,14 @@ pub fn compare_images(
     let total_pixels = out_w
         .checked_mul(out_h)
         .ok_or_else(|| anyhow!("Image dimensions are too large to compare safely"))?;
+    if total_pixels > MAX_CAPTURE_PIXELS as usize {
+        anyhow::bail!(
+            "Comparison canvas {}x{} exceeds the {} pixel limit",
+            out_w,
+            out_h,
+            MAX_CAPTURE_PIXELS
+        );
+    }
     let diff_count = count_differences(reference, test, max_delta);
 
     let raw_mis_match = if total_pixels > 0 {
@@ -529,5 +537,27 @@ mod tests {
         let error = load_png(&path).unwrap_err();
 
         assert!(error.to_string().contains("pixel limit"));
+    }
+
+    #[test]
+    fn comparison_rejects_an_oversized_union_canvas() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let side = MAX_CAPTURE_DIMENSION as usize;
+        let pixels = vec![0_u8; side * 4];
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&pixels, side, 1).unwrap(),
+        )
+        .unwrap();
+        fs::write(&test_path, lodepng::encode32(&pixels, 1, side).unwrap()).unwrap();
+
+        let error = match compare_images(&reference_path, &test_path) {
+            Ok(_) => panic!("comparison unexpectedly accepted an oversized union canvas"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Comparison canvas"));
     }
 }
