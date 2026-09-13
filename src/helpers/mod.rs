@@ -16,7 +16,7 @@ pub use asset::AssetExtensions;
 pub use command::CommandExtensions;
 pub use date_time::{NaiveTimeExtensions, elapsed_time, sleep_remaining_time};
 pub use http::HttpExtensions;
-pub use io::{IOExtensions, format_size, write_file_atomically};
+pub use io::{IOExtensions, copy_file_atomically, format_size, write_file_atomically};
 pub use locks::{OnceLockBoolExtensions, OnceLockExtensions};
 pub use numbers::format_bytes;
 pub use slugify::slugify;

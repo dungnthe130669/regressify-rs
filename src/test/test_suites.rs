@@ -16,7 +16,7 @@ use crate::{
     common,
     compare::report_gen::generate_comparison_report,
     config::{self, replacements},
-    helpers::OnceLockExtensions,
+    helpers::{OnceLockExtensions, copy_file_atomically},
     snapshot,
     test::{
         browsers::fetcher,
@@ -879,7 +879,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
                 }
 
                 let dst = ref_dest.join(&file_name);
-                fs::copy(&src, &dst)?;
+                copy_file_atomically(&src, &dst)?;
 
                 let marker_dst = crate::test::capture::error_marker_path(&dst);
                 if marker_dst.exists() {

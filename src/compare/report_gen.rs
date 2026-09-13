@@ -8,7 +8,7 @@ use rayon::prelude::*;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
-use crate::helpers::write_file_atomically;
+use crate::helpers::{copy_file_atomically, write_file_atomically};
 use crate::test::capture::{REPORT_ORDER_FILE, REPORT_THRESHOLDS_FILE, read_error_marker};
 
 #[derive(Debug, Serialize)]
@@ -483,14 +483,14 @@ pub fn approve_screenshots(suite_dir: &Path) -> Result<()> {
                 continue;
             }
             let dst = reference_dir.join(&file_name);
-            fs::copy(&src, &dst)?;
+            copy_file_atomically(&src, &dst)?;
 
             // Promote the error-marker sidecar so the reference retains its
             // failure flag; clear any stale marker when the new capture is good.
             let marker_src = crate::test::capture::error_marker_path(&src);
             let marker_dst = crate::test::capture::error_marker_path(&dst);
             if marker_src.exists() {
-                fs::copy(&marker_src, &marker_dst)?;
+                copy_file_atomically(&marker_src, &marker_dst)?;
             } else if marker_dst.exists() {
                 fs::remove_file(&marker_dst)?;
             }
@@ -619,6 +619,33 @@ mod tests {
         assert_eq!(
             file_names,
             vec!["gamma__FINAL.png", "alpha__FINAL.png", "beta__FINAL.png"]
+        );
+    }
+
+    #[test]
+    fn approve_replaces_reference_and_clears_stale_error_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let screenshot_name = "home__FINAL.png";
+        let reference = reference_dir.join(screenshot_name);
+        fs::write(&reference, png_bytes(10)).unwrap();
+        fs::write(
+            crate::test::capture::error_marker_path(&reference),
+            br#"{"error":true,"message":"old capture failed"}"#,
+        )
+        .unwrap();
+        fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
+
+        approve_screenshots(&suite_dir).unwrap();
+
+        assert_eq!(fs::read(reference).unwrap(), png_bytes(200));
+        assert!(
+            !crate::test::capture::error_marker_path(&reference_dir.join(screenshot_name)).exists()
         );
     }
 }

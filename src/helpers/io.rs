@@ -2,7 +2,7 @@
 
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -11,6 +11,31 @@ use anyhow::{Context, Result, anyhow};
 /// Replace a file only after a complete temporary copy has been written in the
 /// same directory, preventing truncated generated artifacts after interruption.
 pub fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    write_with_temporary_file(path, |temporary_file| temporary_file.write_all(bytes))
+}
+
+/// Stream a source file into a same-directory temporary file, then replace the
+/// destination. This avoids partial or memory-heavy baseline promotion.
+pub fn copy_file_atomically(source: &Path, destination: &Path) -> Result<()> {
+    let mut source_file = fs::File::open(source)
+        .with_context(|| format!("Failed to open source file '{}'", source.display()))?;
+    let source_permissions = source_file.metadata()?.permissions();
+    write_with_temporary_file(destination, |temporary_file| {
+        std::io::copy(&mut source_file, temporary_file).map(|_| ())
+    })?;
+    fs::set_permissions(destination, source_permissions).with_context(|| {
+        format!(
+            "Failed to preserve permissions on copied file '{}'",
+            destination.display()
+        )
+    })?;
+    Ok(())
+}
+
+fn write_with_temporary_file(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> Result<()> {
     let parent = path
         .parent()
         .ok_or_else(|| anyhow!("Path '{}' has no parent directory", path.display()))?;
@@ -30,7 +55,7 @@ pub fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
                 temporary_path.display()
             )
         })?;
-        temporary_file.write_all(bytes).with_context(|| {
+        write(&mut temporary_file).with_context(|| {
             format!(
                 "Failed to write temporary file '{}'",
                 temporary_path.display()
@@ -144,6 +169,24 @@ mod tests {
         assert_eq!(
             fs::read_dir(temp_dir.path()).unwrap().count(),
             1,
+            "temporary files must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn atomic_copy_replaces_existing_content_without_temporary_files() {
+        let temp_dir = TempDir::new().unwrap();
+        let source = temp_dir.path().join("source.png");
+        let destination = temp_dir.path().join("reference.png");
+        fs::write(&source, b"new baseline").unwrap();
+        fs::write(&destination, b"old baseline").unwrap();
+
+        copy_file_atomically(&source, &destination).unwrap();
+
+        assert_eq!(fs::read(&destination).unwrap(), b"new baseline");
+        assert_eq!(
+            fs::read_dir(temp_dir.path()).unwrap().count(),
+            2,
             "temporary files must be cleaned up"
         );
     }
