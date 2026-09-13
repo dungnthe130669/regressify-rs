@@ -1033,7 +1033,8 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
         let mut count = 0;
         let mut skipped_failed_count = 0;
-        for entry in fs::read_dir(&latest_test_dir)?.flatten() {
+        for entry in fs::read_dir(&latest_test_dir)? {
+            let entry = entry?;
             let file_name = entry.file_name().to_string_lossy().to_string();
             if file_name.ends_with(".png") && !file_name.ends_with("_diff.png") {
                 let src = entry.path();
