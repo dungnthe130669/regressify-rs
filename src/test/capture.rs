@@ -628,9 +628,26 @@ pub fn write_error_screenshots(
 /// when the screenshot is flagged as a capture failure (`error: true`), or
 /// `None` when there is no marker or the flag is false.
 pub fn read_error_marker(png_path: &Path) -> Option<String> {
-    let bytes = fs::read(error_marker_path(png_path)).ok()?;
-    let marker: ErrorMarker = serde_json::from_slice(&bytes).ok()?;
-    marker.error.then_some(marker.message)
+    let marker_path = error_marker_path(png_path);
+    let bytes = match fs::read(&marker_path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            return Some(format!(
+                "Failed to read capture error marker '{}': {}",
+                marker_path.display(),
+                error
+            ));
+        }
+    };
+    match serde_json::from_slice::<ErrorMarker>(&bytes) {
+        Ok(marker) => marker.error.then_some(marker.message),
+        Err(error) => Some(format!(
+            "Failed to parse capture error marker '{}': {}",
+            marker_path.display(),
+            error
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -712,6 +729,13 @@ mod tests {
         };
         fs::write(error_marker_path(&png), serde_json::to_vec(&ok).unwrap()).unwrap();
         assert!(read_error_marker(&png).is_none());
+
+        fs::write(error_marker_path(&png), b"not json").unwrap();
+        assert!(
+            read_error_marker(&png)
+                .unwrap()
+                .contains("Failed to parse capture error marker")
+        );
     }
 
     #[test]

@@ -648,4 +648,27 @@ mod tests {
             !crate::test::capture::error_marker_path(&reference_dir.join(screenshot_name)).exists()
         );
     }
+
+    #[test]
+    fn approve_skips_capture_with_malformed_error_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let screenshot_name = "home__FINAL.png";
+        let capture = test_dir.join(screenshot_name);
+        fs::write(&capture, png_bytes(200)).unwrap();
+        fs::write(
+            crate::test::capture::error_marker_path(&capture),
+            b"invalid marker",
+        )
+        .unwrap();
+
+        approve_screenshots(&suite_dir).unwrap();
+
+        assert!(!reference_dir.join(screenshot_name).exists());
+    }
 }
