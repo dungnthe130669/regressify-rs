@@ -156,18 +156,28 @@ pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotT
 /// This prevents overwrites on case-insensitive filesystems and keeps generated
 /// diff files distinct from intermediate step screenshots.
 pub fn validate_scenario_capture_names(scenario: &TestScenario) -> Result<()> {
-    let mut names = HashSet::new();
-    for screenshot_type in final_screenshot_types(scenario)? {
-        register_capture_name(&mut names, &screenshot_type)?;
-    }
+    let mut screenshot_types =
+        saved_screenshot_types(scenario.actions.as_deref().unwrap_or_default().iter());
+    screenshot_types.extend(final_screenshot_types(scenario)?);
+    validate_screenshot_types(&screenshot_types)
+}
 
-    if let Some(actions) = &scenario.actions {
-        for action in actions {
-            if let TestAction::Save(save) = action {
-                let screenshot_type = ScreenshotType::Step(save.save.clone());
-                register_capture_name(&mut names, &screenshot_type)?;
-            }
-        }
+pub(crate) fn saved_screenshot_types<'a>(
+    actions: impl IntoIterator<Item = &'a TestAction>,
+) -> Vec<ScreenshotType> {
+    actions
+        .into_iter()
+        .filter_map(|action| match action {
+            TestAction::Save(save) => Some(ScreenshotType::Step(save.save.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+pub(crate) fn validate_screenshot_types(screenshot_types: &[ScreenshotType]) -> Result<()> {
+    let mut names = HashSet::with_capacity(screenshot_types.len());
+    for screenshot_type in screenshot_types {
+        register_capture_name(&mut names, screenshot_type)?;
     }
     Ok(())
 }

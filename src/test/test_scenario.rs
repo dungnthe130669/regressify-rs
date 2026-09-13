@@ -14,8 +14,8 @@ use crate::{
     test::{
         capture::{
             final_screenshot_order_key, final_screenshot_types, load_persisted_state,
-            save_screenshot, screenshot_type_description, validate_cookie_value,
-            write_error_screenshots,
+            save_screenshot, saved_screenshot_types, screenshot_type_description,
+            validate_cookie_value, validate_screenshot_types, write_error_screenshots,
         },
         page_stability::{
             freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
@@ -98,20 +98,20 @@ pub(crate) fn scenario_capture_viewports(
     }
 }
 
-/// Ordered final-capture keys for a scenario. Each configured viewport and
-/// selector target receives its own key, mirroring the screenshot filename
-/// without `.png` so reports remain in declaration order.
+/// Ordered capture keys for a scenario. Saved steps from prerequisite and
+/// current actions precede final targets, matching their execution order.
 pub(crate) fn scenario_capture_order_keys(
     workspace_config: &WorkspaceConfig,
     test_suite: &TestSuite,
     scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
 ) -> Result<Vec<String>> {
     let Some(scenario_id) = scenario.id.as_deref() else {
         return Ok(Vec::new());
     };
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
     let viewports = resolve_scenario_viewports(&resolved)?;
-    let screenshot_types = final_screenshot_types(scenario)?;
+    let screenshot_types = scenario_screenshot_types(scenario, all_scenarios)?;
     if viewports.is_empty() {
         Ok(screenshot_types
             .iter()
@@ -127,6 +127,21 @@ pub(crate) fn scenario_capture_order_keys(
             })
             .collect())
     }
+}
+
+fn scenario_screenshot_types(
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+) -> Result<Vec<ScreenshotType>> {
+    let mut visited = Vec::new();
+    let prerequisite_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
+    let mut screenshot_types = saved_screenshot_types(prerequisite_actions);
+    screenshot_types.extend(saved_screenshot_types(
+        scenario.actions.as_deref().unwrap_or_default().iter(),
+    ));
+    screenshot_types.extend(final_screenshot_types(scenario)?);
+    validate_screenshot_types(&screenshot_types)?;
+    Ok(screenshot_types)
 }
 
 /// Bundled inputs for executing one capture (a single scenario/viewport pair).
@@ -940,6 +955,10 @@ async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> R
 mod tests {
     use super::*;
 
+    fn scenario(id: &str, yaml: &str) -> TestScenario {
+        serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()
+    }
+
     #[tokio::test]
     async fn scenario_timeout_cancels_stalled_work() {
         let result = run_with_scenario_timeout(
@@ -955,5 +974,32 @@ mod tests {
                 .to_string()
                 .contains("stalled scenario' exceeded its 1ms timeout")
         );
+    }
+
+    #[test]
+    fn capture_order_includes_prerequisite_and_current_save_steps() {
+        let setup = scenario("setup", "actions:\n  - save: prepared\n");
+        let page = scenario(
+            "page",
+            "needs: setup\nactions:\n  - save: ready\nselectors:\n  - viewport\n",
+        );
+        let all = vec![setup, page];
+
+        let types = scenario_screenshot_types(&all[1], &all).unwrap();
+
+        assert!(matches!(&types[0], ScreenshotType::Step(name) if name == "prepared"));
+        assert!(matches!(&types[1], ScreenshotType::Step(name) if name == "ready"));
+        assert!(matches!(types[2], ScreenshotType::Viewport));
+    }
+
+    #[test]
+    fn capture_order_rejects_duplicate_inherited_save_steps() {
+        let setup = scenario("setup", "actions:\n  - save: current\n");
+        let page = scenario("page", "needs: setup\nactions:\n  - save: current\n");
+        let all = vec![setup, page];
+
+        let error = scenario_screenshot_types(&all[1], &all).unwrap_err();
+
+        assert!(error.to_string().contains("duplicate filename"));
     }
 }

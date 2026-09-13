@@ -275,7 +275,8 @@ save
 Capture an intermediate full-page screenshot before the scenario's final
 capture. Names must be non-empty portable filename components no longer than
 100 bytes; path separators, reserved Windows filename characters, and the
-`_diff` suffix are rejected.
+`_diff` suffix are rejected. Reports list saved screenshots in action order
+before that scenario's final capture targets.
 
 Example:
 

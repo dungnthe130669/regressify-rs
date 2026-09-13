@@ -805,11 +805,18 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         let mut order: Vec<String> = Vec::new();
         let mut thresholds: Vec<(String, f64)> = Vec::new();
         for scenario in &suite.scenarios {
-            let order_keys =
-                scenario_capture_order_keys(workspace_config.as_ref(), suite, scenario)?;
+            let order_keys = scenario_capture_order_keys(
+                workspace_config.as_ref(),
+                suite,
+                scenario,
+                &suite.scenarios,
+            )?;
             let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
             for order_key in &order_keys {
                 thresholds.push((order_key.clone(), resolved.mis_match_threshold));
+                if let Some(prefix) = order_key.split("__").next() {
+                    thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
+                }
             }
             order.extend(order_keys);
         }
@@ -980,11 +987,18 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         let mut order: Vec<String> = Vec::new();
         let mut thresholds: Vec<(String, f64)> = Vec::new();
         for scenario in &suite.scenarios {
-            let order_keys =
-                scenario_capture_order_keys(workspace_config.as_ref(), suite, scenario)?;
+            let order_keys = scenario_capture_order_keys(
+                workspace_config.as_ref(),
+                suite,
+                scenario,
+                &suite.scenarios,
+            )?;
             let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
             for order_key in &order_keys {
                 thresholds.push((order_key.clone(), resolved.mis_match_threshold));
+                if let Some(prefix) = order_key.split("__").next() {
+                    thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
+                }
             }
             order.extend(order_keys);
         }

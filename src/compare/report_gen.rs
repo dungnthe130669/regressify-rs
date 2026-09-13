@@ -297,11 +297,11 @@ pub fn generate_comparison_report(
         }
     };
     let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
-    let order_index: HashMap<&str, usize> = order
-        .iter()
-        .enumerate()
-        .map(|(index, key)| (key.as_str(), index))
-        .collect();
+    let mut order_index = HashMap::with_capacity(order.len() * 2);
+    for (index, key) in order.iter().enumerate() {
+        order_index.insert(key.as_str(), index);
+        order_index.entry(screenshot_prefix(key)).or_insert(index);
+    }
     test_screenshots.sort_by(|a, b| {
         screenshot_order_key(a, &order_index)
             .cmp(&screenshot_order_key(b, &order_index))
@@ -791,5 +791,39 @@ mod tests {
                 .to_string()
                 .contains("Requested capture run 'missing' does not exist")
         );
+    }
+
+    #[test]
+    fn intermediate_screenshots_use_scenario_order_and_threshold_fallbacks() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        fs::write(reference_dir.join("home__$after-login.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("home__$after-login.png"), png_bytes(200)).unwrap();
+        fs::write(reference_dir.join("home__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("home__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&["home__FINAL"]).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            test_dir.join(REPORT_THRESHOLDS_FILE),
+            serde_json::to_vec(&HashMap::from([("home".to_string(), 100.0)])).unwrap(),
+        )
+        .unwrap();
+
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        let tests = report["tests"].as_array().unwrap();
+        assert_eq!(tests[0]["pair"]["fileName"], "home__$after-login.png");
+        assert_eq!(tests[0]["status"], "pass");
+        assert_eq!(tests[0]["pair"]["misMatchThreshold"], 100.0);
     }
 }
