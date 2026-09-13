@@ -165,8 +165,9 @@ needs:
 The `url` property in wait supports:
 
 - Exact match: `https://example.com/page`
-- Simple `**` prefix/suffix patterns such as `**/page`
-- Other glob syntax (`*`, `?`, multiple wildcard segments) is not currently implemented
+- `*` within one path segment: `https://example.com/*/page`
+- `**` across any path depth: `https://example.com/**/page`
+- Wildcards in query values: `https://example.com/page?tab=*`
 
 ## Best Practices
 

@@ -3,6 +3,7 @@ use std::path::Path;
 use anyhow::{Result, anyhow};
 use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
+use regex::Regex;
 
 use crate::{
     common::ROOT_DIR,
@@ -981,6 +982,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             if let Some(url) = url {
                 let target_url = apply_action_url_replacements(url, url_replacements);
                 eprintln!("{} Waiting for URL: {}", log_prefix, target_url);
+                let matcher = UrlMatcher::compile(&target_url)?;
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
                 let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
@@ -992,7 +994,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                         .await?
                         .ok_or_else(|| anyhow!("Failed to get current URL"))?;
 
-                    let matches = url_matches(&current_url, &target_url);
+                    let matches = matcher.matches(&current_url);
 
                     if matches {
                         break;
@@ -1030,16 +1032,57 @@ fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> 
     config::replacements::apply_replacements(url, replacements)
 }
 
-fn url_matches(current_url: &str, target_url: &str) -> bool {
-    if target_url.contains("**") {
-        let parts: Vec<&str> = target_url.splitn(2, "**").collect();
-        let prefix = parts[0];
-        let suffix = parts.get(1).copied().unwrap_or("");
-        let prefix_ok = prefix.is_empty() || current_url.starts_with(prefix);
-        let suffix_ok = suffix.is_empty() || current_url.ends_with(suffix);
-        prefix_ok && suffix_ok
-    } else {
-        current_url == target_url
+enum UrlMatcher {
+    Exact(String),
+    Glob(Regex),
+}
+
+impl UrlMatcher {
+    fn compile(pattern: &str) -> Result<Self> {
+        if !pattern.contains('*') {
+            return Ok(Self::Exact(pattern.to_string()));
+        }
+
+        let mut expression = String::from("^");
+        let mut chars = pattern.chars().peekable();
+        let mut in_query = false;
+        while let Some(character) = chars.next() {
+            match character {
+                '?' if !in_query => {
+                    in_query = true;
+                    expression.push_str(r"\?");
+                }
+                '*' => {
+                    if chars.next_if_eq(&'*').is_some() {
+                        if chars.next_if_eq(&'/').is_some() {
+                            // A globstar directory can match zero directories:
+                            // `/ ** / dashboard` also matches `/dashboard`.
+                            expression.push_str("(?:.*/)?");
+                        } else {
+                            expression.push_str(".*");
+                        }
+                    } else if in_query {
+                        expression.push_str(".*");
+                    } else {
+                        expression.push_str("[^/?#]*");
+                    }
+                }
+                '?' => expression.push('.'),
+                _ => expression.push_str(&regex::escape(&character.to_string())),
+            }
+        }
+        expression.push('$');
+
+        Regex::new(&expression)
+            .map(Self::Glob)
+            .map_err(|error| anyhow!("Invalid URL wait pattern '{}': {}", pattern, error))
+    }
+
+    fn matches(&self, url: &str) -> bool {
+        match self {
+            Self::Exact(expected) => url == expected,
+            Self::Glob(regex) => regex.is_match(url),
+        }
     }
 }
 
@@ -1088,15 +1131,23 @@ mod tests {
     }
 
     #[test]
-    fn url_matches_supports_double_star_prefix_suffix() {
-        assert!(url_matches(
-            "https://example.com/a/b/dashboard",
-            "https://example.com/**/dashboard"
-        ));
-        assert!(!url_matches(
-            "https://example.com/a/b/settings",
-            "https://example.com/**/dashboard"
-        ));
+    fn url_matches_supports_multi_segment_globs() {
+        let deep_dashboard = UrlMatcher::compile("https://example.com/**/dashboard").unwrap();
+        let one_segment = UrlMatcher::compile("https://example.com/*/overview").unwrap();
+
+        assert!(deep_dashboard.matches("https://example.com/dashboard"));
+        assert!(deep_dashboard.matches("https://example.com/a/b/dashboard"));
+        assert!(one_segment.matches("https://example.com/a/overview"));
+        assert!(!one_segment.matches("https://example.com/a/b/overview"));
+        assert!(!deep_dashboard.matches("https://example.com/a/b/settings"));
+    }
+
+    #[test]
+    fn url_matches_keeps_query_delimiter_literal() {
+        let matcher = UrlMatcher::compile("https://example.com/**/dashboard?tab=*").unwrap();
+
+        assert!(matcher.matches("https://example.com/dashboard?tab=metrics"));
+        assert!(!matcher.matches("https://example.com/dashboard?section=metrics"));
     }
 
     #[test]

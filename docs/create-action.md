@@ -350,6 +350,8 @@ Wait for X milliseconds or wait for an element to appear.
 If there is navigation, add the URL pattern of the target page also.
 
 In `test` mode, URL replacements from the active replacement profile and suite/workspace `urlReplacements` are applied to `url` before matching. In `ref` mode, wait URLs are matched as written.
+URL patterns support `*` within a path segment, `**` across path depth, and
+wildcards in query values.
 
 > Important:
 >
@@ -366,12 +368,12 @@ actions:
   - wait: .popup
 
   # Wait for the navigation to `/quote`, then delay 2 seconds
-  # `**` means a group of arbitrary characters
+  # `**` matches any path depth
   - wait: 2000
     url: '**/quote'
 
   # Wait for the navigation to `/quote`, then wait for `#my-form` element to appear
-  # `**` means a group of arbitrary characters
+  # `*` matches within one path segment; `**` matches any path depth
   - wait: '#my-form'
     url: '**/quote'
 ```

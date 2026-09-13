@@ -2,17 +2,6 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
-## 1. Wait URL Glob Matching Is Simplistic
-
-**Severity:** Low  
-**File:** `src/test/test_action.rs` (Wait action URL branch)
-
-**Problem:** URL waits only support a single `**` prefix/suffix pattern. They do not support `*`, `?`, or multiple glob segments.
-
-**Current behavior:** `url: "https://example.com/**/dashboard"` matches any URL starting with `https://example.com/` and ending with `dashboard`. `url: "https://example.com/*/page"` treats `*` literally.
-
-**Fix options:** Document the limitation only, or use a real glob matcher for URL patterns.
-
 ## Resolved In September 2026 Hardening Pass
 
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
@@ -21,6 +10,7 @@ Issues identified during adversarial review that remain after the September 2026
 - Screenshot output writes atomically, preserves color-management PNG chunks, and uses collision-resistant run IDs.
 - Capture waits for an interactive DOM, lazy-loaded resources, decoded fonts/images, and stable layout; capture-only animation freezing is configurable.
 - Interactive actions use full actionability validation, URL replacements apply to `goto`, and iframe waits/coordinates are hardened.
+- URL waits support exact URLs, single-segment `*`, multi-segment `**`, and query-value wildcards.
 
 ## Resolved In June 2026 Fix Pass
 
