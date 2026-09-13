@@ -1,5 +1,7 @@
 use anyhow::Result;
 
+use crate::helpers::is_windows_reserved_path_component;
+
 #[derive(clap::Args)]
 pub struct OptimizeArgs {
     /// Compression speed (1 = smallest files, 10 = fastest)
@@ -155,7 +157,11 @@ fn portable_identifier_parser(value: &str, label: &str) -> Result<String, String
 }
 
 pub(crate) fn run_id_parser(value: &str) -> Result<String, String> {
-    portable_identifier_parser(value, "Run ID")
+    let run_id = portable_identifier_parser(value, "Run ID")?;
+    if is_windows_reserved_path_component(&run_id) {
+        return Err("Run ID cannot use a Windows-reserved device name.".to_string());
+    }
+    Ok(run_id)
 }
 
 pub(crate) fn site_env_parser(value: &str) -> Result<String, String> {
@@ -216,6 +222,7 @@ mod tests {
         assert!(run_id_parser("../../outside").is_err());
         assert!(run_id_parser("release run").is_err());
         assert!(run_id_parser(&"a".repeat(81)).is_err());
+        assert!(run_id_parser("CON").is_err());
     }
 
     #[test]

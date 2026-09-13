@@ -16,7 +16,7 @@ use crate::{
     common,
     compare::report_gen::{generate_comparison_report, validate_capture_run_inventory},
     config::{self, replacements},
-    helpers::{OnceLockExtensions, copy_file_atomically},
+    helpers::{OnceLockExtensions, copy_file_atomically, is_windows_reserved_path_component},
     snapshot,
     test::{
         browsers::fetcher,
@@ -458,8 +458,12 @@ fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
     if value.trim().is_empty()
         || value == "."
         || value == ".."
+        || value != value.trim()
         || value.len() > MAX_OUTPUT_IDENTIFIER_BYTES
+        || value.ends_with(['.', ' '])
         || value.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
+        || value.chars().any(char::is_control)
+        || is_windows_reserved_path_component(value)
     {
         anyhow::bail!(
             "{} '{}' is not a portable output path component no longer than {} bytes",
@@ -1647,6 +1651,21 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("no longer than")
+        );
+
+        for invalid_id in ["suite.", "suite ", "suite\nname", "CON", "LPT1.txt"] {
+            let mut invalid_id_suite = suite(vec![scenario("home", None)]);
+            invalid_id_suite.id = Some(invalid_id.to_string());
+            assert!(validate_test_suite_config(&input(), &invalid_id_suite).is_err());
+        }
+
+        let mut reserved_scenario_suite = suite(vec![scenario("home", None)]);
+        reserved_scenario_suite.scenarios[0].id = Some("AUX".to_string());
+        assert!(
+            validate_test_suite_config(&input(), &reserved_scenario_suite)
+                .unwrap_err()
+                .to_string()
+                .contains("Scenario ID")
         );
     }
 

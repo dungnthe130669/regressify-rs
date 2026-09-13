@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     common,
     helpers::{
-        OnceLockExtensions,
+        OnceLockExtensions, is_windows_reserved_path_component,
         png::{MAX_VISUAL_IMAGE_DIMENSION, MAX_VISUAL_IMAGE_PIXELS},
         slugify, write_file_atomically,
     },
@@ -375,6 +375,7 @@ pub fn validate_state_name(name: &str) -> Result<()> {
         || name.ends_with(['.', ' '])
         || name.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
         || name.chars().any(char::is_control)
+        || is_windows_reserved_path_component(name)
     {
         anyhow::bail!(
             "Invalid state name '{}': use a non-empty portable filename component no longer than {} bytes",
@@ -1279,6 +1280,7 @@ mod tests {
         assert!(validate_state_name("auth-staging").is_ok());
         assert!(validate_state_name("../auth").is_err());
         assert!(validate_state_name(" auth").is_err());
+        assert!(validate_state_name("CON").is_err());
     }
 
     #[test]

@@ -39,6 +39,8 @@ single path components no longer than 80 bytes. Viewport labels must produce
 unique screenshot suffixes no longer than 48 bytes. Website failures during
 scenario execution are written to the reports instead of stopping sibling
 scenarios.
+IDs cannot have leading or trailing whitespace, trailing dots, control
+characters, or Windows-reserved device names such as `CON` and `LPT1`.
 
 Before capture, Regressify also resolves every scenario, viewport, saved step,
 and selector target to its actual screenshot filename. Any collision, including

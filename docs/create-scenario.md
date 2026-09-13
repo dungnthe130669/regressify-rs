@@ -189,6 +189,7 @@ Default value: empty.
 Scenario ID. This property is for identifying this scenario when you re-use in other one. Use any value you find meaningful, but should be as short and concise as possible.  
 IDs must be a portable single path component: they cannot be empty or contain
 path separators, control characters, or Windows-reserved filename characters.
+Leading or trailing whitespace and trailing dots are also rejected.
 Lowercase alphanumeric characters (`a-z`, `0-9`), minus (`-`), and underscore
 (`_`) are recommended.
 

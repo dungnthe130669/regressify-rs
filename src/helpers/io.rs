@@ -32,6 +32,20 @@ pub fn copy_file_atomically(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether a single filename component is reserved by Windows, including a
+/// reserved device name followed by an extension.
+pub fn is_windows_reserved_path_component(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or_default();
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper.strip_prefix("COM").is_some_and(|number| {
+            matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+        || upper.strip_prefix("LPT").is_some_and(|number| {
+            matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+        })
+}
+
 fn write_with_temporary_file(
     path: &Path,
     write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
@@ -189,6 +203,16 @@ mod tests {
             2,
             "temporary files must be cleaned up"
         );
+    }
+
+    #[test]
+    fn windows_reserved_path_components_include_device_names_and_extensions() {
+        for name in ["CON", "prn", "AUX.json", "nul.txt", "COM1", "lpt9.log"] {
+            assert!(is_windows_reserved_path_component(name), "{name}");
+        }
+        for name in ["CONSOLE", "COM0", "COM10", "LPT0", "LPT10", "report.json"] {
+            assert!(!is_windows_reserved_path_component(name), "{name}");
+        }
     }
 
     // ==================== format_size tests ====================
