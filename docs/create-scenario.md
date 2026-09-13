@@ -31,6 +31,8 @@ url
 Type: `string`.
 
 The URL you want to test.
+Initial navigation, including the reload used after restoring local storage, is
+bounded by the workspace `elementTimeout` setting before actions begin.
 
 {% end %}
 

@@ -25,6 +25,21 @@ use crate::{
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
 };
 
+async fn navigate_and_wait_for_dom(
+    page: &chromiumoxide::Page,
+    url: &str,
+    element_timeout_ms: u64,
+) -> Result<()> {
+    let timeout = std::time::Duration::from_millis(element_timeout_ms);
+    crate::test::actionability::cdp_with_timeout(
+        timeout,
+        "navigating scenario URL",
+        page.goto(url),
+    )
+    .await?;
+    wait_for_dom_ready(page, timeout).await
+}
+
 /// Collect all prerequisite actions from `needs` dependencies recursively.
 /// Walks the dependency graph depth-first and returns actions in execution order.
 fn collect_needs_actions<'a>(
@@ -402,12 +417,7 @@ async fn run_scenario_capture_inner(
         .unwrap_or("common/_cookies.yaml");
     load_cookie_path(&page, cookie_path, log_prefix).await?;
 
-    page.goto(url).await?;
-    wait_for_dom_ready(
-        &page,
-        std::time::Duration::from_millis(resolved.element_timeout_ms),
-    )
-    .await?;
+    navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
 
     // localStorage requires an origin, so it is restored after navigation. If
     // anything was restored, reload so app code observes it during startup.
@@ -418,12 +428,7 @@ async fn run_scenario_capture_inner(
             "{} Reloading page after restoring localStorage...",
             log_prefix
         );
-        page.goto(url).await?;
-        wait_for_dom_ready(
-            &page,
-            std::time::Duration::from_millis(resolved.element_timeout_ms),
-        )
-        .await?;
+        navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
     }
 
     // Apply CSS override if configured
