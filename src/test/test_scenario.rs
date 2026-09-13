@@ -14,7 +14,8 @@ use crate::{
     test::{
         capture::{
             final_screenshot_order_key, final_screenshot_types, load_persisted_state,
-            save_screenshot, screenshot_type_description, write_error_screenshots,
+            save_screenshot, screenshot_type_description, validate_cookie_value,
+            write_error_screenshots,
         },
         page_stability::{
             freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
@@ -644,45 +645,14 @@ async fn load_state_cookies(
 
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
-            use chromiumoxide::cdp::browser_protocol::network::CookieParam;
-            for cookie in cookies {
-                if let (Some(name), Some(value)) = (
-                    cookie.get("name").and_then(|v| v.as_str()),
-                    cookie.get("value").and_then(|v| v.as_str()),
-                ) {
-                    let mut param = CookieParam::builder().name(name).value(value);
-
-                    if let Some(url) = cookie_url_from(cookie) {
-                        param = param.url(url);
-                    }
-                    if let Some(domain) = cookie.get("domain").and_then(|v| v.as_str()) {
-                        param = param.domain(domain);
-                    }
-                    if let Some(path) = cookie.get("path").and_then(|v| v.as_str()) {
-                        param = param.path(path);
-                    }
-                    if let Some(secure) = cookie.get("secure").and_then(|v| v.as_bool()) {
-                        param = param.secure(secure);
-                    }
-                    if let Some(http_only) = cookie.get("httpOnly").and_then(|v| v.as_bool()) {
-                        param = param.http_only(http_only);
-                    }
-                    if let Some(expires) = cookie.get("expires").and_then(|v| v.as_f64()) {
-                        use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
-                        param = param.expires(TimeSinceEpoch::new(expires));
-                    }
-                    if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str())
-                        && let Some(ss) = parse_same_site(same_site)
-                    {
-                        param = param.same_site(ss);
-                    }
-                    let cookie_param = param
-                        .build()
-                        .map_err(|e| anyhow::anyhow!("Failed to build cookie param: {:?}", e))?;
-                    page.set_cookie(cookie_param).await.map_err(|e| {
-                        anyhow!("Failed to restore state cookie '{}': {:?}", name, e)
-                    })?;
-                }
+            for (index, cookie) in cookies.iter().enumerate() {
+                let (name, cookie_param) = build_cookie_param(
+                    cookie,
+                    &format!("Persisted state '{}' cookie {}", name, index),
+                )?;
+                page.set_cookie(cookie_param).await.map_err(|error| {
+                    anyhow!("Failed to restore state cookie '{}': {:?}", name, error)
+                })?;
             }
         }
     }
@@ -753,47 +723,14 @@ async fn load_cookie_path(
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
 
-    use chromiumoxide::cdp::browser_protocol::network::{CookieParam, CookieSameSite};
-    for cookie in &cookies {
-        if let (Some(name), Some(value)) = (
-            cookie.get("name").and_then(|v| v.as_str()),
-            cookie.get("value").and_then(|v| v.as_str()),
-        ) {
-            let mut param = CookieParam::builder().name(name).value(value);
-
-            if let Some(url) = cookie_url_from(cookie) {
-                param = param.url(url);
-            }
-            if let Some(domain) = cookie.get("domain").and_then(|v| v.as_str()) {
-                param = param.domain(domain);
-            }
-            if let Some(path) = cookie.get("path").and_then(|v| v.as_str()) {
-                param = param.path(path);
-            }
-            if let Some(secure) = cookie.get("secure").and_then(|v| v.as_bool()) {
-                param = param.secure(secure);
-            }
-            if let Some(http_only) = cookie.get("httpOnly").and_then(|v| v.as_bool()) {
-                param = param.http_only(http_only);
-            }
-            if let Some(expires) = cookie.get("expires").and_then(|v| v.as_f64()) {
-                use chromiumoxide::cdp::browser_protocol::network::TimeSinceEpoch;
-                param = param.expires(TimeSinceEpoch::new(expires));
-            }
-            if let Some(same_site) = cookie.get("sameSite").and_then(|v| v.as_str())
-                && let Some(ss) = parse_same_site(same_site)
-            {
-                param = param.same_site(ss);
-            }
-            let _ = CookieSameSite::Strict;
-
-            let cookie_param = param
-                .build()
-                .map_err(|e| anyhow::anyhow!("Failed to build cookie param: {:?}", e))?;
-            page.set_cookie(cookie_param)
-                .await
-                .map_err(|e| anyhow!("Failed to load cookie '{}': {:?}", name, e))?;
-        }
+    for (index, cookie) in cookies.iter().enumerate() {
+        let (name, cookie_param) = build_cookie_param(
+            cookie,
+            &format!("cookiePath '{}' cookie {}", cookie_path.display(), index),
+        )?;
+        page.set_cookie(cookie_param)
+            .await
+            .map_err(|error| anyhow!("Failed to load cookie '{}': {:?}", name, error))?;
     }
 
     Ok(())
@@ -824,16 +761,67 @@ fn cookie_url_from(cookie: &serde_json::Value) -> Option<String> {
     Some(format!("{scheme}://{host}{path}"))
 }
 
+fn build_cookie_param(
+    cookie: &serde_json::Value,
+    context: &str,
+) -> Result<(
+    String,
+    chromiumoxide::cdp::browser_protocol::network::CookieParam,
+)> {
+    use chromiumoxide::cdp::browser_protocol::network::{CookieParam, TimeSinceEpoch};
+
+    validate_cookie_value(cookie, context)?;
+    let name = cookie
+        .get("name")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("{} has no name after validation", context))?;
+    let value = cookie
+        .get("value")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| anyhow!("{} has no value after validation", context))?;
+    let mut param = CookieParam::builder().name(name).value(value);
+
+    if let Some(url) = cookie_url_from(cookie) {
+        param = param.url(url);
+    }
+    if let Some(domain) = cookie.get("domain").and_then(|value| value.as_str()) {
+        param = param.domain(domain);
+    }
+    if let Some(path) = cookie.get("path").and_then(|value| value.as_str()) {
+        param = param.path(path);
+    }
+    if let Some(secure) = cookie.get("secure").and_then(|value| value.as_bool()) {
+        param = param.secure(secure);
+    }
+    if let Some(http_only) = cookie.get("httpOnly").and_then(|value| value.as_bool()) {
+        param = param.http_only(http_only);
+    }
+    if let Some(expires) = cookie.get("expires").and_then(|value| value.as_f64()) {
+        param = param.expires(TimeSinceEpoch::new(expires));
+    }
+    if let Some(same_site) = cookie.get("sameSite").and_then(|value| value.as_str()) {
+        param = param.same_site(parse_same_site(same_site)?);
+    }
+
+    let param = param
+        .build()
+        .map_err(|error| anyhow!("Failed to build {}: {:?}", context, error))?;
+    Ok((name.to_string(), param))
+}
+
 /// Parse a SameSite string from cookie JSON into the CDP enum.
 fn parse_same_site(
     s: &str,
-) -> Option<chromiumoxide::cdp::browser_protocol::network::CookieSameSite> {
+) -> Result<chromiumoxide::cdp::browser_protocol::network::CookieSameSite> {
     use chromiumoxide::cdp::browser_protocol::network::CookieSameSite;
     match s {
-        "Strict" | "strict" => Some(CookieSameSite::Strict),
-        "Lax" | "lax" => Some(CookieSameSite::Lax),
-        "None" | "none" => Some(CookieSameSite::None),
-        _ => None,
+        "Strict" | "strict" => Ok(CookieSameSite::Strict),
+        "Lax" | "lax" => Ok(CookieSameSite::Lax),
+        "None" | "none" => Ok(CookieSameSite::None),
+        _ => anyhow::bail!(
+            "Unsupported SameSite value '{}'; expected Strict, Lax, or None",
+            s
+        ),
     }
 }
 

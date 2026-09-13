@@ -683,8 +683,15 @@ fn validate_external_capture_files_in(
                     let content = std::fs::read_to_string(&path).with_context(|| {
                         format!("Failed to read cookiePath '{}'", path.display())
                     })?;
-                    let _: Vec<serde_json::Value> = serde_yaml::from_str(&content)
+                    let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)
                         .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
+                    for (index, cookie) in cookies.iter().enumerate() {
+                        crate::test::capture::validate_cookie_value(
+                            cookie,
+                            &format!("cookiePath '{}' cookie {}", path.display(), index),
+                        )
+                        .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
+                    }
                 }
             }
 
@@ -1538,6 +1545,20 @@ mod tests {
             )
             .is_ok()
         );
+
+        std::fs::write(
+            &cookies_path,
+            "- name: session\n  value: abc\n  domain: example.com\n  sameSite: Invalid\n",
+        )
+        .unwrap();
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &parsed,
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("Strict, Lax, or None"));
 
         std::fs::write(&cookies_path, "not: a cookie list\n").unwrap();
         let error = validate_external_capture_files_in(

@@ -401,50 +401,10 @@ fn validate_persisted_state_value(state: &serde_json::Value, name: &str) -> Resu
             )
         })?;
         for (index, cookie) in cookies.iter().enumerate() {
-            let cookie = cookie.as_object().ok_or_else(|| {
-                anyhow!(
-                    "Persisted state '{}' cookie {} must be an object",
-                    name,
-                    index
-                )
-            })?;
-            if cookie
-                .get("name")
-                .and_then(|value| value.as_str())
-                .is_none_or(str::is_empty)
-            {
-                anyhow::bail!(
-                    "Persisted state '{}' cookie {} requires a name",
-                    name,
-                    index
-                );
-            }
-            if cookie
-                .get("value")
-                .and_then(|value| value.as_str())
-                .is_none()
-            {
-                anyhow::bail!(
-                    "Persisted state '{}' cookie {} requires a string value",
-                    name,
-                    index
-                );
-            }
-            let has_url = cookie
-                .get("url")
-                .and_then(|value| value.as_str())
-                .is_some_and(|url| !url.is_empty());
-            let has_domain = cookie
-                .get("domain")
-                .and_then(|value| value.as_str())
-                .is_some_and(|domain| !domain.trim_start_matches('.').is_empty());
-            if !has_url && !has_domain {
-                anyhow::bail!(
-                    "Persisted state '{}' cookie {} requires a url or domain",
-                    name,
-                    index
-                );
-            }
+            validate_cookie_value(
+                cookie,
+                &format!("Persisted state '{}' cookie {}", name, index),
+            )?;
         }
     }
     if let Some(local_storage) = object.get("localStorage") {
@@ -463,6 +423,79 @@ fn validate_persisted_state_value(state: &serde_json::Value, name: &str) -> Resu
                 );
             }
         }
+    }
+    Ok(())
+}
+
+/// Validate cookie data before it is sent through CDP. Chromium's cookie JSON
+/// carries additional fields, so unknown fields remain allowed, but every field
+/// this CLI consumes must be well typed and meaningful.
+pub(crate) fn validate_cookie_value(cookie: &serde_json::Value, context: &str) -> Result<()> {
+    let cookie = cookie
+        .as_object()
+        .ok_or_else(|| anyhow!("{} must be an object", context))?;
+    if cookie
+        .get("name")
+        .and_then(|value| value.as_str())
+        .is_none_or(str::is_empty)
+    {
+        anyhow::bail!("{} requires a non-empty name", context);
+    }
+    if cookie
+        .get("value")
+        .and_then(|value| value.as_str())
+        .is_none()
+    {
+        anyhow::bail!("{} requires a string value", context);
+    }
+
+    let has_url = cookie
+        .get("url")
+        .and_then(|value| value.as_str())
+        .is_some_and(|url| !url.trim().is_empty());
+    let has_domain = cookie
+        .get("domain")
+        .and_then(|value| value.as_str())
+        .is_some_and(|domain| !domain.trim_start_matches('.').trim().is_empty());
+    if !has_url && !has_domain {
+        anyhow::bail!("{} requires a url or domain", context);
+    }
+
+    for (field, expected) in [
+        ("url", "a string"),
+        ("domain", "a string"),
+        ("path", "a string"),
+        ("sameSite", "a string"),
+    ] {
+        if cookie.get(field).is_some_and(|value| !value.is_string()) {
+            anyhow::bail!("{} field '{}' must be {}", context, field, expected);
+        }
+    }
+    for field in ["secure", "httpOnly"] {
+        if cookie.get(field).is_some_and(|value| !value.is_boolean()) {
+            anyhow::bail!("{} field '{}' must be a boolean", context, field);
+        }
+    }
+    if let Some(expires) = cookie.get("expires")
+        && !expires.as_f64().is_some_and(f64::is_finite)
+    {
+        anyhow::bail!("{} field 'expires' must be a finite number", context);
+    }
+    if let Some(same_site) = cookie.get("sameSite").and_then(|value| value.as_str())
+        && !matches!(
+            same_site.to_ascii_lowercase().as_str(),
+            "strict" | "lax" | "none"
+        )
+    {
+        anyhow::bail!("{} field 'sameSite' must be Strict, Lax, or None", context);
+    }
+    if cookie
+        .get("sameSite")
+        .and_then(|value| value.as_str())
+        .is_some_and(|same_site| same_site.eq_ignore_ascii_case("none"))
+        && cookie.get("secure").and_then(|value| value.as_bool()) != Some(true)
+    {
+        anyhow::bail!("{} with SameSite=None requires secure: true", context);
     }
     Ok(())
 }
@@ -1084,6 +1117,57 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("Invalid persisted state")
+        );
+    }
+
+    #[test]
+    fn cookie_validation_requires_supported_cookie_fields() {
+        let valid = serde_json::json!({
+            "name": "session",
+            "value": "abc",
+            "domain": ".example.com",
+            "sameSite": "Lax",
+            "secure": true
+        });
+        assert!(validate_cookie_value(&valid, "cookie").is_ok());
+
+        let invalid_url_type = serde_json::json!({
+            "name": "session",
+            "value": "abc",
+            "domain": ".example.com",
+            "url": 1
+        });
+        assert!(
+            validate_cookie_value(&invalid_url_type, "cookie")
+                .unwrap_err()
+                .to_string()
+                .contains("field 'url' must be a string")
+        );
+
+        let invalid_same_site = serde_json::json!({
+            "name": "session",
+            "value": "abc",
+            "domain": ".example.com",
+            "sameSite": "Invalid"
+        });
+        assert!(
+            validate_cookie_value(&invalid_same_site, "cookie")
+                .unwrap_err()
+                .to_string()
+                .contains("Strict, Lax, or None")
+        );
+
+        let insecure_none = serde_json::json!({
+            "name": "session",
+            "value": "abc",
+            "domain": ".example.com",
+            "sameSite": "None"
+        });
+        assert!(
+            validate_cookie_value(&insecure_none, "cookie")
+                .unwrap_err()
+                .to_string()
+                .contains("requires secure: true")
         );
     }
 

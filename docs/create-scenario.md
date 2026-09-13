@@ -143,7 +143,21 @@ cookiePath
 Type: `string`.  
 Default value: Test suite's value, then workspace value, then `common/_cookies.yaml`.
 
-Import cookies in YAML format. Cookies are loaded before the first navigation and the path must stay inside the project root.
+Import cookies in YAML format. Cookies are loaded before the first navigation
+and the path must stay inside the project root. Each cookie needs a non-empty
+`name`, a string `value`, and either `url` or `domain`. Optional `secure` and
+`httpOnly` values must be booleans; `sameSite` is `Strict`, `Lax`, or `None`.
+`SameSite: None` requires `secure: true`.
+
+```yaml
+- name: session
+  value: example-token
+  domain: .example.com
+  path: /
+  secure: true
+  httpOnly: true
+  sameSite: Lax
+```
 
 {% end %}
 
