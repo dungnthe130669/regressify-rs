@@ -7,6 +7,7 @@ mod http;
 mod io;
 mod locks;
 mod numbers;
+pub(crate) mod png;
 mod slugify;
 
 #[cfg(unix)]

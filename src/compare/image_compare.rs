@@ -1,11 +1,10 @@
-use std::time::Instant;
-use std::{fs::File, io::Read, path::Path};
+use std::{path::Path, time::Instant};
 
 use anyhow::{Result, anyhow};
 use lodepng::Image;
 use rgb::RGBA8;
 
-use crate::test::capture::{MAX_CAPTURE_DIMENSION, MAX_CAPTURE_PIXELS};
+use crate::helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions};
 
 /// Result of comparing two images.
 pub struct CompareResult {
@@ -22,7 +21,7 @@ pub struct CompareResult {
 
 /// Load a PNG file as RGBA pixels.
 fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
-    let (expected_width, expected_height) = read_png_dimensions(path)?;
+    let (expected_width, expected_height) = read_bounded_png_dimensions(path)?;
     let mut decoder = lodepng::Decoder::new();
     decoder.color_convert(true);
     decoder.info_raw_mut().colortype = lodepng::ColorType::RGBA;
@@ -51,46 +50,6 @@ fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
             path.display()
         )),
     }
-}
-
-/// Read and bound PNG IHDR dimensions before the decoder allocates an RGBA buffer.
-fn read_png_dimensions(path: &Path) -> Result<(usize, usize)> {
-    const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-    let mut header = [0_u8; 24];
-    let mut file = File::open(path)?;
-    file.read_exact(&mut header)
-        .map_err(|error| anyhow!("Failed to read PNG header '{}': {}", path.display(), error))?;
-
-    if header[..8] != PNG_SIGNATURE {
-        anyhow::bail!("Invalid PNG signature in '{}'", path.display());
-    }
-    if header[8..12] != [0, 0, 0, 13] || header[12..16] != *b"IHDR" {
-        anyhow::bail!("PNG '{}' has no valid IHDR header", path.display());
-    }
-
-    let width = u32::from_be_bytes([header[16], header[17], header[18], header[19]]);
-    let height = u32::from_be_bytes([header[20], header[21], header[22], header[23]]);
-    let pixel_count = u64::from(width)
-        .checked_mul(u64::from(height))
-        .ok_or_else(|| anyhow!("PNG '{}' dimensions overflow", path.display()))?;
-    if width == 0
-        || height == 0
-        || width > MAX_CAPTURE_DIMENSION
-        || height > MAX_CAPTURE_DIMENSION
-        || pixel_count > MAX_CAPTURE_PIXELS
-    {
-        anyhow::bail!(
-            "Cannot compare PNG '{}': dimensions {}x{} exceed the {}x{} / {} pixel limit",
-            path.display(),
-            width,
-            height,
-            MAX_CAPTURE_DIMENSION,
-            MAX_CAPTURE_DIMENSION,
-            MAX_CAPTURE_PIXELS
-        );
-    }
-
-    Ok((width as usize, height as usize))
 }
 
 // ─── Perceptual comparison (pixelmatch-style) ────────────────────────────────
@@ -380,12 +339,12 @@ pub fn compare_images(
     let total_pixels = out_w
         .checked_mul(out_h)
         .ok_or_else(|| anyhow!("Image dimensions are too large to compare safely"))?;
-    if total_pixels > MAX_CAPTURE_PIXELS as usize {
+    if total_pixels > MAX_VISUAL_IMAGE_PIXELS as usize {
         anyhow::bail!(
             "Comparison canvas {}x{} exceeds the {} pixel limit",
             out_w,
             out_h,
-            MAX_CAPTURE_PIXELS
+            MAX_VISUAL_IMAGE_PIXELS
         );
     }
     let diff_count = count_differences(reference, test, max_delta);
@@ -427,6 +386,8 @@ pub fn compare_images(
 mod tests {
     use super::*;
     use std::fs;
+
+    use crate::helpers::png::MAX_VISUAL_IMAGE_DIMENSION;
 
     fn png_header(width: u32, height: u32) -> Vec<u8> {
         let mut header = vec![137, 80, 78, 71, 13, 10, 26, 10];
@@ -530,7 +491,7 @@ mod tests {
         let path = dir.path().join("oversized.png");
         fs::write(
             &path,
-            png_header(MAX_CAPTURE_DIMENSION, MAX_CAPTURE_DIMENSION),
+            png_header(MAX_VISUAL_IMAGE_DIMENSION, MAX_VISUAL_IMAGE_DIMENSION),
         )
         .unwrap();
 
@@ -544,7 +505,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let reference_path = dir.path().join("reference.png");
         let test_path = dir.path().join("test.png");
-        let side = MAX_CAPTURE_DIMENSION as usize;
+        let side = MAX_VISUAL_IMAGE_DIMENSION as usize;
         let pixels = vec![0_u8; side * 4];
         fs::write(
             &reference_path,

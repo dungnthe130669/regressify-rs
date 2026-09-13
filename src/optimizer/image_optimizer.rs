@@ -10,7 +10,11 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::OptimizeArgs,
     common,
-    helpers::{OnceLockExtensions, format_bytes, write_file_atomically},
+    helpers::{
+        OnceLockExtensions, format_bytes,
+        png::{MAX_VISUAL_IMAGE_DECOMPRESSED_BYTES, read_bounded_png_dimensions},
+        write_file_atomically,
+    },
 };
 
 enum OptimizeResult {
@@ -196,6 +200,23 @@ fn collect_png_files(output_dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(png_files)
 }
 
+/// Configure OxiPNG for bounded, lossless recompression without altering PNG
+/// color representation, bit depth, palette, or interlacing.
+fn compression_only_options(speed: u8) -> oxipng::Options {
+    let oxipng_level = (10 - speed).clamp(0, 6);
+    let mut options = oxipng::Options::from_preset(oxipng_level);
+    options.interlace = None;
+    options.optimize_alpha = false;
+    options.bit_depth_reduction = false;
+    options.color_type_reduction = false;
+    options.palette_reduction = false;
+    options.grayscale_reduction = false;
+    options.scale_16 = false;
+    options.strip = oxipng::StripChunks::None;
+    options.max_decompressed_size = Some(MAX_VISUAL_IMAGE_DECOMPRESSED_BYTES);
+    options
+}
+
 fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
     let metadata = fs::metadata(path)?;
     let original_size = metadata.len();
@@ -203,13 +224,11 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
         return Ok(OptimizeResult::TooSmall(original_size));
     }
 
+    read_bounded_png_dimensions(path)?;
     let source =
         fs::read(path).with_context(|| format!("Failed to read PNG '{}'", path.display()))?;
 
-    // oxipng changes compression only. Do not quantize, resize, or strip color
-    // data: visual-regression artifacts must retain their decoded pixels.
-    let oxipng_level = (10 - args.speed).clamp(0, 6);
-    let options = oxipng::Options::from_preset(oxipng_level);
+    let options = compression_only_options(args.speed);
     let optimized_buffer = oxipng::optimize_from_memory(&source, &options)
         .with_context(|| format!("Failed to losslessly optimize PNG '{}'", path.display()))?;
 
@@ -227,6 +246,8 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 mod tests {
     use super::*;
 
+    use crate::helpers::png::MAX_VISUAL_IMAGE_DIMENSION;
+
     fn optimize_args(min_size_kb: u64) -> OptimizeArgs {
         OptimizeArgs {
             speed: 8,
@@ -243,6 +264,33 @@ mod tests {
             lodepng::Image::RGBA(image) => image.buffer.to_vec(),
             image => panic!("expected RGBA image, got {image:?}"),
         }
+    }
+
+    fn png_header(width: u32, height: u32) -> Vec<u8> {
+        let mut header = Vec::from([137, 80, 78, 71, 13, 10, 26, 10]);
+        header.extend_from_slice(&13_u32.to_be_bytes());
+        header.extend_from_slice(b"IHDR");
+        header.extend_from_slice(&width.to_be_bytes());
+        header.extend_from_slice(&height.to_be_bytes());
+        header
+    }
+
+    #[test]
+    fn compression_only_options_preserve_png_representation() {
+        let options = compression_only_options(8);
+
+        assert_eq!(options.interlace, None);
+        assert!(!options.optimize_alpha);
+        assert!(!options.bit_depth_reduction);
+        assert!(!options.color_type_reduction);
+        assert!(!options.palette_reduction);
+        assert!(!options.grayscale_reduction);
+        assert!(!options.scale_16);
+        assert_eq!(options.strip, oxipng::StripChunks::None);
+        assert_eq!(
+            options.max_decompressed_size,
+            Some(MAX_VISUAL_IMAGE_DECOMPRESSED_BYTES)
+        );
     }
 
     #[test]
@@ -297,5 +345,23 @@ mod tests {
 
         assert!(matches!(result, OptimizeResult::TooSmall(3)));
         assert_eq!(fs::read(path).unwrap(), [1_u8, 2, 3]);
+    }
+
+    #[test]
+    fn oversized_pngs_are_rejected_before_optimization() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("oversized.png");
+        fs::write(
+            &path,
+            png_header(MAX_VISUAL_IMAGE_DIMENSION, MAX_VISUAL_IMAGE_DIMENSION),
+        )
+        .unwrap();
+
+        let error = match optimize_png(&path, &optimize_args(0)) {
+            Ok(_) => panic!("optimizer unexpectedly accepted an oversized image"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("pixel limit"));
     }
 }

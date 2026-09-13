@@ -15,7 +15,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common,
-    helpers::{OnceLockExtensions, slugify, write_file_atomically},
+    helpers::{
+        OnceLockExtensions,
+        png::{MAX_VISUAL_IMAGE_DIMENSION, MAX_VISUAL_IMAGE_PIXELS},
+        slugify, write_file_atomically,
+    },
     snapshot::get_asset_version,
     types::{ScreenshotType, Selectors, TestAction, TestScenario, TestSuite},
 };
@@ -29,8 +33,6 @@ const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 const MAX_SELECTOR_SLUG_LEN: usize = 48;
 const MAX_STEP_NAME_BYTES: usize = 100;
 const MAX_STATE_NAME_BYTES: usize = 80;
-pub(crate) const MAX_CAPTURE_DIMENSION: u32 = 100_000;
-pub(crate) const MAX_CAPTURE_PIXELS: u64 = 64_000_000;
 
 /// Marker for failures while producing on-disk regression artifacts. These are
 /// tool failures, unlike a page that fails to render or perform an action.
@@ -662,25 +664,25 @@ fn validate_capture_dimensions(width: f64, height: f64, target: &str) -> Result<
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
-        || width > f64::from(MAX_CAPTURE_DIMENSION)
-        || height > f64::from(MAX_CAPTURE_DIMENSION)
+        || width > f64::from(MAX_VISUAL_IMAGE_DIMENSION)
+        || height > f64::from(MAX_VISUAL_IMAGE_DIMENSION)
     {
         anyhow::bail!(
             "Cannot capture {}: dimensions {}x{} must be finite, positive, and no larger than {} CSS pixels",
             target,
             width,
             height,
-            MAX_CAPTURE_DIMENSION
+            MAX_VISUAL_IMAGE_DIMENSION
         );
     }
     let pixel_count = width.ceil() * height.ceil();
-    if pixel_count > MAX_CAPTURE_PIXELS as f64 {
+    if pixel_count > MAX_VISUAL_IMAGE_PIXELS as f64 {
         anyhow::bail!(
             "Cannot capture {}: dimensions {}x{} exceed the {} CSS pixel limit",
             target,
             width,
             height,
-            MAX_CAPTURE_PIXELS
+            MAX_VISUAL_IMAGE_PIXELS
         );
     }
     Ok(())
@@ -1235,7 +1237,7 @@ mod tests {
         );
         assert!(validate_capture_dimensions(f64::NAN, 100.0, "test").is_err());
         assert!(
-            validate_capture_dimensions(f64::from(MAX_CAPTURE_DIMENSION) + 1.0, 100.0, "test")
+            validate_capture_dimensions(f64::from(MAX_VISUAL_IMAGE_DIMENSION) + 1.0, 100.0, "test")
                 .is_err()
         );
         assert!(
