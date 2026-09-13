@@ -292,36 +292,14 @@ pub async fn wait_for_selector(
     }
 }
 
-/// Wait for element to be visible: non-zero bounding box, not hidden, opacity > 0.
+/// Wait for element to be visible: non-zero bounding box, not CSS/content-hidden, opacity > 0.
 pub async fn wait_for_visible(
     page: &Page,
     selector: &str,
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    let frame_selectors = get_frame_selectors(frame);
-    let element_js = build_element_js(selector, &frame_selectors);
-    let script = format!(
-        r#"(() => {{
-            const el = {element_js};
-            if (!el) return {{ visible: false, reason: 'not_found' }};
-            const rect = el.getBoundingClientRect();
-            const view = el.ownerDocument.defaultView;
-            if (!view) return {{ visible: false, reason: 'no_window' }};
-            if (rect.width === 0 || rect.height === 0)
-                return {{ visible: false, reason: 'zero_size' }};
-            for (let current = el; current; current = current.parentElement) {{
-                const style = current.ownerDocument.defaultView.getComputedStyle(current);
-                if (style.visibility === 'hidden' || style.visibility === 'collapse')
-                    return {{ visible: false, reason: 'visibility_hidden' }};
-                if (style.display === 'none')
-                    return {{ visible: false, reason: 'display_none' }};
-                if (parseFloat(style.opacity) === 0)
-                    return {{ visible: false, reason: 'zero_opacity' }};
-            }}
-            return {{ visible: true }};
-        }})()"#
-    );
+    let script = visibility_script(selector, frame);
 
     let timeout = std::time::Duration::from_millis(config.actionability_timeout_ms);
     let poll = std::time::Duration::from_millis(config.poll_interval_ms);
@@ -356,6 +334,34 @@ pub async fn wait_for_visible(
             .to_string();
         tokio::time::sleep(poll).await;
     }
+}
+
+fn visibility_script(selector: &str, frame: &Option<Frame>) -> String {
+    let frame_selectors = get_frame_selectors(frame);
+    let element_js = build_element_js(selector, &frame_selectors);
+    format!(
+        r#"(() => {{
+            const el = {element_js};
+            if (!el) return {{ visible: false, reason: 'not_found' }};
+            const rect = el.getBoundingClientRect();
+            const view = el.ownerDocument.defaultView;
+            if (!view) return {{ visible: false, reason: 'no_window' }};
+            if (rect.width === 0 || rect.height === 0)
+                return {{ visible: false, reason: 'zero_size' }};
+            for (let current = el; current; current = current.parentElement) {{
+                const style = current.ownerDocument.defaultView.getComputedStyle(current);
+                if (style.visibility === 'hidden' || style.visibility === 'collapse')
+                    return {{ visible: false, reason: 'visibility_hidden' }};
+                if (style.display === 'none')
+                    return {{ visible: false, reason: 'display_none' }};
+                if (style.contentVisibility === 'hidden')
+                    return {{ visible: false, reason: 'content_visibility_hidden' }};
+                if (parseFloat(style.opacity) === 0)
+                    return {{ visible: false, reason: 'zero_opacity' }};
+            }}
+            return {{ visible: true }};
+        }})()"#
+    )
 }
 
 /// Wait for element to be stable (bounding box not changing between 2 consecutive checks).
@@ -1121,6 +1127,46 @@ mod tests {
             ),
         )
         .unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn visibility_script_treats_content_hidden_elements_as_non_visible() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("content-visibility-runtime.js");
+        let script = visibility_script("#target", &None);
+        let runtime = format!(
+            r#"const element = {{
+    parentElement: null,
+    ownerDocument: {{
+        defaultView: {{
+            getComputedStyle: () => ({{
+                display: 'block',
+                visibility: 'visible',
+                contentVisibility: 'hidden',
+                opacity: '1',
+            }}),
+        }},
+    }},
+    getBoundingClientRect: () => ({{ width: 10, height: 10 }}),
+}};
+global.document = {{ querySelector: () => element }};
+const result = {script};
+if (result.visible !== false || result.reason !== 'content_visibility_hidden')
+    throw new Error(JSON.stringify(result));
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
         let output = Command::new("node").arg(&script_path).output().unwrap();
 
         assert!(

@@ -747,6 +747,8 @@ fn selector_capture_script(selector: &str) -> Result<String> {
                     if (style.display === 'none') return 'display_none';
                     if (style.visibility === 'hidden' || style.visibility === 'collapse')
                         return 'visibility_hidden';
+                    if (style.contentVisibility === 'hidden')
+                        return 'content_visibility_hidden';
                     if (parseFloat(style.opacity) === 0) return 'zero_opacity';
                 }}
                 return null;
@@ -1342,6 +1344,56 @@ global.document = {{
 (async () => {{
     const result = await {capture_script};
     if (result.error !== 'detached' || window.scrollX !== 12 || window.scrollY !== 34)
+        throw new Error(JSON.stringify({{ result, scrollX: window.scrollX, scrollY: window.scrollY }}));
+}})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn selector_capture_script_rejects_content_hidden_targets() {
+        use std::process::Command;
+
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("selector-content-visibility-runtime.js");
+        let capture_script = selector_capture_script("#target").unwrap();
+        let runtime = format!(
+            r#"global.window = {{
+    scrollX: 12,
+    scrollY: 34,
+    scrollTo(x, y) {{ this.scrollX = x; this.scrollY = y; }},
+}};
+const element = {{
+    parentElement: null,
+    ownerDocument: {{
+        defaultView: {{
+            getComputedStyle: () => ({{
+                display: 'block',
+                visibility: 'visible',
+                contentVisibility: 'hidden',
+                opacity: '1',
+            }}),
+        }},
+    }},
+    scrollIntoView() {{ window.scrollTo(0, 500); }},
+    getBoundingClientRect() {{ return {{ left: 20, top: 30, width: 40, height: 50 }}; }},
+}};
+global.document = {{ querySelector: () => element }};
+(async () => {{
+    const result = await {capture_script};
+    if (result.error !== 'content_visibility_hidden' || window.scrollX !== 12 || window.scrollY !== 34)
         throw new Error(JSON.stringify({{ result, scrollX: window.scrollX, scrollY: window.scrollY }}));
 }})().catch((error) => {{ console.error(error); process.exitCode = 1; }});
 "#
