@@ -17,7 +17,7 @@ All test suite files live in `visual_tests/` with the naming convention:
 visual_tests/{name}.tests.yaml
 ```
 
-The Rust CLI also accepts `.tests.yml` and `.tests.json`. If multiple formats exist for the same suite name, discovery uses `.tests.yaml`, then `.tests.yml`, then `.tests.json`.
+The Rust CLI also accepts `.tests.yml` and `.tests.json`. If multiple formats exist for the same suite name, discovery uses `.tests.yaml`, then `.tests.yml`, then `.tests.json`. Two files at the same format priority with the same suite name are rejected as ambiguous, including files in different subdirectories.
 
 ## YAML Structure
 

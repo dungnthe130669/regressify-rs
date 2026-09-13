@@ -299,6 +299,15 @@ fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Result<Vec<TestSu
                     *current_priority = priority;
                     *current_input = input;
                 }
+                Some((current_priority, current_input)) if priority == *current_priority => {
+                    anyhow::bail!(
+                        "Ambiguous test suite '{}': both '{}' and '{}' use the same .tests.{} priority",
+                        suite_name,
+                        current_input.path.display(),
+                        input.path.display(),
+                        ext
+                    );
+                }
                 Some(_) => {}
                 None => {
                     suites.insert(suite_name.to_string(), (priority, input));
@@ -1390,6 +1399,24 @@ mod tests {
             suites[0].path.file_name().and_then(|name| name.to_str()),
             Some("alloy.tests.yml")
         );
+    }
+
+    #[test]
+    fn discovery_rejects_same_priority_suites_with_the_same_name() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let first = temp_dir.path().join("first");
+        let second = temp_dir.path().join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::write(first.join("alloy.tests.yaml"), "scenarios: []\n").unwrap();
+        std::fs::write(second.join("alloy.tests.yaml"), "scenarios: []\n").unwrap();
+
+        let error = match discover_test_suites(temp_dir.path()) {
+            Ok(_) => panic!("duplicate same-priority suites unexpectedly passed discovery"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("Ambiguous test suite 'alloy'"));
     }
 
     #[test]
