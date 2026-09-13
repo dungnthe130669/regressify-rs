@@ -36,6 +36,16 @@ fn suite_matches_filters(suite_id: &str, filters: &Option<Vec<glob::Pattern>>) -
         .is_none_or(|filters| filters.iter().any(|filter| filter.matches(suite_id)))
 }
 
+fn require_explicit_filter_match(
+    filters: &Option<Vec<glob::Pattern>>,
+    matched_suite: bool,
+) -> Result<()> {
+    if filters.is_some() && !matched_suite {
+        anyhow::bail!("No output test suites matched the requested --test-suite filter");
+    }
+    Ok(())
+}
+
 /// Entry point for the `compare` CLI command.
 /// Compares the latest test screenshots against reference images for each test suite.
 pub fn compare(args: CompareArgs) -> Result<()> {
@@ -54,6 +64,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_compared = false;
+    let mut matched_suite = false;
 
     for entry in entries {
         let path = entry.path();
@@ -70,6 +81,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
         if !suite_matches_filters(&suite_id, &suite_filters) {
             continue;
         }
+        matched_suite = true;
 
         let tests_dir = path.join("bitmaps_test");
         if !tests_dir.exists() {
@@ -94,6 +106,7 @@ pub fn compare(args: CompareArgs) -> Result<()> {
         }
     }
 
+    require_explicit_filter_match(&suite_filters, matched_suite)?;
     if !any_compared {
         eprintln!(
             "{}",
@@ -117,6 +130,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_approved = false;
+    let mut matched_suite = false;
     let requested_run_id = common::RUN_ID.get().map(String::as_str);
     let suite_filters = compile_suite_filters(&args.test_suite)?;
 
@@ -135,6 +149,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         if !suite_matches_filters(&suite_id, &suite_filters) {
             continue;
         }
+        matched_suite = true;
 
         let bitmaps_test_dir = path.join("bitmaps_test");
         if !bitmaps_test_dir.exists() {
@@ -146,6 +161,7 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         any_approved = true;
     }
 
+    require_explicit_filter_match(&suite_filters, matched_suite)?;
     if !any_approved {
         eprintln!(
             "{}",
@@ -176,5 +192,20 @@ mod tests {
         let error = compile_suite_filters(&["[".to_string()]).unwrap_err();
 
         assert!(error.to_string().contains("Invalid test suite pattern"));
+    }
+
+    #[test]
+    fn explicit_suite_filters_must_match_an_output_suite() {
+        let explicit = compile_suite_filters(&["missing".to_string()]).unwrap();
+        assert!(
+            require_explicit_filter_match(&explicit, false)
+                .unwrap_err()
+                .to_string()
+                .contains("No output test suites matched")
+        );
+
+        let all = compile_suite_filters(&[]).unwrap();
+        assert!(require_explicit_filter_match(&all, false).is_ok());
+        assert!(require_explicit_filter_match(&explicit, true).is_ok());
     }
 }
