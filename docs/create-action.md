@@ -90,7 +90,8 @@ Type: `string`.
 
 Go to specific URL.
 Regressify waits until the destination document is interactive before running the
-next action.
+next action. In `test` mode, active URL replacements are applied before
+navigating; `ref` mode uses the URL as written.
 
 Example:
 

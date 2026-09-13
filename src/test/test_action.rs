@@ -383,8 +383,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
-            eprintln!("{} Navigating to URL: {}", log_prefix, goto);
-            page.goto(goto).await?;
+            let target_url = apply_action_url_replacements(goto, url_replacements);
+            eprintln!("{} Navigating to URL: {}", log_prefix, target_url);
+            page.goto(target_url.as_str()).await?;
             wait_for_dom_ready(
                 page,
                 std::time::Duration::from_millis(config.element_timeout_ms),
@@ -978,7 +979,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
-                let target_url = apply_wait_url_replacements(url, url_replacements);
+                let target_url = apply_action_url_replacements(url, url_replacements);
                 eprintln!("{} Waiting for URL: {}", log_prefix, target_url);
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
@@ -1025,7 +1026,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
     Ok(())
 }
 
-fn apply_wait_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
     config::replacements::apply_replacements(url, replacements)
 }
 
@@ -1072,7 +1073,7 @@ mod tests {
     }
 
     #[test]
-    fn wait_url_replacements_apply_before_matching() {
+    fn action_url_replacements_apply_before_navigation_or_matching() {
         let replacements = vec![UrlReplacement {
             ref_pattern: "https://prod.example.com".to_string(),
             test: "https://test.example.com".to_string(),
@@ -1081,7 +1082,7 @@ mod tests {
         }];
 
         assert_eq!(
-            apply_wait_url_replacements("https://prod.example.com/dashboard", &replacements),
+            apply_action_url_replacements("https://prod.example.com/dashboard", &replacements),
             "https://test.example.com/dashboard"
         );
     }
