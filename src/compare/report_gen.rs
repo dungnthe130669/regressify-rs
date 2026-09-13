@@ -7,6 +7,7 @@ use colored::Colorize;
 use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
+use crate::helpers::write_file_atomically;
 use crate::test::capture::{REPORT_ORDER_FILE, REPORT_THRESHOLDS_FILE, read_error_marker};
 
 #[derive(Debug, Serialize)]
@@ -253,10 +254,17 @@ pub fn generate_comparison_report(
                 let diff_image_name = screenshot_name.replace(".png", "_diff.png");
                 let diff_image_path = bitmaps_test_dir.join(&diff_image_name);
 
-                // Write diff image if available
-                if let Some(diff_data) = diff_png {
-                    fs::write(&diff_image_path, diff_data)?;
-                }
+                let diff_image = if let Some(diff_data) = diff_png {
+                    write_file_atomically(&diff_image_path, &diff_data)?;
+                    Some(format!("../bitmaps_test/{}/{}", test_date, diff_image_name))
+                } else {
+                    // A previous comparison in this run may have produced a
+                    // diff. Do not show that stale artifact for a current pass.
+                    if diff_image_path.exists() {
+                        fs::remove_file(&diff_image_path)?;
+                    }
+                    None
+                };
 
                 let passed =
                     result.raw_mis_match_percentage <= threshold && result.is_same_dimensions;
@@ -280,18 +288,12 @@ pub fn generate_comparison_report(
                     status_text,
                 );
 
-                let relative_diff = format!("../bitmaps_test/{}/{}", test_date, diff_image_name);
-
                 report_tests.push(ReportTest {
                     pair: ReportPair {
                         label,
                         reference: format!("../bitmaps_reference/{}", screenshot_name),
                         test: relative_test,
-                        diff_image: if diff_image_path.exists() {
-                            Some(relative_diff)
-                        } else {
-                            None
-                        },
+                        diff_image,
                         selector: "document".to_string(),
                         file_name: screenshot_name.clone(),
                         mis_match_threshold: threshold,
@@ -345,12 +347,12 @@ pub fn generate_comparison_report(
 
     let report_json = serde_json::to_string_pretty(&report)?;
     let report_path = bitmaps_test_dir.join("report.json");
-    fs::write(&report_path, &report_json)?;
+    write_file_atomically(&report_path, report_json.as_bytes())?;
 
     // Generate config.js for Regressify React UI
     let config_js = format!("report({});", report_json);
     let config_path = html_report_dir.join("config.js");
-    fs::write(&config_path, &config_js)?;
+    write_file_atomically(&config_path, config_js.as_bytes())?;
 
     // Print summary
     let pass_count = report.tests.iter().filter(|t| t.status == "pass").count();
@@ -491,5 +493,31 @@ mod tests {
         assert_eq!(tests.len(), 1);
         assert_eq!(tests[0]["status"], "fail");
         assert!(test_dir.join("home__FINAL_diff.png").exists());
+    }
+
+    #[test]
+    fn report_removes_stale_diff_when_capture_becomes_identical() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let screenshot_name = "home__FINAL.png";
+        fs::write(reference_dir.join(screenshot_name), png_bytes(10)).unwrap();
+        fs::write(test_dir.join(screenshot_name), png_bytes(200)).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+        let diff_path = test_dir.join("home__FINAL_diff.png");
+        assert!(diff_path.exists());
+
+        fs::write(test_dir.join(screenshot_name), png_bytes(10)).unwrap();
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0).unwrap();
+
+        assert!(!diff_path.exists());
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["tests"][0]["status"], "pass");
+        assert!(report["tests"][0]["pair"].get("diffImage").is_none());
     }
 }
