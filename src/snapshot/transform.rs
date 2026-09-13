@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use colored::*;
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -93,6 +93,58 @@ fn version_report_image_path(config_text: String, file_path: &str, hash: &str) -
     Ok(versioned)
 }
 
+/// Parse the generated `report(<JSON>);` configuration before it is trusted to
+/// identify capture directories eligible for cleanup.
+fn parse_report_config(config_text: &str) -> Result<RegressifyReport> {
+    let config_json = config_text
+        .trim()
+        .strip_prefix("report(")
+        .and_then(|content| content.strip_suffix(");"))
+        .ok_or_else(|| anyhow::anyhow!("Invalid snapshot config.js wrapper; expected report(<JSON>);"))?;
+    serde_json::from_str(config_json).context("Invalid snapshot config.js report data")
+}
+
+/// Return the capture run directories referenced by the generated report.
+/// Query hashes added by snapshot generation and legacy Windows separators are
+/// normalized before extracting the run component.
+fn referenced_capture_runs(report: &RegressifyReport) -> Result<BTreeSet<String>> {
+    let mut runs = BTreeSet::new();
+    for (index, test) in report.tests.iter().enumerate() {
+        let path = test.pair.test.as_deref().ok_or_else(|| {
+            anyhow::anyhow!("Snapshot config test {} has no capture image path", index + 1)
+        })?;
+        let normalized = path
+            .split_once('?')
+            .map(|(path, _)| path)
+            .unwrap_or(path)
+            .replace('\\', "/");
+        let relative = normalized.strip_prefix("../bitmaps_test/").ok_or_else(|| {
+            anyhow::anyhow!(
+                "Snapshot config test {} has an invalid capture image path '{}'",
+                index + 1,
+                path
+            )
+        })?;
+        let mut components = relative.split('/');
+        let run_id = components.next().filter(|component| {
+            !component.is_empty() && *component != "." && *component != ".."
+        });
+        let file_name = components.next().filter(|component| !component.is_empty());
+        if run_id.is_none() || file_name.is_none() || components.next().is_some() {
+            anyhow::bail!(
+                "Snapshot config test {} has an invalid capture image path '{}'",
+                index + 1,
+                path
+            );
+        }
+        runs.insert(run_id.unwrap().to_string());
+    }
+    if runs.is_empty() {
+        anyhow::bail!("Snapshot config.js contains no capture image paths; refusing cleanup");
+    }
+    Ok(runs)
+}
+
 pub fn process_test_suite(
     regressify_dir: &Path,
     id: &str,
@@ -140,14 +192,16 @@ pub fn process_test_suite(
     }
 
     let config_text = fs::read_to_string(&config_path)?;
+    let referenced_runs = referenced_capture_runs(&parse_report_config(&config_text)?)?;
     let mut modified_config_text = config_text.clone();
 
-    // Readdir and filter directories
+    // Remove only run directories explicitly referenced by neither the parsed
+    // config nor a validated report path.
     let entries = fs::read_dir(&bitmap_test_dir)?;
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
+        if !entry.file_type()?.is_dir() {
             continue;
         }
 
@@ -163,11 +217,7 @@ pub fn process_test_suite(
             continue;
         };
 
-        // Regressify uses both forward and backslashes in config
-        let win_path = format!("bitmaps_test\\\\{}", sub_dir_name);
-        let unix_path = format!("bitmaps_test/{}", sub_dir_name);
-
-        if !config_text.contains(&unix_path) && !config_text.contains(&win_path) {
+        if !referenced_runs.contains(&sub_dir_name) {
             fs::remove_dir_all(&path).with_context(|| {
                 format!(
                     "Failed to remove unreferenced snapshot directory '{}'",
@@ -287,7 +337,7 @@ mod tests {
         fs::create_dir_all(&run_dir).unwrap();
         fs::write(
             html_report_dir.join("config.js"),
-            "report({test: '../bitmaps_test/run/home__FINAL.png'});",
+            r#"report({"id":"suite","tests":[{"pair":{"test":"../bitmaps_test/run/home__FINAL.png"},"status":"pass"}]});"#,
         )
         .unwrap();
         fs::write(run_dir.join("report.json"), "not json").unwrap();
@@ -302,6 +352,74 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("expected ident"));
+    }
+
+    #[test]
+    fn malformed_config_does_not_remove_capture_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("suite");
+        let html_report_dir = suite_dir.join("html_report");
+        let current_run = suite_dir.join("bitmaps_test/current");
+        let prior_run = suite_dir.join("bitmaps_test/prior");
+        fs::create_dir_all(&html_report_dir).unwrap();
+        fs::create_dir_all(&current_run).unwrap();
+        fs::create_dir_all(&prior_run).unwrap();
+        fs::write(html_report_dir.join("config.js"), "corrupt report data").unwrap();
+
+        let error = process_test_suite(
+            temp.path(),
+            "suite",
+            &mut BTreeMap::new(),
+            &tera::Tera::default(),
+            "bundle",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Invalid snapshot config.js wrapper"));
+        assert!(current_run.exists());
+        assert!(prior_run.exists());
+    }
+
+    #[test]
+    fn valid_config_removes_only_unreferenced_capture_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("suite");
+        let html_report_dir = suite_dir.join("html_report");
+        let current_run = suite_dir.join("bitmaps_test/current");
+        let prior_run = suite_dir.join("bitmaps_test/prior");
+        fs::create_dir_all(&html_report_dir).unwrap();
+        fs::create_dir_all(&current_run).unwrap();
+        fs::create_dir_all(&prior_run).unwrap();
+        fs::write(
+            html_report_dir.join("config.js"),
+            r#"report({"id":"suite","tests":[{"pair":{"test":"../bitmaps_test/current/home__FINAL.png"},"status":"pass"}]});"#,
+        )
+        .unwrap();
+
+        process_test_suite(
+            temp.path(),
+            "suite",
+            &mut BTreeMap::new(),
+            &tera::Tera::default(),
+            "bundle",
+        )
+        .unwrap();
+
+        assert!(current_run.exists());
+        assert!(!prior_run.exists());
+    }
+
+    #[test]
+    fn capture_run_extraction_accepts_versioned_windows_paths() {
+        let report: RegressifyReport = serde_json::from_str(
+            r#"{"id":"suite","tests":[{"pair":{"test":"..\\bitmaps_test\\run\\home.png?v=hash"},"status":"pass"}]}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            referenced_capture_runs(&report).unwrap(),
+            BTreeSet::from(["run".to_string()])
+        );
     }
 
     #[test]
