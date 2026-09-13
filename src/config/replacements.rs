@@ -31,16 +31,16 @@ pub struct ReplacementProfilesFile {
 /// Looks for `common/_replacement-profiles.yaml` or `common/_replacement-profiles.yml`
 /// relative to the workspace root.
 pub fn load_replacement_profiles(root_dir: &Path) -> Result<Option<ReplacementProfilesFile>> {
-    let yaml_path = root_dir.join("common/_replacement-profiles.yaml");
-    let yml_path = root_dir.join("common/_replacement-profiles.yml");
-
-    let config_path = if yaml_path.exists() {
-        Some(yaml_path)
-    } else if yml_path.exists() {
-        Some(yml_path)
-    } else {
-        None
-    };
+    let config_path = super::resolve_optional_workspace_file(
+        root_dir,
+        "common/_replacement-profiles.yaml",
+        "replacement profile file",
+    )?
+    .or(super::resolve_optional_workspace_file(
+        root_dir,
+        "common/_replacement-profiles.yml",
+        "replacement profile file",
+    )?);
 
     match config_path {
         Some(path) => {
@@ -224,5 +224,25 @@ mod tests {
             serde_yaml::from_str::<ReplacementProfilesFile>("profiles: {}\nprofilez: {}\n");
 
         assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_profile_file_cannot_escape_workspace_through_symlink() {
+        let workspace = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let common = workspace.path().join("common");
+        let outside_profile = outside.path().join("profiles.yaml");
+        std::fs::create_dir_all(&common).unwrap();
+        std::fs::write(&outside_profile, "profiles: {}\n").unwrap();
+        std::os::unix::fs::symlink(&outside_profile, common.join("_replacement-profiles.yaml"))
+            .unwrap();
+
+        let error = match load_replacement_profiles(workspace.path()) {
+            Ok(_) => panic!("replacement profile symlink unexpectedly escaped the workspace"),
+            Err(error) => error,
+        };
+
+        assert!(error.to_string().contains("escapes workspace root"));
     }
 }
