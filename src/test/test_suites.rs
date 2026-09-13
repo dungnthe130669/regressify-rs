@@ -80,6 +80,28 @@ fn current_capture_run_dir(tests_dir: &Path, suite: &TestSuite) -> Result<PathBu
     Ok(run_dir)
 }
 
+fn ensure_capture_run_directories_are_new(
+    output_dir: &Path,
+    suites: &[(TestSuiteInput, Arc<TestSuite>)],
+) -> Result<()> {
+    for (input, suite) in suites {
+        let suite_dir = suite_output_dir(output_dir, suite)?;
+        let run_id = suite
+            .test_date
+            .as_deref()
+            .ok_or_else(|| anyhow!("Test suite '{}' is missing a capture run ID", input.name))?;
+        let run_dir = suite_dir.join("bitmaps_test").join(run_id);
+        if run_dir.exists() {
+            anyhow::bail!(
+                "Capture run directory already exists for test suite '{}': {}. Use a new --run-id or remove the stale run before capturing.",
+                input.name,
+                run_dir.display()
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Flatten every scenario/viewport pair across all parsed suites into a flat list
 /// of independent capture jobs, assigning each a 1-based dedicated index. The
 /// total number of jobs is simply the returned vec's length.
@@ -772,6 +794,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
+    ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
 
@@ -949,6 +972,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
+    ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
 
@@ -1461,6 +1485,21 @@ mod tests {
             current_capture_run_dir(&tests_dir, &suite).unwrap(),
             tests_dir.join("20260913_120000_000000001")
         );
+    }
+
+    #[test]
+    fn capture_commands_reject_reusing_an_existing_run_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.test_date = Some("ci-123".to_string());
+        let parsed = vec![(input(), Arc::new(suite))];
+        std::fs::create_dir_all(temp.path().join("alloy/bitmaps_test/ci-123")).unwrap();
+
+        let error = ensure_capture_run_directories_are_new(temp.path(), &parsed).unwrap_err();
+        assert!(error.to_string().contains("already exists"));
+
+        std::fs::remove_dir_all(temp.path().join("alloy/bitmaps_test/ci-123")).unwrap();
+        assert!(ensure_capture_run_directories_are_new(temp.path(), &parsed).is_ok());
     }
 
     #[test]
