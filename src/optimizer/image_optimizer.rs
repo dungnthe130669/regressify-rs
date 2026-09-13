@@ -1,5 +1,4 @@
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -11,7 +10,7 @@ use walkdir::WalkDir;
 use crate::{
     cli::args::OptimizeArgs,
     common,
-    helpers::{OnceLockExtensions, format_bytes},
+    helpers::{OnceLockExtensions, format_bytes, write_file_atomically},
 };
 
 enum OptimizeResult {
@@ -219,51 +218,9 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
         return Ok(OptimizeResult::AlreadyOptimized(original_size));
     }
 
-    replace_file_atomically(path, &optimized_buffer)?;
+    write_file_atomically(path, &optimized_buffer)?;
 
     Ok(OptimizeResult::Pair(original_size, optimized_size))
-}
-
-fn replace_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("PNG path '{}' has no parent directory", path.display()))?;
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow!("PNG path '{}' has no valid file name", path.display()))?;
-    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
-    let permissions = fs::metadata(path)?.permissions();
-
-    let write_result = (|| -> Result<()> {
-        let mut temporary_file = fs::File::create(&temporary_path).with_context(|| {
-            format!(
-                "Failed to create temporary optimized PNG '{}'",
-                temporary_path.display()
-            )
-        })?;
-        temporary_file.write_all(bytes).with_context(|| {
-            format!(
-                "Failed to write temporary optimized PNG '{}'",
-                temporary_path.display()
-            )
-        })?;
-        temporary_file.sync_all()?;
-        drop(temporary_file);
-        fs::set_permissions(&temporary_path, permissions)?;
-        fs::rename(&temporary_path, path).with_context(|| {
-            format!(
-                "Failed to replace PNG '{}' with its optimized version",
-                path.display()
-            )
-        })?;
-        Ok(())
-    })();
-
-    if write_result.is_err() {
-        let _ = fs::remove_file(&temporary_path);
-    }
-    write_result
 }
 
 #[cfg(test)]

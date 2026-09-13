@@ -1,8 +1,56 @@
 #![allow(dead_code)]
 
-use std::path::{Path, PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::{Path, PathBuf},
+};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
+
+/// Replace a file only after a complete temporary copy has been written in the
+/// same directory, preventing truncated generated artifacts after interruption.
+pub fn write_file_atomically(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Path '{}' has no parent directory", path.display()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("Path '{}' has no valid file name", path.display()))?;
+    let temporary_path = parent.join(format!(".{file_name}.{}.tmp", uuid::Uuid::new_v4()));
+    let existing_permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+
+    let write_result = (|| -> Result<()> {
+        let mut temporary_file = fs::File::create(&temporary_path).with_context(|| {
+            format!(
+                "Failed to create temporary file '{}'",
+                temporary_path.display()
+            )
+        })?;
+        temporary_file.write_all(bytes).with_context(|| {
+            format!(
+                "Failed to write temporary file '{}'",
+                temporary_path.display()
+            )
+        })?;
+        temporary_file.sync_all()?;
+        drop(temporary_file);
+        if let Some(permissions) = existing_permissions {
+            fs::set_permissions(&temporary_path, permissions)?;
+        }
+        fs::rename(&temporary_path, path)
+            .with_context(|| format!("Failed to replace file '{}'", path.display()))?;
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    write_result
+}
 
 pub trait IOExtensions {
     fn normalize(&self) -> Result<PathBuf>;
@@ -83,6 +131,22 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn atomic_write_replaces_existing_content() {
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("artifact.json");
+        fs::write(&path, b"old").unwrap();
+
+        write_file_atomically(&path, b"new").unwrap();
+
+        assert_eq!(fs::read(&path).unwrap(), b"new");
+        assert_eq!(
+            fs::read_dir(temp_dir.path()).unwrap().count(),
+            1,
+            "temporary files must be cleaned up"
+        );
+    }
 
     // ==================== format_size tests ====================
 
