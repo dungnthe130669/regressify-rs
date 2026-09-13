@@ -13,7 +13,7 @@ use crate::{
         actionability::{
             self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
             ensure_actionable, ensure_exists, ensure_focusable, escape_css_rule, escape_js_string,
-            get_frame_selectors, scroll_into_view, wait_for_selector,
+            focus_element, get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{
             artifact_write_error, save_screenshot, state_path, validate_screenshot_step_name,
@@ -407,21 +407,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Focus(FocusAction { focus, frame }) => {
             eprintln!("{} Focusing element: {}", log_prefix, focus);
-            let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, focus, frame, &ac).await?;
-
-            let sel_escaped = escape_js_string(focus);
-            let doc = frame_selectors
-                .as_ref()
-                .map(|s| build_frame_document_js(s))
-                .unwrap_or_else(|| "document".to_string());
-            let script = format!(
-                "(() => {{ {doc}.querySelector('{sel}').focus(); }})()",
-                doc = doc,
-                sel = sel_escaped
-            );
-            let _: serde_json::Value =
-                evaluate_action(page, script, &ac, "focusing the requested element").await?;
+            focus_element(page, focus, frame, &ac).await?;
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
@@ -540,19 +527,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     evaluate_action(page, target_script, &ac, "validating text input target")
                         .await?;
                 let target = parse_text_input_target(&target_value)?;
+                focus_element(page, input, frame, &ac).await?;
 
                 if frame.is_none() {
                     // CDP key/text events use Chromium's editing pipeline and
                     // therefore honor maxlength, input filtering, and beforeinput.
-                    let focus_script = format!(
-                        "(() => {{ const el = {doc}.querySelector('{sel}'); el.focus(); }})()",
-                        doc = doc,
-                        sel = sel_escaped
-                    );
-                    let _: serde_json::Value =
-                        evaluate_action(page, focus_script, &ac, "focusing text input target")
-                            .await?;
-
                     if !append_mode {
                         let select_all = if cfg!(target_os = "macos") {
                             parse_press_key("Meta+A")?
@@ -619,7 +598,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                                 const setter = Object.getOwnPropertyDescriptor(constructor.prototype, 'value').set;
                                 setter.call(el, nextValue);
                             }};
-                            el.focus();
                             if (!{append}) {{
                                 if (!beforeInput('deleteContentBackward', null))
                                     return {{ ok: false, error: 'beforeinput_prevented' }};
@@ -781,24 +759,8 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 "{} Pressing key '{}' on element: {}",
                 log_prefix, key, press
             );
-            let frame_selectors = get_frame_selectors(frame);
             ensure_focusable(page, press, frame, &ac).await?;
-
-            // Focus the target element so the key events reach it. For elements
-            // inside same-origin frames this still works because CDP key events
-            // are delivered to the document's currently focused element.
-            let sel_escaped = escape_js_string(press);
-            let doc = frame_selectors
-                .as_ref()
-                .map(|s| build_frame_document_js(s))
-                .unwrap_or_else(|| "document".to_string());
-            let focus_script = format!(
-                "(() => {{ var el = {doc}.querySelector('{sel}'); if (el) el.focus(); }})()",
-                doc = doc,
-                sel = sel_escaped
-            );
-            let _: serde_json::Value =
-                evaluate_action(page, focus_script, &ac, "focusing key press target").await?;
+            focus_element(page, press, frame, &ac).await?;
 
             let keystroke = parse_press_key(key)?;
             dispatch_key_stroke(page, &keystroke, &ac).await?;

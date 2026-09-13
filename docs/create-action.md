@@ -70,6 +70,8 @@ focus
 :::::
 
 Focus an element.
+The action fails if the requested element cannot become the active element,
+preventing later keyboard input from being sent to a different target.
 
 Example:
 

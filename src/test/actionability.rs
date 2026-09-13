@@ -780,6 +780,64 @@ pub async fn ensure_focusable(
         .map(|_| ())
 }
 
+/// Focus an actionable element and verify the target document reports it as
+/// active. A plain `element.focus()` can silently fail for non-focusable nodes.
+pub async fn focus_element(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
+    let script = focus_element_script(selector, frame);
+    let operation = format!("focusing element '{}'", selector);
+    let value = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
+    parse_focus_result(selector, &value)
+}
+
+fn focus_element_script(selector: &str, frame: &Option<Frame>) -> String {
+    let frame_selectors = get_frame_selectors(frame);
+    let element_js = build_element_js(selector, &frame_selectors);
+    let document_js = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    format!(
+        r#"(() => {{
+            const targetDocument = {document_js};
+            const element = {element_js};
+            if (!element) return {{ error: 'not_found' }};
+            element.focus({{ preventScroll: true }});
+            if (targetDocument.activeElement === element) return {{ ok: true }};
+            const active = targetDocument.activeElement;
+            const tag = active ? active.tagName.toLowerCase() : 'none';
+            const id = active && active.id ? '#' + active.id : '';
+            return {{ error: 'not_focusable', active: tag + id }};
+        }})()"#
+    )
+}
+
+fn parse_focus_result(selector: &str, value: &serde_json::Value) -> Result<()> {
+    if value.get("ok").and_then(|field| field.as_bool()) == Some(true) {
+        return Ok(());
+    }
+    match value
+        .get("error")
+        .and_then(|field| field.as_str())
+        .unwrap_or("unknown")
+    {
+        "not_found" => Err(anyhow!("Element '{}' disappeared before focus", selector)),
+        "not_focusable" => Err(anyhow!(
+            "Element '{}' could not receive focus; active element is '{}'",
+            selector,
+            value
+                .get("active")
+                .and_then(|field| field.as_str())
+                .unwrap_or("unknown")
+        )),
+        error => Err(anyhow!("Failed to focus element '{}': {}", selector, error)),
+    }
+}
+
 /// Minimal check: just wait for element to exist (for scroll, hide, remove).
 pub async fn ensure_exists(
     page: &Page,
@@ -871,6 +929,8 @@ pub async fn cdp_hover(page: &Page, x: f64, y: f64, config: &ActionabilityConfig
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, process::Command};
+
     use super::*;
 
     #[tokio::test]
@@ -934,6 +994,68 @@ mod tests {
         assert_eq!(
             frame_selectors_js(&["iframe[name='checkout']".to_string()]),
             "'iframe[name=\\'checkout\\']'"
+        );
+    }
+
+    #[test]
+    fn focus_result_reports_a_non_focusable_target() {
+        let error = parse_focus_result(
+            "#status",
+            &serde_json::json!({ "error": "not_focusable", "active": "body" }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("#status"));
+        assert!(error.to_string().contains("active element is 'body'"));
+    }
+
+    #[test]
+    fn focus_script_is_valid_javascript_when_node_is_available() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("focus.js");
+        fs::write(&script_path, focus_element_script("#email", &None)).unwrap();
+        let output = Command::new("node")
+            .arg("--check")
+            .arg(&script_path)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn focus_script_activates_the_requested_top_level_element() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("focus-runtime.js");
+        let script = focus_element_script("#email", &None);
+        fs::write(
+            &script_path,
+            format!(
+                "const element = {{ focus() {{ document.activeElement = this; }} }};\n\
+                 global.document = {{ activeElement: null, querySelector: () => element }};\n\
+                 const result = {script};\n\
+                 if (!result.ok || document.activeElement !== element) throw new Error(JSON.stringify(result));\n"
+            ),
+        )
+        .unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
