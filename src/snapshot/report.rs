@@ -1,10 +1,9 @@
 use anyhow::Result;
 use colored::*;
-use std::fs;
 use std::path::Path;
 
 use crate::cli::args::SnapshotArgs;
-use crate::helpers::IOExtensions;
+use crate::helpers::{IOExtensions, write_file_atomically};
 use crate::snapshot::helpers::get_asset_version;
 use crate::types::HtmlReportSummary;
 
@@ -75,7 +74,7 @@ pub fn generate_html_report_summary(
     let replaced_html = tera.render("report_template.html", &context)?;
 
     let report_path = regressify_dir.join("index.html");
-    fs::write(&report_path, replaced_html)?;
+    write_file_atomically(&report_path, replaced_html.as_bytes())?;
     eprintln!(
         "Snapshot report summary generated at: {}",
         report_path.normalize_string(false)?.cyan()
@@ -83,7 +82,7 @@ pub fn generate_html_report_summary(
 
     let swa_config = include_bytes!("data/staticwebapp.config.json");
     let swa_config_path = regressify_dir.join("staticwebapp.config.json");
-    fs::write(&swa_config_path, swa_config)?;
+    write_file_atomically(&swa_config_path, swa_config)?;
 
     Ok(())
 }
@@ -190,6 +189,22 @@ pub fn generate_shared_files(regressify_dir: &Path) -> Result<()> {
 
 pub fn write_shared_file(regressify_dir: &Path, file_name: &str, content: &[u8]) -> Result<()> {
     let file_path = regressify_dir.join(file_name);
-    fs::write(&file_path, content)?;
-    Ok(())
+    write_file_atomically(&file_path, content)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_report_files_replace_existing_content_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("script.js");
+        std::fs::write(&path, b"old").unwrap();
+
+        write_shared_file(temp.path(), "script.js", b"new").unwrap();
+
+        assert_eq!(std::fs::read(path).unwrap(), b"new");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
+    }
 }

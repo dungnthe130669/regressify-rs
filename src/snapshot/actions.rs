@@ -1,6 +1,6 @@
 use anyhow::{Result, bail};
 use colored::*;
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fs;
 
 use crate::{
@@ -22,7 +22,6 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     }
 
     let mut summaries = Vec::new();
-    let mut hashes = HashMap::new();
 
     // Using Tera template engine to render the report
     let mut tera = tera::Tera::default();
@@ -40,7 +39,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let index_bundle_content = include_str!("data/index_bundle.js");
     let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|e| e.file_name());
 
     for entry in entries {
@@ -60,8 +59,18 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
                 continue;
             }
 
-            if let Ok(Some(summary)) =
+            // Hash paths are relative to each suite's html_report directory;
+            // sharing them across suites can apply the wrong cache version.
+            let mut hashes = BTreeMap::new();
+            if let Some(summary) =
                 process_test_suite(regressify_dir, dir_name, &mut hashes, &tera, &bundle_hash)
+                    .map_err(|error| {
+                        anyhow::anyhow!(
+                            "Failed to process snapshot suite '{}': {}",
+                            dir_name,
+                            error
+                        )
+                    })?
             {
                 summaries.push(summary);
             }
