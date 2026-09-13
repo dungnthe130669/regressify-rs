@@ -211,7 +211,7 @@ pub async fn exec_single_scenario(
         );
     }
 
-    classify_scenario_result(scenario_result)
+    classify_scenario_completion(scenario_result, browser_closed || handler_finished)
 }
 
 fn classify_scenario_result(result: Result<()>) -> ScenarioOutcome {
@@ -220,6 +220,24 @@ fn classify_scenario_result(result: Result<()>) -> ScenarioOutcome {
         Err(error) if is_artifact_write_error(&error) => ScenarioOutcome::InfraFailed(error),
         Err(error) => ScenarioOutcome::PageFailed(error),
     }
+}
+
+fn classify_scenario_completion(
+    scenario_result: Result<()>,
+    shutdown_confirmed: bool,
+) -> ScenarioOutcome {
+    if shutdown_confirmed {
+        return classify_scenario_result(scenario_result);
+    }
+
+    let error = match scenario_result {
+        Ok(()) => anyhow!("Browser shutdown was not confirmed after a successful scenario"),
+        Err(scenario_error) => anyhow!(
+            "Browser shutdown was not confirmed; the scenario also failed: {}",
+            scenario_error
+        ),
+    };
+    ScenarioOutcome::InfraFailed(error)
 }
 
 #[cfg(test)]
@@ -388,6 +406,22 @@ mod tests {
         assert!(matches!(
             classify_scenario_result(Err(anyhow!("page failed"))),
             ScenarioOutcome::PageFailed(_)
+        ));
+    }
+
+    #[test]
+    fn unconfirmed_browser_shutdown_is_an_infrastructure_failure() {
+        assert!(matches!(
+            classify_scenario_completion(Ok(()), false),
+            ScenarioOutcome::InfraFailed(_)
+        ));
+        assert!(matches!(
+            classify_scenario_completion(Err(anyhow!("page failed")), false),
+            ScenarioOutcome::InfraFailed(_)
+        ));
+        assert!(matches!(
+            classify_scenario_completion(Ok(()), true),
+            ScenarioOutcome::Passed
         ));
     }
 }
