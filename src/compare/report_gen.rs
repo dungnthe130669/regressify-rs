@@ -289,9 +289,28 @@ pub fn select_capture_run(
 ) -> Result<Option<String>> {
     if let Some(run_id) = requested_run_id {
         let requested_dir = tests_dir.join(run_id);
-        if !requested_dir.is_dir() {
+        let metadata = match fs::symlink_metadata(&requested_dir) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                anyhow::bail!(
+                    "Requested capture run '{}' does not exist: {}",
+                    run_id,
+                    requested_dir.display()
+                );
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to inspect requested capture run '{}': {}",
+                        run_id,
+                        requested_dir.display()
+                    )
+                });
+            }
+        };
+        if !metadata.file_type().is_dir() {
             anyhow::bail!(
-                "Requested capture run '{}' does not exist: {}",
+                "Requested capture run '{}' is not a real directory: {}",
                 run_id,
                 requested_dir.display()
             );
@@ -972,6 +991,21 @@ mod tests {
                 .to_string()
                 .contains("Requested capture run 'missing' does not exist")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_capture_run_selection_rejects_symlinked_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let runs = temp.path().join("bitmaps_test");
+        let outside = temp.path().join("outside-run");
+        fs::create_dir_all(&runs).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, runs.join("linked-run")).unwrap();
+
+        let error = select_capture_run(&runs, Some("linked-run")).unwrap_err();
+
+        assert!(error.to_string().contains("not a real directory"));
     }
 
     #[test]
