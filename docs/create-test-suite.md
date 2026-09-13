@@ -260,6 +260,10 @@ Type: `ReplacementModel[]`.
 Default value: `[]`.
 
 Find/replace for URLs in the `test` command. Invalid regex replacements are treated as configuration errors before scenarios start.
+Set `regex: true` to use a regular expression. Supported JavaScript-style
+flags are `g` (global replacement), `i` (case-insensitive), `m` (multiline),
+`s` (dot-all), and `u` (Unicode); flags require `regex: true` and may not be
+repeated.
 
 Example:
 

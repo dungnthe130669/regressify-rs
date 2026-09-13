@@ -36,6 +36,10 @@ state:                             # Load persisted state before scenarios
 urlReplacements:                   # URL variable substitution
   - ref: '{{BASE_URL}}'
     test: 'https://staging.example.com'
+  - ref: '^https://prod\\.example\\.com'
+    test: 'https://staging.example.com'
+    regex: true
+    flags: i
 
 scenarios:
   - url: https://example.com/page

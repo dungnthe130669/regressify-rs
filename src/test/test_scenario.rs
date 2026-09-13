@@ -197,7 +197,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
     } else {
         Vec::new()
     };
-    let url = apply_url_replacements(&scenario.url, &url_replacements);
+    let url = apply_url_replacements(&scenario.url, &url_replacements)?;
 
     // This request captures exactly one scenario/viewport pair. When a viewport
     // is present the full page lifecycle (navigation + actions) is replayed at
@@ -607,7 +607,7 @@ fn collect_url_replacements(
 }
 
 /// Apply URL replacements in declaration order.
-fn apply_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+fn apply_url_replacements(url: &str, replacements: &[UrlReplacement]) -> Result<String> {
     config::replacements::apply_replacements(url, replacements)
 }
 

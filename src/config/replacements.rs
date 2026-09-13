@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{Result, anyhow};
@@ -22,6 +22,7 @@ use crate::types::UrlReplacement;
 ///       flags: "i"
 /// ```
 #[derive(Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 pub struct ReplacementProfilesFile {
     pub profiles: HashMap<String, Vec<UrlReplacement>>,
 }
@@ -67,30 +68,66 @@ pub fn get_profile_name(cli_arg: Option<&str>) -> String {
 
 /// Apply a list of URL replacements to a URL string.
 /// Supports both literal and regex replacements.
-pub fn apply_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+pub fn apply_replacements(url: &str, replacements: &[UrlReplacement]) -> Result<String> {
     let mut result = url.to_string();
-    for r in replacements {
-        if r.regex.unwrap_or(false) {
-            let flags = r.flags.as_deref().unwrap_or("");
-            let case_insensitive = flags.contains('i');
-            let pattern_str = if case_insensitive {
-                format!("(?i){}", r.ref_pattern)
-            } else {
-                r.ref_pattern.clone()
-            };
-            if let Ok(re) = regex::Regex::new(&pattern_str) {
-                result = re.replace_all(&result, r.test.as_str()).to_string();
-            } else {
-                eprintln!(
-                    "    WARNING: Invalid regex pattern '{}' in replacements",
-                    r.ref_pattern
+    for replacement in replacements {
+        if replacement.regex.unwrap_or(false) {
+            let regex = compile_replacement_regex(replacement)?;
+            result = regex
+                .replace_all(&result, replacement.test.as_str())
+                .to_string();
+        } else {
+            if replacement
+                .flags
+                .as_deref()
+                .is_some_and(|flags| !flags.is_empty())
+            {
+                anyhow::bail!(
+                    "URL replacement '{}' specifies flags but does not enable regex",
+                    replacement.ref_pattern
                 );
             }
-        } else {
-            result = result.replace(&r.ref_pattern, &r.test);
+            result = result.replace(&replacement.ref_pattern, &replacement.test);
         }
     }
-    result
+    Ok(result)
+}
+
+fn compile_replacement_regex(replacement: &UrlReplacement) -> Result<regex::Regex> {
+    let mut modifiers = String::new();
+    let mut seen = HashSet::new();
+    for flag in replacement.flags.as_deref().unwrap_or("").chars() {
+        if !seen.insert(flag) {
+            anyhow::bail!(
+                "Regex URL replacement '{}' repeats flag '{}'",
+                replacement.ref_pattern,
+                flag
+            );
+        }
+        match flag {
+            // replace_all is global regardless of an explicit JS `g` flag;
+            // Rust regex is Unicode-aware by default, matching JS `u` URLs.
+            'g' | 'u' => {}
+            'i' | 'm' | 's' => modifiers.push(flag),
+            unsupported => anyhow::bail!(
+                "Regex URL replacement '{}' has unsupported flag '{}' (supported: g, i, m, s, u)",
+                replacement.ref_pattern,
+                unsupported
+            ),
+        }
+    }
+    let pattern = if modifiers.is_empty() {
+        replacement.ref_pattern.clone()
+    } else {
+        format!("(?{}){}", modifiers, replacement.ref_pattern)
+    };
+    regex::Regex::new(&pattern).map_err(|error| {
+        anyhow!(
+            "Invalid regex URL replacement '{}': {}",
+            replacement.ref_pattern,
+            error
+        )
+    })
 }
 
 /// Validate replacement rules as configuration before browser scenarios start.
@@ -103,21 +140,89 @@ pub fn validate_replacements(replacements: &[UrlReplacement], source: &str) -> R
             ));
         }
         if replacement.regex.unwrap_or(false) {
-            let flags = replacement.flags.as_deref().unwrap_or("");
-            let pattern = if flags.contains('i') {
-                format!("(?i){}", replacement.ref_pattern)
-            } else {
-                replacement.ref_pattern.clone()
-            };
-            regex::Regex::new(&pattern).map_err(|e| {
+            compile_replacement_regex(replacement).map_err(|error| {
                 anyhow!(
                     "Invalid regex URL replacement '{}' in {}: {}",
                     replacement.ref_pattern,
                     source,
-                    e
+                    error
                 )
             })?;
+        } else if replacement
+            .flags
+            .as_deref()
+            .is_some_and(|flags| !flags.is_empty())
+        {
+            anyhow::bail!(
+                "URL replacement '{}' in {} specifies flags but does not enable regex",
+                replacement.ref_pattern,
+                source
+            );
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn regex_replacement(pattern: &str, test: &str, flags: &str) -> UrlReplacement {
+        UrlReplacement {
+            ref_pattern: pattern.to_string(),
+            test: test.to_string(),
+            regex: Some(true),
+            flags: Some(flags.to_string()),
+        }
+    }
+
+    #[test]
+    fn regex_replacements_honor_supported_flags() {
+        let insensitive = regex_replacement("^https://example\\.com$", "ok", "i");
+        assert_eq!(
+            apply_replacements("HTTPS://EXAMPLE.COM", &[insensitive]).unwrap(),
+            "ok"
+        );
+
+        let dot_all = regex_replacement("a.b", "ok", "s");
+        assert_eq!(apply_replacements("a\nb", &[dot_all]).unwrap(), "ok");
+
+        let multiline = regex_replacement("^b$", "ok", "m");
+        assert_eq!(
+            apply_replacements("a\nb\nc", &[multiline]).unwrap(),
+            "a\nok\nc"
+        );
+
+        let global = regex_replacement("a", "b", "g");
+        assert_eq!(apply_replacements("aaa", &[global]).unwrap(), "bbb");
+    }
+
+    #[test]
+    fn replacement_validation_rejects_invalid_flag_configurations() {
+        for replacement in [
+            regex_replacement("a", "b", "ii"),
+            regex_replacement("a", "b", "y"),
+            UrlReplacement {
+                ref_pattern: "a".to_string(),
+                test: "b".to_string(),
+                regex: Some(false),
+                flags: Some("i".to_string()),
+            },
+        ] {
+            assert!(
+                validate_replacements(&[replacement], "test")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("flag")
+            );
+        }
+    }
+
+    #[test]
+    fn replacement_profile_file_rejects_unknown_properties() {
+        let result =
+            serde_yaml::from_str::<ReplacementProfilesFile>("profiles: {}\nprofilez: {}\n");
+
+        assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
+    }
 }

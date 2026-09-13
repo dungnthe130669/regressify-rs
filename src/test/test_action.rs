@@ -412,7 +412,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
-            let target_url = apply_action_url_replacements(goto, url_replacements);
+            let target_url = apply_action_url_replacements(goto, url_replacements)?;
             eprintln!("{} Navigating to URL: {}", log_prefix, target_url);
             actionability::cdp_with_timeout(
                 Duration::from_millis(ac.element_timeout_ms),
@@ -995,7 +995,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
-                let target_url = apply_action_url_replacements(url, url_replacements);
+                let target_url = apply_action_url_replacements(url, url_replacements)?;
                 eprintln!("{} Waiting for URL: {}", log_prefix, target_url);
                 let matcher = UrlMatcher::compile(&target_url)?;
 
@@ -1049,7 +1049,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
     Ok(())
 }
 
-fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> String {
+fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> Result<String> {
     config::replacements::apply_replacements(url, replacements)
 }
 
@@ -1146,7 +1146,8 @@ mod tests {
         }];
 
         assert_eq!(
-            apply_action_url_replacements("https://prod.example.com/dashboard", &replacements),
+            apply_action_url_replacements("https://prod.example.com/dashboard", &replacements)
+                .unwrap(),
             "https://test.example.com/dashboard"
         );
     }
