@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Result, anyhow};
@@ -53,6 +53,14 @@ struct CaptureJob {
     scenario_idx: usize,
     viewport: Option<config::viewports::ViewportDef>,
     index: usize,
+}
+
+fn suite_output_dir(regressify_dir: &Path, suite: &TestSuite) -> Result<PathBuf> {
+    let suite_id = suite
+        .id
+        .as_deref()
+        .ok_or_else(|| anyhow!("Test suite ID is required for output paths"))?;
+    Ok(regressify_dir.join(suite_id))
 }
 
 /// Flatten every scenario/viewport pair across all parsed suites into a flat list
@@ -396,7 +404,24 @@ fn validate_duration(name: &str, value: Option<f64>) -> Result<()> {
     Ok(())
 }
 
+fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
+    let value = value.ok_or_else(|| anyhow!("{} is required", name))?;
+    if value.trim().is_empty()
+        || value == "."
+        || value == ".."
+        || value.contains(['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*'])
+    {
+        anyhow::bail!(
+            "{} '{}' is not a portable output path component",
+            name,
+            value
+        );
+    }
+    Ok(())
+}
+
 fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
+    validate_output_identifier("Test suite ID", suite.id.as_deref())?;
     validate_percentage(
         &format!("test suite '{}' misMatchThreshold", input.name),
         suite.mis_match_threshold,
@@ -433,6 +458,7 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
     }
     for (index, scenario) in suite.scenarios.iter().enumerate() {
         let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
+        validate_output_identifier("Scenario ID", scenario.id.as_deref())?;
         validate_percentage(
             &format!("scenario '{}' misMatchThreshold", scenario_name),
             scenario.mis_match_threshold,
@@ -707,7 +733,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
                 (suite.id.as_deref(), suite.test_date.as_deref())
         {
             let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
-            let suite_dir = regressify_dir.join(suite_id);
+            let suite_dir = suite_output_dir(regressify_dir, suite)?;
 
             let threshold = suite.mis_match_threshold.unwrap_or(mis_match_threshold);
             let async_compare_limit =
@@ -892,7 +918,11 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     // Promote screenshots and run comparison per suite
     for (input, suite) in &parsed_suites {
-        let suite_dir = regressify_dir.join(&input.name);
+        let suite_id = suite
+            .id
+            .as_deref()
+            .ok_or_else(|| anyhow!("Test suite '{}' is missing an ID", input.name))?;
+        let suite_dir = suite_output_dir(regressify_dir, suite)?;
         let tests_dir = suite_dir.join("bitmaps_test");
 
         if !tests_dir.exists() {
@@ -974,20 +1004,14 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         eprintln!("Running visual comparison...");
         let async_compare_limit =
             config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
-        if let Err(e) = generate_comparison_report(
-            &suite_dir,
-            &input.name,
-            &latest_run,
-            0.0,
-            async_compare_limit,
-        ) {
-            eprintln!(
-                "{} Visual comparison for '{}' reported failures: {:?}",
-                "WARNING:".yellow(),
-                input.name,
-                e
-            );
-        }
+        generate_comparison_report(&suite_dir, suite_id, &latest_run, 0.0, async_compare_limit)
+            .map_err(|error| {
+                anyhow!(
+                    "Failed to generate reference comparison report for '{}': {}",
+                    input.name,
+                    error
+                )
+            })?;
     }
 
     generate_snapshot_reports()?;
@@ -1283,5 +1307,37 @@ mod tests {
                 .contains("Invalid selectors for scenario 'home'")
         );
         assert!(error.to_string().contains("at least one capture target"));
+    }
+
+    #[test]
+    fn suite_output_directory_uses_configured_suite_id() {
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.id = Some("production-dashboard".to_string());
+        let temp = tempfile::tempdir().unwrap();
+
+        let output = suite_output_dir(temp.path(), &suite).unwrap();
+
+        assert_eq!(output, temp.path().join("production-dashboard"));
+    }
+
+    #[test]
+    fn rejects_unsafe_suite_and_scenario_output_identifiers() {
+        let mut unsafe_suite = suite(vec![scenario("home", None)]);
+        unsafe_suite.id = Some("../outside".to_string());
+        assert!(
+            validate_test_suite_config(&input(), &unsafe_suite)
+                .unwrap_err()
+                .to_string()
+                .contains("Test suite ID")
+        );
+
+        let mut unsafe_scenario_suite = suite(vec![scenario("home", None)]);
+        unsafe_scenario_suite.scenarios[0].id = Some("nested/home".to_string());
+        assert!(
+            validate_test_suite_config(&input(), &unsafe_scenario_suite)
+                .unwrap_err()
+                .to_string()
+                .contains("Scenario ID")
+        );
     }
 }
