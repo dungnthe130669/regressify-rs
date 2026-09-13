@@ -216,11 +216,25 @@ fn report_pair(
         reference: format!("../bitmaps_reference/{}", screenshot_name),
         test: relative_test,
         diff_image: None,
-        selector: "document".to_string(),
+        selector: report_selector(screenshot_name),
         file_name: screenshot_name.to_string(),
         mis_match_threshold: threshold,
         diff: None,
         engine_error_msg: None,
+    }
+}
+
+fn report_selector(screenshot_name: &str) -> String {
+    let target = screenshot_key(screenshot_name)
+        .rsplit_once("__")
+        .map(|(_, target)| target)
+        .unwrap_or("FINAL");
+    match target {
+        "FINAL" => "document".to_string(),
+        "VIEWPORT" => "viewport".to_string(),
+        target if target.starts_with('$') => format!("save:{}", &target[1..]),
+        target if target.starts_with("SELECTOR-") => target.to_string(),
+        target => target.to_string(),
     }
 }
 
@@ -825,5 +839,19 @@ mod tests {
         assert_eq!(tests[0]["pair"]["fileName"], "home__$after-login.png");
         assert_eq!(tests[0]["status"], "pass");
         assert_eq!(tests[0]["pair"]["misMatchThreshold"], 100.0);
+    }
+
+    #[test]
+    fn report_selector_describes_capture_target_from_filename() {
+        assert_eq!(report_selector("home__FINAL.png"), "document");
+        assert_eq!(report_selector("home__VIEWPORT.png"), "viewport");
+        assert_eq!(
+            report_selector("home__$after-login.png"),
+            "save:after-login"
+        );
+        assert_eq!(
+            report_selector("home__SELECTOR-main-hero-abc123.png"),
+            "SELECTOR-main-hero-abc123"
+        );
     }
 }
