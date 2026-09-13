@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 
@@ -82,9 +82,20 @@ struct DimensionDiff {
 fn read_report_order(tests_dir: &Path) -> Result<Option<Vec<String>>> {
     let path = tests_dir.join(REPORT_ORDER_FILE);
     match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map(Some)
-            .with_context(|| format!("Invalid report order manifest '{}'", path.display())),
+        Ok(content) => {
+            let order: Vec<String> = serde_json::from_str(&content)
+                .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
+            let mut seen = HashSet::with_capacity(order.len());
+            for key in &order {
+                if key.trim().is_empty() || !seen.insert(key) {
+                    anyhow::bail!(
+                        "Invalid report order manifest '{}': duplicate or empty key",
+                        path.display()
+                    );
+                }
+            }
+            Ok(Some(order))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error)
             .with_context(|| format!("Failed to read report order manifest '{}'", path.display())),
@@ -94,9 +105,22 @@ fn read_report_order(tests_dir: &Path) -> Result<Option<Vec<String>>> {
 fn read_report_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64>>> {
     let path = tests_dir.join(REPORT_THRESHOLDS_FILE);
     match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map(Some)
-            .with_context(|| format!("Invalid report threshold manifest '{}'", path.display())),
+        Ok(content) => {
+            let thresholds: HashMap<String, f64> =
+                serde_json::from_str(&content).with_context(|| {
+                    format!("Invalid report threshold manifest '{}'", path.display())
+                })?;
+            for (key, value) in &thresholds {
+                if key.trim().is_empty() || !value.is_finite() || !(0.0..=100.0).contains(value) {
+                    anyhow::bail!(
+                        "Invalid report threshold manifest '{}': '{}' must be a finite value between 0 and 100",
+                        path.display(),
+                        key
+                    );
+                }
+            }
+            Ok(Some(thresholds))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| {
             format!(
@@ -717,5 +741,15 @@ mod tests {
                 .to_string()
                 .contains("Invalid report threshold manifest")
         );
+
+        fs::remove_file(test_dir.join(REPORT_THRESHOLDS_FILE)).unwrap();
+        fs::write(test_dir.join(REPORT_ORDER_FILE), br#"["home","home"]"#).unwrap();
+        let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
+        assert!(error.to_string().contains("duplicate or empty key"));
+
+        fs::remove_file(test_dir.join(REPORT_ORDER_FILE)).unwrap();
+        fs::write(test_dir.join(REPORT_THRESHOLDS_FILE), br#"{"home":101}"#).unwrap();
+        let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
+        assert!(error.to_string().contains("finite value between 0 and 100"));
     }
 }
