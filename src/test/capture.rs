@@ -29,6 +29,7 @@ const SELECTOR_SCROLL_SETTLE: Duration = Duration::from_millis(100);
 const MAX_SELECTOR_SLUG_LEN: usize = 48;
 const MAX_STEP_NAME_BYTES: usize = 100;
 const MAX_STATE_NAME_BYTES: usize = 80;
+const MAX_CAPTURE_DIMENSION: f64 = 100_000.0;
 
 /// Marker for failures while producing on-disk regression artifacts. These are
 /// tool failures, unlike a page that fails to render or perform an action.
@@ -625,6 +626,7 @@ async fn full_page_params(page: &Page) -> Result<ScreenshotParams> {
     let metrics = page.layout_metrics().await?;
     let width = metrics.css_content_size.width;
     let height = metrics.css_content_size.height;
+    validate_capture_dimensions(width, height, "full page")?;
 
     Ok(ScreenshotParams::builder()
         .format(CaptureScreenshotFormat::Png)
@@ -639,6 +641,25 @@ async fn full_page_params(page: &Page) -> Result<ScreenshotParams> {
         .from_surface(true)
         .omit_background(false)
         .build())
+}
+
+fn validate_capture_dimensions(width: f64, height: f64, target: &str) -> Result<()> {
+    if !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || width > MAX_CAPTURE_DIMENSION
+        || height > MAX_CAPTURE_DIMENSION
+    {
+        anyhow::bail!(
+            "Cannot capture {}: dimensions {}x{} must be finite, positive, and no larger than {} CSS pixels",
+            target,
+            width,
+            height,
+            MAX_CAPTURE_DIMENSION
+        );
+    }
+    Ok(())
 }
 
 async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<SelectorCapture> {
@@ -678,9 +699,7 @@ async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<Selecto
     };
     let width = coordinate("width")?;
     let height = coordinate("height")?;
-    if width <= 0.0 || height <= 0.0 {
-        anyhow::bail!("Selector '{}' has an empty capture rectangle", selector);
-    }
+    validate_capture_dimensions(width, height, &format!("selector '{}'", selector))?;
 
     Ok(SelectorCapture {
         clip: Viewport {
@@ -1133,6 +1152,19 @@ mod tests {
         assert!(validate_screenshot_step_name(" progress").is_err());
         assert!(validate_screenshot_step_name("progress ").is_err());
         assert!(validate_screenshot_step_name("progress_diff").is_err());
+    }
+
+    #[test]
+    fn capture_dimensions_must_be_finite_positive_and_bounded() {
+        assert!(validate_capture_dimensions(1920.0, 10_000.0, "test").is_ok());
+        assert!(
+            validate_capture_dimensions(0.0, 100.0, "test")
+                .unwrap_err()
+                .to_string()
+                .contains("finite, positive")
+        );
+        assert!(validate_capture_dimensions(f64::NAN, 100.0, "test").is_err());
+        assert!(validate_capture_dimensions(MAX_CAPTURE_DIMENSION + 1.0, 100.0, "test").is_err());
     }
 
     #[test]

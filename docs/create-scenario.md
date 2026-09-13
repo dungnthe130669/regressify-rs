@@ -417,7 +417,8 @@ must resolve to a visible element when captured. Regressify restores the prior
 page scroll position after each selector capture so one target does not alter a
 later viewport, selector, or full-page capture. Comparison reports label each
 target as `document`, `viewport`, a saved step, or a stable selector capture
-name.
+name. Full-page and selector targets must resolve to finite positive dimensions
+no larger than 100000 CSS pixels in either direction.
 
 ```yaml
 scenarios:
