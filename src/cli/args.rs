@@ -137,7 +137,7 @@ pub(crate) fn positive_u32_parser(s: &str) -> Result<u32, String> {
         })
 }
 
-pub(crate) fn run_id_parser(value: &str) -> Result<String, String> {
+fn portable_identifier_parser(value: &str, label: &str) -> Result<String, String> {
     const MAX_RUN_ID_BYTES: usize = 80;
     let is_valid = !value.is_empty()
         && value.len() <= MAX_RUN_ID_BYTES
@@ -148,10 +148,18 @@ pub(crate) fn run_id_parser(value: &str) -> Result<String, String> {
         Ok(value.to_string())
     } else {
         Err(format!(
-            "Run ID must contain only ASCII letters, digits, underscores, or hyphens and be at most {} bytes.",
-            MAX_RUN_ID_BYTES
+            "{} must contain only ASCII letters, digits, underscores, or hyphens and be at most {} bytes.",
+            label, MAX_RUN_ID_BYTES
         ))
     }
+}
+
+pub(crate) fn run_id_parser(value: &str) -> Result<String, String> {
+    portable_identifier_parser(value, "Run ID")
+}
+
+pub(crate) fn site_env_parser(value: &str) -> Result<String, String> {
+    portable_identifier_parser(value, "Site environment")
 }
 
 fn percentage_parser(s: &str) -> Result<f64, String> {
@@ -172,7 +180,8 @@ fn percentage_parser(s: &str) -> Result<f64, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser, speed_parser,
+        percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser,
+        site_env_parser, speed_parser,
     };
 
     #[test]
@@ -207,5 +216,12 @@ mod tests {
         assert!(run_id_parser("../../outside").is_err());
         assert!(run_id_parser("release run").is_err());
         assert!(run_id_parser(&"a".repeat(81)).is_err());
+    }
+
+    #[test]
+    fn site_environments_require_portable_output_names() {
+        assert_eq!(site_env_parser("staging_2"), Ok("staging_2".to_string()));
+        assert!(site_env_parser("../outside").is_err());
+        assert!(site_env_parser("staging env").is_err());
     }
 }

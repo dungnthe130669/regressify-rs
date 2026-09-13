@@ -28,7 +28,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | Flag                          | Purpose                                                                                                                      |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `--root`, `-r`                | Project root. Defaults to the current directory.                                                                             |
-| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory.            |
+| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. The environment name must use only ASCII letters, digits, `_`, or `-`. |
 | `--run-id`                    | Portable explicit capture directory ID shared by all selected suites. `test` and `ref` write to it; `compare` and `approve` select it. Defaults to a sortable UTC timestamp for capture and the lexically latest run for standalone compare/approve when omitted. |
 | `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap. |
 | `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                  |

@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use super::args::{positive_u32_parser, run_id_parser};
+use super::args::{positive_u32_parser, run_id_parser, site_env_parser};
 
 use super::Command;
 
@@ -41,7 +41,7 @@ pub struct Cli {
     pub verbose: bool,
 
     /// Site environment
-    #[clap(long, allow_hyphen_values = true)]
+    #[clap(long, allow_hyphen_values = true, value_parser = site_env_parser)]
     pub site_env: Option<String>,
 
     /// Directory to use as regressify directory (overrides site_env)
@@ -103,5 +103,14 @@ mod tests {
         let result = Cli::try_parse_from(["regressify", "--run-id", "../unsafe", "test"]);
 
         assert!(matches!(result, Err(error) if error.to_string().contains("Run ID must contain")));
+    }
+
+    #[test]
+    fn cli_rejects_unsafe_site_environment() {
+        let result = Cli::try_parse_from(["regressify", "--site-env", "../unsafe", "test"]);
+
+        assert!(
+            matches!(result, Err(error) if error.to_string().contains("Site environment must contain"))
+        );
     }
 }
