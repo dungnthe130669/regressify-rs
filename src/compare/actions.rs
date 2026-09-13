@@ -10,6 +10,32 @@ use crate::{
     helpers::OnceLockExtensions,
 };
 
+fn compile_suite_filters(patterns: &[String]) -> Result<Option<Vec<glob::Pattern>>> {
+    if patterns.is_empty()
+        || patterns
+            .iter()
+            .any(|pattern| pattern == "all" || pattern == "*")
+    {
+        return Ok(None);
+    }
+
+    patterns
+        .iter()
+        .map(|pattern| {
+            glob::Pattern::new(pattern).map_err(|error| {
+                anyhow::anyhow!("Invalid test suite pattern '{}': {}", pattern, error)
+            })
+        })
+        .collect::<Result<Vec<_>>>()
+        .map(Some)
+}
+
+fn suite_matches_filters(suite_id: &str, filters: &Option<Vec<glob::Pattern>>) -> bool {
+    filters
+        .as_ref()
+        .is_none_or(|filters| filters.iter().any(|filter| filter.matches(suite_id)))
+}
+
 /// Entry point for the `compare` CLI command.
 /// Compares the latest test screenshots against reference images for each test suite.
 pub fn compare(args: CompareArgs) -> Result<()> {
@@ -22,8 +48,9 @@ pub fn compare(args: CompareArgs) -> Result<()> {
     let mis_match_threshold = args.mis_match_threshold;
     let async_compare_limit = args.async_compare_limit;
     let requested_run_id = common::RUN_ID.get().map(String::as_str);
+    let suite_filters = compile_suite_filters(&args.test_suite)?;
 
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_compared = false;
@@ -40,15 +67,8 @@ pub fn compare(args: CompareArgs) -> Result<()> {
         };
 
         // Filter by suite patterns if provided
-        if !args.test_suite.is_empty() && !args.test_suite.contains(&"all".to_string()) {
-            let matched = args.test_suite.iter().any(|pattern| {
-                glob::Pattern::new(pattern)
-                    .map(|p| p.matches(&suite_id))
-                    .unwrap_or(false)
-            });
-            if !matched {
-                continue;
-            }
+        if !suite_matches_filters(&suite_id, &suite_filters) {
+            continue;
         }
 
         let tests_dir = path.join("bitmaps_test");
@@ -93,11 +113,12 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         anyhow::bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.flatten().collect();
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|e| e.file_name());
 
     let mut any_approved = false;
     let requested_run_id = common::RUN_ID.get().map(String::as_str);
+    let suite_filters = compile_suite_filters(&args.test_suite)?;
 
     for entry in entries {
         let path = entry.path();
@@ -111,15 +132,8 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         };
 
         // Filter by suite patterns if provided
-        if !args.test_suite.is_empty() && !args.test_suite.contains(&"all".to_string()) {
-            let matched = args.test_suite.iter().any(|pattern| {
-                glob::Pattern::new(pattern)
-                    .map(|p| p.matches(&suite_id))
-                    .unwrap_or(false)
-            });
-            if !matched {
-                continue;
-            }
+        if !suite_matches_filters(&suite_id, &suite_filters) {
+            continue;
         }
 
         let bitmaps_test_dir = path.join("bitmaps_test");
@@ -140,4 +154,27 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suite_filters_match_all_or_compiled_patterns() {
+        let all = compile_suite_filters(&[]).unwrap();
+        assert!(suite_matches_filters("dashboard", &all));
+
+        let filters = compile_suite_filters(&["dash*".to_string(), "store".to_string()]).unwrap();
+        assert!(suite_matches_filters("dashboard", &filters));
+        assert!(suite_matches_filters("store", &filters));
+        assert!(!suite_matches_filters("account", &filters));
+    }
+
+    #[test]
+    fn suite_filters_reject_invalid_globs() {
+        let error = compile_suite_filters(&["[".to_string()]).unwrap_err();
+
+        assert!(error.to_string().contains("Invalid test suite pattern"));
+    }
 }

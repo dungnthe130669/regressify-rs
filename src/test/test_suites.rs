@@ -224,13 +224,19 @@ async fn acquire_capture_permits(
 }
 
 /// Discover available test suite files in the visual_tests/ directory.
-fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Vec<TestSuiteInput> {
+fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Result<Vec<TestSuiteInput>> {
     let mut suites: HashMap<String, (u8, TestSuiteInput)> = HashMap::new();
-    for entry in WalkDir::new(visual_tests_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.file_type().is_file())
-    {
+    for entry in WalkDir::new(visual_tests_dir) {
+        let entry = entry.map_err(|error| {
+            anyhow!(
+                "Failed to discover test suites under '{}': {}",
+                visual_tests_dir.display(),
+                error
+            )
+        })?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
         let file_name = entry.file_name().to_string_lossy().to_lowercase();
         if file_name.ends_with(".tests.yaml")
             || file_name.ends_with(".tests.yml")
@@ -280,27 +286,31 @@ fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Vec<TestSuiteInpu
     }
     let mut suites: Vec<_> = suites.into_values().map(|(_, input)| input).collect();
     suites.sort_by(|a, b| a.name.cmp(&b.name));
-    suites
+    Ok(suites)
 }
 
 /// Filter test suites by glob patterns (or return all if patterns is empty / contains "all" / "*").
-fn filter_test_suites(available: Vec<TestSuiteInput>, patterns: &[String]) -> Vec<TestSuiteInput> {
+fn filter_test_suites(
+    available: Vec<TestSuiteInput>,
+    patterns: &[String],
+) -> Result<Vec<TestSuiteInput>> {
     if patterns.is_empty()
         || patterns.contains(&"all".to_string())
         || patterns.contains(&"*".to_string())
     {
-        available
+        Ok(available)
     } else {
-        available
-            .into_iter()
-            .filter(|ts| {
-                patterns.iter().any(|pattern| {
-                    glob::Pattern::new(pattern)
-                        .map(|p| p.matches(&ts.name))
-                        .unwrap_or(false)
-                })
+        let patterns: Vec<_> = patterns
+            .iter()
+            .map(|pattern| {
+                glob::Pattern::new(pattern)
+                    .map_err(|error| anyhow!("Invalid test suite pattern '{}': {}", pattern, error))
             })
-            .collect()
+            .collect::<Result<_>>()?;
+        Ok(available
+            .into_iter()
+            .filter(|ts| patterns.iter().any(|pattern| pattern.matches(&ts.name)))
+            .collect())
     }
 }
 
@@ -679,8 +689,8 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let active_replacements =
         load_active_replacement_profile(root_dir, replacement_profile.as_deref())?;
 
-    let available = discover_test_suites(&visual_tests_dir);
-    let filtered = filter_test_suites(available, &test_suites);
+    let available = discover_test_suites(&visual_tests_dir)?;
+    let filtered = filter_test_suites(available, &test_suites)?;
 
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
@@ -853,8 +863,8 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let workspace_config = config::load_workspace_config(root_dir)?;
     validate_workspace_config(&workspace_config)?;
 
-    let available = discover_test_suites(&visual_tests_dir);
-    let filtered = filter_test_suites(available, &test_suites);
+    let available = discover_test_suites(&visual_tests_dir)?;
+    let filtered = filter_test_suites(available, &test_suites)?;
 
     let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
@@ -1161,7 +1171,7 @@ mod tests {
         std::fs::write(temp_dir.path().join("alloy.tests.yml"), "scenarios: []\n").unwrap();
         std::fs::write(temp_dir.path().join("alloy.tests.yaml"), "scenarios: []\n").unwrap();
 
-        let suites = discover_test_suites(temp_dir.path());
+        let suites = discover_test_suites(temp_dir.path()).unwrap();
 
         assert_eq!(suites.len(), 1);
         assert_eq!(suites[0].name, "alloy");
@@ -1177,12 +1187,27 @@ mod tests {
         std::fs::write(temp_dir.path().join("alloy.tests.json"), "{}").unwrap();
         std::fs::write(temp_dir.path().join("alloy.tests.yml"), "scenarios: []\n").unwrap();
 
-        let suites = discover_test_suites(temp_dir.path());
+        let suites = discover_test_suites(temp_dir.path()).unwrap();
 
         assert_eq!(suites.len(), 1);
         assert_eq!(
             suites[0].path.file_name().and_then(|name| name.to_str()),
             Some("alloy.tests.yml")
+        );
+    }
+
+    #[test]
+    fn discovery_and_filtering_report_invalid_inputs() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing_directory = temp_dir.path().join("missing");
+        let discovery = discover_test_suites(&missing_directory);
+        assert!(
+            matches!(discovery, Err(error) if error.to_string().contains("Failed to discover test suites"))
+        );
+
+        let filtering = filter_test_suites(Vec::new(), &["[".to_string()]);
+        assert!(
+            matches!(filtering, Err(error) if error.to_string().contains("Invalid test suite pattern"))
         );
     }
 

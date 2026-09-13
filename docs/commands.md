@@ -51,7 +51,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | `snapshot` | Generate the HTML summary report from existing comparison data.                                                                                     |
 | `optimize` | Optimize PNG files in the project output tree.                                                                                                      |
 
-All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite.
+All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns and unreadable suite directories fail the command instead of silently reducing coverage.
 
 ## Exit codes
 
