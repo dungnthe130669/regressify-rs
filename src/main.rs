@@ -111,7 +111,7 @@ fn set_global_vars(cli: &Cli) -> Result<()> {
     common::DEBUG.set_value(cli.debug)?;
     common::REQUIRED_LOGIN.set_value(cli.required_login)?;
 
-    common::ASYNC_CAPTURE_LIMIT.set_value((cli.async_capture_limit as usize).max(1))?;
+    common::ASYNC_CAPTURE_LIMIT.set_value(cli.async_capture_limit as usize)?;
     common::ASYNC_CAPTURE_RAMP_MS.set_value(cli.async_capture_ramp_ms)?;
 
     if let Some(ref proxy) = cli.proxy {

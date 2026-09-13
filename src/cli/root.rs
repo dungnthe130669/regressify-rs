@@ -1,6 +1,8 @@
 use clap::Parser;
 use std::path::PathBuf;
 
+use super::args::positive_u32_parser;
+
 use super::Command;
 
 /// Version string shown by `--version`, including the embedded git commit hash.
@@ -51,7 +53,12 @@ pub struct Cli {
     pub run_id: Option<String>,
 
     /// Number of test scenarios to run in parallel
-    #[clap(long, allow_hyphen_values = true, default_value = "5")]
+    #[clap(
+        long,
+        allow_hyphen_values = true,
+        default_value = "5",
+        value_parser = positive_u32_parser
+    )]
     pub async_capture_limit: u32,
 
     /// Milliseconds between concurrency ramp-up steps (1 additional scenario slot per step)
@@ -74,4 +81,20 @@ pub struct Cli {
     /// Subcommand to execute
     #[clap(subcommand)]
     pub command: Command,
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Cli;
+
+    #[test]
+    fn cli_rejects_zero_global_capture_limit() {
+        let result = Cli::try_parse_from(["regressify", "--async-capture-limit", "0", "test"]);
+
+        assert!(
+            matches!(result, Err(error) if error.to_string().contains("Value must be greater than zero"))
+        );
+    }
 }

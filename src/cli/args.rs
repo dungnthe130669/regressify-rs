@@ -113,8 +113,20 @@ fn speed_parser(s: &str) -> Result<u8, String> {
         })
 }
 
-fn positive_usize_parser(s: &str) -> Result<usize, String> {
+pub(crate) fn positive_usize_parser(s: &str) -> Result<usize, String> {
     s.parse::<usize>()
+        .map_err(|_| format!("'{}' is not a positive integer.", s))
+        .and_then(|value| {
+            if value > 0 {
+                Ok(value)
+            } else {
+                Err("Value must be greater than zero.".to_string())
+            }
+        })
+}
+
+pub(crate) fn positive_u32_parser(s: &str) -> Result<u32, String> {
+    s.parse::<u32>()
         .map_err(|_| format!("'{}' is not a positive integer.", s))
         .and_then(|value| {
             if value > 0 {
@@ -142,7 +154,7 @@ fn percentage_parser(s: &str) -> Result<f64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{percentage_parser, positive_usize_parser, speed_parser};
+    use super::{percentage_parser, positive_u32_parser, positive_usize_parser, speed_parser};
 
     #[test]
     fn optimization_speed_is_limited_to_supported_range() {
@@ -157,6 +169,8 @@ mod tests {
         assert_eq!(positive_usize_parser("1"), Ok(1));
         assert!(positive_usize_parser("0").is_err());
         assert!(positive_usize_parser("one").is_err());
+        assert_eq!(positive_u32_parser("1"), Ok(1));
+        assert!(positive_u32_parser("0").is_err());
     }
 
     #[test]
