@@ -339,6 +339,16 @@ fn screenshot_path_in(
 /// alphabetical filename sorting.
 pub const REPORT_ORDER_FILE: &str = ".report-order.json";
 pub const REPORT_THRESHOLDS_FILE: &str = ".report-thresholds.json";
+pub(crate) const REPORT_ORDER_VERSION: u8 = 1;
+
+/// Complete expected screenshot inventory for a capture run. Older runs stored
+/// a bare array and remain readable as order-only manifests.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReportOrderManifest {
+    pub version: u8,
+    pub captures: Vec<String>,
+}
 
 fn run_dir(test_suite: &TestSuite) -> Result<PathBuf> {
     let test_suite_id = test_suite
@@ -521,7 +531,10 @@ pub fn write_report_order(test_suite: &TestSuite, prefixes: &[String]) -> Result
     let run_dir = run_dir(test_suite)?;
     create_dir_all(&run_dir)?;
 
-    let manifest = serde_json::to_vec_pretty(prefixes)?;
+    let manifest = serde_json::to_vec_pretty(&ReportOrderManifest {
+        version: REPORT_ORDER_VERSION,
+        captures: prefixes.to_vec(),
+    })?;
     write_file_atomically(&run_dir.join(REPORT_ORDER_FILE), &manifest)?;
     Ok(())
 }

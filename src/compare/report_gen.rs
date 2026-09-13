@@ -9,7 +9,10 @@ use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
 use crate::helpers::{copy_file_atomically, write_file_atomically};
-use crate::test::capture::{REPORT_ORDER_FILE, REPORT_THRESHOLDS_FILE, read_error_marker};
+use crate::test::capture::{
+    REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_THRESHOLDS_FILE, ReportOrderManifest,
+    read_error_marker,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -77,16 +80,40 @@ struct DimensionDiff {
     height: i64,
 }
 
+struct ReportOrder {
+    captures: Vec<String>,
+    is_complete_inventory: bool,
+}
+
 /// Read the report ordering manifest. Older runs may not have one, but a
 /// present malformed manifest is an artifact error rather than an empty order.
-fn read_report_order(tests_dir: &Path) -> Result<Option<Vec<String>>> {
+fn read_report_order(tests_dir: &Path) -> Result<Option<ReportOrder>> {
     let path = tests_dir.join(REPORT_ORDER_FILE);
     match fs::read_to_string(&path) {
         Ok(content) => {
-            let order: Vec<String> = serde_json::from_str(&content)
+            let value: serde_json::Value = serde_json::from_str(&content)
                 .with_context(|| format!("Invalid report order manifest '{}'", path.display()))?;
-            let mut seen = HashSet::with_capacity(order.len());
-            for key in &order {
+            let (captures, is_complete_inventory) = if value.is_array() {
+                let captures: Vec<String> = serde_json::from_value(value).with_context(|| {
+                    format!("Invalid report order manifest '{}'", path.display())
+                })?;
+                (captures, false)
+            } else {
+                let manifest: ReportOrderManifest =
+                    serde_json::from_value(value).with_context(|| {
+                        format!("Invalid report order manifest '{}'", path.display())
+                    })?;
+                if manifest.version != REPORT_ORDER_VERSION {
+                    anyhow::bail!(
+                        "Unsupported report order manifest version {} in '{}'",
+                        manifest.version,
+                        path.display()
+                    );
+                }
+                (manifest.captures, true)
+            };
+            let mut seen = HashSet::with_capacity(captures.len());
+            for key in &captures {
                 if key.trim().is_empty() || !seen.insert(key) {
                     anyhow::bail!(
                         "Invalid report order manifest '{}': duplicate or empty key",
@@ -94,7 +121,10 @@ fn read_report_order(tests_dir: &Path) -> Result<Option<Vec<String>>> {
                     );
                 }
             }
-            Ok(Some(order))
+            Ok(Some(ReportOrder {
+                captures,
+                is_complete_inventory,
+            }))
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error)
@@ -176,6 +206,45 @@ fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
         }
     }
     Ok(screenshots)
+}
+
+fn validate_capture_inventory(
+    tests_dir: &Path,
+    expected_captures: &[String],
+    screenshots: &[String],
+) -> Result<()> {
+    let actual_keys: HashSet<&str> = screenshots
+        .iter()
+        .map(|screenshot| screenshot_key(screenshot))
+        .collect();
+    let missing: Vec<&str> = expected_captures
+        .iter()
+        .map(String::as_str)
+        .filter(|capture| !actual_keys.contains(capture))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+
+    const DISPLAY_LIMIT: usize = 5;
+    let listed = missing
+        .iter()
+        .take(DISPLAY_LIMIT)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let remainder = if missing.len() > DISPLAY_LIMIT {
+        ", ..."
+    } else {
+        ""
+    };
+    anyhow::bail!(
+        "Capture run '{}' is missing {} screenshot(s) listed in its manifest: {}{}",
+        tests_dir.display(),
+        missing.len(),
+        listed,
+        remainder
+    );
 }
 
 pub fn select_capture_run(
@@ -300,16 +369,23 @@ pub fn generate_comparison_report(
     // rather than alphabetical filename order. Any screenshot not present in the
     // manifest (e.g. stale files or runs predating the manifest) sorts last, then
     // alphabetically among themselves.
-    let order = match read_report_order(&tests_dir)? {
+    let report_order = match read_report_order(&tests_dir)? {
         Some(order) => order,
         None => {
             eprintln!(
                 "  {} Report order manifest missing; using alphabetical fallback.",
                 "WARNING:".yellow()
             );
-            Vec::new()
+            ReportOrder {
+                captures: Vec::new(),
+                is_complete_inventory: false,
+            }
         }
     };
+    if report_order.is_complete_inventory {
+        validate_capture_inventory(&tests_dir, &report_order.captures, &test_screenshots)?;
+    }
+    let order = report_order.captures;
     let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
     let mut order_index = HashMap::with_capacity(order.len() * 2);
     for (index, key) in order.iter().enumerate() {
@@ -782,6 +858,33 @@ mod tests {
         fs::write(test_dir.join(REPORT_THRESHOLDS_FILE), br#"{"home":101}"#).unwrap();
         let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
         assert!(error.to_string().contains("finite value between 0 and 100"));
+    }
+
+    #[test]
+    fn complete_manifest_rejects_missing_expected_captures() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        fs::write(reference_dir.join("available__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("available__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&ReportOrderManifest {
+                version: REPORT_ORDER_VERSION,
+                captures: vec!["available__FINAL".to_string(), "missing__FINAL".to_string()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
+
+        assert!(error.to_string().contains("missing 1 screenshot"));
+        assert!(error.to_string().contains("missing__FINAL"));
     }
 
     #[test]
