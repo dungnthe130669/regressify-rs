@@ -580,28 +580,20 @@ pub async fn check_enabled(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    let frame_selectors = get_frame_selectors(frame);
-    let element_js = build_element_js(selector, &frame_selectors);
-    let script = format!(
-        r#"(() => {{
-            const el = {element_js};
-            if (!el) return {{ error: 'not_found' }};
-            const disabled = el.matches(':disabled')
-                || el.getAttribute('aria-disabled') === 'true';
-            if (disabled) return {{ disabled: true }};
-            return {{ disabled: false }};
-        }})()"#
-    );
-
+    let script = enabled_script(selector, frame);
     let operation = format!("checking whether element '{}' is enabled", selector);
     let val = evaluate_value(page, script, actionability_timeout(config), &operation).await?;
 
     if val
         .get("disabled")
-        .and_then(|v| v.as_bool())
+        .and_then(|value| value.as_bool())
         .unwrap_or(false)
     {
-        return Err(anyhow!("Element '{}' is disabled", selector));
+        let state = match val.get("reason").and_then(|value| value.as_str()) {
+            Some("inert") => "inert",
+            _ => "disabled",
+        };
+        return Err(anyhow!("Element '{}' is {}", selector, state));
     }
     if val.get("error").is_some() {
         return Err(anyhow!(
@@ -610,6 +602,24 @@ pub async fn check_enabled(
         ));
     }
     Ok(())
+}
+
+fn enabled_script(selector: &str, frame: &Option<Frame>) -> String {
+    let frame_selectors = get_frame_selectors(frame);
+    let element_js = build_element_js(selector, &frame_selectors);
+    format!(
+        r#"(() => {{
+            const el = {element_js};
+            if (!el) return {{ error: 'not_found' }};
+            for (let current = el; current; current = current.parentElement) {{
+                if (current.inert === true || current.hasAttribute('inert'))
+                    return {{ disabled: true, reason: 'inert' }};
+            }}
+            const disabled = el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true';
+            if (disabled) return {{ disabled: true, reason: 'disabled' }};
+            return {{ disabled: false }};
+        }})()"#
+    )
 }
 
 /// Calculate the cumulative content-box offset of nested iframes relative to the
@@ -1273,6 +1283,40 @@ if (result.error !== 'frame_not_visible') throw new Error(JSON.stringify(result)
 global.document = {{ querySelector: () => element }};
 const result = {script};
 if (result.visible !== false || result.reason !== 'content_visibility_hidden')
+    throw new Error(JSON.stringify(result));
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn enabled_script_rejects_inert_ancestors() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("inert-runtime.js");
+        let script = enabled_script("#target", &None);
+        let runtime = format!(
+            r#"const inertAncestor = {{ parentElement: null, inert: true, hasAttribute: () => false }};
+const target = {{
+    parentElement: inertAncestor,
+    inert: false,
+    hasAttribute: () => false,
+    matches: () => false,
+    getAttribute: () => null,
+}};
+global.document = {{ querySelector: () => target }};
+const result = {script};
+if (result.disabled !== true || result.reason !== 'inert')
     throw new Error(JSON.stringify(result));
 "#
         );
