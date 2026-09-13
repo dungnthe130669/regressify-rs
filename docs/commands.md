@@ -98,3 +98,5 @@ Capture runs use sortable UTC directory IDs with nanosecond precision, so back-t
 ## Comparison Reports
 
 Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.
+
+Older capture runs without ordering or threshold manifests remain comparable: missing ordering data uses alphabetical output and missing threshold data uses the command threshold. A present malformed manifest is treated as an artifact error and fails the command.

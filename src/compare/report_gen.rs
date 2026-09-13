@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use rayon::prelude::*;
 use serde::Serialize;
@@ -77,22 +77,34 @@ struct DimensionDiff {
     height: i64,
 }
 
-/// Read the report ordering manifest written during capture. Returns an empty
-/// vec when absent (older runs) so callers fall back to alphabetical ordering.
-fn read_report_order(tests_dir: &Path) -> Vec<String> {
+/// Read the report ordering manifest. Older runs may not have one, but a
+/// present malformed manifest is an artifact error rather than an empty order.
+fn read_report_order(tests_dir: &Path) -> Result<Option<Vec<String>>> {
     let path = tests_dir.join(REPORT_ORDER_FILE);
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<Vec<String>>(&content).ok())
-        .unwrap_or_default()
+    match fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map(Some)
+            .with_context(|| format!("Invalid report order manifest '{}'", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to read report order manifest '{}'", path.display())),
+    }
 }
 
-fn read_report_thresholds(tests_dir: &Path) -> HashMap<String, f64> {
+fn read_report_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64>>> {
     let path = tests_dir.join(REPORT_THRESHOLDS_FILE);
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<HashMap<String, f64>>(&content).ok())
-        .unwrap_or_default()
+    match fs::read_to_string(&path) {
+        Ok(content) => serde_json::from_str(&content)
+            .map(Some)
+            .with_context(|| format!("Invalid report threshold manifest '{}'", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to read report threshold manifest '{}'",
+                path.display()
+            )
+        }),
+    }
 }
 
 fn screenshot_prefix(file_name: &str) -> &str {
@@ -111,16 +123,12 @@ fn screenshot_key(file_name: &str) -> &str {
 /// Position of a screenshot in the ordering manifest, derived from its filename
 /// prefix (`<scenario-id>[_<viewport>]`, the part before `__<step|FINAL>`).
 /// Screenshots not listed in the manifest sort after all listed ones.
-fn screenshot_order_key(file_name: &str, order: &[String]) -> usize {
-    order
-        .iter()
-        .position(|key| key == screenshot_key(file_name))
+fn screenshot_order_key(file_name: &str, order_index: &HashMap<&str, usize>) -> usize {
+    order_index
+        .get(screenshot_key(file_name))
+        .copied()
         // Older captures stored only the scenario/viewport prefix.
-        .or_else(|| {
-            order
-                .iter()
-                .position(|key| key == screenshot_prefix(file_name))
-        })
+        .or_else(|| order_index.get(screenshot_prefix(file_name)).copied())
         .unwrap_or(usize::MAX)
 }
 
@@ -227,11 +235,25 @@ pub fn generate_comparison_report(
     // rather than alphabetical filename order. Any screenshot not present in the
     // manifest (e.g. stale files or runs predating the manifest) sorts last, then
     // alphabetically among themselves.
-    let order = read_report_order(&tests_dir);
-    let thresholds = read_report_thresholds(&tests_dir);
+    let order = match read_report_order(&tests_dir)? {
+        Some(order) => order,
+        None => {
+            eprintln!(
+                "  {} Report order manifest missing; using alphabetical fallback.",
+                "WARNING:".yellow()
+            );
+            Vec::new()
+        }
+    };
+    let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
+    let order_index: HashMap<&str, usize> = order
+        .iter()
+        .enumerate()
+        .map(|(index, key)| (key.as_str(), index))
+        .collect();
     test_screenshots.sort_by(|a, b| {
-        screenshot_order_key(a, &order)
-            .cmp(&screenshot_order_key(b, &order))
+        screenshot_order_key(a, &order_index)
+            .cmp(&screenshot_order_key(b, &order_index))
             .then_with(|| a.cmp(b))
     });
 
@@ -670,5 +692,30 @@ mod tests {
         approve_screenshots(&suite_dir).unwrap();
 
         assert!(!reference_dir.join(screenshot_name).exists());
+    }
+
+    #[test]
+    fn malformed_report_manifests_fail_generation() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::write(reference_dir.join("home__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("home__FINAL.png"), png_bytes(10)).unwrap();
+
+        fs::write(test_dir.join(REPORT_ORDER_FILE), b"not json").unwrap();
+        let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
+        assert!(error.to_string().contains("Invalid report order manifest"));
+
+        fs::remove_file(test_dir.join(REPORT_ORDER_FILE)).unwrap();
+        fs::write(test_dir.join(REPORT_THRESHOLDS_FILE), b"not json").unwrap();
+        let error = generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid report threshold manifest")
+        );
     }
 }
