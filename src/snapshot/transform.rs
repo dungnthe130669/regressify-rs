@@ -100,7 +100,9 @@ fn parse_report_config(config_text: &str) -> Result<RegressifyReport> {
         .trim()
         .strip_prefix("report(")
         .and_then(|content| content.strip_suffix(");"))
-        .ok_or_else(|| anyhow::anyhow!("Invalid snapshot config.js wrapper; expected report(<JSON>);"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("Invalid snapshot config.js wrapper; expected report(<JSON>);")
+        })?;
     serde_json::from_str(config_json).context("Invalid snapshot config.js report data")
 }
 
@@ -111,7 +113,10 @@ fn referenced_capture_runs(report: &RegressifyReport) -> Result<BTreeSet<String>
     let mut runs = BTreeSet::new();
     for (index, test) in report.tests.iter().enumerate() {
         let path = test.pair.test.as_deref().ok_or_else(|| {
-            anyhow::anyhow!("Snapshot config test {} has no capture image path", index + 1)
+            anyhow::anyhow!(
+                "Snapshot config test {} has no capture image path",
+                index + 1
+            )
         })?;
         let normalized = path
             .split_once('?')
@@ -126,9 +131,9 @@ fn referenced_capture_runs(report: &RegressifyReport) -> Result<BTreeSet<String>
             )
         })?;
         let mut components = relative.split('/');
-        let run_id = components.next().filter(|component| {
-            !component.is_empty() && *component != "." && *component != ".."
-        });
+        let run_id = components
+            .next()
+            .filter(|component| !component.is_empty() && *component != "." && *component != "..");
         let file_name = components.next().filter(|component| !component.is_empty());
         if run_id.is_none() || file_name.is_none() || components.next().is_some() {
             anyhow::bail!(
@@ -375,7 +380,11 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("Invalid snapshot config.js wrapper"));
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid snapshot config.js wrapper")
+        );
         assert!(current_run.exists());
         assert!(prior_run.exists());
     }
