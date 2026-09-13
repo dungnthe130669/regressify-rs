@@ -628,30 +628,7 @@ pub async fn get_frame_offset(
         return Err(anyhow!("Frame selector chain cannot be empty"));
     }
 
-    let script = format!(
-        r#"(() => {{
-            let totalX = 0, totalY = 0;
-            let currentDoc = document;
-            const selectors = [{}];
-            for (const sel of selectors) {{
-                const frame = currentDoc.querySelector(sel);
-                if (!frame) return {{ error: 'frame_not_found', selector: sel }};
-                const rect = frame.getBoundingClientRect();
-                const style = currentDoc.defaultView.getComputedStyle(frame);
-                if (rect.width === 0 || rect.height === 0 || style.display === 'none'
-                    || style.visibility === 'hidden' || style.visibility === 'collapse'
-                    || parseFloat(style.opacity) === 0) {{
-                    return {{ error: 'frame_not_visible', selector: sel }};
-                }}
-                totalX += rect.x + frame.clientLeft;
-                totalY += rect.y + frame.clientTop;
-                currentDoc = frame.contentDocument;
-                if (!currentDoc) return {{ error: 'cross_origin_frame', selector: sel }};
-            }}
-            return {{ x: totalX, y: totalY }};
-        }})()"#,
-        frame_selectors_js(&frame_selectors)
-    );
+    let script = frame_offset_script(&frame_selectors);
 
     let val = evaluate_value(
         page,
@@ -666,19 +643,69 @@ pub async fn get_frame_offset(
             .get("selector")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        if error == "frame_not_visible" {
-            return Err(anyhow!("Frame '{}' is not visible", sel));
+        match error {
+            "frame_not_visible" => return Err(anyhow!("Frame '{}' is not visible", sel)),
+            "not_a_frame" => {
+                let tag = val
+                    .get("tag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_lowercase();
+                return Err(anyhow!(
+                    "Frame selector '{}' matches a <{}>, not an <iframe>",
+                    sel,
+                    tag
+                ));
+            }
+            "cross_origin_frame" => {
+                return Err(anyhow!(
+                    "Cannot access cross-origin frame '{}' while calculating its offset",
+                    sel
+                ));
+            }
+            _ => {
+                return Err(anyhow!(
+                    "Frame offset calculation failed: {} ('{}')",
+                    error,
+                    sel
+                ));
+            }
         }
-        return Err(anyhow!(
-            "Frame offset calculation failed: {} ('{}')",
-            error,
-            sel
-        ));
     }
 
     let x = required_finite_coordinate(&val, "x", "Frame offset calculation")?;
     let y = required_finite_coordinate(&val, "y", "Frame offset calculation")?;
     Ok((x, y))
+}
+
+fn frame_offset_script(frame_selectors: &[String]) -> String {
+    format!(
+        r#"(() => {{
+            let totalX = 0, totalY = 0;
+            let currentDoc = document;
+            const selectors = [{}];
+            for (const sel of selectors) {{
+                const frame = currentDoc.querySelector(sel);
+                if (!frame) return {{ error: 'frame_not_found', selector: sel }};
+                if (frame.tagName !== 'IFRAME' && frame.tagName !== 'FRAME')
+                    return {{ error: 'not_a_frame', selector: sel, tag: frame.tagName }};
+                const rect = frame.getBoundingClientRect();
+                const style = currentDoc.defaultView.getComputedStyle(frame);
+                if (rect.width === 0 || rect.height === 0 || style.display === 'none'
+                    || style.visibility === 'hidden' || style.visibility === 'collapse'
+                    || style.contentVisibility === 'hidden'
+                    || parseFloat(style.opacity) === 0) {{
+                    return {{ error: 'frame_not_visible', selector: sel }};
+                }}
+                totalX += rect.x + frame.clientLeft;
+                totalY += rect.y + frame.clientTop;
+                currentDoc = frame.contentDocument;
+                if (!currentDoc) return {{ error: 'cross_origin_frame', selector: sel }};
+            }}
+            return {{ x: totalX, y: totalY }};
+        }})()"#,
+        frame_selectors_js(frame_selectors)
+    )
 }
 
 /// When the target element lives inside an iframe, verify that the iframe itself
@@ -1124,6 +1151,75 @@ mod tests {
                  global.document = {{ activeElement: null, querySelector: () => element }};\n\
                  const result = {script};\n\
                  if (!result.ok || document.activeElement !== element) throw new Error(JSON.stringify(result));\n"
+            ),
+        )
+        .unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn frame_offset_script_rejects_non_frame_targets() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("frame-offset-non-frame.js");
+        let script = frame_offset_script(&["#target".to_string()]);
+        fs::write(
+            &script_path,
+            format!(
+                r#"const target = {{ tagName: 'DIV' }};
+global.document = {{ querySelector: () => target }};
+const result = {script};
+if (result.error !== 'not_a_frame' || result.tag !== 'DIV')
+    throw new Error(JSON.stringify(result));
+"#
+            ),
+        )
+        .unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn frame_offset_script_rejects_content_hidden_frames() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("frame-offset-content-visibility.js");
+        let script = frame_offset_script(&["#target".to_string()]);
+        fs::write(
+            &script_path,
+            format!(
+                r#"const target = {{
+    tagName: 'IFRAME',
+    getBoundingClientRect: () => ({{ x: 0, y: 0, width: 10, height: 10 }}),
+}};
+global.document = {{
+    querySelector: () => target,
+    defaultView: {{
+        getComputedStyle: () => ({{
+            display: 'block', visibility: 'visible', contentVisibility: 'hidden', opacity: '1',
+        }}),
+    }},
+}};
+const result = {script};
+if (result.error !== 'frame_not_visible') throw new Error(JSON.stringify(result));
+"#
             ),
         )
         .unwrap();
