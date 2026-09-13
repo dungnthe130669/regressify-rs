@@ -45,9 +45,10 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
         test_suite.id = Some(name.clone());
     }
 
-    // Set the test suite date time, format: YYYYMMDD_HHMMSS
+    // Use a sortable UTC run ID with nanosecond precision to avoid sharing a
+    // bitmap directory when two invocations start in the same second.
     let now = chrono::Utc::now();
-    test_suite.test_date = Some(now.format("%Y%m%d_%H%M%S").to_string());
+    test_suite.test_date = Some(test_run_id(now));
 
     if test_suite.scenarios.is_empty() {
         return Err(anyhow!("Test suite contains no scenarios."));
@@ -82,6 +83,14 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
     }
 
     Ok(test_suite)
+}
+
+fn test_run_id(time: chrono::DateTime<chrono::Utc>) -> String {
+    format!(
+        "{}_{:09}",
+        time.format("%Y%m%d_%H%M%S"),
+        time.timestamp_subsec_nanos()
+    )
 }
 
 /// Execute a single scenario: launch browser, run scenario, close browser.
@@ -242,6 +251,18 @@ mod tests {
 
         assert_eq!(suite.id.as_deref(), Some("alloy"));
         assert_eq!(suite.scenarios[0].url, "https://yml.example.com");
+    }
+
+    #[test]
+    fn test_run_ids_are_unique_and_sortable_within_one_second() {
+        let first = chrono::DateTime::from_timestamp(1_700_000_000, 123).unwrap();
+        let second = chrono::DateTime::from_timestamp(1_700_000_000, 456).unwrap();
+        let first_id = test_run_id(first);
+        let second_id = test_run_id(second);
+
+        assert_eq!(first_id, "20231114_221320_000000123");
+        assert_eq!(second_id, "20231114_221320_000000456");
+        assert!(first_id < second_id);
     }
 
     #[tokio::test]
