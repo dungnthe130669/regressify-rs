@@ -219,7 +219,8 @@ bytes. State files are written under the active Regressify output directory, so
 `--site-env staging` stores them under `.regressify__staging/states/`.
 Configured `state` and `restore` files are validated before Chromium launches;
 missing or malformed state files fail the command instead of silently using an
-empty session.
+empty session. State updates are written atomically so interrupted persistence
+cannot publish a partial JSON file.
 
 {% end %}
 

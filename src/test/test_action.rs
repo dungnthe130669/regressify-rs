@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     common::ROOT_DIR,
     config::{self, ResolvedConfig},
+    helpers::write_file_atomically,
     test::{
         actionability::{
             self, ActionabilityConfig, build_frame_document_js, cdp_click, cdp_hover,
@@ -67,6 +68,13 @@ fn actionability_config(config: &ResolvedConfig) -> ActionabilityConfig {
         actionability_timeout_ms: config.actionability_timeout_ms,
         ..Default::default()
     }
+}
+
+fn write_persisted_state(path: &Path, state: &serde_json::Value) -> Result<()> {
+    let state_json = serde_json::to_vec_pretty(state)
+        .map_err(|error| artifact_write_error("Failed to serialize persisted state", error))?;
+    write_file_atomically(path, &state_json)
+        .map_err(|error| artifact_write_error("Failed to write persisted state", error))
 }
 
 fn action_timeout(config: &ActionabilityConfig) -> Duration {
@@ -746,11 +754,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     artifact_write_error("Failed to create persisted-state directory", error)
                 })?;
             }
-            let state_json = serde_json::to_string_pretty(&state).map_err(|error| {
-                artifact_write_error("Failed to serialize persisted state", error)
-            })?;
-            std::fs::write(&state_path, state_json)
-                .map_err(|error| artifact_write_error("Failed to write persisted state", error))?;
+            write_persisted_state(&state_path, &state)?;
             eprintln!("{} State saved to: {}", log_prefix, state_path.display());
         }
 
@@ -1219,5 +1223,21 @@ mod tests {
 
         assert!(non_editable.to_string().contains("contenteditable"));
         assert!(read_only.to_string().contains("read-only"));
+    }
+
+    #[test]
+    fn persisted_state_write_replaces_valid_json_atomically() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("auth.json");
+        std::fs::write(&path, b"old state").unwrap();
+        let state = serde_json::json!({ "cookies": [], "localStorage": {} });
+
+        write_persisted_state(&path, &state).unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(&path).unwrap()).unwrap(),
+            state
+        );
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }
 }
