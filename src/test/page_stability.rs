@@ -239,8 +239,8 @@ fn build_settle_script(timeout_ms: u64, quiet_window_ms: u64) -> String {
                 if (checkedGeneration !== resourceGeneration) {{
                     const generationBeforeCheck = resourceGeneration;
                     resourcesReady = await waitForResources();
-                    checkedGeneration = resourceGeneration;
-                    if (generationBeforeCheck !== checkedGeneration) {{
+                    checkedGeneration = generationBeforeCheck;
+                    if (checkedGeneration !== resourceGeneration) {{
                         resourcesReady = false;
                         continue;
                     }}
@@ -284,6 +284,7 @@ mod tests {
         assert!(script.contains("document.images"));
         assert!(script.contains("image.decode"));
         assert!(script.contains("resourceGeneration"));
+        assert!(script.contains("checkedGeneration = generationBeforeCheck"));
         assert!(script.contains("attributeFilter"));
         assert!(!script.contains("requestAnimationFrame"));
     }
