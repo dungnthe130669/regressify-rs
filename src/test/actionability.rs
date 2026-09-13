@@ -784,6 +784,7 @@ fn parse_frame_coverage_result(
             frame_selector
         )),
         "frame_not_visible" => Err(anyhow!("Frame '{}' is not visible", frame_selector)),
+        "frame_inert" => Err(anyhow!("Frame '{}' is inert", frame_selector)),
         "not_a_frame" => Err(anyhow!(
             "Frame selector '{}' matches a <{}>, not an <iframe>",
             frame_selector,
@@ -823,6 +824,8 @@ fn frame_coverage_script(frame_selectors: &[String], center_x: f64, center_y: f6
                     return {{ error: 'frame_not_visible', frame: selector }};
                 for (let current = frame; current; current = current.parentElement) {{
                     const style = view.getComputedStyle(current);
+                    if (current.inert === true || current.hasAttribute?.('inert'))
+                        return {{ error: 'frame_inert', frame: selector }};
                     if (style.display === 'none'
                         || style.visibility === 'hidden' || style.visibility === 'collapse'
                         || style.contentVisibility === 'hidden'
@@ -1422,6 +1425,45 @@ if (result.error !== 'frame_not_visible' || result.frame !== '#embedded')
     }
 
     #[test]
+    fn frame_coverage_script_rejects_inert_frame_ancestors() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("frame-coverage-inert-runtime.js");
+        let coverage_script = frame_coverage_script(&["#embedded".to_string()], 5.0, 6.0);
+        let runtime = format!(
+            r#"const inertContainer = {{ parentElement: null, inert: true, hasAttribute: () => false }};
+const frame = {{
+    tagName: 'IFRAME', contentDocument: {{}}, clientLeft: 0, clientTop: 0,
+    parentElement: inertContainer, inert: false, hasAttribute: () => false,
+    getBoundingClientRect: () => ({{ left: 10, top: 20, width: 100, height: 100 }}),
+}};
+global.document = {{
+    querySelector: () => frame,
+    defaultView: {{
+        getComputedStyle: () => ({{
+            display: 'block', visibility: 'visible', contentVisibility: 'visible', opacity: '1',
+        }}),
+    }},
+}};
+const result = {coverage_script};
+if (result.error !== 'frame_inert' || result.frame !== '#embedded')
+    throw new Error(JSON.stringify(result));
+"#
+        );
+        fs::write(&script_path, runtime).unwrap();
+        let output = Command::new("node").arg(&script_path).output().unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
     fn frame_coverage_result_reports_invalid_frame_boundaries() {
         let frames = vec!["#embed".to_string()];
         let non_frame = parse_frame_coverage_result(
@@ -1452,6 +1494,13 @@ if (result.error !== 'frame_not_visible' || result.frame !== '#embedded')
         )
         .unwrap_err();
         assert!(hidden.to_string().contains("Frame '#embed' is not visible"));
+
+        let inert = parse_frame_coverage_result(
+            &frames,
+            &serde_json::json!({ "error": "frame_inert", "frame": "#embed" }),
+        )
+        .unwrap_err();
+        assert!(inert.to_string().contains("Frame '#embed' is inert"));
     }
 
     #[test]
