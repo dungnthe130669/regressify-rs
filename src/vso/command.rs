@@ -119,7 +119,7 @@ fn command(cmd: &str, properties: Option<HashMap<&str, &str>>, message: &str) ->
     output.push_str(&escapedata(message));
 
     if cfg!(debug_assertions) || is_azure_devops() {
-        println!("{}", &output);
+        println!("{output}");
     }
     Ok(())
 }

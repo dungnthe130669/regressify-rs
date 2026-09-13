@@ -208,7 +208,7 @@ fn optimize_png(path: &Path, args: &OptimizeArgs) -> Result<OptimizeResult> {
 
     // oxipng changes compression only. Do not quantize, resize, or strip color
     // data: visual-regression artifacts must retain their decoded pixels.
-    let oxipng_level = (10 - args.speed).clamp(0, 6) as u8;
+    let oxipng_level = (10 - args.speed).clamp(0, 6);
     let options = oxipng::Options::from_preset(oxipng_level);
     let optimized_buffer = oxipng::optimize_from_memory(&source, &options)
         .with_context(|| format!("Failed to losslessly optimize PNG '{}'", path.display()))?;
