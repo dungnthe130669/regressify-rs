@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use colored::*;
+use regex::Regex;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -68,6 +69,28 @@ fn cache_report_image_hash(
     })?;
     hashes.insert(relative_path.clone(), get_asset_version(&content, 20));
     Ok(())
+}
+
+/// Replace a report image literal whether it is unversioned or has a hash from
+/// an earlier snapshot generation.
+fn version_report_image_path(config_text: String, file_path: &str, hash: &str) -> Result<String> {
+    let mut versioned = config_text;
+    for path in [file_path.to_string(), file_path.replace('\\', "\\\\")] {
+        for quote in ["'", "\""] {
+            let expression = format!(
+                "{}(?:\\?v=[^{}]*)?{}",
+                regex::escape(&format!("{quote}{path}")),
+                regex::escape(quote),
+                regex::escape(quote),
+            );
+            let pattern = Regex::new(&expression).map_err(|error| {
+                anyhow::anyhow!("Failed to build report image version pattern: {}", error)
+            })?;
+            let replacement = format!("{quote}{path}?v={hash}{quote}");
+            versioned = pattern.replace_all(&versioned, replacement).into_owned();
+        }
+    }
+    Ok(versioned)
 }
 
 pub fn process_test_suite(
@@ -180,33 +203,10 @@ pub fn process_test_suite(
                     )?;
                 }
 
-                // Apply hash versioning to config.js
+                // Apply hash versioning to config.js.
                 for (file_path, hash) in hashes.iter() {
-                    if modified_config_text.contains(file_path) {
-                        let win_file_path = file_path.replace("\\", "\\\\");
-                        let replacements = [
-                            (
-                                format!("'{}'", file_path),
-                                format!("'{}?v={}'", file_path, hash),
-                            ),
-                            (
-                                format!("\"{}\"", file_path),
-                                format!("\"{}?v={}\"", file_path, hash),
-                            ),
-                            (
-                                format!("'{}'", win_file_path),
-                                format!("'{}?v={}'", win_file_path, hash),
-                            ),
-                            (
-                                format!("\"{}\"", win_file_path),
-                                format!("\"{}?v={}\"", win_file_path, hash),
-                            ),
-                        ];
-
-                        for (old, new) in replacements {
-                            modified_config_text = modified_config_text.replace(&old, &new);
-                        }
-                    }
+                    modified_config_text =
+                        version_report_image_path(modified_config_text, file_path, hash)?;
                 }
                 write_file_atomically(&config_path, modified_config_text.as_bytes())?;
 
@@ -333,5 +333,27 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("escapes snapshot suite"));
+    }
+
+    #[test]
+    fn report_image_versions_replace_prior_cache_hashes() {
+        let path = "../bitmaps_test/run/home__FINAL.png";
+        let config = format!("report({{test: '{path}?v=old-hash', reference: \"{path}\"}});");
+
+        let versioned = version_report_image_path(config, path, "new-hash").unwrap();
+
+        assert_eq!(versioned.matches("?v=new-hash").count(), 2);
+        assert!(!versioned.contains("old-hash"));
+    }
+
+    #[test]
+    fn report_image_versions_handle_backslash_escaped_paths() {
+        let path = r"..\bitmaps_test\run\home__FINAL.png";
+        let config = r"report({test: '..\\bitmaps_test\\run\\home__FINAL.png?v=old-hash'});";
+
+        let versioned = version_report_image_path(config.to_string(), path, "new-hash").unwrap();
+
+        assert!(versioned.contains("?v=new-hash"));
+        assert!(!versioned.contains("old-hash"));
     }
 }
