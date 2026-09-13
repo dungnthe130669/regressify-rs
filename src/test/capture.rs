@@ -14,14 +14,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common,
-    helpers::{OnceLockExtensions, slugify},
+    helpers::{OnceLockExtensions, slugify, write_file_atomically},
     types::{ScreenshotType, TestScenario, TestSuite},
 };
 
-/// PNG chunk types that carry pixel data and are required for correct rendering.
-/// All other chunks (tIME, tEXt, iTXt, zTXt, etc.) are metadata that can vary
-/// between captures and cause false git diffs.
-const ESSENTIAL_PNG_CHUNKS: [&[u8; 4]; 5] = [b"IHDR", b"PLTE", b"tRNS", b"IDAT", b"IEND"];
+/// Chunks retained by normalization. Color-management chunks affect rendered
+/// appearance and must not be stripped from visual-regression artifacts.
+const PRESERVED_PNG_CHUNKS: [&[u8; 4]; 9] = [
+    b"IHDR", b"PLTE", b"tRNS", b"gAMA", b"cHRM", b"sRGB", b"iCCP", b"IDAT", b"IEND",
+];
 
 /// Strip non-essential metadata chunks from a PNG byte buffer so that
 /// identical pixel content always produces byte-identical files.
@@ -36,27 +37,45 @@ fn strip_png_metadata(png: &[u8]) -> Result<Vec<u8>> {
     out.extend_from_slice(&PNG_SIGNATURE);
 
     let mut pos = 8;
-    while pos + 8 <= png.len() {
+    let mut found_iend = false;
+    while pos < png.len() {
+        if png.len() - pos < 12 {
+            return Err(anyhow!("Truncated PNG chunk"));
+        }
         let data_len =
             u32::from_be_bytes([png[pos], png[pos + 1], png[pos + 2], png[pos + 3]]) as usize;
         let chunk_type = &png[pos + 4..pos + 8];
         // total chunk size = 4 (length) + 4 (type) + data_len + 4 (CRC)
-        let chunk_total = 12 + data_len;
+        let chunk_total = data_len
+            .checked_add(12)
+            .ok_or_else(|| anyhow!("PNG chunk length overflows platform size"))?;
+        let chunk_end = pos
+            .checked_add(chunk_total)
+            .ok_or_else(|| anyhow!("PNG chunk offset overflows platform size"))?;
 
-        if pos + chunk_total > png.len() {
+        if chunk_end > png.len() {
             return Err(anyhow!("Truncated PNG chunk"));
         }
 
-        if ESSENTIAL_PNG_CHUNKS
+        if PRESERVED_PNG_CHUNKS
             .iter()
             .any(|t| t.as_slice() == chunk_type)
         {
-            out.extend_from_slice(&png[pos..pos + chunk_total]);
+            out.extend_from_slice(&png[pos..chunk_end]);
         }
 
-        pos += chunk_total;
+        pos = chunk_end;
+        if chunk_type == b"IEND" {
+            if data_len != 0 || pos != png.len() {
+                return Err(anyhow!("Invalid PNG IEND chunk"));
+            }
+            found_iend = true;
+        }
     }
 
+    if !found_iend {
+        return Err(anyhow!("PNG is missing its IEND chunk"));
+    }
     Ok(out)
 }
 
@@ -68,7 +87,24 @@ fn screenshot_path(
     scenario: &TestScenario,
     screenshot_type: &ScreenshotType,
     viewport_label: Option<&str>,
-) -> Result<String> {
+) -> Result<PathBuf> {
+    let output_dir = common::REGRESSIFY_DIR.get_required()?;
+    screenshot_path_in(
+        output_dir,
+        test_suite,
+        scenario,
+        screenshot_type,
+        viewport_label,
+    )
+}
+
+fn screenshot_path_in(
+    output_dir: &Path,
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    screenshot_type: &ScreenshotType,
+    viewport_label: Option<&str>,
+) -> Result<PathBuf> {
     let test_suite_id = test_suite
         .id
         .as_ref()
@@ -84,8 +120,10 @@ fn screenshot_path(
         .as_deref()
         .ok_or_else(|| anyhow!("Test suite date is required for Save action"))?;
 
-    let test_dir = common::REGRESSIFY_DIR_NAME.get_required()?;
-    let test_suite_dir = format!("{}/{}/bitmaps_test/{}", test_dir, test_suite_id, test_date);
+    let test_suite_dir = output_dir
+        .join(test_suite_id)
+        .join("bitmaps_test")
+        .join(test_date);
 
     create_dir_all(&test_suite_dir)?;
 
@@ -95,9 +133,8 @@ fn screenshot_path(
         .map(|l| format!("_{}", slugify(l)))
         .unwrap_or_default();
 
-    Ok(format!(
-        "{}/{}{}__{}{}.png",
-        test_suite_dir,
+    Ok(test_suite_dir.join(format!(
+        "{}{}__{}{}.png",
         scenario_id,
         vp_suffix,
         match screenshot_type {
@@ -108,7 +145,7 @@ fn screenshot_path(
             ScreenshotType::Step(step) => step.as_str(),
             ScreenshotType::Final => "FINAL",
         }
-    ))
+    )))
 }
 
 /// Filename of the report ordering manifest written alongside the captured
@@ -160,7 +197,7 @@ pub fn write_report_order(test_suite: &TestSuite, prefixes: &[String]) -> Result
     create_dir_all(&run_dir)?;
 
     let manifest = serde_json::to_vec_pretty(prefixes)?;
-    fs::write(run_dir.join(REPORT_ORDER_FILE), manifest)?;
+    write_file_atomically(&run_dir.join(REPORT_ORDER_FILE), &manifest)?;
     Ok(())
 }
 
@@ -170,7 +207,7 @@ pub fn write_report_thresholds(test_suite: &TestSuite, thresholds: &[(String, f6
 
     let map = thresholds.iter().cloned().collect::<HashMap<String, f64>>();
     let manifest = serde_json::to_vec_pretty(&map)?;
-    fs::write(run_dir.join(REPORT_THRESHOLDS_FILE), manifest)?;
+    write_file_atomically(&run_dir.join(REPORT_THRESHOLDS_FILE), &manifest)?;
     Ok(())
 }
 
@@ -221,7 +258,11 @@ pub async fn save_screenshot(
 
     let png_bytes = page.screenshot(params).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
-    fs::write(&path, &clean_bytes)?;
+    write_file_atomically(&path, &clean_bytes)?;
+    let marker_path = error_marker_path(&path);
+    if marker_path.exists() {
+        fs::remove_file(marker_path)?;
+    }
 
     Ok(())
 }
@@ -336,14 +377,14 @@ pub fn write_error_screenshot(
     message: &str,
 ) -> Result<()> {
     let path = screenshot_path(test_suite, scenario, &ScreenshotType::Final, viewport_label)?;
-    fs::write(&path, error_icon_png())?;
 
     let marker = ErrorMarker {
         error: true,
         message: message.to_string(),
     };
     let marker_json = serde_json::to_vec_pretty(&marker)?;
-    fs::write(error_marker_path(Path::new(&path)), marker_json)?;
+    write_file_atomically(&error_marker_path(&path), &marker_json)?;
+    write_file_atomically(&path, error_icon_png())?;
     Ok(())
 }
 
@@ -360,6 +401,44 @@ pub fn read_error_marker(png_path: &Path) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn test_suite() -> TestSuite {
+        serde_json::from_value(serde_json::json!({
+            "id": "suite",
+            "testDate": "run",
+            "scenarios": []
+        }))
+        .unwrap()
+    }
+
+    fn test_scenario() -> TestScenario {
+        serde_json::from_value(serde_json::json!({
+            "id": "home",
+            "url": "https://example.com"
+        }))
+        .unwrap()
+    }
+
+    fn png_chunk(chunk_type: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::with_capacity(data.len() + 12);
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(chunk_type);
+        chunk.extend_from_slice(data);
+        chunk.extend_from_slice(&[0, 0, 0, 0]);
+        chunk
+    }
+
+    fn chunk_types(png: &[u8]) -> Vec<[u8; 4]> {
+        let mut types = Vec::new();
+        let mut pos = 8;
+        while pos < png.len() {
+            let data_len =
+                u32::from_be_bytes([png[pos], png[pos + 1], png[pos + 2], png[pos + 3]]) as usize;
+            types.push([png[pos + 4], png[pos + 5], png[pos + 6], png[pos + 7]]);
+            pos += data_len + 12;
+        }
+        types
+    }
+
     #[test]
     fn error_icon_is_deterministic_and_valid_png() {
         const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -371,9 +450,8 @@ mod tests {
 
     #[test]
     fn error_marker_round_trips_and_reflects_flag() {
-        let dir = std::env::temp_dir().join(format!("regressify_err_{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let png = dir.join("scenario__FINAL.png");
+        let temp = tempfile::tempdir().unwrap();
+        let png = temp.path().join("scenario__FINAL.png");
         fs::write(&png, error_icon_png()).unwrap();
 
         // No marker yet.
@@ -398,7 +476,62 @@ mod tests {
         };
         fs::write(error_marker_path(&png), serde_json::to_vec(&ok).unwrap()).unwrap();
         assert!(read_error_marker(&png).is_none());
+    }
 
-        let _ = fs::remove_dir_all(&dir);
+    #[test]
+    fn screenshot_path_uses_explicit_output_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let output_dir = temp.path().join("custom-output");
+        let path = screenshot_path_in(
+            &output_dir,
+            &test_suite(),
+            &test_scenario(),
+            &ScreenshotType::Final,
+            Some("Mobile Device"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            path,
+            output_dir.join("suite/bitmaps_test/run/home_mobile-device__FINAL.png")
+        );
+        assert!(path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn metadata_normalization_removes_text_but_preserves_color_data() {
+        let base = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+        let iend_start = base.len() - 12;
+        let mut png = base[..iend_start].to_vec();
+        png.extend_from_slice(&png_chunk(b"tEXt", b"generated-at=now"));
+        png.extend_from_slice(&png_chunk(b"gAMA", &[0, 0, 177, 24]));
+        png.extend_from_slice(&base[iend_start..]);
+
+        let normalized = strip_png_metadata(&png).unwrap();
+        let chunk_types = chunk_types(&normalized);
+
+        assert!(chunk_types.contains(b"gAMA"));
+        assert!(!chunk_types.contains(b"tEXt"));
+    }
+
+    #[test]
+    fn metadata_normalization_rejects_missing_or_trailing_iend_data() {
+        let png = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+        let missing_iend = png[..png.len() - 12].to_vec();
+        let mut trailing = png;
+        trailing.push(0);
+
+        assert!(
+            strip_png_metadata(&missing_iend)
+                .unwrap_err()
+                .to_string()
+                .contains("missing its IEND")
+        );
+        assert!(
+            strip_png_metadata(&trailing)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid PNG IEND")
+        );
     }
 }
