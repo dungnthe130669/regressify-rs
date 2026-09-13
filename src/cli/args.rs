@@ -41,7 +41,12 @@ pub struct TestArgs {
     pub skip_compare: bool,
 
     /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
-    #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
+    #[clap(
+        long,
+        visible_alias = "threshold",
+        default_value_t = 0.1,
+        value_parser = percentage_parser
+    )]
     pub mis_match_threshold: f64,
 
     /// Replacement profile name (overrides REPLACEMENT_PROFILE env var)
@@ -71,7 +76,12 @@ pub struct CompareArgs {
     pub test_suite: Vec<String>,
 
     /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
-    #[clap(long, visible_alias = "threshold", default_value_t = 0.1)]
+    #[clap(
+        long,
+        visible_alias = "threshold",
+        default_value_t = 0.1,
+        value_parser = percentage_parser
+    )]
     pub mis_match_threshold: f64,
 
     /// Maximum image comparisons to run in parallel
@@ -115,9 +125,24 @@ fn positive_usize_parser(s: &str) -> Result<usize, String> {
         })
 }
 
+fn percentage_parser(s: &str) -> Result<f64, String> {
+    s.parse::<f64>()
+        .map_err(|_| format!("'{}' is not a valid percentage.", s))
+        .and_then(|value| {
+            if value.is_finite() && (0.0..=100.0).contains(&value) {
+                Ok(value)
+            } else {
+                Err(format!(
+                    "Percentage must be a finite value between 0 and 100, got {}",
+                    value
+                ))
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{positive_usize_parser, speed_parser};
+    use super::{percentage_parser, positive_usize_parser, speed_parser};
 
     #[test]
     fn optimization_speed_is_limited_to_supported_range() {
@@ -132,5 +157,14 @@ mod tests {
         assert_eq!(positive_usize_parser("1"), Ok(1));
         assert!(positive_usize_parser("0").is_err());
         assert!(positive_usize_parser("one").is_err());
+    }
+
+    #[test]
+    fn mismatch_percentage_is_finite_and_in_range() {
+        assert_eq!(percentage_parser("0"), Ok(0.0));
+        assert_eq!(percentage_parser("100"), Ok(100.0));
+        assert!(percentage_parser("-0.1").is_err());
+        assert!(percentage_parser("100.1").is_err());
+        assert!(percentage_parser("NaN").is_err());
     }
 }

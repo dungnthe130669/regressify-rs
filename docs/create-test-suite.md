@@ -31,7 +31,11 @@ scenarios:
 
 The purpose of these tests is to load the specified URLs and capture screenshots. For more complex test cases, you can utilize a combination of the properties provided below.
 
-Configuration is validated before browser capture starts. Malformed suite files, invalid viewport names, invalid replacement regexes, and unsupported browser settings stop the command early. Website failures during scenario execution are written to the reports instead of stopping sibling scenarios.
+Configuration is validated before browser capture starts. Malformed suite files,
+invalid viewport names, invalid replacement regexes, unsupported browser
+settings, out-of-range mismatch thresholds, and negative or non-finite timing
+values stop the command early. Website failures during scenario execution are
+written to the reports instead of stopping sibling scenarios.
 
 ## Properties
 

@@ -335,6 +335,15 @@ fn load_active_replacement_profile(
 }
 
 fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Result<()> {
+    validate_percentage(
+        "workspace misMatchThreshold",
+        workspace_config.mis_match_threshold,
+    )?;
+    validate_duration("workspace delay", workspace_config.delay)?;
+    validate_duration(
+        "workspace postInteractionWait",
+        workspace_config.post_interaction_wait,
+    )?;
     for (name, value) in [
         ("elementTimeout", workspace_config.element_timeout),
         (
@@ -366,7 +375,36 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
     Ok(())
 }
 
+fn validate_percentage(name: &str, value: Option<f64>) -> Result<()> {
+    if let Some(value) = value
+        && (!value.is_finite() || !(0.0..=100.0).contains(&value))
+    {
+        anyhow::bail!("{} must be a finite value between 0 and 100", name);
+    }
+    Ok(())
+}
+
+fn validate_duration(name: &str, value: Option<f64>) -> Result<()> {
+    if let Some(value) = value
+        && (!value.is_finite() || value < 0.0)
+    {
+        anyhow::bail!(
+            "{} must be a finite value greater than or equal to zero",
+            name
+        );
+    }
+    Ok(())
+}
+
 fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
+    validate_percentage(
+        &format!("test suite '{}' misMatchThreshold", input.name),
+        suite.mis_match_threshold,
+    )?;
+    validate_duration(
+        &format!("test suite '{}' postInteractionWait", input.name),
+        suite.post_interaction_wait,
+    )?;
     if suite.async_capture_limit == Some(0) {
         anyhow::bail!(
             "Test suite '{}' asyncCaptureLimit must be greater than zero",
@@ -394,10 +432,23 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
         )?;
     }
     for (index, scenario) in suite.scenarios.iter().enumerate() {
+        let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
+        validate_percentage(
+            &format!("scenario '{}' misMatchThreshold", scenario_name),
+            scenario.mis_match_threshold,
+        )?;
+        validate_duration(
+            &format!("scenario '{}' delay", scenario_name),
+            scenario.delay,
+        )?;
+        validate_duration(
+            &format!("scenario '{}' postInteractionWait", scenario_name),
+            scenario.post_interaction_wait,
+        )?;
         capture::final_screenshot_types(scenario).map_err(|error| {
             anyhow!(
                 "Invalid selectors for scenario '{}': {}",
-                scenario_identifier(scenario, &format!("<scenario:{}>", index + 1)),
+                scenario_name,
                 error
             )
         })?;
@@ -1156,6 +1207,38 @@ mod tests {
                     .contains("must be greater than zero")
             );
         }
+    }
+
+    #[test]
+    fn rejects_invalid_visual_thresholds_and_timing_values() {
+        let invalid_workspace = config::WorkspaceConfig {
+            mis_match_threshold: Some(100.1),
+            ..Default::default()
+        };
+        assert!(
+            validate_workspace_config(&invalid_workspace)
+                .unwrap_err()
+                .to_string()
+                .contains("between 0 and 100")
+        );
+
+        let mut suite_with_negative_wait = suite(vec![scenario("home", None)]);
+        suite_with_negative_wait.post_interaction_wait = Some(-1.0);
+        assert!(
+            validate_test_suite_config(&input(), &suite_with_negative_wait)
+                .unwrap_err()
+                .to_string()
+                .contains("greater than or equal to zero")
+        );
+
+        let mut suite_with_non_finite_delay = suite(vec![scenario("home", None)]);
+        suite_with_non_finite_delay.scenarios[0].delay = Some(f64::NAN);
+        assert!(
+            validate_test_suite_config(&input(), &suite_with_non_finite_delay)
+                .unwrap_err()
+                .to_string()
+                .contains("finite value")
+        );
     }
 
     #[tokio::test]
