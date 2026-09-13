@@ -205,7 +205,23 @@ fn collect_capture_screenshots(tests_dir: &Path) -> Result<Vec<String>> {
             screenshots.push(file_name);
         }
     }
+    screenshots.sort();
     Ok(screenshots)
+}
+
+fn display_capture_keys(captures: &[&str]) -> String {
+    const DISPLAY_LIMIT: usize = 5;
+    let listed = captures
+        .iter()
+        .take(DISPLAY_LIMIT)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if captures.len() > DISPLAY_LIMIT {
+        format!("{listed}, ...")
+    } else {
+        listed
+    }
 }
 
 fn validate_capture_inventory(
@@ -213,6 +229,7 @@ fn validate_capture_inventory(
     expected_captures: &[String],
     screenshots: &[String],
 ) -> Result<()> {
+    let expected_keys: HashSet<&str> = expected_captures.iter().map(String::as_str).collect();
     let actual_keys: HashSet<&str> = screenshots
         .iter()
         .map(|screenshot| screenshot_key(screenshot))
@@ -222,28 +239,35 @@ fn validate_capture_inventory(
         .map(String::as_str)
         .filter(|capture| !actual_keys.contains(capture))
         .collect();
-    if missing.is_empty() {
+    let unexpected: Vec<&str> = screenshots
+        .iter()
+        .map(|screenshot| screenshot_key(screenshot))
+        .filter(|capture| !expected_keys.contains(capture))
+        .collect();
+
+    if missing.is_empty() && unexpected.is_empty() {
         return Ok(());
     }
 
-    const DISPLAY_LIMIT: usize = 5;
-    let listed = missing
-        .iter()
-        .take(DISPLAY_LIMIT)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let remainder = if missing.len() > DISPLAY_LIMIT {
-        ", ..."
-    } else {
-        ""
-    };
+    let mut problems = Vec::new();
+    if !missing.is_empty() {
+        problems.push(format!(
+            "missing {} screenshot(s) listed in its manifest: {}",
+            missing.len(),
+            display_capture_keys(&missing)
+        ));
+    }
+    if !unexpected.is_empty() {
+        problems.push(format!(
+            "contains {} unexpected screenshot(s) absent from its manifest: {}",
+            unexpected.len(),
+            display_capture_keys(&unexpected)
+        ));
+    }
     anyhow::bail!(
-        "Capture run '{}' is missing {} screenshot(s) listed in its manifest: {}{}",
+        "Capture run '{}' {}",
         tests_dir.display(),
-        missing.len(),
-        listed,
-        remainder
+        problems.join("; ")
     );
 }
 
@@ -617,40 +641,41 @@ pub fn approve_screenshots(suite_dir: &Path, requested_run_id: Option<&str>) -> 
 
     eprintln!("  Approving screenshots from run: {}", selected_run.cyan());
 
+    let screenshots = collect_capture_screenshots(&latest_test_dir)?;
+    if let Some(report_order) = read_report_order(&latest_test_dir)?
+        && report_order.is_complete_inventory
+    {
+        validate_capture_inventory(&latest_test_dir, &report_order.captures, &screenshots)?;
+    }
+
     create_dir_all(&reference_dir)?;
 
     let mut approved_count = 0;
-    for entry in fs::read_dir(&latest_test_dir)? {
-        let entry = entry?;
-        let file_name = entry.file_name().to_string_lossy().to_string();
-
-        // Only copy actual test screenshots, not diff images
-        if file_name.ends_with(".png") && !file_name.ends_with("_diff.png") {
-            let src = entry.path();
-            if read_error_marker(&src).is_some() {
-                eprintln!(
-                    "    {} Skipped failed capture: {}",
-                    "SKIP:".yellow(),
-                    file_name
-                );
-                continue;
-            }
-            let dst = reference_dir.join(&file_name);
-            copy_file_atomically(&src, &dst)?;
-
-            // Promote the error-marker sidecar so the reference retains its
-            // failure flag; clear any stale marker when the new capture is good.
-            let marker_src = crate::test::capture::error_marker_path(&src);
-            let marker_dst = crate::test::capture::error_marker_path(&dst);
-            if marker_src.exists() {
-                copy_file_atomically(&marker_src, &marker_dst)?;
-            } else if marker_dst.exists() {
-                fs::remove_file(&marker_dst)?;
-            }
-
-            approved_count += 1;
-            eprintln!("    Approved: {}", file_name.green());
+    for file_name in screenshots {
+        let src = latest_test_dir.join(&file_name);
+        if read_error_marker(&src).is_some() {
+            eprintln!(
+                "    {} Skipped failed capture: {}",
+                "SKIP:".yellow(),
+                file_name
+            );
+            continue;
         }
+        let dst = reference_dir.join(&file_name);
+        copy_file_atomically(&src, &dst)?;
+
+        // Promote the error-marker sidecar so the reference retains its
+        // failure flag; clear any stale marker when the new capture is good.
+        let marker_src = crate::test::capture::error_marker_path(&src);
+        let marker_dst = crate::test::capture::error_marker_path(&dst);
+        if marker_src.exists() {
+            copy_file_atomically(&marker_src, &marker_dst)?;
+        } else if marker_dst.exists() {
+            fs::remove_file(&marker_dst)?;
+        }
+
+        approved_count += 1;
+        eprintln!("    Approved: {}", file_name.green());
     }
 
     eprintln!(
@@ -885,6 +910,41 @@ mod tests {
 
         assert!(error.to_string().contains("missing 1 screenshot"));
         assert!(error.to_string().contains("missing__FINAL"));
+    }
+
+    #[test]
+    fn complete_manifest_rejects_unexpected_captures_before_approval() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        fs::write(reference_dir.join("home__FINAL.png"), png_bytes(10)).unwrap();
+        fs::write(test_dir.join("home__FINAL.png"), png_bytes(20)).unwrap();
+        fs::write(test_dir.join("unexpected__FINAL.png"), png_bytes(30)).unwrap();
+        fs::write(
+            test_dir.join(REPORT_ORDER_FILE),
+            serde_json::to_vec(&ReportOrderManifest {
+                version: REPORT_ORDER_VERSION,
+                captures: vec!["home__FINAL".to_string()],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = approve_screenshots(&suite_dir, None).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("contains 1 unexpected screenshot")
+        );
+        assert_eq!(
+            fs::read(reference_dir.join("home__FINAL.png")).unwrap(),
+            png_bytes(10)
+        );
     }
 
     #[test]
