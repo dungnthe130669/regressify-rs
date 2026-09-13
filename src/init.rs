@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::path::Path;
 
 use anyhow::Result;
@@ -33,16 +34,31 @@ fn init_workspace(root_dir: &Path) -> Result<()> {
 
 fn write_if_missing(path: impl AsRef<Path>, contents: &str) -> Result<()> {
     let path = path.as_ref();
-    if path.exists() {
-        eprintln!("{} {}", "SKIP:".yellow(), path.display());
-        return Ok(());
-    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, contents)?;
-    eprintln!("{} {}", "CREATE:".green(), path.display());
-    Ok(())
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file
+                .write_all(contents.as_bytes())
+                .and_then(|_| file.sync_all())
+            {
+                let _ = fs::remove_file(path);
+                return Err(error.into());
+            }
+            eprintln!("{} {}", "CREATE:".green(), path.display());
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!("{} {}", "SKIP:".yellow(), path.display());
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[cfg(test)]
@@ -74,5 +90,9 @@ mod tests {
                 .exists()
         );
         assert_eq!(fs::read_to_string(existing).unwrap(), "existing");
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("common/_cookies.yaml")).unwrap(),
+            COOKIES
+        );
     }
 }
