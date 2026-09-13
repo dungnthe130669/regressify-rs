@@ -90,9 +90,19 @@ async fn evaluate_action<T>(
 where
     T: DeserializeOwned,
 {
-    let result =
-        actionability::cdp_with_timeout(action_timeout(config), operation, page.evaluate(script))
-            .await?;
+    evaluate_action_with_timeout(page, script, action_timeout(config), operation).await
+}
+
+async fn evaluate_action_with_timeout<T>(
+    page: &Page,
+    script: impl Into<chromiumoxide::js::Evaluation>,
+    timeout: Duration,
+    operation: &str,
+) -> Result<T>
+where
+    T: DeserializeOwned,
+{
+    let result = actionability::cdp_with_timeout(timeout, operation, page.evaluate(script)).await?;
     result
         .into_value()
         .map_err(|error| anyhow!("{} returned invalid data: {}", operation, error))
@@ -253,6 +263,61 @@ fn checkable_click_required(action: &str, element_type: &str, is_checked: bool) 
     }
 }
 
+fn checked_state_script(selector: &str, frame: &Option<crate::types::Frame>) -> String {
+    let frame_selectors = get_frame_selectors(frame);
+    let document = frame_selectors
+        .as_ref()
+        .map(|selectors| build_frame_document_js(selectors))
+        .unwrap_or_else(|| "document".to_string());
+    let selector = escape_js_string(selector);
+    format!(
+        "(() => {{ const el = {document}.querySelector('{selector}'); \
+         return el ? {{ found: true, checked: el.checked === true }} : {{ found: false }}; }})()"
+    )
+}
+
+async fn wait_for_checked_state(
+    page: &Page,
+    selector: &str,
+    frame: &Option<crate::types::Frame>,
+    expected_checked: bool,
+    config: &ActionabilityConfig,
+    action: &str,
+) -> Result<()> {
+    let timeout = action_timeout(config);
+    let start = std::time::Instant::now();
+    let mut last_state = "not found";
+    let script = checked_state_script(selector, frame);
+    let operation = format!("verifying {} state", action);
+
+    loop {
+        let remaining = timeout.saturating_sub(start.elapsed());
+        if remaining.is_zero() {
+            anyhow::bail!(
+                "{} action did not set element '{}' to checked={} after {}ms (last state: {})",
+                action,
+                selector,
+                expected_checked,
+                timeout.as_millis(),
+                last_state
+            );
+        }
+        let value: serde_json::Value =
+            evaluate_action_with_timeout(page, script.as_str(), remaining, &operation).await?;
+        if value.get("found").and_then(|field| field.as_bool()) == Some(true) {
+            let checked = value
+                .get("checked")
+                .and_then(|field| field.as_bool())
+                .unwrap_or(false);
+            if checked == expected_checked {
+                return Ok(());
+            }
+            last_state = if checked { "checked" } else { "unchecked" };
+        }
+        tokio::time::sleep(Duration::from_millis(config.poll_interval_ms).min(remaining)).await;
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum TextInputTarget {
     Native,
@@ -397,6 +462,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     &ac,
                 )
                 .await?;
+                wait_for_checked_state(page, check, frame, true, &ac, "check").await?;
             }
         }
 
@@ -994,6 +1060,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     &ac,
                 )
                 .await?;
+                wait_for_checked_state(page, uncheck, frame, false, &ac, "uncheck").await?;
             }
         }
 
@@ -1194,6 +1261,40 @@ mod tests {
     fn checkable_click_required_rejects_non_checkable_elements() {
         let error = checkable_click_required("check", "text", false).unwrap_err();
         assert!(error.to_string().contains("checkbox or radio"));
+    }
+
+    #[test]
+    fn checked_state_script_reads_checkbox_state() {
+        if std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_err()
+        {
+            return;
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let script_path = temp.path().join("checked-state.js");
+        let script = checked_state_script("#newsletter", &None);
+        std::fs::write(
+            &script_path,
+            format!(
+                "global.document = {{ querySelector: () => ({{ checked: false }}) }};\n\
+                 const result = {script};\n\
+                 if (!result.found || result.checked !== false) throw new Error(JSON.stringify(result));\n"
+            ),
+        )
+        .unwrap();
+        let output = std::process::Command::new("node")
+            .arg(&script_path)
+            .output()
+            .unwrap();
+
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
