@@ -63,6 +63,21 @@ fn suite_output_dir(regressify_dir: &Path, suite: &TestSuite) -> Result<PathBuf>
     Ok(regressify_dir.join(suite_id))
 }
 
+fn current_capture_run_dir(tests_dir: &Path, suite: &TestSuite) -> Result<PathBuf> {
+    let run_id = suite
+        .test_date
+        .as_deref()
+        .ok_or_else(|| anyhow!("Test suite is missing a capture run ID"))?;
+    let run_dir = tests_dir.join(run_id);
+    if !run_dir.is_dir() {
+        anyhow::bail!(
+            "Current capture run directory does not exist: {}",
+            run_dir.display()
+        );
+    }
+    Ok(run_dir)
+}
+
 /// Flatten every scenario/viewport pair across all parsed suites into a flat list
 /// of independent capture jobs, assigning each a 1-based dedicated index. The
 /// total number of jobs is simply the returned vec's length.
@@ -930,27 +945,11 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             continue;
         }
 
-        // Find the latest test run
-        let mut test_runs: Vec<String> = Vec::new();
-        for entry in fs::read_dir(&tests_dir)?.flatten() {
-            if entry.path().is_dir() {
-                test_runs.push(entry.file_name().to_string_lossy().to_string());
-            }
-        }
-        test_runs.sort();
-
-        let latest_run = match test_runs.last() {
-            Some(run) => run.clone(),
-            None => {
-                eprintln!(
-                    "No test run directories found for '{}', skipping.",
-                    input.name
-                );
-                continue;
-            }
-        };
-
-        let latest_test_dir = tests_dir.join(&latest_run);
+        let current_run = suite
+            .test_date
+            .as_deref()
+            .ok_or_else(|| anyhow!("Test suite '{}' is missing a capture run ID", input.name))?;
+        let latest_test_dir = current_capture_run_dir(&tests_dir, suite)?;
         let ref_dest = suite_dir.join("bitmaps_reference");
         fs::create_dir_all(&ref_dest)?;
 
@@ -987,7 +986,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
             "Captured {} reference screenshot(s) for '{}' (run: {}).",
             count.to_string().green(),
             input.name.cyan(),
-            latest_run
+            current_run
         );
         if skipped_failed_count > 0 {
             eprintln!(
@@ -1004,7 +1003,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
         eprintln!("Running visual comparison...");
         let async_compare_limit =
             config::resolve_async_compare_limit(workspace_config.as_ref(), suite);
-        generate_comparison_report(&suite_dir, suite_id, &latest_run, 0.0, async_compare_limit)
+        generate_comparison_report(&suite_dir, suite_id, current_run, 0.0, async_compare_limit)
             .map_err(|error| {
                 anyhow!(
                     "Failed to generate reference comparison report for '{}': {}",
@@ -1318,6 +1317,21 @@ mod tests {
         let output = suite_output_dir(temp.path(), &suite).unwrap();
 
         assert_eq!(output, temp.path().join("production-dashboard"));
+    }
+
+    #[test]
+    fn current_capture_run_directory_uses_suite_run_id_not_latest_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let tests_dir = temp.path().join("bitmaps_test");
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.test_date = Some("20260913_120000_000000001".to_string());
+        std::fs::create_dir_all(tests_dir.join(suite.test_date.as_deref().unwrap())).unwrap();
+        std::fs::create_dir_all(tests_dir.join("99991231_235959_999999999")).unwrap();
+
+        assert_eq!(
+            current_capture_run_dir(&tests_dir, &suite).unwrap(),
+            tests_dir.join("20260913_120000_000000001")
+        );
     }
 
     #[test]
