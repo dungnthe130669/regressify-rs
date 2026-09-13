@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 
 use crate::{
-    config,
+    common, config,
     helpers::{IOExtensions, slugify},
     snapshot::get_asset_version,
     test::{
@@ -46,10 +46,13 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
         test_suite.id = Some(name.clone());
     }
 
-    // Use a sortable UTC run ID with nanosecond precision to avoid sharing a
-    // bitmap directory when two invocations start in the same second.
+    // An explicit CLI run ID groups every selected suite under one known run;
+    // otherwise use a sortable timestamp that avoids same-second collisions.
     let now = chrono::Utc::now();
-    test_suite.test_date = Some(test_run_id(now));
+    test_suite.test_date = Some(resolve_test_run_id(
+        common::RUN_ID.get().map(String::as_str),
+        now,
+    ));
 
     if test_suite.scenarios.is_empty() {
         return Err(anyhow!("Test suite contains no scenarios."));
@@ -92,6 +95,15 @@ fn test_run_id(time: chrono::DateTime<chrono::Utc>) -> String {
         time.format("%Y%m%d_%H%M%S"),
         time.timestamp_subsec_nanos()
     )
+}
+
+fn resolve_test_run_id(
+    explicit_run_id: Option<&str>,
+    time: chrono::DateTime<chrono::Utc>,
+) -> String {
+    explicit_run_id
+        .map(str::to_owned)
+        .unwrap_or_else(|| test_run_id(time))
 }
 
 /// Execute a single scenario: launch browser, run scenario, close browser.
@@ -269,6 +281,14 @@ mod tests {
         assert_eq!(first_id, "20231114_221320_000000123");
         assert_eq!(second_id, "20231114_221320_000000456");
         assert!(first_id < second_id);
+    }
+
+    #[test]
+    fn explicit_run_id_overrides_generated_timestamp() {
+        let time = chrono::DateTime::from_timestamp(1_700_000_000, 123).unwrap();
+
+        assert_eq!(resolve_test_run_id(Some("ci-123"), time), "ci-123");
+        assert_eq!(resolve_test_run_id(None, time), "20231114_221320_000000123");
     }
 
     #[test]

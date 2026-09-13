@@ -14,6 +14,7 @@ pub const SEVEN_ZIP_PATH: &str = "7z";
 
 pub static ROOT_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static REGRESSIFY_DIR: OnceLock<PathBuf> = OnceLock::new();
+pub static RUN_ID: OnceLock<String> = OnceLock::new();
 pub static NO_PRINT: OnceLock<bool> = OnceLock::new();
 pub static VERBOSE: OnceLock<bool> = OnceLock::new();
 pub static PROXY: OnceLock<Proxy> = OnceLock::new();

@@ -108,6 +108,9 @@ fn set_global_vars(cli: &Cli) -> Result<()> {
     };
 
     common::REGRESSIFY_DIR.set_value(regressify_dir)?;
+    if let Some(run_id) = &cli.run_id {
+        common::RUN_ID.set_value(run_id.clone())?;
+    }
     common::DEBUG.set_value(cli.debug)?;
     common::REQUIRED_LOGIN.set_value(cli.required_login)?;
 

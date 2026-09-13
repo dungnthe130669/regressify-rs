@@ -137,6 +137,23 @@ pub(crate) fn positive_u32_parser(s: &str) -> Result<u32, String> {
         })
 }
 
+pub(crate) fn run_id_parser(value: &str) -> Result<String, String> {
+    const MAX_RUN_ID_BYTES: usize = 80;
+    let is_valid = !value.is_empty()
+        && value.len() <= MAX_RUN_ID_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-');
+    if is_valid {
+        Ok(value.to_string())
+    } else {
+        Err(format!(
+            "Run ID must contain only ASCII letters, digits, underscores, or hyphens and be at most {} bytes.",
+            MAX_RUN_ID_BYTES
+        ))
+    }
+}
+
 fn percentage_parser(s: &str) -> Result<f64, String> {
     s.parse::<f64>()
         .map_err(|_| format!("'{}' is not a valid percentage.", s))
@@ -154,7 +171,9 @@ fn percentage_parser(s: &str) -> Result<f64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{percentage_parser, positive_u32_parser, positive_usize_parser, speed_parser};
+    use super::{
+        percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser, speed_parser,
+    };
 
     #[test]
     fn optimization_speed_is_limited_to_supported_range() {
@@ -180,5 +199,13 @@ mod tests {
         assert!(percentage_parser("-0.1").is_err());
         assert!(percentage_parser("100.1").is_err());
         assert!(percentage_parser("NaN").is_err());
+    }
+
+    #[test]
+    fn run_ids_require_portable_output_names() {
+        assert_eq!(run_id_parser("ci-123_abc"), Ok("ci-123_abc".to_string()));
+        assert!(run_id_parser("../../outside").is_err());
+        assert!(run_id_parser("release run").is_err());
+        assert!(run_id_parser(&"a".repeat(81)).is_err());
     }
 }

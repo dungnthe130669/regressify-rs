@@ -1,7 +1,7 @@
 use clap::Parser;
 use std::path::PathBuf;
 
-use super::args::positive_u32_parser;
+use super::args::{positive_u32_parser, run_id_parser};
 
 use super::Command;
 
@@ -48,8 +48,8 @@ pub struct Cli {
     #[clap(long, allow_hyphen_values = true)]
     pub regressify_dir: Option<PathBuf>,
 
-    /// Run ID
-    #[clap(long, allow_hyphen_values = true)]
+    /// Explicit output run ID shared by all selected suites
+    #[clap(long, allow_hyphen_values = true, value_parser = run_id_parser)]
     pub run_id: Option<String>,
 
     /// Number of test scenarios to run in parallel
@@ -96,5 +96,12 @@ mod tests {
         assert!(
             matches!(result, Err(error) if error.to_string().contains("Value must be greater than zero"))
         );
+    }
+
+    #[test]
+    fn cli_rejects_unsafe_run_id() {
+        let result = Cli::try_parse_from(["regressify", "--run-id", "../unsafe", "test"]);
+
+        assert!(matches!(result, Err(error) if error.to_string().contains("Run ID must contain")));
     }
 }
