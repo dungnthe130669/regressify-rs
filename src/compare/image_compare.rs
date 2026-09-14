@@ -59,6 +59,8 @@ fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
 const MATCH_THRESHOLD: f64 = 0.1;
 /// Maximum possible YIQ color delta squared (pixelmatch constant).
 const MAX_YIQ_DELTA: f64 = 35215.0;
+const MAX_VERTICAL_SHIFT: usize = 512;
+const MIN_ALIGNED_ROWS: usize = 32;
 
 #[inline]
 fn blend_channel(c: f64, a: f64) -> f64 {
@@ -198,11 +200,95 @@ fn is_antialiased(
             && has_many_siblings(other, max_x, max_y, w, h))
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VerticalGap {
+    start: usize,
+    height: usize,
+}
+
 #[derive(Clone, Copy)]
 struct ImageView<'a> {
     pixels: &'a [RGBA8],
     width: usize,
     height: usize,
+    gap: Option<VerticalGap>,
+}
+
+impl ImageView<'_> {
+    fn pixel_index(self, column: usize, row: usize) -> Option<usize> {
+        let source_row = match self.gap {
+            Some(gap) if row >= gap.start => {
+                if row < gap.start + gap.height {
+                    return None;
+                }
+                row - gap.height
+            }
+            _ => row,
+        };
+        (column < self.width && source_row < self.height)
+            .then_some(source_row * self.width + column)
+    }
+}
+
+fn row_difference(
+    shorter: ImageView<'_>,
+    taller: ImageView<'_>,
+    row: usize,
+    taller_row: usize,
+    max_delta: f64,
+) -> usize {
+    (0..shorter.width)
+        .filter(|column| {
+            color_delta(
+                shorter.pixels,
+                taller.pixels,
+                row * shorter.width + column,
+                taller_row * taller.width + column,
+                false,
+            )
+            .abs()
+                > max_delta
+        })
+        .count()
+}
+
+fn find_vertical_gap(
+    shorter: ImageView<'_>,
+    taller: ImageView<'_>,
+    max_delta: f64,
+) -> Option<VerticalGap> {
+    if shorter.width != taller.width || shorter.height >= taller.height {
+        return None;
+    }
+    let height = taller.height - shorter.height;
+    if height > MAX_VERTICAL_SHIFT {
+        return None;
+    }
+
+    let mut gain = 0_i64;
+    let mut supporting_rows = 0;
+    let mut best_gain = 0;
+    let mut best_start = shorter.height;
+    let mut best_support = 0;
+
+    for row in (0..shorter.height).rev() {
+        let unshifted = row_difference(shorter, taller, row, row, max_delta);
+        let shifted = row_difference(shorter, taller, row, row + height, max_delta);
+        gain += unshifted as i64 - shifted as i64;
+        if shifted * 100 <= shorter.width && unshifted > shifted {
+            supporting_rows += 1;
+        }
+        if gain > best_gain {
+            best_gain = gain;
+            best_start = row;
+            best_support = supporting_rows;
+        }
+    }
+
+    (best_support >= MIN_ALIGNED_ROWS).then_some(VerticalGap {
+        start: best_start,
+        height,
+    })
 }
 
 fn pixel_is_different(
@@ -212,14 +298,12 @@ fn pixel_is_different(
     y: usize,
     max_delta: f64,
 ) -> bool {
-    let in_reference = x < reference.width && y < reference.height;
-    let in_test = x < test.width && y < test.height;
-    if !(in_reference && in_test) {
+    let (Some(reference_index), Some(test_index)) =
+        (reference.pixel_index(x, y), test.pixel_index(x, y))
+    else {
         return true;
-    }
+    };
 
-    let reference_index = y * reference.width + x;
-    let test_index = y * test.width + x;
     let delta = color_delta(
         reference.pixels,
         test.pixels,
@@ -273,7 +357,9 @@ fn render_diff(
             if pixel_is_different(reference, test, x, y, max_delta) {
                 pixels.extend_from_slice(&[255, 0, 255, 200]);
             } else {
-                let reference_index = y * reference.width + x;
+                let reference_index = reference
+                    .pixel_index(x, y)
+                    .expect("Matching pixels must exist in both images");
                 let pixel = &reference.pixels[reference_index];
                 pixels.extend_from_slice(&[pixel.r / 3, pixel.g / 3, pixel.b / 3, pixel.a]);
             }
@@ -286,8 +372,9 @@ fn render_diff(
 ///
 /// Uses a perceptual (YIQ) color metric with anti-aliasing detection to avoid
 /// false positives from subpixel/font rendering. When dimensions differ, a diff
-/// image sized to the union of both images is still produced: the overlapping
-/// region is compared pixel-by-pixel and the non-overlapping area is flagged.
+/// image sized to the union of both images is still produced. A single vertical
+/// insertion/deletion is aligned when matching rows support it; the missing band
+/// and all remaining pixel differences are flagged.
 ///
 /// Returns the comparison result and the diff image PNG bytes.
 pub fn compare_images(
@@ -323,15 +410,17 @@ pub fn compare_images(
     }
 
     let max_delta = MAX_YIQ_DELTA * MATCH_THRESHOLD * MATCH_THRESHOLD;
-    let reference = ImageView {
+    let mut reference = ImageView {
         pixels: &ref_pixels,
         width: ref_w,
         height: ref_h,
+        gap: None,
     };
-    let test = ImageView {
+    let mut test = ImageView {
         pixels: &test_pixels,
         width: test_w,
         height: test_h,
+        gap: None,
     };
 
     let out_w = ref_w.max(test_w);
@@ -346,6 +435,11 @@ pub fn compare_images(
             out_h,
             MAX_VISUAL_IMAGE_PIXELS
         );
+    }
+    if ref_h < test_h {
+        reference.gap = find_vertical_gap(reference, test, max_delta);
+    } else if test_h < ref_h {
+        test.gap = find_vertical_gap(test, reference, max_delta);
     }
     let diff_count = count_differences(reference, test, max_delta);
 
@@ -396,6 +490,122 @@ mod tests {
         header.extend_from_slice(&width.to_be_bytes());
         header.extend_from_slice(&height.to_be_bytes());
         header
+    }
+
+    fn patterned_image(width: usize, height: usize) -> Vec<RGBA8> {
+        (0..width * height)
+            .map(|index| {
+                let row = index / width;
+                let column = index % width;
+                RGBA8::new(
+                    ((row * 73 + column * 17) % 256) as u8,
+                    ((row * 151 + column * 43) % 256) as u8,
+                    ((row * 199 + column * 97) % 256) as u8,
+                    255,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inserted_rows_are_a_band_without_hiding_other_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 128;
+        let gap_start = 24;
+        let gap_height = 5;
+        let mut reference = patterned_image(width, height);
+        reference[5 * width + 3] = RGBA8::new(255, 255, 255, 255);
+        reference[80 * width + 3] = RGBA8::new(255, 255, 255, 255);
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend(vec![RGBA8::new(0, 0, 0, 255); gap_height * width]);
+        test.extend_from_slice(&reference[gap_start * width..]);
+        test[5 * width + 3] = RGBA8::new(0, 0, 0, 255);
+        test[(80 + gap_height) * width + 3] = RGBA8::new(0, 0, 0, 255);
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height + gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert!(!result.is_same_dimensions);
+        assert_eq!(result.dimension_difference, (0, gap_height as i64));
+        let expected = (gap_height * width + 2) as f64 / test.len() as f64 * 100.0;
+        assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
+        let diff = lodepng::decode32(&diff.unwrap()).unwrap();
+        assert_eq!((diff.width, diff.height), (width, height + gap_height));
+        let pink = RGBA8::new(255, 0, 255, 200);
+        assert!(
+            diff.buffer[gap_start * width..(gap_start + gap_height) * width]
+                .iter()
+                .all(|pixel| *pixel == pink)
+        );
+        assert_eq!(diff.buffer[5 * width + 3], pink);
+        assert_eq!(diff.buffer[(80 + gap_height) * width + 3], pink);
+        let original = reference[100 * width];
+        assert_eq!(
+            diff.buffer[(100 + gap_height) * width],
+            RGBA8::new(original.r / 3, original.g / 3, original.b / 3, original.a)
+        );
+    }
+
+    #[test]
+    fn removed_rows_are_a_band_without_hiding_other_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        let width = 32;
+        let height = 128;
+        let gap_start = 24;
+        let gap_height = 5;
+        let mut reference = patterned_image(width, height);
+        reference[5 * width + 3] = RGBA8::new(255, 255, 255, 255);
+        reference[80 * width + 3] = RGBA8::new(255, 255, 255, 255);
+        let mut test = reference[..gap_start * width].to_vec();
+        test.extend_from_slice(&reference[(gap_start + gap_height) * width..]);
+        test[5 * width + 3] = RGBA8::new(0, 0, 0, 255);
+        test[(80 - gap_height) * width + 3] = RGBA8::new(0, 0, 0, 255);
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&reference, width, height).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&test, width, height - gap_height).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert!(!result.is_same_dimensions);
+        assert_eq!(result.dimension_difference, (0, -(gap_height as i64)));
+        let expected = (gap_height * width + 2) as f64 / reference.len() as f64 * 100.0;
+        assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
+        let diff = lodepng::decode32(&diff.unwrap()).unwrap();
+        assert_eq!((diff.width, diff.height), (width, height));
+        let pink = RGBA8::new(255, 0, 255, 200);
+        assert!(
+            diff.buffer[gap_start * width..(gap_start + gap_height) * width]
+                .iter()
+                .all(|pixel| *pixel == pink)
+        );
+        assert_eq!(diff.buffer[5 * width + 3], pink);
+        assert_eq!(diff.buffer[80 * width + 3], pink);
+        let original = reference[100 * width];
+        assert_eq!(
+            diff.buffer[100 * width],
+            RGBA8::new(original.r / 3, original.g / 3, original.b / 3, original.a)
+        );
     }
 
     #[test]
