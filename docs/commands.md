@@ -102,4 +102,10 @@ prevents old screenshots from being mixed into a new comparison.
 
 Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.
 
+New capture runs record both the raw reference page URL and the resolved test
+page URL for every report entry. The report links to the reference page and,
+when URL replacements are active, its corresponding test page. Run `test` or
+`ref` once after upgrading to add this metadata to an existing suite; standalone
+`compare` reuses it without needing another browser capture.
+
 Older capture runs without ordering or threshold manifests remain comparable: missing ordering data uses alphabetical output and missing threshold data uses the command threshold. A present malformed manifest is treated as an artifact error and fails the command.

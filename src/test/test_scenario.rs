@@ -629,7 +629,7 @@ async fn run_scenario_capture_inner(
 
 /// Apply urlReplacements from the test suite to a URL.
 /// Supports both literal string replacement and regex replacement.
-fn collect_url_replacements(
+pub(crate) fn collect_url_replacements(
     test_suite: &TestSuite,
     workspace_config: &WorkspaceConfig,
     replacement_profile: &[UrlReplacement],

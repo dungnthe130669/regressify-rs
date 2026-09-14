@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -341,7 +341,9 @@ fn screenshot_path_in(
 /// alphabetical filename sorting.
 pub const REPORT_ORDER_FILE: &str = ".report-order.json";
 pub const REPORT_THRESHOLDS_FILE: &str = ".report-thresholds.json";
+pub const REPORT_URLS_FILE: &str = ".report-urls.json";
 pub(crate) const REPORT_ORDER_VERSION: u8 = 1;
+pub(crate) const REPORT_URLS_VERSION: u8 = 1;
 
 /// Complete expected screenshot inventory for a capture run. Older runs stored
 /// a bare array and remain readable as order-only manifests.
@@ -350,6 +352,24 @@ pub(crate) const REPORT_ORDER_VERSION: u8 = 1;
 pub(crate) struct ReportOrderManifest {
     pub version: u8,
     pub captures: Vec<String>,
+}
+
+/// Page URLs associated with one captured target. `url` is the test page URL
+/// expected by the bundled report UI; `reference_url` is the raw baseline URL.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReportPageUrls {
+    pub reference_url: String,
+    pub url: String,
+}
+
+/// Per-capture page URLs preserved for report regeneration and standalone
+/// comparisons, which otherwise only have screenshot filenames available.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReportUrlsManifest {
+    pub version: u8,
+    pub captures: BTreeMap<String, ReportPageUrls>,
 }
 
 fn run_dir(test_suite: &TestSuite) -> Result<PathBuf> {
@@ -549,6 +569,40 @@ pub fn write_report_thresholds(test_suite: &TestSuite, thresholds: &[(String, f6
     let map = thresholds.iter().cloned().collect::<HashMap<String, f64>>();
     let manifest = serde_json::to_vec_pretty(&map)?;
     write_file_atomically(&run_dir.join(REPORT_THRESHOLDS_FILE), &manifest)?;
+    Ok(())
+}
+
+pub(crate) fn write_report_urls(
+    test_suite: &TestSuite,
+    urls: &[(String, ReportPageUrls)],
+) -> Result<()> {
+    let run_dir = run_dir(test_suite)?;
+    create_dir_all(&run_dir)?;
+
+    let mut captures = BTreeMap::new();
+    for (capture, page_urls) in urls {
+        if capture.trim().is_empty()
+            || page_urls.reference_url.trim().is_empty()
+            || page_urls.url.trim().is_empty()
+        {
+            anyhow::bail!("Report URL manifest contains an empty capture key or page URL");
+        }
+        if captures
+            .insert(capture.clone(), page_urls.clone())
+            .is_some()
+        {
+            anyhow::bail!(
+                "Report URL manifest contains duplicate capture key '{}'",
+                capture
+            );
+        }
+    }
+
+    let manifest = serde_json::to_vec_pretty(&ReportUrlsManifest {
+        version: REPORT_URLS_VERSION,
+        captures,
+    })?;
+    write_file_atomically(&run_dir.join(REPORT_URLS_FILE), &manifest)?;
     Ok(())
 }
 
@@ -1026,6 +1080,31 @@ mod tests {
         let b = generate_error_icon();
         assert_eq!(a, b.as_slice(), "error icon must be byte-deterministic");
         assert_eq!(&a[..8], &PNG_SIGNATURE, "error icon must be a valid PNG");
+    }
+
+    #[test]
+    fn report_page_urls_serialize_with_report_ui_field_names() {
+        let manifest = ReportUrlsManifest {
+            version: REPORT_URLS_VERSION,
+            captures: BTreeMap::from([(
+                "home__FINAL".to_string(),
+                ReportPageUrls {
+                    reference_url: "https://www.example.com/home".to_string(),
+                    url: "https://test.example.com/home".to_string(),
+                },
+            )]),
+        };
+
+        let value = serde_json::to_value(manifest).unwrap();
+
+        assert_eq!(
+            value["captures"]["home__FINAL"]["referenceUrl"],
+            "https://www.example.com/home"
+        );
+        assert_eq!(
+            value["captures"]["home__FINAL"]["url"],
+            "https://test.example.com/home"
+        );
     }
 
     #[test]

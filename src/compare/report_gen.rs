@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
 
@@ -10,7 +10,8 @@ use serde::Serialize;
 use crate::compare::image_compare::{CompareResult, compare_images};
 use crate::helpers::{copy_file_atomically, write_file_atomically};
 use crate::test::capture::{
-    REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_THRESHOLDS_FILE, ReportOrderManifest,
+    REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_THRESHOLDS_FILE, REPORT_URLS_FILE,
+    REPORT_URLS_VERSION, ReportOrderManifest, ReportPageUrls, ReportUrlsManifest,
     read_error_marker,
 };
 
@@ -34,6 +35,10 @@ struct ReportPair {
     label: String,
     reference: String,
     test: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reference_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff_image: Option<String>,
     selector: String,
@@ -158,6 +163,40 @@ fn read_report_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64
                 path.display()
             )
         }),
+    }
+}
+
+/// Read page URLs recorded for a capture run. Older runs predate this manifest
+/// and remain reportable without page-link metadata.
+fn read_report_urls(tests_dir: &Path) -> Result<Option<BTreeMap<String, ReportPageUrls>>> {
+    let path = tests_dir.join(REPORT_URLS_FILE);
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            let manifest: ReportUrlsManifest = serde_json::from_str(&content)
+                .with_context(|| format!("Invalid report URL manifest '{}'", path.display()))?;
+            if manifest.version != REPORT_URLS_VERSION {
+                anyhow::bail!(
+                    "Unsupported report URL manifest version {} in '{}'",
+                    manifest.version,
+                    path.display()
+                );
+            }
+            for (capture, urls) in &manifest.captures {
+                if capture.trim().is_empty()
+                    || urls.reference_url.trim().is_empty()
+                    || urls.url.trim().is_empty()
+                {
+                    anyhow::bail!(
+                        "Invalid report URL manifest '{}': capture keys and page URLs must not be empty",
+                        path.display()
+                    );
+                }
+            }
+            Ok(Some(manifest.captures))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to read report URL manifest '{}'", path.display())),
     }
 }
 
@@ -347,11 +386,14 @@ fn report_pair(
     screenshot_name: &str,
     relative_test: String,
     threshold: f64,
+    page_urls: Option<&ReportPageUrls>,
 ) -> ReportPair {
     ReportPair {
         label,
         reference: format!("../bitmaps_reference/{}", screenshot_name),
         test: relative_test,
+        reference_url: page_urls.map(|urls| urls.reference_url.clone()),
+        url: page_urls.map(|urls| urls.url.clone()),
         diff_image: None,
         selector: report_selector(screenshot_name),
         file_name: screenshot_name.to_string(),
@@ -452,6 +494,11 @@ pub fn generate_comparison_report(
     };
     let order = report_order.captures;
     let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
+    let report_urls = read_report_urls(&tests_dir)?;
+    if let Some(page_urls) = &report_urls {
+        let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
+        validate_capture_inventory(&tests_dir, &expected_captures, &test_screenshots)?;
+    }
     let mut order_index = HashMap::with_capacity(order.len() * 2);
     for (index, key) in order.iter().enumerate() {
         order_index.insert(key.as_str(), index);
@@ -482,7 +529,10 @@ pub fn generate_comparison_report(
             .trim_end_matches(".png")
             .replace("__", " ")
             .replace('$', "");
-        let mut pair = report_pair(label, &screenshot_name, relative_test, threshold);
+        let page_urls = report_urls
+            .as_ref()
+            .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
+        let mut pair = report_pair(label, &screenshot_name, relative_test, threshold, page_urls);
 
         // If either side is flagged as a capture failure (via its JSON error
         // marker), the corresponding scenario never produced a real screenshot.
@@ -794,6 +844,51 @@ mod tests {
             serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
         assert_eq!(report["tests"][0]["status"], "pass");
         assert!(report["tests"][0]["pair"].get("diffImage").is_none());
+    }
+
+    #[test]
+    fn report_includes_reference_and_test_page_urls_from_manifest() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test").join("run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let screenshot_name = "home__FINAL.png";
+        fs::write(reference_dir.join(screenshot_name), png_bytes(10)).unwrap();
+        fs::write(test_dir.join(screenshot_name), png_bytes(10)).unwrap();
+        fs::write(
+            test_dir.join(REPORT_URLS_FILE),
+            serde_json::to_vec(&ReportUrlsManifest {
+                version: REPORT_URLS_VERSION,
+                captures: BTreeMap::from([(
+                    "home__FINAL".to_string(),
+                    ReportPageUrls {
+                        reference_url: "https://www.example.com/home".to_string(),
+                        url: "https://test.example.com/home".to_string(),
+                    },
+                )]),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+
+        generate_comparison_report(&suite_dir, "basic", "run", 0.0, 1).unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(
+            report["tests"][0]["pair"]["referenceUrl"],
+            "https://www.example.com/home"
+        );
+        assert_eq!(
+            report["tests"][0]["pair"]["url"],
+            "https://test.example.com/home"
+        );
+        let config = fs::read_to_string(suite_dir.join("html_report/config.js")).unwrap();
+        assert!(config.contains("\"referenceUrl\": \"https://www.example.com/home\""));
+        assert!(config.contains("\"url\": \"https://test.example.com/home\""));
     }
 
     #[test]

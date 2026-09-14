@@ -22,8 +22,8 @@ use crate::{
         browsers::fetcher,
         capture,
         test_scenario::{
-            ScenarioRequest, make_log_prefix, scenario_capture_order_keys,
-            scenario_capture_viewports,
+            ScenarioRequest, collect_url_replacements, make_log_prefix,
+            scenario_capture_order_keys, scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
@@ -853,6 +853,80 @@ fn validate_suite_capture_keys(
     Ok(())
 }
 
+fn report_page_urls(
+    scenario: &TestScenario,
+    url_replacements: &[UrlReplacement],
+    apply_url_replacements: bool,
+) -> Result<capture::ReportPageUrls> {
+    let url = if apply_url_replacements {
+        replacements::apply_replacements(&scenario.url, url_replacements)?
+    } else {
+        scenario.url.clone()
+    };
+    Ok(capture::ReportPageUrls {
+        reference_url: scenario.url.clone(),
+        url,
+    })
+}
+
+/// Persist report metadata before capture so standalone `compare` can recover
+/// page URLs as well as ordering and threshold information.
+fn write_capture_run_manifests(
+    workspace_config: &config::WorkspaceConfig,
+    parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
+    replacement_profile: &[UrlReplacement],
+    apply_url_replacements: bool,
+) -> Result<()> {
+    for (input, suite) in parsed_suites {
+        let url_replacements = if apply_url_replacements {
+            collect_url_replacements(suite, workspace_config, replacement_profile)
+        } else {
+            Vec::new()
+        };
+        let mut order = Vec::new();
+        let mut thresholds = Vec::new();
+        let mut urls = Vec::new();
+
+        for scenario in &suite.scenarios {
+            let order_keys =
+                scenario_capture_order_keys(workspace_config, suite, scenario, &suite.scenarios)?;
+            let resolved = config::resolve_config(workspace_config, suite, scenario);
+            let page_urls = report_page_urls(scenario, &url_replacements, apply_url_replacements)?;
+            for order_key in &order_keys {
+                thresholds.push((order_key.clone(), resolved.mis_match_threshold));
+                if let Some(prefix) = order_key.split("__").next() {
+                    thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
+                }
+                urls.push((order_key.clone(), page_urls.clone()));
+            }
+            order.extend(order_keys);
+        }
+
+        capture::write_report_order(suite, &order).map_err(|error| {
+            anyhow!(
+                "Failed to write report ordering manifest for '{}': {:?}",
+                input.name,
+                error
+            )
+        })?;
+        capture::write_report_thresholds(suite, &thresholds).map_err(|error| {
+            anyhow!(
+                "Failed to write report threshold manifest for '{}': {:?}",
+                input.name,
+                error
+            )
+        })?;
+        capture::write_report_urls(suite, &urls).map_err(|error| {
+            anyhow!(
+                "Failed to write report URL manifest for '{}': {:?}",
+                input.name,
+                error
+            )
+        })?;
+    }
+    Ok(())
+}
+
 pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
@@ -882,43 +956,12 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     let workspace_config = Arc::new(workspace_config);
 
-    // Write the per-suite report ordering manifest so the comparison report lists
-    // screenshots in scenario-then-viewport order (matching the TS/BackstopJS
-    // behaviour) instead of alphabetically by filename.
-    for (input, suite) in &parsed_suites {
-        let mut order: Vec<String> = Vec::new();
-        let mut thresholds: Vec<(String, f64)> = Vec::new();
-        for scenario in &suite.scenarios {
-            let order_keys = scenario_capture_order_keys(
-                workspace_config.as_ref(),
-                suite,
-                scenario,
-                &suite.scenarios,
-            )?;
-            let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
-            for order_key in &order_keys {
-                thresholds.push((order_key.clone(), resolved.mis_match_threshold));
-                if let Some(prefix) = order_key.split("__").next() {
-                    thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
-                }
-            }
-            order.extend(order_keys);
-        }
-        capture::write_report_order(suite, &order).map_err(|e| {
-            anyhow!(
-                "Failed to write report ordering manifest for '{}': {:?}",
-                input.name,
-                e
-            )
-        })?;
-        capture::write_report_thresholds(suite, &thresholds).map_err(|e| {
-            anyhow!(
-                "Failed to write report threshold manifest for '{}': {:?}",
-                input.name,
-                e
-            )
-        })?;
-    }
+    write_capture_run_manifests(
+        workspace_config.as_ref(),
+        &parsed_suites,
+        &active_replacements,
+        true,
+    )?;
 
     // Flatten every scenario/viewport pair into an independent capture job (own
     // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
@@ -1068,40 +1111,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     let workspace_config = Arc::new(workspace_config);
 
-    for (input, suite) in &parsed_suites {
-        let mut order: Vec<String> = Vec::new();
-        let mut thresholds: Vec<(String, f64)> = Vec::new();
-        for scenario in &suite.scenarios {
-            let order_keys = scenario_capture_order_keys(
-                workspace_config.as_ref(),
-                suite,
-                scenario,
-                &suite.scenarios,
-            )?;
-            let resolved = config::resolve_config(workspace_config.as_ref(), suite, scenario);
-            for order_key in &order_keys {
-                thresholds.push((order_key.clone(), resolved.mis_match_threshold));
-                if let Some(prefix) = order_key.split("__").next() {
-                    thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
-                }
-            }
-            order.extend(order_keys);
-        }
-        capture::write_report_order(suite, &order).map_err(|e| {
-            anyhow!(
-                "Failed to write report ordering manifest for '{}': {:?}",
-                input.name,
-                e
-            )
-        })?;
-        capture::write_report_thresholds(suite, &thresholds).map_err(|e| {
-            anyhow!(
-                "Failed to write report threshold manifest for '{}': {:?}",
-                input.name,
-                e
-            )
-        })?;
-    }
+    write_capture_run_manifests(workspace_config.as_ref(), &parsed_suites, &[], false)?;
 
     let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref())?;
 
@@ -1339,6 +1349,25 @@ mod tests {
         ]);
 
         validate_scenario_dependencies(&input(), &suite).unwrap();
+    }
+
+    #[test]
+    fn report_page_urls_keep_reference_urls_and_apply_test_replacements() {
+        let scenario = scenario("home", None);
+        let replacements = vec![UrlReplacement {
+            ref_pattern: "https://example.com".to_string(),
+            test: "https://staging.example.com".to_string(),
+            regex: None,
+            flags: None,
+        }];
+
+        let test_urls = report_page_urls(&scenario, &replacements, true).unwrap();
+        let reference_urls = report_page_urls(&scenario, &replacements, false).unwrap();
+
+        assert_eq!(test_urls.reference_url, "https://example.com/home");
+        assert_eq!(test_urls.url, "https://staging.example.com/home");
+        assert_eq!(reference_urls.reference_url, "https://example.com/home");
+        assert_eq!(reference_urls.url, "https://example.com/home");
     }
 
     #[test]
