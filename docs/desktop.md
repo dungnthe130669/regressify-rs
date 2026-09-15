@@ -102,3 +102,15 @@ future statuses are never shown as passed. Reference, test, and diff paths are
 resolved relative to `html_report`, matching the report generator, and must stay
 inside the selected output directory. Missing images remain recoverable errors.
 PNG dimensions are bounded before decoding with the same limits as the CLI.
+
+## Structural Editing
+
+Scenarios, actions, and viewports support insertion, duplication, reordering, and
+removal. Compound operations form one undo step. Duplicated scenarios omit their
+explicit ID and receive a unique label; their original actions are retained.
+Selections are repaired after deletions and undo so a stale list index cannot
+silently edit a different item.
+
+New nested values use YAML flow notation to remain valid at any indentation.
+Existing document nodes and their comments are retained. JSON flow notation is
+valid YAML, so these files remain compatible with the existing CLI parser.

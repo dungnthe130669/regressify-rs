@@ -185,6 +185,15 @@ impl Document {
         );
         self.set_source(source)
     }
+
+    /// A user command may need several structural edits but only one undo entry.
+    pub fn apply_many(&mut self, edits: Vec<Edit>) -> Result<()> {
+        let mut draft = Self::new(self.kind, self.format, self.source.clone())?;
+        for edit in edits {
+            draft.apply(edit)?;
+        }
+        self.set_source(draft.source)
+    }
 }
 
 fn array_mut<'value>(value: &'value mut Value, path: &str) -> Result<&'value mut Vec<Value>> {
@@ -248,7 +257,9 @@ fn root_node(document: &YamlDocument) -> Result<YamlNode> {
 }
 
 fn yaml_node(value: &Value) -> Result<YamlNode> {
-    root_node(&YamlDocument::from_str(&serde_yaml::to_string(value)?)?)
+    // JSON flow nodes are valid YAML and retain their meaning at any indentation.
+    // Existing CST nodes stay untouched; only newly inserted values use this form.
+    root_node(&YamlDocument::from_str(&serde_json::to_string(value)?)?)
 }
 
 fn locate(root: YamlNode, path: &str) -> Result<YamlNode> {

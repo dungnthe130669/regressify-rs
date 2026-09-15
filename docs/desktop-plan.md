@@ -158,3 +158,7 @@ check complete merely because compilation passed.
 - Result model: three tests pass for pass/mismatch/engine-error classification,
   malformed-report recovery, historical run discovery, artifact containment,
   missing files, and PNG dimension validation using the existing CLI helper.
+- Editor session: four integration-style model tests cover all 15 action types,
+  scenario duplication without ID collisions, selection repair, grouped undo,
+  unsaved navigation guards, and rollback of failed compound edits. All 33
+  desktop model tests pass together.
