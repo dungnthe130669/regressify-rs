@@ -27,6 +27,7 @@ pub(super) enum Pending {
     Name(Operation),
     Reload,
     Close,
+    Run,
 }
 
 #[derive(Default)]
@@ -38,6 +39,8 @@ pub(super) struct ModalState {
 
 impl Workbench {
     pub(super) fn sync_modal(&self, cx: &mut Context<Self>) {
+        self.runs
+            .update(cx, |panel, cx| panel.set_disabled(self.busy, cx));
         self.modal.update(cx, |state, cx| {
             state.busy = self.busy;
             state.blocked = self.diagnostic.is_some() || !self.field_errors.is_empty();
@@ -200,6 +203,7 @@ impl Workbench {
                 }
             }
             Pending::Close => cx.quit(),
+            Pending::Run => self.runs.update(cx, |panel, cx| panel.start(window, cx)),
         }
     }
 

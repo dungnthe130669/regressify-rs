@@ -25,6 +25,7 @@ use super::{
 };
 
 mod files;
+mod runs;
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests;
@@ -86,6 +87,8 @@ pub struct Workbench {
     diagnostic: Option<String>,
     preferences: Preferences,
     modal: Entity<files::ModalState>,
+    runs: Entity<runs::RunPanel>,
+    main_tab: usize,
 }
 
 impl Workbench {
@@ -128,13 +131,43 @@ impl Workbench {
             .unwrap_or_else(|| "Ready".into());
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let runs = cx.new(|cx| {
+            runs::RunPanel::new(
+                preferences
+                    .as_ref()
+                    .ok()
+                    .and_then(|preferences| preferences.cli_path.clone()),
+                window,
+                cx,
+            )
+        });
+        let run_subscription =
+            cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
+                runs::RunEvent::Requested => this.guard(files::Pending::Run, window, cx),
+                runs::RunEvent::Finished => {
+                    this.status = "Command finished; refresh Results for visual outcomes".into();
+                    if let Err(error) = this.session.refresh() {
+                        this.status = format!("{error:#}");
+                    }
+                    cx.notify();
+                }
+                runs::RunEvent::Executable(path) => {
+                    this.preferences.cli_path = Some(path.clone());
+                    if let Err(error) =
+                        Preferences::path().and_then(|path| this.preferences.save(&path))
+                    {
+                        this.status = format!("{error:#}");
+                    }
+                    cx.notify();
+                }
+            });
         Self {
             session: Session::default(),
             source,
             resolved,
             search,
             bindings: Vec::new(),
-            _subscriptions: vec![source_subscription, search_subscription],
+            _subscriptions: vec![source_subscription, search_subscription, run_subscription],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
             focus,
@@ -147,6 +180,8 @@ impl Workbench {
             diagnostic: None,
             preferences: preferences.unwrap_or_default(),
             modal: cx.new(|_| files::ModalState::default()),
+            runs,
+            main_tab: 0,
         }
     }
 
@@ -170,6 +205,7 @@ impl Workbench {
             let result = task.await;
             let _ = view.update_in(cx, |this, window, cx| {
                 this.busy = false;
+                this.sync_modal(cx);
                 match result {
                     Ok(value) => done(this, value, window, cx),
                     Err(error) => this.status = format!("{error:#}"),
@@ -183,6 +219,11 @@ impl Workbench {
     }
 
     fn load_workspace(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.runs.read(cx).running() {
+            self.status = "Cancel the active command before switching workspaces".into();
+            cx.notify();
+            return;
+        }
         if self.unsaved() {
             self.guard(files::Pending::Workspace(path), window, cx);
             return;
@@ -198,6 +239,9 @@ impl Workbench {
                 this.session = session;
                 if let Some(workspace) = &this.session.workspace {
                     this.preferences.remember(workspace);
+                    let root = workspace.root.clone();
+                    this.runs
+                        .update(cx, |panel, cx| panel.set_workspace(root, window, cx));
                     if let Err(error) =
                         Preferences::path().and_then(|path| this.preferences.save(&path))
                     {
@@ -1081,7 +1125,11 @@ impl Workbench {
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let navigation = self.render_navigation(cx);
-        let editor = self.render_editor(cx);
+        let editor = if self.main_tab == 1 {
+            self.runs.clone().into_any_element()
+        } else {
+            self.render_editor(cx)
+        };
         div()
             .id("workbench")
             .key_context("Regressify")
@@ -1123,6 +1171,56 @@ impl Render for Workbench {
                 )
             }))
             .child(self.render_toolbar(cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        TabBar::new("workbench-tabs")
+                            .underline()
+                            .selected_index(self.main_tab)
+                            .on_click(cx.listener(|this, index, _, cx| {
+                                this.main_tab = *index;
+                                cx.notify();
+                            }))
+                            .child(Tab::new().label("Editor"))
+                            .child(Tab::new().label("Runs")),
+                    )
+                    .child(
+                        Button::new("run-suite")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Play)
+                            .label("Run suite")
+                            .disabled(
+                                self.busy
+                                    || self
+                                        .session
+                                        .open
+                                        .as_ref()
+                                        .and_then(|open| open.entry.suite_name())
+                                        .is_none(),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(suite) = this
+                                    .session
+                                    .open
+                                    .as_ref()
+                                    .and_then(|open| open.entry.suite_name())
+                                {
+                                    this.runs.update(cx, |panel, cx| {
+                                        panel.set_suites(vec![suite], window, cx)
+                                    });
+                                    this.main_tab = 1;
+                                    cx.notify();
+                                }
+                            })),
+                    ),
+            )
             .child(
                 div().flex_1().min_h_0().child(
                     h_resizable("workspace-layout")
@@ -1209,6 +1307,13 @@ pub fn launch(root: Option<PathBuf>) {
                                 if this.busy {
                                     this.status =
                                         "Finish the current operation before closing".into();
+                                    cx.notify();
+                                    false
+                                } else if this.runs.read(cx).running() {
+                                    this.runs.update(cx, |panel, cx| panel.cancel(cx));
+                                    this.status =
+                                        "Cancelling the active run; close again after it finishes"
+                                            .into();
                                     cx.notify();
                                     false
                                 } else if this.unsaved() {

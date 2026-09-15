@@ -38,7 +38,7 @@ target compiles; document operations are testable without a display.
 
 - [x] Open a workspace using a native folder chooser or startup path.
 - [x] Discover supported suite files and workspace/viewport configuration.
-- [ ] Create missing starter files using the existing non-destructive init flow.
+- [x] Create missing starter files using the existing non-destructive init flow.
 - [x] Create, duplicate, rename, and delete suite files with confirmation.
 - [x] Track unsaved changes; guard document/workspace changes and window close.
 - [x] Save, save as, reload, and detect externally modified files.
@@ -72,15 +72,15 @@ unrequested overrides; action ordering and YAML/JSON round trips are tested.
 
 ### 4. Run Management
 
-- [ ] Run test, ref, compare, approve, snapshot, optimize, install, and init.
-- [ ] Offer applicable suite/scenario filters and global options, including
+- [x] Run test, ref, compare, approve, snapshot, optimize, install, and init.
+- [x] Offer applicable suite filters and global options, including
   environment, output directory, concurrency, ramp interval, and debug mode.
-- [ ] Launch with argument arrays, never shell-interpolated commands.
-- [ ] Keep execution off the UI thread and show bounded stdout/stderr logs.
-- [ ] Support cancellation and clean up the child process tree.
-- [ ] Prevent overlapping mutating commands in the same desktop session.
-- [ ] Confirm baseline promotion and other destructive operations.
-- [ ] Distinguish command failure, cancellation, and visual/scenario failure.
+- [x] Launch with argument arrays, never shell-interpolated commands.
+- [x] Keep execution off the UI thread and show bounded stdout/stderr logs.
+- [x] Support cancellation and clean up the child process tree.
+- [x] Prevent overlapping mutating commands in the same desktop session.
+- [x] Confirm baseline promotion and other destructive operations.
+- [x] Distinguish command failure, cancellation, and visual/scenario failure.
 
 Acceptance: CLI argument generation is checked against the actual clap parser;
 spaces and special characters remain single arguments; process completion and
@@ -171,3 +171,7 @@ check complete merely because compilation passed.
   item removal with undo. Dialog status uses a separate retained entity to
   avoid reading the workbench during its render/update borrow. Animation tests
   use the same test-thread wall-clock wait as GPUI Kit's own overlay suite.
+- Native runs: eight UI tests pass, including baseline confirmation before any
+  process starts, command-specific option visibility, and switching between run
+  and editor views without changing the draft. Model tests cover the actual
+  subprocess lifecycle. Save-and-run re-enables execution after saving completes.

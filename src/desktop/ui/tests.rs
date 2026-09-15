@@ -21,6 +21,9 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
         let view = cx.new(|cx| Workbench::new(window, cx));
         view.update(cx, |this, cx| {
             this.session.connect(root).unwrap();
+            this.runs.update(cx, |panel, cx| {
+                panel.set_workspace(root.to_path_buf(), window, cx)
+            });
             let open = this
                 .session
                 .workspace
@@ -269,6 +272,53 @@ async fn item_removal_requires_confirmation_and_is_undoable(cx: &mut TestAppCont
                 .len(),
             1
         );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.choose(crate::desktop::runner::RunCommand::Approve, window, cx)
+            });
+        });
+        window.render_frame(cx);
+        window.click("start-command", cx);
+        assert!(window.find("run-confirm").visible());
+        assert!(!view.read(cx).runs.read(cx).running());
+        window.click("run-confirm-cancel", cx);
+        assert!(window.try_find("run-confirm").is_none());
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("run-suite", cx);
+        assert_eq!(view.read(cx).main_tab, 1);
+        assert!(window.find("start-command").visible());
+        assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.choose(crate::desktop::runner::RunCommand::Snapshot, window, cx)
+            })
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("run-field-asyncCaptureLimit").is_none());
+        assert!(window.try_find("run-field-heading").is_some());
+        window.within("workbench-tabs").click(0_usize, cx);
+        assert!(window.find("field-url").visible());
+        assert!(!view.read(cx).session.dirty());
     })
     .unwrap();
 }

@@ -145,3 +145,17 @@ Opening another file/workspace or closing with a draft prompts Save, Discard,
 or Cancel. A failed save keeps the dialog and draft available for recovery.
 Removing an item requires confirmation and remains undoable; deleting a suite
 file is a filesystem operation and cannot be undone through document history.
+
+## Run Panel
+
+Runs provides the supported command menu, an explicit suite scope, applicable
+typed options, and a searchable read-only log. Run suite selects the current
+suite and opens Runs; the Run button starts execution after any required draft
+save/discard and artifact-change confirmation. An empty suite filter means all
+suites. Select Initialize workspace to run the existing non-destructive init.
+
+The CLI picker persists a trusted executable path in per-user preferences.
+Proxy input is masked in the option editor and command lines are not echoed.
+Cancellation stays available while execution is active. Switching workspaces is
+blocked during a command. Closing during a run requests cancellation; close again
+after the command has stopped to handle any unsaved document prompt.
