@@ -91,6 +91,12 @@ a diagnostic rather than a guessed value.
 - Immediate saves read retained native input. Completion acknowledges only the source written; newer edits stay dirty. This is conflict detection, not an OS-wide lock.
 - Documents are limited to 4 MiB. Undo retains at most 100 exact-source snapshots with a 16 MiB budget.
 
+Valid plain YAML strings such as `.item[aria-label='10 midpoints']` retain their
+original spelling during guided edits. Adding suite fields does not require
+quoting existing selectors. A YAML 1.2 span adapter protects these strings from
+the lossless editor's flow-delimiter parsing, then restores them without changing
+comments, Unicode text, or surrounding line endings.
+
 Use trusted local workspaces. Configuration can reference scripts and browser
 actions executed by the CLI. The desktop is not a sandbox for untrusted projects
 or arbitrary executables.

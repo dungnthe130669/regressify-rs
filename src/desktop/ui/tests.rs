@@ -145,6 +145,89 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
 }
 
 #[gpui_kit::test]
+async fn editing_real_suite_fields_preserves_plain_css_selectors(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let source = include_str!("../../../visual_tests/color-blender.tests.yaml");
+    let original: serde_json::Value = serde_yaml::from_str(source).unwrap();
+    let path = Path::new("visual_tests/color-blender.tests.yaml");
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_document(path, crate::desktop::document::DocumentKind::Suite, source)
+                .unwrap();
+            this.session.install_document(open).unwrap();
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        let binding = view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "viewportNames")
+            .unwrap();
+        let super::Control::Textarea(input) = &binding.control else {
+            panic!("Expected viewport list input");
+        };
+        let focus = input.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        window.render_frame(cx);
+        window.input("name", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("hint-viewportNames")
+            .is_some_and(|hint| hint.label() == Some("Override"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).field_errors.is_empty());
+        assert!(view.read(cx).diagnostic.is_none());
+        window.click("field-asyncCompareLimit", cx);
+        window.input("3", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("hint-asyncCompareLimit")
+            .is_some_and(|hint| hint.label() == Some("Override"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).field_errors.is_empty());
+        assert!(view.read(cx).diagnostic.is_none());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"],
+            original["scenarios"]
+        );
+        window.click("save", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Saved"))
+    })
+    .await;
+    let saved = std::fs::read_to_string(directory.path().join(path)).unwrap();
+    let edited: serde_json::Value = serde_yaml::from_str(&saved).unwrap();
+    assert_eq!(edited["viewportNames"], "name");
+    assert_eq!(edited["asyncCompareLimit"], 3);
+    assert_eq!(edited["scenarios"], original["scenarios"]);
+    assert!(saved.contains(".t-o-color-blender__midpoint-list-item[aria-label='10 midpoints']"));
+    assert_eq!(
+        saved.matches("# Scenario:").count(),
+        source.matches("# Scenario:").count()
+    );
+    cx.update(|cx| assert!(!view.read(cx).session.dirty()));
+}
+
+#[gpui_kit::test]
 async fn typing_a_guided_field_and_clicking_save_updates_the_file(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

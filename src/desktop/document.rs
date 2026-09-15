@@ -1,8 +1,14 @@
 //! Source-preserving document edits shared by guided forms and the source editor.
 
-use std::{collections::VecDeque, path::Path, str::FromStr};
+use std::{
+    collections::{HashMap, VecDeque},
+    ops::Range,
+    path::Path,
+    str::FromStr,
+};
 
 use anyhow::{Context, Result, anyhow, ensure};
+use saphyr_parser::{Event, Parser as YamlParser, ScalarStyle, Span};
 use serde_json::{Value, json};
 use yaml_edit::{AsYaml, Document as YamlDocument, Sequence, SyntaxKind, YamlFile, YamlNode};
 
@@ -282,8 +288,9 @@ fn locate(root: YamlNode, path: &str) -> Result<YamlNode> {
 }
 
 fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
+    let (protected, originals) = protect_plain_scalars(source)?;
     // Keep the stream wrapper: leading comments can belong to it, not the document.
-    let file = YamlFile::from_str(source)?;
+    let file = YamlFile::from_str(&protected)?;
     let document = file
         .documents()
         .next()
@@ -309,7 +316,7 @@ fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
             let sequence = node
                 .as_sequence()
                 .ok_or_else(|| anyhow!("Expected a YAML sequence"))?;
-            insert_yaml_item(sequence, *index, yaml_node(value)?, source)?;
+            insert_yaml_item(sequence, *index, yaml_node(value)?, &protected)?;
         }
         Edit::Remove { path, index } => {
             let node = locate(root, path)?;
@@ -331,7 +338,98 @@ fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
             }
         }
     }
-    Ok(file.to_string())
+    restore_plain_scalars(&file.to_string(), &originals)
+}
+
+fn protect_plain_scalars(source: &str) -> Result<(String, HashMap<String, String>)> {
+    let prefix = format!("regressify_scalar_{}_", uuid::Uuid::new_v4().simple());
+    let mut originals = HashMap::new();
+    let mut replacements = Vec::new();
+    let offsets = yaml_source_offsets(source);
+    // yaml-edit splits some legal plain scalars at embedded flow punctuation.
+    // Use YAML 1.2 spans, not selector-specific text matching, to isolate them.
+    for event in YamlParser::new_from_str(source) {
+        let (event, span) = event.map_err(|error| anyhow!("Invalid YAML: {error}"))?;
+        if let Event::Scalar(value, ScalarStyle::Plain, _, _) = event
+            && value.contains(['[', ']', '{', '}', ',', '\'', '"'])
+        {
+            let range = scalar_byte_range(source, span, &offsets)?;
+            let original = source
+                .get(range.clone())
+                .ok_or_else(|| anyhow!("Invalid YAML scalar span"))?;
+            let marker = format!("{prefix}{}", originals.len());
+            replacements.push((range, serde_json::to_string(&marker)?));
+            originals.insert(marker, original.to_string());
+        }
+    }
+    Ok((replace_scalar_spans(source, replacements)?, originals))
+}
+
+fn restore_plain_scalars(source: &str, originals: &HashMap<String, String>) -> Result<String> {
+    let mut replacements = Vec::new();
+    let offsets = yaml_source_offsets(source);
+    for event in YamlParser::new_from_str(source) {
+        let (event, span) = event.map_err(|error| anyhow!("Invalid generated YAML: {error}"))?;
+        if let Event::Scalar(value, style, _, _) = event
+            && let Some(original) = originals.get(value.as_ref())
+        {
+            let start = *offsets
+                .get(span.start.index())
+                .ok_or_else(|| anyhow!("Invalid YAML marker start"))?;
+            let token = match style {
+                ScalarStyle::Plain => value.to_string(),
+                ScalarStyle::SingleQuoted => format!("'{value}'"),
+                ScalarStyle::DoubleQuoted => serde_json::to_string(&value)?,
+                _ => return Err(anyhow!("Unexpected YAML marker style")),
+            };
+            // Quoted event spans can extend past comments to the next token.
+            // Restore only the exact generated marker, never its following trivia.
+            let range = start..start + token.len();
+            ensure!(
+                source.get(range.clone()) == Some(token.as_str()),
+                "Invalid YAML marker token"
+            );
+            replacements.push((range, original.clone()));
+        }
+    }
+    replace_scalar_spans(source, replacements)
+}
+
+fn yaml_source_offsets(source: &str) -> Vec<usize> {
+    // Saphyr 0.0.12 markers count characters rather than UTF-8 bytes.
+    source
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(source.len()))
+        .collect()
+}
+
+fn scalar_byte_range(source: &str, span: Span, offsets: &[usize]) -> Result<Range<usize>> {
+    let start = offsets
+        .get(span.start.index())
+        .ok_or_else(|| anyhow!("Invalid YAML scalar start"))?;
+    let end = offsets
+        .get(span.end.index())
+        .ok_or_else(|| anyhow!("Invalid YAML scalar end"))?;
+    let text = source
+        .get(*start..*end)
+        .ok_or_else(|| anyhow!("Invalid YAML scalar range"))?;
+    // The parser span can include trivia separating a scalar from its comment.
+    Ok(*start..*start + text.trim_end_matches([' ', '\t', '\r', '\n']).len())
+}
+
+fn replace_scalar_spans(source: &str, replacements: Vec<(Range<usize>, String)>) -> Result<String> {
+    let mut result = source.to_string();
+    let mut following = source.len();
+    for (range, replacement) in replacements.into_iter().rev() {
+        ensure!(
+            range.end <= following && source.get(range.clone()).is_some(),
+            "Invalid overlapping YAML scalar spans"
+        );
+        following = range.start;
+        result.replace_range(range, &replacement);
+    }
+    Ok(result)
 }
 
 fn insert_yaml_item(
@@ -481,6 +579,175 @@ mod tests {
 
     fn suite(source: &str) -> Document {
         Document::new(DocumentKind::Suite, Format::Yaml, source.to_string()).unwrap()
+    }
+
+    #[test]
+    fn editing_color_blender_suite_preserves_existing_scenarios() {
+        let source = include_str!("../../visual_tests/color-blender.tests.yaml");
+        let original = Format::Yaml.parse(source).unwrap();
+        for (key, value) in [
+            ("viewportNames", json!("name")),
+            ("asyncCompareLimit", json!(3)),
+        ] {
+            let mut document = suite(source);
+            document.validate().unwrap();
+            let edit = Edit::Set {
+                parent: String::new(),
+                key: key.into(),
+                value: Some(value.clone()),
+            };
+            let generated = apply_yaml(source, &edit).unwrap();
+            Format::Yaml
+                .parse(&generated)
+                .unwrap_or_else(|error| panic!("{error:#}\nGenerated YAML:\n{generated}"));
+            document.apply(edit).unwrap();
+            let edited = document.value().unwrap();
+            assert_eq!(edited[key], value);
+            assert_eq!(edited["scenarios"], original["scenarios"]);
+            assert!(
+                document
+                    .source()
+                    .contains(".t-o-color-blender__midpoint-list-item[aria-label='10 midpoints']")
+            );
+            document.validate().unwrap();
+            document.undo();
+            assert_eq!(document.source(), source);
+        }
+    }
+
+    #[test]
+    fn plain_selector_protection_preserves_unicode_comments_and_line_endings() {
+        let source = "# Caf\u{e9} selector notes\nscenarios:\n  - url: https://example.com\n    label: Caf\u{e9}\n    actions:\n      - click: .caf\u{e9}[data-label='a,b{c}'] # preserve selector\n      - input: '#name'\n        value: plain \"quoted\" text\n";
+        for ending in ["\n", "\r\n"] {
+            for terminal_newline in [true, false] {
+                let mut source = source.replace('\n', ending);
+                if !terminal_newline {
+                    source.truncate(source.len() - ending.len());
+                }
+                let mut document = suite(&source);
+                let original = document.value().unwrap();
+                for (key, value) in [
+                    ("viewportNames", json!("desktop")),
+                    ("asyncCompareLimit", json!(3)),
+                ] {
+                    document
+                        .apply(Edit::Set {
+                            parent: String::new(),
+                            key: key.into(),
+                            value: Some(value),
+                        })
+                        .unwrap();
+                }
+                assert_eq!(
+                    document.value().unwrap()["scenarios"],
+                    original["scenarios"]
+                );
+                assert!(
+                    document
+                        .source()
+                        .contains(".caf\u{e9}[data-label='a,b{c}'] # preserve selector"),
+                    "ending={ending:?}, terminal_newline={terminal_newline}\n{}",
+                    document.source()
+                );
+                assert!(document.source().contains("value: plain \"quoted\" text"));
+                assert!(
+                    document
+                        .source()
+                        .contains(&format!("# Caf\u{e9} selector notes{ending}"))
+                );
+                assert!(!document.source().contains("regressify_scalar_"));
+                document.undo();
+                document.undo();
+                assert_eq!(document.source(), source);
+            }
+        }
+    }
+
+    #[test]
+    fn edits_reach_scenarios_after_a_plain_selector_and_can_replace_it() {
+        let source = include_str!("../../visual_tests/color-blender.tests.yaml");
+        let mut document = suite(source);
+        document
+            .apply(Edit::Set {
+                parent: "/scenarios/5".into(),
+                key: "label".into(),
+                value: Some(json!("Updated scenario")),
+            })
+            .unwrap();
+        assert_eq!(
+            document.value().unwrap()["scenarios"][5]["label"],
+            "Updated scenario"
+        );
+        document
+            .apply(Edit::Set {
+                parent: "/scenarios/4/actions/3".into(),
+                key: "click".into(),
+                value: Some(json!(".replacement[data-name='next']")),
+            })
+            .unwrap();
+        assert_eq!(
+            document.value().unwrap()["scenarios"][4]["actions"][3]["click"],
+            ".replacement[data-name='next']"
+        );
+        assert_eq!(
+            document.value().unwrap()["scenarios"][5]["actions"][3]["click"],
+            ".t-o-color-blender__midpoint-list-item[aria-label='10 midpoints']"
+        );
+        document.validate().unwrap();
+    }
+
+    #[test]
+    fn plain_scalar_anchors_and_actual_flow_collections_are_preserved() {
+        let source = "selector: &target .button[data-role='submit']\ncopy: *target\nvalues: [one, two, {label: 'a,b'}]\n";
+        let mut document = Document::new(DocumentKind::Data, Format::Yaml, source.into()).unwrap();
+        let mut expected = document.value().unwrap();
+        expected["enabled"] = json!(false);
+        document
+            .apply(Edit::Set {
+                parent: String::new(),
+                key: "enabled".into(),
+                value: Some(json!(false)),
+            })
+            .unwrap();
+        assert_eq!(document.value().unwrap(), expected);
+        assert!(
+            document
+                .source()
+                .contains("selector: &target .button[data-role='submit']")
+        );
+        assert!(document.source().contains("copy: *target"));
+        assert!(
+            document
+                .source()
+                .contains("values: [one, two, {label: 'a,b'}]")
+        );
+    }
+
+    #[test]
+    fn every_shipped_suite_allows_root_field_edits() {
+        for source in [
+            include_str!("../../visual_tests/alloy.tests.yaml"),
+            include_str!("../../visual_tests/basic.tests.yaml"),
+            include_str!("../../visual_tests/color-blender.tests.yaml"),
+            include_str!("../../visual_tests/form-reuse-scenarios.tests.yaml"),
+            include_str!("../../visual_tests/form-submission.tests.yaml"),
+            include_str!("../../visual_tests/frequently-changed-data.tests.yaml"),
+            include_str!("../../visual_tests/sign-in.tests.yaml"),
+        ] {
+            let mut document = suite(source);
+            let original = document.value().unwrap();
+            document
+                .apply(Edit::Set {
+                    parent: String::new(),
+                    key: "asyncCompareLimit".into(),
+                    value: Some(json!(3)),
+                })
+                .unwrap();
+            assert_eq!(
+                document.value().unwrap()["scenarios"],
+                original["scenarios"]
+            );
+        }
     }
 
     #[test]

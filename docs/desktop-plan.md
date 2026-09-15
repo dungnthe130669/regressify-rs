@@ -52,16 +52,16 @@ cancellation, unsaved changes, invalid paths, and conflicting saves are tested.
 
 - [x] Edit all workspace settings using labeled, typed fields.
 - [x] Edit suite settings and create, duplicate, rename, reorder, and remove
-  scenarios.
+      scenarios.
 - [x] Edit scenario settings, dependencies, restore state, URLs, viewports,
-  capture selectors, waits, and overrides.
+      capture selectors, waits, and overrides.
 - [x] Add, duplicate, reorder, and remove every supported action type: check,
-  click, focus, goto, hide, hover, input, persist, press, remove, save, select,
-  scroll, uncheck, and wait.
+      click, focus, goto, hide, hover, input, persist, press, remove, save, select,
+      scroll, uncheck, and wait.
 - [x] Support frame chains, file uploads, optional values, and action-specific
-  fields without changing the existing serialization format.
+      fields without changing the existing serialization format.
 - [x] Distinguish inherited values from explicit false, zero, and empty values;
-  show resolved values and offer reset-to-inherited controls.
+      show resolved values and offer reset-to-inherited controls.
 - [x] Edit viewport definitions.
 - [x] Provide YAML/JSON source editing, parse/type diagnostics, and undo/redo.
 - [x] Keep guided editing and source editing synchronized through one document.
@@ -74,7 +74,7 @@ unrequested overrides; action ordering and YAML/JSON round trips are tested.
 
 - [x] Run test, ref, compare, approve, snapshot, optimize, install, and init.
 - [x] Offer applicable suite filters and global options, including
-  environment, output directory, concurrency, ramp interval, and debug mode.
+      environment, output directory, concurrency, ramp interval, and debug mode.
 - [x] Launch with argument arrays, never shell-interpolated commands.
 - [x] Keep execution off the UI thread and show bounded stdout/stderr logs.
 - [x] Support cancellation and clean up the child process tree.
@@ -90,11 +90,11 @@ cancellation are tested; exit zero is never treated as proof of a visual pass.
 
 - [x] Discover existing comparison reports and refresh after commands finish.
 - [x] List scenario/viewport outcomes with pass, mismatch, and capture-error
-  states and filtering.
+      states and filtering.
 - [x] Display reference, current, and diff images with fit/zoom controls.
 - [x] Open generated HTML reports and artifact folders externally.
 - [x] Provide a searchable suite/scenario navigator, resizable panels, clear
-  empty/error/loading states, and keyboard-accessible editing controls.
+      empty/error/loading states, and keyboard-accessible editing controls.
 - [x] Provide keyboard shortcuts for save, undo, redo, and document operations.
 - [x] Use consistent labels, concise tooltips, and inline validation.
 
@@ -105,15 +105,15 @@ do not block the UI thread indefinitely.
 ### 6. Verification and Documentation
 
 - [x] Add focused unit tests for documents, editing, schema coverage, validation,
-  paths, persistence, command arguments, subprocesses, and result discovery.
+      paths, persistence, command arguments, subprocesses, and result discovery.
 - [x] Add GPUI interaction/render tests where supported by the framework.
 - [x] Run the existing CLI regression tests and both default/desktop build gates.
 - [x] Exercise the desktop application on Windows, recording any GUI checks
-  that cannot be automated in the available environment.
+      that cannot be automated in the available environment.
 - [x] Document installation, launching, editing, inheritance, running, result
-  semantics, keyboard shortcuts, limitations, and contributor test commands.
+      semantics, keyboard shortcuts, limitations, and contributor test commands.
 - [x] Update this checklist as work is completed; distinguish implemented,
-  verified, and environment-blocked work.
+      verified, and environment-blocked work.
 
 ## Non-Goals
 
@@ -206,3 +206,11 @@ check complete merely because compilation passed.
   been executed on GitHub in this session. Native macOS/Linux rendering, full
   IME composition, screen-reader usability, signing, and installer packaging
   remain platform/release follow-up checks, not locally verified deliverables.
+
+- Suite-edit regression: reproduced the color-blender error where a root field
+  was inserted inside an unquoted CSS attribute selector. Plain scalar spans are
+  now protected before CST editing and restored exactly afterward. Added tests
+  for both reported fields, nested edits, all shipped suites, Unicode, LF/CRLF,
+  inline comments, anchors, undo, and real GPUI typing/save behavior.
+  Verification: all 333 feature-enabled tests and 276 default CLI tests pass;
+  strict production Clippy, formatting, and locked GUI/CLI builds also pass.
