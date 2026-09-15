@@ -159,3 +159,17 @@ Proxy input is masked in the option editor and command lines are not echoed.
 Cancellation stays available while execution is active. Switching workspaces is
 blocked during a command. Closing during a run requests cancellation; close again
 after the command has stopped to handle any unsaved document prompt.
+
+## Reviewing Captures
+
+Results refreshes from the current environment/output options on opening and
+after commands finish. Choose a suite/run from the report menu, filter All,
+Failed, or Passed, and search capture labels or error messages. Capture lists
+are paginated in groups of 50 to keep large reports responsive.
+
+Reference, Current, Diff, and Side by side views use background-loaded PNGs.
+Fit width and zoom controls support tall-page inspection with scrollbars.
+Engine errors are shown separately from mismatch percentages. The external-open
+controls open the generated HTML summary, output directory, or individual image
+with the operating system's default application. These are trusted local
+artifacts; no report HTML is embedded in the desktop process.

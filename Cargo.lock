@@ -6260,6 +6260,7 @@ dependencies = [
  "glob",
  "gpui-kit",
  "lodepng",
+ "open",
  "oxipng",
  "pulldown-cmark",
  "rayon",

@@ -322,3 +322,82 @@ fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mut Test
     })
     .unwrap();
 }
+
+#[gpui_kit::test]
+async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join(".regressify");
+    let run = output.join("shop/bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(output.join("shop/html_report")).unwrap();
+    std::fs::create_dir_all(output.join("shop/bitmaps_reference")).unwrap();
+    for path in [
+        run.join("home.png"),
+        run.join("home_diff.png"),
+        output.join("shop/bitmaps_reference/home.png"),
+    ] {
+        lodepng::encode32_file(path, &[0_u8, 128, 255, 255], 1, 1).unwrap();
+    }
+    let pair = serde_json::json!({"label": "Home", "reference": "../bitmaps_reference/home.png", "test": "../bitmaps_test/run-1/home.png", "diffImage": "../bitmaps_test/run-1/home_diff.png"});
+    let report = serde_json::json!({"id": "shop", "tests": [
+        {"status": "pass", "pair": pair},
+        {"status": "fail", "pair": {"label": "Checkout", "engineErrorMsg": "Missing selector #pay"}}
+    ]});
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find(("image-details", 1_usize)).label(),
+            Some("Current 1 x 1")
+        );
+        window.click("zoom-in", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("125%"));
+        window.within("image-modes").click(3_usize, cx);
+        assert!(window.find(("image-details", 0_usize)).visible());
+        assert!(window.find(("image-details", 1_usize)).visible());
+        window.within("result-filter").click(1_usize, cx);
+        assert!(window.try_find(("capture", 0_usize)).is_none());
+        window.click(("capture", 1_usize), cx);
+        assert_eq!(
+            window.find("capture-error").label(),
+            Some("Missing selector #pay")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn missing_output_has_a_recoverable_empty_results_view(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("results-status")
+            .is_some_and(|status| status.label() == Some("0 reports, 0 warnings"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("refresh-results").visible());
+        window.within("workbench-tabs").click(0_usize, cx);
+        assert!(window.find("field-url").visible());
+    })
+    .unwrap();
+}

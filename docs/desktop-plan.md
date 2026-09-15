@@ -88,12 +88,12 @@ cancellation are tested; exit zero is never treated as proof of a visual pass.
 
 ### 5. Results and Workbench
 
-- [ ] Discover existing comparison reports and refresh after commands finish.
-- [ ] List scenario/viewport outcomes with pass, mismatch, and capture-error
+- [x] Discover existing comparison reports and refresh after commands finish.
+- [x] List scenario/viewport outcomes with pass, mismatch, and capture-error
   states and filtering.
-- [ ] Display reference, current, and diff images with fit/zoom controls.
-- [ ] Open generated HTML reports and artifact folders externally.
-- [ ] Provide a searchable suite/scenario navigator, resizable panels, clear
+- [x] Display reference, current, and diff images with fit/zoom controls.
+- [x] Open generated HTML reports and artifact folders externally.
+- [x] Provide a searchable suite/scenario navigator, resizable panels, clear
   empty/error/loading states, and keyboard-accessible editing controls.
 - [ ] Provide keyboard shortcuts for save, undo, redo, and document operations.
 - [ ] Use consistent labels, concise tooltips, and inline validation.
@@ -175,3 +175,7 @@ check complete merely because compilation passed.
   process starts, command-specific option visibility, and switching between run
   and editor views without changing the draft. Model tests cover the actual
   subprocess lifecycle. Save-and-run re-enables execution after saving completes.
+- Native results: ten workbench UI tests pass, including real PNG/report fixture
+  loading, reference/current side-by-side mode, zoom, failed-capture filtering,
+  engine error details, and recovery from missing output directories. These are
+  layout/state checks; native pixels still require the final smoke test.

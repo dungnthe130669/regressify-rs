@@ -465,15 +465,13 @@ impl Render for RunPanel {
                         .px_4()
                         .py_3()
                         .bg(cx.theme().warning.opacity(0.12))
-                        .child(
-                            div().flex_1().child(format!(
+                        .child(div().flex_1().child(format!(
                                 "{} will modify {}",
                                 self.command.label(),
                                 self.output_root()
                                     .map(|path| path.display().to_string())
                                     .unwrap_or_default()
-                            )),
-                        )
+                            )))
                         .child(Button::new("run-confirm-cancel").label("Cancel").on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.confirmation = false;

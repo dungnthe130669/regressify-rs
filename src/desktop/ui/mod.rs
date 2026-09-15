@@ -25,6 +25,7 @@ use super::{
 };
 
 mod files;
+mod reports;
 mod runs;
 
 #[cfg(all(test, feature = "gui-tests"))]
@@ -88,6 +89,7 @@ pub struct Workbench {
     preferences: Preferences,
     modal: Entity<files::ModalState>,
     runs: Entity<runs::RunPanel>,
+    results: Entity<reports::ResultsPanel>,
     main_tab: usize,
 }
 
@@ -145,10 +147,11 @@ impl Workbench {
             cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
                 runs::RunEvent::Requested => this.guard(files::Pending::Run, window, cx),
                 runs::RunEvent::Finished => {
-                    this.status = "Command finished; refresh Results for visual outcomes".into();
+                    this.status = "Command finished".into();
                     if let Err(error) = this.session.refresh() {
                         this.status = format!("{error:#}");
                     }
+                    this.refresh_results(window, cx);
                     cx.notify();
                 }
                 runs::RunEvent::Executable(path) => {
@@ -181,6 +184,7 @@ impl Workbench {
             preferences: preferences.unwrap_or_default(),
             modal: cx.new(|_| files::ModalState::default()),
             runs,
+            results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
             main_tab: 0,
         }
     }
@@ -250,6 +254,7 @@ impl Workbench {
                 }
                 this.sync_editor(window, cx);
                 this.status = "Workspace opened".into();
+                this.refresh_results(window, cx);
             },
             window,
             cx,
@@ -304,6 +309,18 @@ impl Workbench {
 
     fn unsaved(&self) -> bool {
         self.session.dirty() || !self.field_errors.is_empty()
+    }
+
+    fn refresh_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.runs.read(cx).output_root() {
+            Ok(root) => self
+                .results
+                .update(cx, |panel, cx| panel.refresh(root, window, cx)),
+            Err(error) => {
+                self.status = format!("{error:#}");
+                cx.notify();
+            }
+        }
     }
 
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
@@ -1125,7 +1142,9 @@ impl Workbench {
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let navigation = self.render_navigation(cx);
-        let editor = if self.main_tab == 1 {
+        let editor = if self.main_tab == 2 {
+            self.results.clone().into_any_element()
+        } else if self.main_tab == 1 {
             self.runs.clone().into_any_element()
         } else {
             self.render_editor(cx)
@@ -1183,12 +1202,16 @@ impl Render for Workbench {
                         TabBar::new("workbench-tabs")
                             .underline()
                             .selected_index(self.main_tab)
-                            .on_click(cx.listener(|this, index, _, cx| {
+                            .on_click(cx.listener(|this, index, window, cx| {
                                 this.main_tab = *index;
+                                if *index == 2 {
+                                    this.refresh_results(window, cx);
+                                }
                                 cx.notify();
                             }))
                             .child(Tab::new().label("Editor"))
-                            .child(Tab::new().label("Runs")),
+                            .child(Tab::new().label("Runs"))
+                            .child(Tab::new().label("Results")),
                     )
                     .child(
                         Button::new("run-suite")
