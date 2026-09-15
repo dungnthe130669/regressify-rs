@@ -215,10 +215,10 @@ impl RunRequest {
                 arguments.extend(["--test-suite".into(), suite.into()]);
             }
         }
-        if self.command.captures() {
-            if let Some(fetch) = options.fetch_browser {
-                arguments.extend(["--fetch-browser".into(), fetch.to_string().into()]);
-            }
+        if self.command.captures()
+            && let Some(fetch) = options.fetch_browser
+        {
+            arguments.extend(["--fetch-browser".into(), fetch.to_string().into()]);
         }
         if self.command == RunCommand::Test {
             if options.skip_compare {
@@ -478,17 +478,15 @@ impl RunManager {
         for line in lines {
             self.push_log(line);
         }
-        if finished {
-            if let Some(mut active) = self.active.take() {
-                for line in active.logs.try_iter() {
-                    self.push_log(line);
-                }
-                self.outcome = active.worker.take().map(|worker| {
-                    worker.join().unwrap_or_else(|_| {
-                        RunOutcome::Failed("Execution worker stopped unexpectedly".into())
-                    })
-                });
+        if finished && let Some(mut active) = self.active.take() {
+            for line in active.logs.try_iter() {
+                self.push_log(line);
             }
+            self.outcome = active.worker.take().map(|worker| {
+                worker.join().unwrap_or_else(|_| {
+                    RunOutcome::Failed("Execution worker stopped unexpectedly".into())
+                })
+            });
         }
         finished
     }

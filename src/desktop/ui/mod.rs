@@ -500,7 +500,7 @@ impl Workbench {
                             if matches!(event, InputEvent::Change) {
                                 this.change_field(
                                     &descriptor,
-                                    &state.read(cx).value().to_string(),
+                                    state.read(cx).value().as_ref(),
                                     window,
                                     cx,
                                 );
@@ -523,7 +523,7 @@ impl Workbench {
                             if matches!(event, InputEvent::Change) {
                                 this.change_field(
                                     &descriptor,
-                                    &state.read(cx).value().to_string(),
+                                    state.read(cx).value().as_ref(),
                                     window,
                                     cx,
                                 );

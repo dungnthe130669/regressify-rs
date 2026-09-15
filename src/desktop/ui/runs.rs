@@ -152,7 +152,7 @@ impl RunPanel {
                         &input,
                         move |this, input, event: &InputEvent, cx| {
                             if matches!(event, InputEvent::Change) {
-                                this.change(&descriptor, &input.read(cx).value().to_string(), cx);
+                                this.change(&descriptor, input.read(cx).value().as_ref(), cx);
                             }
                         },
                     ));
@@ -169,7 +169,7 @@ impl RunPanel {
                         &input,
                         move |this, input, event: &InputEvent, cx| {
                             if matches!(event, InputEvent::Change) {
-                                this.change(&descriptor, &input.read(cx).value().to_string(), cx);
+                                this.change(&descriptor, input.read(cx).value().as_ref(), cx);
                             }
                         },
                     ));
