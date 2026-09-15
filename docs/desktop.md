@@ -137,3 +137,11 @@ The `gui-tests` feature enables GPUI's headless interaction instrumentation.
 These tests operate on the production view, not a duplicate test-only UI. They
 verify events, state, and layout bounds, but are not pixel screenshots or full
 operating-system IME tests.
+
+The File menu provides suite creation, duplication, renaming, Save As, reload,
+deletion, configuration creation, opening additional workspace files, refresh,
+and light/dark appearance. Save As expects a workspace-relative destination.
+Opening another file/workspace or closing with a draft prompts Save, Discard,
+or Cancel. A failed save keeps the dialog and draft available for recovery.
+Removing an item requires confirmation and remains undoable; deleting a suite
+file is a filesystem operation and cannot be undone through document history.

@@ -36,14 +36,14 @@ target compiles; document operations are testable without a display.
 
 ### 2. Workspace and Document Management
 
-- [ ] Open a workspace using a native folder chooser or startup path.
-- [ ] Discover supported suite files and workspace/viewport configuration.
+- [x] Open a workspace using a native folder chooser or startup path.
+- [x] Discover supported suite files and workspace/viewport configuration.
 - [ ] Create missing starter files using the existing non-destructive init flow.
-- [ ] Create, duplicate, rename, and delete suite files with confirmation.
-- [ ] Track unsaved changes; guard document/workspace changes and window close.
-- [ ] Save, save as, reload, and detect externally modified files.
-- [ ] Persist recent workspaces and desktop preferences outside test data.
-- [ ] Reject writes outside the workspace, including symlink escapes.
+- [x] Create, duplicate, rename, and delete suite files with confirmation.
+- [x] Track unsaved changes; guard document/workspace changes and window close.
+- [x] Save, save as, reload, and detect externally modified files.
+- [x] Persist recent workspaces and desktop preferences outside test data.
+- [x] Reject writes outside the workspace, including symlink escapes.
 
 Acceptance: existing project files are not overwritten on initialization;
 cancellation, unsaved changes, invalid paths, and conflicting saves are tested.
@@ -51,18 +51,18 @@ cancellation, unsaved changes, invalid paths, and conflicting saves are tested.
 ### 3. Guided Editing
 
 - [x] Edit all workspace settings using labeled, typed fields.
-- [ ] Edit suite settings and create, duplicate, rename, reorder, and remove
+- [x] Edit suite settings and create, duplicate, rename, reorder, and remove
   scenarios.
 - [x] Edit scenario settings, dependencies, restore state, URLs, viewports,
   capture selectors, waits, and overrides.
-- [ ] Add, duplicate, reorder, and remove every supported action type: check,
+- [x] Add, duplicate, reorder, and remove every supported action type: check,
   click, focus, goto, hide, hover, input, persist, press, remove, save, select,
   scroll, uncheck, and wait.
 - [x] Support frame chains, file uploads, optional values, and action-specific
   fields without changing the existing serialization format.
 - [ ] Distinguish inherited values from explicit false, zero, and empty values;
   show resolved values and offer reset-to-inherited controls.
-- [ ] Edit viewport definitions.
+- [x] Edit viewport definitions.
 - [x] Provide YAML/JSON source editing, parse/type diagnostics, and undo/redo.
 - [x] Keep guided editing and source editing synchronized through one document.
 
@@ -166,3 +166,8 @@ check complete merely because compilation passed.
   pass on Windows. Tests type into fields, save asynchronously, duplicate/undo
   scenarios, and verify that invalid source exposes an alert and cannot save.
   GPUI input subscriptions are deferred; tests wait outside window-update borrows.
+- Native file workflows: six production-view tests pass, including cancel and
+  discard/reload, JSON suite creation through the name dialog, and confirmed
+  item removal with undo. Dialog status uses a separate retained entity to
+  avoid reading the workbench during its render/update borrow. Animation tests
+  use the same test-thread wall-clock wait as GPUI Kit's own overlay suite.

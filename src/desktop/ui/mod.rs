@@ -24,6 +24,8 @@ use super::{
     workspace::{Entry, OpenDocument, Preferences},
 };
 
+mod files;
+
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests;
 
@@ -83,6 +85,7 @@ pub struct Workbench {
     status: String,
     diagnostic: Option<String>,
     preferences: Preferences,
+    modal: Entity<files::ModalState>,
 }
 
 impl Workbench {
@@ -143,6 +146,7 @@ impl Workbench {
             status,
             diagnostic: None,
             preferences: preferences.unwrap_or_default(),
+            modal: cx.new(|_| files::ModalState::default()),
         }
     }
 
@@ -160,6 +164,7 @@ impl Workbench {
         }
         self.busy = true;
         self.status = message.into();
+        self.sync_modal(cx);
         let task = cx.background_executor().spawn(async move { job() });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
@@ -169,6 +174,7 @@ impl Workbench {
                     Ok(value) => done(this, value, window, cx),
                     Err(error) => this.status = format!("{error:#}"),
                 }
+                this.sync_modal(cx);
                 cx.notify();
             });
         })
@@ -178,8 +184,7 @@ impl Workbench {
 
     fn load_workspace(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         if self.unsaved() {
-            self.status = "Save the current document before opening another workspace".into();
-            cx.notify();
+            self.guard(files::Pending::Workspace(path), window, cx);
             return;
         }
         self.task(
@@ -223,8 +228,7 @@ impl Workbench {
 
     fn load_document(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
         if self.unsaved() {
-            self.status = "Save the current document before opening another file".into();
-            cx.notify();
+            self.guard(files::Pending::Document(entry), window, cx);
             return;
         }
         let Some(workspace) = self.session.workspace.clone() else {
@@ -259,6 +263,15 @@ impl Workbench {
     }
 
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
+        self.save_and_continue(None, window, cx);
+    }
+
+    fn save_and_continue(
+        &mut self,
+        pending: Option<files::Pending>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy || !self.field_errors.is_empty() {
             return;
         }
@@ -291,11 +304,15 @@ impl Workbench {
             Ok((workspace, mut snapshot)) => self.task(
                 "Saving...",
                 move || workspace.save(&mut snapshot),
-                |this, (), _, _| {
+                move |this, (), window, cx| {
                     if let Some(open) = &mut this.session.open {
                         open.document.mark_saved();
                     }
                     this.status = "Saved".into();
+                    if let Some(pending) = pending {
+                        window.close_dialog(cx);
+                        this.perform_pending(pending, window, cx);
+                    }
                 },
                 window,
                 cx,
@@ -527,6 +544,7 @@ impl Workbench {
                     .mr_4()
                     .child("Regressify"),
             )
+            .child(self.file_menu())
             .child(
                 Button::new("open-workspace")
                     .icon(IconName::FolderOpen)
@@ -599,6 +617,15 @@ impl Workbench {
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(Session::duplicate_selected, window, cx)
                     })),
+            )
+            .child(
+                Button::new("remove-item")
+                    .icon(gpui_kit::assets::IconName::Trash)
+                    .tooltip("Remove selected item")
+                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.confirm_remove(false, window, cx)),
+                    ),
             )
             .child(
                 Button::new("move-up")
@@ -1069,6 +1096,7 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::undo_document))
             .on_action(cx.listener(Self::redo_document))
             .on_action(cx.listener(Self::choose_workspace))
+            .on_action(cx.listener(Self::file_command))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)
             }))
@@ -1141,36 +1169,68 @@ impl Render for Workbench {
 }
 
 pub fn launch(root: Option<PathBuf>) {
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
-        gpui_kit::init(cx);
-        Theme::change(ThemeMode::Light, None, cx);
-        let modifier = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
-        cx.bind_keys([
-            KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
-            KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
-            KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
-            KeyBinding::new(&format!("{modifier}-shift-z"), RedoDocument, Some("Regressify")),
-        ]);
-        let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
-        cx.spawn(async move |cx| {
-            let result = cx.open_window(WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(1000.), px(640.))),
-                titlebar: Some(TitlebarOptions { title: Some("Regressify Desktop".into()), ..Default::default() }),
-                ..Default::default()
-            }, |window, cx| {
-                let view = cx.new(|cx| Workbench::new(window, cx));
-                let weak = view.downgrade();
-                window.on_window_should_close(cx, move |_, cx| {
-                    weak.update(cx, |this, cx| {
-                        if this.unsaved() || this.busy { this.status = "Save changes and finish the current operation before closing".into(); cx.notify(); false }
-                        else { cx.quit(); true }
-                    }).unwrap_or(true)
-                });
-                if let Some(root) = root { view.update(cx, |this, cx| this.load_workspace(root, window, cx)); }
-                cx.new(|cx| Root::new(view, window, cx))
-            });
-            if let Err(error) = result { eprintln!("Unable to open Regressify Desktop: {error:#}"); }
-        }).detach();
-    });
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            Theme::change(ThemeMode::Light, None, cx);
+            let modifier = if cfg!(target_os = "macos") {
+                "cmd"
+            } else {
+                "ctrl"
+            };
+            cx.bind_keys([
+                KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
+                KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
+                KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
+                KeyBinding::new(
+                    &format!("{modifier}-shift-z"),
+                    RedoDocument,
+                    Some("Regressify"),
+                ),
+            ]);
+            let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
+            cx.spawn(async move |cx| {
+                let result = cx.open_window(
+                    WindowOptions {
+                        window_bounds: Some(WindowBounds::Windowed(bounds)),
+                        window_min_size: Some(size(px(1000.), px(640.))),
+                        titlebar: Some(TitlebarOptions {
+                            title: Some("Regressify Desktop".into()),
+                            ..Default::default()
+                        }),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let view = cx.new(|cx| Workbench::new(window, cx));
+                        let weak = view.downgrade();
+                        window.on_window_should_close(cx, move |window, cx| {
+                            weak.update(cx, |this, cx| {
+                                if this.busy {
+                                    this.status =
+                                        "Finish the current operation before closing".into();
+                                    cx.notify();
+                                    false
+                                } else if this.unsaved() {
+                                    this.guard(files::Pending::Close, window, cx);
+                                    false
+                                } else {
+                                    cx.quit();
+                                    true
+                                }
+                            })
+                            .unwrap_or(true)
+                        });
+                        if let Some(root) = root {
+                            view.update(cx, |this, cx| this.load_workspace(root, window, cx));
+                        }
+                        cx.new(|cx| Root::new(view, window, cx))
+                    },
+                );
+                if let Err(error) = result {
+                    eprintln!("Unable to open Regressify Desktop: {error:#}");
+                }
+            })
+            .detach();
+        });
 }

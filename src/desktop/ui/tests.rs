@@ -7,6 +7,13 @@ use gpui_kit::{AppContext, Entity, Focusable, TestAppContext, WindowHandle, px, 
 use super::Workbench;
 use crate::desktop::session::Selection;
 
+async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    // GPUI's dialog animation uses wall time, not the test executor's clock.
+    std::thread::sleep(Duration::from_millis(300));
+    cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+}
+
 fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<Workbench>) {
     cx.update(gpui_kit::init);
     let mut created = None;
@@ -129,4 +136,139 @@ async fn invalid_source_exposes_a_diagnostic_and_save_does_not_write(cx: &mut Te
     })
     .unwrap();
     assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+}
+
+#[gpui_kit::test]
+async fn unsaved_dialog_cancel_and_discard_preserve_their_contracts(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        view.update(cx, |this, cx| {
+            this.guard(super::files::Pending::Reload, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-cancel", cx);
+        assert!(view.read(cx).session.dirty());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.guard(super::files::Pending::Reload, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-discard", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Document loaded"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert!(!view.read(cx).session.dirty());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn new_suite_dialog_creates_a_real_file(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.guard(
+                super::files::Pending::Name(super::files::Operation::New),
+                window,
+                cx,
+            )
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("file-name", cx);
+        window.press("ctrl-a", cx);
+        window.input("checkout.tests.json", cx);
+        assert_eq!(
+            window.find("file-name").value(),
+            Some("checkout.tests.json")
+        );
+        window.click("file-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("File saved"))
+    })
+    .await;
+    let source =
+        std::fs::read_to_string(directory.path().join("visual_tests/checkout.tests.json")).unwrap();
+    let suite: crate::types::TestSuite = serde_json::from_str(&source).unwrap();
+    assert_eq!(suite.scenarios.len(), 1);
+    cx.update(|cx| assert_eq!(view.read(cx).session.entries.len(), 2));
+}
+
+#[gpui_kit::test]
+async fn item_removal_requires_confirmation_and_is_undoable(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("remove-item", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("remove-confirm", cx);
+        assert!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .is_empty(),
+            "{}",
+            view.read(cx).status
+        );
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    })
+    .unwrap();
 }
