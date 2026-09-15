@@ -81,6 +81,7 @@ pub struct Workbench {
     focus: FocusHandle,
     value: Value,
     effective: Value,
+    workspace_value: Value,
     tab: usize,
     advanced: bool,
     busy: bool,
@@ -176,6 +177,7 @@ impl Workbench {
             focus,
             value: Value::Null,
             effective: Value::Null,
+            workspace_value: Value::Null,
             tab: 0,
             advanced: false,
             busy: false,
@@ -189,7 +191,7 @@ impl Workbench {
         }
     }
 
-    /// All potentially slow filesystem work is completed away from the UI thread.
+    /// Dispatch workspace loads and saves away from the UI event loop.
     fn task<T: Send + 'static>(
         &mut self,
         message: &str,
@@ -458,18 +460,13 @@ impl Workbench {
         self.bindings.clear();
         self.field_subscriptions.clear();
         self.field_errors.clear();
-        self.effective = self.session.effective().unwrap_or(Value::Null);
-        let resolved = self
+        self.workspace_value = self
             .session
-            .effective()
-            .and_then(|value| Ok(serde_json::to_string_pretty(&value)?));
-        self.resolved.update(cx, |state, cx| {
-            state.set_value(
-                resolved.unwrap_or_else(|error| format!("{error:#}")),
-                window,
-                cx,
-            )
-        });
+            .workspace_value()
+            .ok()
+            .flatten()
+            .unwrap_or(Value::Null);
+        self.refresh_effective(window, cx);
         let fields = self
             .session
             .scope()
@@ -557,6 +554,7 @@ impl Workbench {
             Ok(()) => {
                 self.field_errors.remove(&field.key);
                 self.refresh_value();
+                self.refresh_effective(window, cx);
                 if let Some(open) = &self.session.open {
                     let source = open.document.source().to_string();
                     self.source
@@ -866,6 +864,69 @@ impl Workbench {
         navigation.child(files).into_any_element()
     }
 
+    fn refresh_effective(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| open.entry.kind == DocumentKind::Workspace)
+        {
+            self.workspace_value = self.value.clone();
+        }
+        let suite = self
+            .session
+            .open
+            .as_ref()
+            .filter(|open| open.entry.kind == DocumentKind::Suite)
+            .map(|_| &self.value);
+        let resolved = schema::effective(
+            self.workspace_value
+                .is_object()
+                .then_some(&self.workspace_value),
+            suite,
+            self.session.selection.scenario(),
+        );
+        self.effective = resolved.as_ref().cloned().unwrap_or(Value::Null);
+        let text = resolved
+            .and_then(|value| Ok(serde_json::to_string_pretty(&value)?))
+            .unwrap_or_else(|error| format!("{error:#}"));
+        self.resolved
+            .update(cx, |state, cx| state.set_value(text, window, cx));
+    }
+
+    fn field_hint(&self, field: &Field, explicit: bool) -> String {
+        if field.required {
+            return "Required".into();
+        }
+        if explicit {
+            return "Override".into();
+        }
+        if matches!(
+            self.session.selection,
+            Selection::Action { .. } | Selection::Viewport(_)
+        ) {
+            return "Optional".into();
+        }
+        let value = &self.effective[&schema::effective_key(&field.key)];
+        if value.is_null() {
+            return "Optional".into();
+        }
+        let suite = self
+            .session
+            .open
+            .as_ref()
+            .filter(|open| open.entry.kind == DocumentKind::Suite)
+            .map(|_| &self.value);
+        let scenario = self
+            .session
+            .selection
+            .scenario()
+            .and_then(|index| self.value["scenarios"].get(index));
+        let origin = schema::origin(&field.key, Some(&self.workspace_value), suite, scenario);
+        let text = field.display(value).replace('\n', ", ");
+        format!("{origin}: {text}")
+    }
+
     fn render_fields(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self
             .value
@@ -926,13 +987,13 @@ impl Workbench {
                                 div()
                                     .text_xs()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child(if field.required {
-                                        "Required"
-                                    } else if explicit {
-                                        "Override"
-                                    } else {
-                                        "Inherited"
-                                    }),
+                                    .id(SharedString::from(format!("hint-{}", field.key)))
+                                    .role(Role::Status)
+                                    .aria_label(self.field_hint(field, explicit))
+                                    .test_support()
+                                    .max_w(px(340.))
+                                    .truncate()
+                                    .child(self.field_hint(field, explicit)),
                             )
                             .child(
                                 Button::new(SharedString::from(format!("reset-{key}")))
@@ -1014,6 +1075,20 @@ impl Workbench {
                 }
             };
             row = row.child(control);
+            if field.key.ends_with("Path") || field.key == "file" {
+                let key = field.key.clone();
+                row = row.child(
+                    Button::new(SharedString::from(format!("browse-{key}")))
+                        .ghost()
+                        .small()
+                        .icon(IconName::FolderOpen)
+                        .tooltip("Choose a workspace file")
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.choose_field_file(key.clone(), window, cx)
+                        })),
+                );
+            }
             if let Some(error) = self.field_errors.get(&field.key) {
                 row = row.child(
                     div()
@@ -1294,22 +1369,20 @@ pub fn launch(root: Option<PathBuf>) {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            Theme::change(ThemeMode::Light, None, cx);
-            let modifier = if cfg!(target_os = "macos") {
-                "cmd"
-            } else {
-                "ctrl"
-            };
-            cx.bind_keys([
-                KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
-                KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
-                KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
-                KeyBinding::new(
-                    &format!("{modifier}-shift-z"),
-                    RedoDocument,
-                    Some("Regressify"),
-                ),
-            ]);
+            let dark = Preferences::path()
+                .and_then(|path| Preferences::load(&path))
+                .map(|preferences| preferences.dark_mode)
+                .unwrap_or(false);
+            Theme::change(
+                if dark {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                },
+                None,
+                cx,
+            );
+            bind_keys(cx);
             let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
             cx.spawn(async move |cx| {
                 let result = cx.open_window(
@@ -1361,4 +1434,57 @@ pub fn launch(root: Option<PathBuf>) {
             })
             .detach();
         });
+}
+
+fn bind_keys(cx: &mut App) {
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.bind_keys([
+        KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
+        KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
+        KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
+        KeyBinding::new(
+            &format!("{modifier}-shift-z"),
+            RedoDocument,
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-n"),
+            files::FileCommand {
+                operation: files::Operation::New,
+            },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-shift-s"),
+            files::FileCommand {
+                operation: files::Operation::SaveAs,
+            },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-r"),
+            files::FileCommand {
+                operation: files::Operation::Reload,
+            },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            "f2",
+            files::FileCommand {
+                operation: files::Operation::Rename,
+            },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            "f5",
+            files::FileCommand {
+                operation: files::Operation::Refresh,
+            },
+            Some("Regressify"),
+        ),
+    ]);
 }

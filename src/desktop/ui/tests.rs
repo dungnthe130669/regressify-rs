@@ -16,6 +16,7 @@ async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
 
 fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<Workbench>) {
     cx.update(gpui_kit::init);
+    cx.update(super::bind_keys);
     let mut created = None;
     let handle = cx.open_window(size(px(1280.), px(820.)), |window, cx| {
         let view = cx.new(|cx| Workbench::new(window, cx));
@@ -400,4 +401,78 @@ async fn missing_output_has_a_recoverable_empty_results_view(cx: &mut TestAppCon
         assert!(window.find("field-url").visible());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn inherited_values_explicit_false_and_reset_have_distinct_ui_states(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(
+        directory.path().join("regressify.yaml"),
+        "bypassCsp: true\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("hint-bypassCsp").label(),
+            Some("Workspace: true")
+        );
+        view.update(cx, |this, cx| {
+            let field = this
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "bypassCsp")
+                .unwrap()
+                .field
+                .clone();
+            this.change_field(&field, "false", window, cx);
+        });
+        window.render_frame(cx);
+        assert_eq!(window.find("hint-bypassCsp").label(), Some("Override"));
+        assert_eq!(view.read(cx).effective["bypassCsp"], false);
+        view.update(cx, |this, cx| {
+            this.edit(|session| session.set_field("bypassCsp", None), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("hint-bypassCsp").label(),
+            Some("Workspace: true")
+        );
+        assert_eq!(view.read(cx).effective["bypassCsp"], true);
+        assert!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]
+                .get("bypassCsp")
+                .is_none()
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn new_suite_keyboard_shortcut_opens_the_file_dialog(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-n"
+            } else {
+                "ctrl-n"
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("file-name").is_some()
+    })
+    .await;
+    assert!(
+        !directory
+            .path()
+            .join("visual_tests/new-suite.tests.yaml")
+            .exists()
+    );
 }

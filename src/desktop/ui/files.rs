@@ -17,7 +17,7 @@ pub(super) enum Operation {
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 pub(super) struct FileCommand {
-    operation: Operation,
+    pub(super) operation: Operation,
 }
 
 #[derive(Clone)]
@@ -38,6 +38,64 @@ pub(super) struct ModalState {
 }
 
 impl Workbench {
+    pub(super) fn choose_field_file(
+        &mut self,
+        key: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.session.workspace.clone() else {
+            return;
+        };
+        let selection = self.session.selection;
+        let document_path = self
+            .session
+            .open
+            .as_ref()
+            .map(|open| open.entry.path.clone());
+        cx.spawn_in(window, async move |view, cx| {
+            let picker = rfd::AsyncFileDialog::new().set_directory(&workspace.root);
+            let files = if key == "file" {
+                picker.pick_files().await
+            } else {
+                picker.pick_file().await.map(|file| vec![file])
+            };
+            let Some(files) = files else {
+                return;
+            };
+            let paths = files
+                .iter()
+                .map(|file| workspace.relative_file(file.path(), key == "file"))
+                .collect::<Result<Vec<_>>>();
+            let _ = view.update_in(cx, |this, window, cx| {
+                if this.session.selection != selection
+                    || this.session.open.as_ref().map(|open| &open.entry.path)
+                        != document_path.as_ref()
+                {
+                    this.status =
+                        "Selection changed while choosing a file; no field was modified".into();
+                    cx.notify();
+                    return;
+                }
+                match paths {
+                    Ok(paths) => {
+                        let value = if paths.len() == 1 {
+                            json!(paths[0])
+                        } else {
+                            json!(paths)
+                        };
+                        this.edit(|session| session.set_field(&key, Some(value)), window, cx);
+                    }
+                    Err(error) => {
+                        this.status = format!("{error:#}");
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
     pub(super) fn sync_modal(&self, cx: &mut Context<Self>) {
         self.runs
             .update(cx, |panel, cx| panel.set_disabled(self.busy, cx));

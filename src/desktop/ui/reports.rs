@@ -73,6 +73,9 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let previous = self
+            .selected_report()
+            .map(|report| (report.path.clone(), self.capture));
         self.generation += 1;
         let generation = self.generation;
         self.root = Some(root.clone());
@@ -93,7 +96,15 @@ impl ResultsPanel {
                 match result {
                     Ok(catalog) => {
                         this.catalog = catalog;
-                        this.report = 0;
+                        this.report = previous
+                            .as_ref()
+                            .and_then(|(path, _)| {
+                                this.catalog
+                                    .reports
+                                    .iter()
+                                    .position(|report| &report.path == path)
+                            })
+                            .unwrap_or(0);
                         this.capture = None;
                         this.page = 0;
                         this.status = format!(
@@ -101,13 +112,16 @@ impl ResultsPanel {
                             this.catalog.reports.len(),
                             this.catalog.warnings.len()
                         );
-                        if this
-                            .catalog
-                            .reports
-                            .first()
-                            .is_some_and(|report| !report.report.tests.is_empty())
+                        if let Some(report) = this.selected_report()
+                            && !report.report.tests.is_empty()
                         {
-                            this.select_capture(0, window, cx);
+                            let capture = previous
+                                .as_ref()
+                                .filter(|(path, _)| *path == report.path)
+                                .and_then(|(_, index)| *index)
+                                .filter(|index| *index < report.report.tests.len())
+                                .unwrap_or(0);
+                            this.select_capture(capture, window, cx);
                         }
                     }
                     Err(error) => {
@@ -127,6 +141,11 @@ impl ResultsPanel {
     }
 
     fn select_capture(&mut self, capture: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        self.previews.clear();
+        self.image_loading = false;
         let Some(report) = self.selected_report().cloned() else {
             return;
         };

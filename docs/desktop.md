@@ -173,3 +173,17 @@ Engine errors are shown separately from mismatch percentages. The external-open
 controls open the generated HTML summary, output directory, or individual image
 with the operating system's default application. These are trusted local
 artifacts; no report HTML is embedded in the desktop process.
+
+File fields have a native picker. Configuration paths are workspace-relative;
+input-action upload files are relative to `visual_tests`, including multi-file
+selection. Files outside the appropriate base are rejected. Picker results are
+discarded if the selected document/item changed while the dialog was open.
+
+Inherited fields show their effective value and source (workspace, suite, or
+default), while explicit values show Override. Reset removes the property rather
+than writing an empty value. Optional action fields do not claim to inherit
+scenario configuration. Effective values update as guided fields are changed.
+
+Additional shortcuts: Ctrl+N creates a suite, Ctrl+Shift+S opens Save As,
+Ctrl+R reloads with the draft guard, F2 renames a suite, and F5 refreshes files.
+Use Cmd in place of Ctrl on macOS. Appearance is restored on the next launch.

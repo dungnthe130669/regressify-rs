@@ -147,6 +147,23 @@ impl Workspace {
         Ok(())
     }
 
+    /// Upload paths use visual_tests; other configured files use the workspace root.
+    pub fn relative_file(&self, path: &Path, upload: bool) -> Result<String> {
+        let canonical = path.canonicalize()?;
+        let base = if upload {
+            self.resolve(Path::new("visual_tests"))?
+        } else {
+            self.root.clone()
+        };
+        ensure!(
+            canonical.is_file() && canonical.starts_with(&base),
+            "Select a file inside {}",
+            base.display()
+        );
+        let relative = canonical.strip_prefix(base)?;
+        Ok(relative.to_string_lossy().replace('\\', "/"))
+    }
+
     pub fn check_unchanged(&self, open: &OpenDocument) -> Result<PathBuf> {
         let path = self.resolve(&open.entry.path)?;
         let current = read_document(&path)
@@ -545,5 +562,29 @@ mod tests {
         );
         fs::write(&path, "invalid").unwrap();
         assert!(Preferences::load(&path).is_err());
+    }
+
+    #[test]
+    fn picked_files_use_the_correct_base_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        fs::create_dir_all(directory.path().join("visual_tests/uploads")).unwrap();
+        let upload = directory.path().join("visual_tests/uploads/sample.txt");
+        fs::write(&upload, "sample").unwrap();
+        assert_eq!(
+            workspace.relative_file(&upload, true).unwrap(),
+            "uploads/sample.txt"
+        );
+        assert_eq!(
+            workspace.relative_file(&upload, false).unwrap(),
+            "visual_tests/uploads/sample.txt"
+        );
+        let other = outside.path().join("other.txt");
+        fs::write(&other, "outside").unwrap();
+        assert!(workspace.relative_file(&other, false).is_err());
+        let root_file = directory.path().join("root.txt");
+        fs::write(&root_file, "root").unwrap();
+        assert!(workspace.relative_file(&root_file, true).is_err());
     }
 }

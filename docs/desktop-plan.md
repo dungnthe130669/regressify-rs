@@ -60,7 +60,7 @@ cancellation, unsaved changes, invalid paths, and conflicting saves are tested.
   scroll, uncheck, and wait.
 - [x] Support frame chains, file uploads, optional values, and action-specific
   fields without changing the existing serialization format.
-- [ ] Distinguish inherited values from explicit false, zero, and empty values;
+- [x] Distinguish inherited values from explicit false, zero, and empty values;
   show resolved values and offer reset-to-inherited controls.
 - [x] Edit viewport definitions.
 - [x] Provide YAML/JSON source editing, parse/type diagnostics, and undo/redo.
@@ -95,8 +95,8 @@ cancellation are tested; exit zero is never treated as proof of a visual pass.
 - [x] Open generated HTML reports and artifact folders externally.
 - [x] Provide a searchable suite/scenario navigator, resizable panels, clear
   empty/error/loading states, and keyboard-accessible editing controls.
-- [ ] Provide keyboard shortcuts for save, undo, redo, and document operations.
-- [ ] Use consistent labels, concise tooltips, and inline validation.
+- [x] Provide keyboard shortcuts for save, undo, redo, and document operations.
+- [x] Use consistent labels, concise tooltips, and inline validation.
 
 Acceptance: missing/malformed reports and images are recoverable UI states;
 artifact paths cannot escape the selected output directory; large images/logs
@@ -179,3 +179,8 @@ check complete merely because compilation passed.
   loading, reference/current side-by-side mode, zoom, failed-capture filtering,
   engine error details, and recovery from missing output directories. These are
   layout/state checks; native pixels still require the final smoke test.
+- Usability pass: twelve native UI tests and seven workspace tests pass. Added
+  inherited source/value labels, live effective configuration, file pickers with
+  upload-relative paths, saved appearance, file-operation shortcuts, and stable
+  report/capture selection across refreshes. Both binaries build successfully;
+  the preceding combined regression gate passed all 319 tests.
