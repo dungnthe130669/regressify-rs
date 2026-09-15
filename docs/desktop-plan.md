@@ -146,3 +146,7 @@ check complete merely because compilation passed.
   external-change conflicts, duplicate-key rejection, suite copy/rename/delete,
   portable path containment, and bounded recent-workspace preferences. A Unix
   symlink-escape regression is platform-gated.
+- Guided schema: four tests verify exact serialized field coverage, all action
+  properties, explicit empty/false values, and the production configuration
+  cascade including combined state/restore values. Schema derives are enabled
+  only with the headless desktop feature.

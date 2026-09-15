@@ -21,6 +21,7 @@ pub enum TestSuiteFormat {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct TestSuite {
     pub id: Option<String>,
 
@@ -67,6 +68,7 @@ pub struct TestSuite {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum Browser {
     Chromium,
 
@@ -77,6 +79,7 @@ pub enum Browser {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
     pub actions: Option<Vec<TestAction>>,
@@ -130,6 +133,7 @@ pub struct TestScenario {
 /// viewport; omit the property for the full page.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum Selectors {
     String(String),
 
@@ -138,6 +142,7 @@ pub enum Selectors {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum Needs {
     String(String),
 
@@ -146,6 +151,7 @@ pub enum Needs {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct UrlReplacement {
     #[serde(rename = "ref")]
     pub ref_pattern: String,

@@ -54,3 +54,17 @@ the original. Renaming keeps IDs unchanged and requires saved content. File
 deletion is restricted to suites and requires a confirmation in the interface.
 Recent workspaces and the selected CLI executable are stored in the operating
 system's per-user application configuration directory, outside the test project.
+
+## Guided Fields and Inheritance
+
+The field catalog is generated from the existing Rust types with `schemars`.
+Collections of scenarios and actions have dedicated editors; generated runtime
+`testDate` metadata remains available in Source. A new serialized config or
+action property therefore appears in the field catalog without a parallel
+handwritten schema.
+
+An absent property inherits from its parent. Explicit `false`, zero, an empty
+string, or an empty list is an override, not a request to inherit. Resetting a
+field removes the property. Effective configuration uses the CLI resolver with
+the scenario, suite, workspace, and built-in defaults in that order. State and
+restore names use the existing merge behavior rather than simple replacement.

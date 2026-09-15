@@ -13,6 +13,7 @@ const MAX_CAPTURE_NAME_BYTES: usize = 48;
 
 /// A viewport definition with label and dimensions.
 #[derive(Deserialize, Clone, Debug)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct ViewportDef {
     pub label: String,

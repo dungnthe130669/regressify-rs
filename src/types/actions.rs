@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/#spoiler--check
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum TestAction {
     Check(CheckAction),
     Click(ClickAction),
@@ -26,6 +27,7 @@ pub enum TestAction {
 /// Can be a single selector string or an array of selectors for nested iframes.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum Frame {
     Single(String),
     Multiple(Vec<String>),
@@ -34,6 +36,7 @@ pub enum Frame {
 /// File input: a single file path or an array of file paths (relative to visual_tests).
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum FileInput {
     Single(String),
     Multiple(Vec<String>),
@@ -42,6 +45,7 @@ pub enum FileInput {
 /// Select value: a single value or an array of values.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum SelectValue {
     Single(String),
     Multiple(Vec<String>),
@@ -49,6 +53,7 @@ pub enum SelectValue {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct CheckAction {
     pub check: String,
     pub frame: Option<Frame>,
@@ -56,6 +61,7 @@ pub struct CheckAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct ClickAction {
     pub click: String,
     pub frame: Option<Frame>,
@@ -63,6 +69,7 @@ pub struct ClickAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct FocusAction {
     pub focus: String,
     pub frame: Option<Frame>,
@@ -70,6 +77,7 @@ pub struct FocusAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct GotoAction {
     pub goto: String,
     pub frame: Option<Frame>,
@@ -77,6 +85,7 @@ pub struct GotoAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct HideAction {
     pub hide: String,
     pub frame: Option<Frame>,
@@ -84,6 +93,7 @@ pub struct HideAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct HoverAction {
     pub hover: String,
     pub frame: Option<Frame>,
@@ -91,6 +101,7 @@ pub struct HoverAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct RemoveAction {
     pub remove: String,
     pub frame: Option<Frame>,
@@ -98,6 +109,7 @@ pub struct RemoveAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct InputAction {
     pub input: String,
     pub value: Option<String>,
@@ -109,6 +121,7 @@ pub struct InputAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct PersistAction {
     pub persist: String,
     pub frame: Option<Frame>,
@@ -116,6 +129,7 @@ pub struct PersistAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct PressAction {
     pub press: String,
     pub key: String,
@@ -124,6 +138,7 @@ pub struct PressAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct SaveAction {
     pub save: String,
     pub frame: Option<Frame>,
@@ -131,6 +146,7 @@ pub struct SaveAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct ScrollAction {
     pub scroll: String,
     pub frame: Option<Frame>,
@@ -138,6 +154,7 @@ pub struct ScrollAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct SelectAction {
     pub select: String,
     pub value: Option<SelectValue>,
@@ -147,6 +164,7 @@ pub struct SelectAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct UncheckAction {
     pub uncheck: String,
     pub frame: Option<Frame>,
@@ -154,6 +172,7 @@ pub struct UncheckAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct WaitAction {
     pub wait: Wait,
     pub url: Option<String>,
@@ -162,6 +181,7 @@ pub struct WaitAction {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub enum Wait {
     Number(u64),
 

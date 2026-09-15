@@ -6,7 +6,7 @@ pub mod viewports;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     common,
@@ -19,7 +19,8 @@ pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
-#[derive(Deserialize, Clone, Default)]
+#[derive(Deserialize, Serialize, Clone, Default)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub async_capture_limit: Option<usize>,
@@ -59,7 +60,8 @@ pub struct WorkspaceConfig {
 }
 
 /// Fully resolved configuration — all cascade levels merged with defaults applied.
-#[derive(Clone)]
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResolvedConfig {
     pub async_capture_limit: usize,
     pub async_compare_limit: usize,
