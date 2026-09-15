@@ -104,15 +104,15 @@ do not block the UI thread indefinitely.
 
 ### 6. Verification and Documentation
 
-- [ ] Add focused unit tests for documents, editing, schema coverage, validation,
+- [x] Add focused unit tests for documents, editing, schema coverage, validation,
   paths, persistence, command arguments, subprocesses, and result discovery.
-- [ ] Add GPUI interaction/render tests where supported by the framework.
-- [ ] Run the existing CLI regression tests and both default/desktop build gates.
+- [x] Add GPUI interaction/render tests where supported by the framework.
+- [x] Run the existing CLI regression tests and both default/desktop build gates.
 - [x] Exercise the desktop application on Windows, recording any GUI checks
   that cannot be automated in the available environment.
-- [ ] Document installation, launching, editing, inheritance, running, result
+- [x] Document installation, launching, editing, inheritance, running, result
   semantics, keyboard shortcuts, limitations, and contributor test commands.
-- [ ] Update this checklist as work is completed; distinguish implemented,
+- [x] Update this checklist as work is completed; distinguish implemented,
   verified, and environment-blocked work.
 
 ## Non-Goals
@@ -198,3 +198,11 @@ check complete merely because compilation passed.
   CLI's discovery routine to reject shadowed selected files. Filename extension
   handling is case-insensitive and the reserved `all` name cannot accidentally
   turn a selected-file run into an all-suite run.
+- Final local gates: `cargo test --locked --all-targets` passed 276 CLI tests;
+  `cargo test --locked --features gui-tests --all-targets -- --test-threads=1`
+  passed 327 tests (including 15 production GPUI interactions). Locked GUI/CLI
+  builds, `cargo fmt --check`, and strict production-library Clippy passed.
+- Added Windows GUI/CLI and Linux headless-model CI jobs. These jobs have not
+  been executed on GitHub in this session. Native macOS/Linux rendering, full
+  IME composition, screen-reader usability, signing, and installer packaging
+  remain platform/release follow-up checks, not locally verified deliverables.

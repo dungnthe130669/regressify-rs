@@ -1,0 +1,61 @@
+name: Desktop Checks
+
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'ci/desktop-smoke.ps1'
+      - '.github/workflows/desktop-checks.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - 'ci/desktop-smoke.ps1'
+      - '.github/workflows/desktop-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  windows:
+    name: Windows Desktop and CLI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --check
+      - name: Default CLI regression tests
+        run: cargo test --locked --all-targets
+      - name: Desktop models and native interaction tests
+        run: cargo test --locked --features gui-tests --all-targets -- --test-threads=1
+      - name: Production library lint
+        run: cargo clippy --locked --features gui --lib -- -D warnings
+      - name: Build desktop and CLI
+        run: cargo build --locked --features gui --bins
+
+  models:
+    name: Linux Headless Models
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Shared library and desktop models
+        run: cargo test --locked --features desktop --lib

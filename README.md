@@ -2,6 +2,26 @@
 
 Rust CLI for visual regression testing. It launches Chromium through the Chrome DevTools Protocol, captures screenshots from YAML/JSON suites, compares them with reference images, and generates HTML report data.
 
+## Desktop App
+
+An optional Rust-native GPUI Kit workbench lets QA edit workspace configuration,
+suites, scenarios, all 15 action types, and viewports. It includes guided and
+source editors, inheritance previews, safe saves with undo/redo, CLI execution
+with cancellation and logs, and reference/current/diff image review.
+
+```bash
+cargo build --features gui --bins
+cargo run --features gui --bin regressify-desktop -- /path/to/test-workspace
+```
+
+Omit the workspace argument to use the native folder picker. The default build
+remains CLI-only. For distribution, build with `--release --features gui --bins`
+and keep the `regressify` CLI beside `regressify-desktop`.
+
+See [the desktop guide](docs/desktop.md) for workflows, shortcuts, safety limits,
+and test commands, and [the delivery plan](docs/desktop-plan.md) for feature scope
+and verification evidence.
+
 ## Build
 
 ```bash
@@ -27,6 +47,16 @@ cargo fmt --check
 cargo check
 cargo test
 ```
+
+Desktop gates:
+
+```bash
+cargo test --features gui-tests --all-targets -- --test-threads=1
+cargo clippy --features gui --lib -- -D warnings
+```
+
+On an interactive Windows desktop, run [the native smoke test](ci/desktop-smoke.ps1)
+to verify real windows, screenshot rendering, and GUI-to-CLI execution.
 
 ## Commands
 
