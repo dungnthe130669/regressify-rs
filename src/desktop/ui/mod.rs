@@ -325,6 +325,33 @@ impl Workbench {
         }
     }
 
+    fn select_run_suite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.runs.read(cx).running() {
+            return;
+        }
+        let Some((workspace, entry)) = self
+            .session
+            .workspace
+            .clone()
+            .zip(self.session.open.as_ref().map(|open| open.entry.clone()))
+        else {
+            return;
+        };
+        self.task(
+            "Checking selected suite...",
+            move || workspace.runnable_suite(&entry),
+            |this, suite, window, cx| {
+                this.status = format!("Run scope: {suite}");
+                this.runs
+                    .update(cx, |panel, cx| panel.set_suites(vec![suite], window, cx));
+                this.main_tab = 1;
+                cx.notify();
+            },
+            window,
+            cx,
+        );
+    }
+
     fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
         self.save_and_continue(None, window, cx);
     }
@@ -1397,18 +1424,7 @@ impl Render for Workbench {
                                         .is_none(),
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(suite) = this
-                                    .session
-                                    .open
-                                    .as_ref()
-                                    .and_then(|open| open.entry.suite_name())
-                                {
-                                    this.runs.update(cx, |panel, cx| {
-                                        panel.set_suites(vec![suite], window, cx)
-                                    });
-                                    this.main_tab = 1;
-                                    cx.notify();
-                                }
+                                this.select_run_suite(window, cx);
                             })),
                     ),
             )

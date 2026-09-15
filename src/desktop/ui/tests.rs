@@ -77,6 +77,39 @@ async fn save_reads_pending_native_field_text_before_deferred_notifications(
     });
 }
 
+#[gpui_kit::test]
+async fn run_suite_refuses_a_file_shadowed_by_another_format(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("ui-test.tests.json")
+                .unwrap();
+            this.session.install_document(open).unwrap();
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        window.click("run-suite", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .and_then(|status| status.label().map(str::to_string))
+            .is_some_and(|status| status.contains("not the selected"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).main_tab, 0);
+        assert!(!view.read(cx).runs.read(cx).running());
+    });
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));
@@ -370,12 +403,21 @@ fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mut TestAppContext) {
+async fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("run-suite", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Run scope: ui-test"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(view.read(cx).main_tab, 1);
         assert!(window.find("start-command").visible());
         assert!(window.try_find("run-field-asyncCaptureLimit").is_some());

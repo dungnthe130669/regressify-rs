@@ -10,3 +10,6 @@ mod test_suites;
 pub use browsers::fetcher;
 pub use test_suites::exec_ref;
 pub use test_suites::exec_test_suites;
+
+#[cfg(feature = "desktop")]
+pub(crate) use test_suites::discover_test_suites;

@@ -194,3 +194,7 @@ check complete merely because compilation passed.
   retention during structural commands, immediate saves before deferred input
   notifications, source-buffer synchronization, and older async save completion
   retaining newer edits as dirty.
+- Run scope: eight workspace tests and fifteen UI tests pass after reusing the
+  CLI's discovery routine to reject shadowed selected files. Filename extension
+  handling is case-insensitive and the reserved `all` name cannot accidentally
+  turn a selected-file run into an all-suite run.

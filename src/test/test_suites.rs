@@ -246,7 +246,9 @@ async fn acquire_capture_permits(
 }
 
 /// Discover available test suite files in the visual_tests/ directory.
-fn discover_test_suites(visual_tests_dir: &std::path::Path) -> Result<Vec<TestSuiteInput>> {
+pub(crate) fn discover_test_suites(
+    visual_tests_dir: &std::path::Path,
+) -> Result<Vec<TestSuiteInput>> {
     let mut suites: HashMap<String, (u8, TestSuiteInput)> = HashMap::new();
     for entry in WalkDir::new(visual_tests_dir) {
         let entry = entry.map_err(|error| {

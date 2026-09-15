@@ -29,7 +29,7 @@ impl Entry {
         self.path.to_string_lossy().replace('\\', "/")
     }
     pub fn suite_name(&self) -> Option<String> {
-        let filename = self.path.file_name()?.to_str()?;
+        let filename = self.path.file_name()?.to_str()?.to_ascii_lowercase();
         [".tests.yaml", ".tests.yml", ".tests.json"]
             .iter()
             .find_map(|suffix| filename.strip_suffix(suffix).map(str::to_string))
@@ -110,7 +110,7 @@ impl Workspace {
                     continue;
                 }
                 let path = item.path().strip_prefix(&self.root)?.to_path_buf();
-                let name = item.file_name().to_string_lossy();
+                let name = item.file_name().to_string_lossy().to_ascii_lowercase();
                 let suite = [".tests.yaml", ".tests.yml", ".tests.json"]
                     .iter()
                     .any(|suffix| name.ends_with(suffix));
@@ -140,6 +140,29 @@ impl Workspace {
         let source = read_document(&self.resolve(&entry.path)?)?;
         let document = Document::new(entry.kind, Format::for_path(&entry.path), source)?;
         Ok(OpenDocument { entry, document })
+    }
+
+    /// A filename filter must resolve to the selected file, not a shadowing format.
+    pub fn runnable_suite(&self, entry: &Entry) -> Result<String> {
+        let name = entry
+            .suite_name()
+            .ok_or_else(|| anyhow!("Select a test suite first"))?;
+        ensure!(
+            name != "all",
+            "The suite name 'all' is reserved by the CLI wildcard filter"
+        );
+        let suites = crate::test::discover_test_suites(&self.resolve(Path::new("visual_tests"))?)?;
+        let actual = suites
+            .into_iter()
+            .find(|suite| suite.name == name)
+            .ok_or_else(|| anyhow!("Suite '{name}' is not discovered by the CLI"))?;
+        ensure!(
+            actual.path.canonicalize()? == self.resolve(&entry.path)?,
+            "The CLI runs '{}', not the selected '{}'. Rename or remove the shadowing suite before running this file.",
+            actual.path.display(),
+            entry.path.display()
+        );
+        Ok(name)
     }
 
     pub fn reload(&self, open: &mut OpenDocument) -> Result<()> {
@@ -317,10 +340,15 @@ fn validate_component(name: &str) -> Result<()> {
 
 pub fn suite_path(name: &str) -> Result<PathBuf> {
     validate_component(name)?;
-    ensure!(name != "all", "The suite name 'all' is reserved by the CLI");
+    let normalized = name.to_ascii_lowercase();
+    let stem = [".tests.yaml", ".tests.yml", ".tests.json"]
+        .iter()
+        .find_map(|suffix| normalized.strip_suffix(suffix))
+        .unwrap_or(&normalized);
+    ensure!(stem != "all", "The suite name 'all' is reserved by the CLI");
     let filename = if [".tests.yaml", ".tests.yml", ".tests.json"]
         .iter()
-        .any(|suffix| name.ends_with(suffix))
+        .any(|suffix| name.to_ascii_lowercase().ends_with(suffix))
     {
         name.to_string()
     } else {
@@ -586,5 +614,27 @@ mod tests {
         let root_file = directory.path().join("root.txt");
         fs::write(&root_file, "root").unwrap();
         assert!(workspace.relative_file(&root_file, true).is_err());
+    }
+
+    #[test]
+    fn selected_suite_must_match_cli_format_precedence() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let json = workspace.create_suite("Shop.TESTS.JSON").unwrap();
+        assert_eq!(json.document.format, Format::Json);
+        assert_eq!(workspace.runnable_suite(&json.entry).unwrap(), "shop");
+        let yaml = workspace.create_suite("shop.tests.yaml").unwrap();
+        assert!(
+            workspace
+                .runnable_suite(&json.entry)
+                .unwrap_err()
+                .to_string()
+                .contains("not the selected")
+        );
+        assert_eq!(workspace.runnable_suite(&yaml.entry).unwrap(), "shop");
+        assert_eq!(workspace.entries().unwrap().len(), 2);
+        assert!(suite_path("ALL").is_err());
+        assert!(suite_path("All.TESTS.JSON").is_err());
+        assert!(suite_path("all.tests.yaml").is_err());
     }
 }

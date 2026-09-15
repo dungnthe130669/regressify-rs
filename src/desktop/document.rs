@@ -33,7 +33,7 @@ impl Format {
     pub fn for_path(path: &Path) -> Self {
         if path
             .extension()
-            .is_some_and(|extension| extension == "json")
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
         {
             Self::Json
         } else {

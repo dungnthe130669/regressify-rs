@@ -215,3 +215,10 @@ undone. Saving reads retained native input before taking its write snapshot, so
 an immediately requested save includes text whose change notification is still
 queued. Save completion acknowledges only the exact source written; any newer
 draft remains modified rather than being incorrectly marked saved.
+
+Run suite verifies the selected file against the CLI's discovery rules before
+setting its filter. If multiple formats share a name, `.tests.yaml` takes
+precedence over `.tests.yml`, then `.tests.json`; a shadowed selection is rejected
+with the competing path. Same-priority duplicate names remain CLI errors. The
+reserved suite name `all` is rejected for selected-file execution. Manual suite
+filters in Runs retain the CLI's normal wildcard and format-precedence behavior.
