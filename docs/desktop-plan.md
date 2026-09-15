@@ -26,7 +26,7 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
 
 ### 1. Foundation
 
-- [ ] Extract a shared library without changing CLI behavior.
+- [x] Extract a shared library without changing CLI behavior.
 - [ ] Add an optional GPUI Kit desktop target and bundled icon assets.
 - [ ] Build a headless document model with validation and undo/redo.
 - [ ] Establish focused model tests and a desktop build check.
@@ -130,3 +130,9 @@ minimal GPUI window before expanding its interface. Add regression cases for
 every discovered defect. Finish with formatting, the full local test suite,
 desktop compilation, and a native smoke test. Do not mark a manual or visual
 check complete merely because compilation passed.
+
+## Verification Record
+
+- Shared-library extraction: `cargo test --all-targets` passed all 276 existing
+  tests on Windows. The CLI entry point still owns process initialization and
+  exit handling; the library exposes the existing modules without changing them.

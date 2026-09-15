@@ -5,29 +5,18 @@ use clap::Parser;
 use colored::Colorize;
 use reqwest::Proxy;
 
-use crate::{
+use regressify::{
     cli::{Cli, Command},
+    common, compare,
     github::is_github,
     helpers::{IOExtensions, OnceLockBoolExtensions, OnceLockExtensions},
+    init, optimizer, snapshot, test,
     vso::is_azure_devops,
 };
 
-mod cli;
-mod common;
-mod compare;
-mod config;
-mod github;
-mod helpers;
-mod init;
-mod optimizer;
-mod snapshot;
-mod test;
-mod types;
-mod vso;
-
 #[tokio::main]
 async fn main() -> Result<()> {
-    let cli = cli::Cli::parse();
+    let cli = Cli::parse();
     let pause = cli.pause;
     let pause_if_error = cli.pause_if_error;
     let mut exit_code = 1;
