@@ -23,6 +23,7 @@ separate CLI process so run-specific state is isolated.
 
 ```sh
 cargo test --all-targets
+cargo test --features desktop --lib desktop::
 cargo check --features gui --bin regressify-desktop
 ```
 
@@ -30,3 +31,15 @@ A successful compile does not replace a native smoke test. Verify keyboard
 focus, file dialogs, text input/IME, resizing, and image rendering on the target
 platform before shipping. Detailed editing and execution documentation will
 accompany the corresponding implementation units.
+
+## Document Guarantees
+
+The headless desktop model can be built/tested with `--features desktop` without
+compiling GPUI. Guided YAML changes use a concrete syntax tree to retain comments;
+JSON edits use pretty-printed JSON. Every guided change is parsed again and
+compared to the requested semantic edit. If a YAML construct cannot be handled
+losslessly, the operation fails and the original source remains untouched.
+
+Source drafts may be temporarily invalid. Validation is a mandatory save gate.
+Undo/redo stores exact source snapshots, limited to 100 entries and a 16 MiB undo
+budget. Individual documents are limited to 4 MiB for interactive editing.

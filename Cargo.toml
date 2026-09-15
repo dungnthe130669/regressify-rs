@@ -13,7 +13,8 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-gui = ["local", "dep:gpui-kit"]
+desktop = ["local", "dep:yaml-edit", "dep:directories"]
+gui = ["desktop", "dep:gpui-kit"]
 
 [dependencies]
 anyhow = "1.0.100"
@@ -23,6 +24,7 @@ chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
 deunicode = "1.6.2"
+directories = { version = "6", optional = true }
 futures = "0.3.31"
 glob = "0.3.3"
 gpui-kit = { version = "=0.6.1", optional = true }
@@ -41,6 +43,7 @@ tera = "1.20.1"
 tokio = { version = "1.49.0", features = ["full"] }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+yaml-edit = { version = "0.3.1", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

@@ -4,6 +4,8 @@ pub mod cli;
 pub mod common;
 pub mod compare;
 pub mod config;
+#[cfg(feature = "desktop")]
+pub mod desktop;
 pub mod github;
 pub mod helpers;
 pub mod init;

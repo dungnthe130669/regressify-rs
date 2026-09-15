@@ -43,7 +43,7 @@ pub fn load_viewports(path: &Path) -> Result<Vec<ViewportDef>> {
     Ok(viewports)
 }
 
-fn validate_viewports(viewports: &[ViewportDef], path: &Path) -> Result<()> {
+pub(crate) fn validate_viewports(viewports: &[ViewportDef], path: &Path) -> Result<()> {
     let mut labels = HashSet::new();
     let mut capture_names = HashSet::new();
     for viewport in viewports {

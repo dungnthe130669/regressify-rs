@@ -28,8 +28,8 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
 
 - [x] Extract a shared library without changing CLI behavior.
 - [x] Add an optional GPUI Kit desktop target and bundled icon assets.
-- [ ] Build a headless document model with validation and undo/redo.
-- [ ] Establish focused model tests and a desktop build check.
+- [x] Build a headless document model with validation and undo/redo.
+- [x] Establish focused model tests and a desktop build check.
 
 Acceptance: the default CLI builds without GUI dependencies; the optional desktop
 target compiles; document operations are testable without a display.
@@ -138,3 +138,7 @@ check complete merely because compilation passed.
   exit handling; the library exposes the existing modules without changing them.
 - GPUI bootstrap: `cargo check --features gui --bin regressify-desktop` passed on
   Windows with GPUI Kit 0.6.1. This checks compilation, not visual interaction.
+- Document model: nine focused tests pass for YAML/JSON edits, nested comment
+  preservation, empty and indentationless lists, history limits, validation,
+  multi-document rejection, and all 15 action templates. The model rejects a
+  generated edit if its parsed meaning differs from the requested change.
