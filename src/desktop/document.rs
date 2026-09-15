@@ -171,6 +171,11 @@ impl Document {
         self.saved.clone_from(&self.source);
     }
 
+    /// An asynchronous write may finish after a newer source edit was queued.
+    pub fn acknowledge_saved(&mut self, source: String) {
+        self.saved = source;
+    }
+
     pub fn apply(&mut self, edit: Edit) -> Result<()> {
         let mut expected = self.value()?;
         apply_value(&mut expected, &edit)?;
@@ -673,5 +678,21 @@ mod tests {
     fn multiple_documents_are_not_silently_truncated() {
         let document = suite("scenarios: []\n---\nscenarios: []\n");
         assert!(document.value().is_err());
+    }
+
+    #[test]
+    fn acknowledging_an_older_save_keeps_newer_edits_dirty() {
+        let mut document = suite("scenarios: []\n");
+        document
+            .set_source("debug: true\nscenarios: []\n".into())
+            .unwrap();
+        let snapshot = document.source().to_string();
+        document
+            .set_source("debug: false\nscenarios: []\n".into())
+            .unwrap();
+        document.acknowledge_saved(snapshot.clone());
+        assert!(document.dirty());
+        assert_eq!(document.saved_source(), snapshot);
+        assert!(document.source().contains("debug: false"));
     }
 }

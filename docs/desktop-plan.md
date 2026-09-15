@@ -190,3 +190,7 @@ check complete merely because compilation passed.
   Six target-window screenshots passed nonblank pixel sampling and were visually
   inspected at 1600x1000 and 1080x720. Startup stderr was empty. Direct
   `PrintWindow` capture excludes other applications even when they overlap.
+- Draft safety: 49 desktop tests pass after adding regressions for invalid field
+  retention during structural commands, immediate saves before deferred input
+  notifications, source-buffer synchronization, and older async save completion
+  retaining newer edits as dirty.

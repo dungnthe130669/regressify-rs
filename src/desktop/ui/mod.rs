@@ -335,7 +335,13 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || !self.field_errors.is_empty() {
+        if self.busy {
+            return;
+        }
+        if let Err(error) = self.flush_drafts(window, cx) {
+            self.status = format!("{error:#}");
+            self.sync_modal(cx);
+            cx.notify();
             return;
         }
         let snapshot = (|| -> Result<_> {
@@ -366,13 +372,23 @@ impl Workbench {
         match snapshot {
             Ok((workspace, mut snapshot)) => self.task(
                 "Saving...",
-                move || workspace.save(&mut snapshot),
-                move |this, (), window, cx| {
+                move || {
+                    workspace.save(&mut snapshot)?;
+                    Ok(snapshot.document.source().to_string())
+                },
+                move |this, written, window, cx| {
                     if let Some(open) = &mut this.session.open {
-                        open.document.mark_saved();
+                        open.document.acknowledge_saved(written);
                     }
-                    this.status = "Saved".into();
-                    if let Some(pending) = pending {
+                    this.status = if this.unsaved() {
+                        "Saved snapshot; newer edits are still unsaved"
+                    } else {
+                        "Saved"
+                    }
+                    .into();
+                    if let Some(pending) = pending
+                        && !this.unsaved()
+                    {
                         window.close_dialog(cx);
                         this.perform_pending(pending, window, cx);
                     }
@@ -418,6 +434,12 @@ impl Workbench {
         if self.busy {
             return;
         }
+        if !self.field_errors.is_empty() {
+            self.status =
+                "Correct invalid fields or undo before changing the document structure".into();
+            cx.notify();
+            return;
+        }
         match operation(&mut self.session) {
             Ok(()) => {
                 self.status = "Unsaved changes".into();
@@ -428,6 +450,62 @@ impl Workbench {
                 cx.notify();
             }
         }
+    }
+
+    fn flush_drafts(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Result<()> {
+        let open = self
+            .session
+            .open
+            .as_mut()
+            .ok_or_else(|| anyhow!("Open a document first"))?;
+        if self.tab == 1 {
+            open.document
+                .set_source(self.source.read(cx).value().to_string())?;
+        } else if self.tab == 0 {
+            let parent = self.session.selection.path();
+            let current = open.document.value()?;
+            let mut edits = Vec::new();
+            // Read retained controls directly: change notifications can still be queued.
+            for binding in &self.bindings {
+                let text = match &binding.control {
+                    Control::Input(input) => input.read(cx).value().to_string(),
+                    Control::Textarea(input) => input.read(cx).value().to_string(),
+                    _ => continue,
+                };
+                let key = &binding.field.key;
+                let value = current
+                    .pointer(&parent)
+                    .and_then(|value| value.get(key))
+                    .unwrap_or(&Value::Null);
+                if text == binding.field.display(value) {
+                    continue;
+                }
+                match binding.field.parse(&text) {
+                    Ok(value) => {
+                        edits.push(super::document::Edit::Set {
+                            parent: parent.clone(),
+                            key: key.clone(),
+                            value: Some(value),
+                        });
+                        self.field_errors.remove(key);
+                    }
+                    Err(error) => {
+                        self.field_errors.insert(key.clone(), format!("{error:#}"));
+                    }
+                }
+            }
+            anyhow::ensure!(
+                self.field_errors.is_empty(),
+                "Correct invalid fields before saving"
+            );
+            open.document.apply_many(edits)?;
+            let source = open.document.source().to_string();
+            self.source
+                .update(cx, |state, cx| state.set_value(source, window, cx));
+        }
+        self.refresh_value();
+        self.refresh_effective(window, cx);
+        Ok(())
     }
 
     fn refresh_value(&mut self) {
@@ -1001,8 +1079,17 @@ impl Workbench {
                                     .xsmall()
                                     .icon(IconName::Undo)
                                     .tooltip("Use inherited value")
-                                    .disabled(self.busy || field.required || !explicit)
+                                    .disabled(
+                                        self.busy
+                                            || field.required
+                                            || (!explicit && !self.field_errors.contains_key(&key)),
+                                    )
                                     .on_click(cx.listener(move |this, _, window, cx| {
+                                        if this.field_errors.len() == 1
+                                            && this.field_errors.contains_key(&key)
+                                        {
+                                            this.field_errors.remove(&key);
+                                        }
                                         this.edit(
                                             |session| session.set_field(&key, None),
                                             window,

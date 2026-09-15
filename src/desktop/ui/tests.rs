@@ -7,6 +7,76 @@ use gpui_kit::{AppContext, Entity, Focusable, TestAppContext, WindowHandle, px, 
 use super::Workbench;
 use crate::desktop::session::Selection;
 
+#[gpui_kit::test]
+fn structural_actions_do_not_discard_an_invalid_field_draft(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let field = this
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "delay")
+                .unwrap()
+                .field
+                .clone();
+            this.change_field(&field, "not a number", window, cx);
+        });
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        assert!(view.read(cx).field_errors.contains_key("delay"));
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn save_reads_pending_native_field_text_before_deferred_notifications(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("https://example.com/pending-edit", cx);
+        view.update(cx, |this, cx| {
+            this.save_document(&super::SaveDocument, window, cx)
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Saved"))
+    })
+    .await;
+    let source =
+        std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap();
+    let value: serde_json::Value = serde_yaml::from_str(&source).unwrap();
+    assert_eq!(
+        value["scenarios"][0]["url"],
+        "https://example.com/pending-edit"
+    );
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .value()
+                .contains("/pending-edit")
+        )
+    });
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));

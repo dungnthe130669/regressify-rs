@@ -209,3 +209,9 @@ The headless GPUI tests additionally exercise field editing, async saves,
 dialogs, undo, command confirmation, result filtering, and keyboard actions.
 Full IME composition, screen-reader usability, and native macOS/Linux behavior
 still require testing on those environments before distributing there.
+
+Invalid field text is retained and blocks structural commands until corrected or
+undone. Saving reads retained native input before taking its write snapshot, so
+an immediately requested save includes text whose change notification is still
+queued. Save completion acknowledges only the exact source written; any newer
+draft remains modified rather than being incorrectly marked saved.
