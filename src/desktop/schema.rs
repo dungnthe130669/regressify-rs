@@ -15,6 +15,7 @@ pub enum Scope {
     Scenario,
     Action(String),
     Viewport,
+    Run,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -117,6 +118,7 @@ pub fn fields(scope: &Scope) -> Result<Vec<Field>> {
         Scope::Scenario => serde_json::to_value(schemars::schema_for!(TestScenario))?,
         Scope::Action(_) => serde_json::to_value(schemars::schema_for!(TestAction))?,
         Scope::Viewport => serde_json::to_value(schemars::schema_for!(ViewportDef))?,
+        Scope::Run => serde_json::to_value(schemars::schema_for!(super::runner::RunOptions))?,
     };
     let schema = if let Scope::Action(name) = scope {
         root["anyOf"]

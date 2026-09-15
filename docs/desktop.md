@@ -68,3 +68,24 @@ string, or an empty list is an override, not a request to inherit. Resetting a
 field removes the property. Effective configuration uses the CLI resolver with
 the scenario, suite, workspace, and built-in defaults in that order. State and
 restore names use the existing merge behavior rather than simple replacement.
+
+## Execution
+
+Each command runs a fresh CLI process in the selected workspace. Arguments are
+validated by the real clap parser and passed as an argument array, never through
+a shell. Capture commands generate a unique run ID when one is not supplied.
+Only one command may run at a time in a desktop session.
+
+Test, reference capture, compare, and approve support suite filters. The current
+CLI has no single-scenario execution flag: selecting a scenario for editing does
+not imply that only that scenario will run. Reference capture and approval
+promote baselines and require confirmation, as does image optimization.
+
+Cancel terminates the process group, including its child processes. Closing the
+application cancels an active command before disposing of its execution worker.
+Logs are capped at 2 MiB; a bounded producer queue may omit chunks if output
+outpaces the UI. Completion is tracked separately so a full log queue cannot
+hide the command's final state.
+
+`Completed` means the process exited zero. It does **not** mean visual tests
+passed. Scenario failures and mismatches are read from generated reports.

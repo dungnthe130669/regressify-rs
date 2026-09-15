@@ -150,3 +150,8 @@ check complete merely because compilation passed.
   properties, explicit empty/false values, and the production configuration
   cascade including combined state/restore values. Schema derives are enabled
   only with the headless desktop feature.
+- Execution model: seven tests pass for all CLI command arguments, invalid
+  option rejection, output-directory precedence, real stdout/stderr capture,
+  command failure, cancellation, and bounded log memory. The current CLI supports
+  suite execution filters, not a per-scenario execution flag; scenario filtering
+  in the desktop navigator does not silently change run scope.

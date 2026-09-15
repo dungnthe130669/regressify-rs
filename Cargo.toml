@@ -13,7 +13,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:directories", "dep:tempfile", "dep:schemars"]
+desktop = ["local", "dep:yaml-edit", "dep:directories", "dep:tempfile", "dep:schemars", "dep:command-group"]
 gui = ["desktop", "dep:gpui-kit"]
 
 [dependencies]
@@ -23,6 +23,7 @@ chromiumoxide = { version = "0.9.1", features = ["bytes", "fetcher", "rustls", "
 chrono = "0.4.26"
 clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
+command-group = { version = "5", optional = true }
 deunicode = "1.6.2"
 directories = { version = "6", optional = true }
 futures = "0.3.31"
