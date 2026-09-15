@@ -108,7 +108,7 @@ do not block the UI thread indefinitely.
   paths, persistence, command arguments, subprocesses, and result discovery.
 - [ ] Add GPUI interaction/render tests where supported by the framework.
 - [ ] Run the existing CLI regression tests and both default/desktop build gates.
-- [ ] Exercise the desktop application on Windows, recording any GUI checks
+- [x] Exercise the desktop application on Windows, recording any GUI checks
   that cannot be automated in the available environment.
 - [ ] Document installation, launching, editing, inheritance, running, result
   semantics, keyboard shortcuts, limitations, and contributor test commands.
@@ -184,3 +184,9 @@ check complete merely because compilation passed.
   upload-relative paths, saved appearance, file-operation shortcuts, and stable
   report/capture selection across refreshes. Both binaries build successfully;
   the preceding combined regression gate passed all 319 tests.
+- Windows native smoke: `ci/desktop-smoke.ps1` builds both executables, opens a
+  synthetic workspace with UI Automation, navigates fields/source/results,
+  renders comparison PNGs, and runs the real CLI init command from the GUI.
+  Six target-window screenshots passed nonblank pixel sampling and were visually
+  inspected at 1600x1000 and 1080x720. Startup stderr was empty. Direct
+  `PrintWindow` capture excludes other applications even when they overlap.

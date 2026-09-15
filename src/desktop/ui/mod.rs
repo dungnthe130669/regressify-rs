@@ -615,7 +615,7 @@ impl Workbench {
             )
             .child(
                 Button::new("save")
-                    .icon(IconName::Check)
+                    .icon(gpui_kit::assets::IconName::Save)
                     .label("Save")
                     .tooltip("Save document")
                     .disabled(
@@ -1135,6 +1135,7 @@ impl Workbench {
                 .size_full()
                 .child(
                     CodeEditor::new(&self.source)
+                        .aria_label("Configuration source")
                         .size_full()
                         .disabled(self.busy || self.session.open.is_none()),
                 )
@@ -1142,7 +1143,12 @@ impl Workbench {
             2 => div()
                 .id("effective-editor")
                 .size_full()
-                .child(CodeEditor::new(&self.resolved).size_full().readonly(true))
+                .child(
+                    CodeEditor::new(&self.resolved)
+                        .aria_label("Effective configuration")
+                        .size_full()
+                        .readonly(true),
+                )
                 .into_any_element(),
             _ => self.render_fields(cx),
         };

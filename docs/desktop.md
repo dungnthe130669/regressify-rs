@@ -187,3 +187,25 @@ scenario configuration. Effective values update as guided fields are changed.
 Additional shortcuts: Ctrl+N creates a suite, Ctrl+Shift+S opens Save As,
 Ctrl+R reloads with the draft guard, F2 renames a suite, and F5 refreshes files.
 Use Cmd in place of Ctrl on macOS. Appearance is restored on the next launch.
+
+## Native Windows Smoke Test
+
+From PowerShell 7 in an interactive Windows desktop:
+
+```powershell
+./ci/desktop-smoke.ps1
+```
+
+The script builds both binaries, creates a synthetic workspace under
+`target/desktop-smoke`, opens the native app, uses Windows UI Automation to
+navigate the editor and results, and executes `init` through the GUI. It captures
+the application window directly, checks sampled pixels for nonblank content,
+and records editor, source, comparison, compact-layout, and completed-run PNGs.
+No website scenarios or browser downloads are run. `-SkipBuild` uses existing
+debug binaries; `-KeepOpen` leaves the fixture workspace open for inspection.
+
+Native validation has been performed on Windows at 1600x1000 and 1080x720.
+The headless GPUI tests additionally exercise field editing, async saves,
+dialogs, undo, command confirmation, result filtering, and keyboard actions.
+Full IME composition, screen-reader usability, and native macOS/Linux behavior
+still require testing on those environments before distributing there.
