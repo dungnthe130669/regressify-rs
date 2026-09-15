@@ -1,0 +1,1176 @@
+//! Native workbench. Domain edits stay in the headless desktop models.
+
+use std::{collections::BTreeMap, path::PathBuf};
+
+use anyhow::{Result, anyhow};
+use gpui_kit::component::{
+    button::{Button, ButtonVariants},
+    checkbox::Checkbox,
+    input::{
+        Editor as CodeEditor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
+    },
+    menu::DropdownMenu,
+    resizable::{h_resizable, resizable_panel},
+    tab::{Tab, TabBar},
+    *,
+};
+use gpui_kit::{prelude::*, *};
+use serde_json::{Value, json};
+
+use super::{
+    document::{ACTIONS, Document, DocumentKind},
+    schema::{self, Field, FieldKind},
+    session::{Selection, Session},
+    workspace::{Entry, OpenDocument, Preferences},
+};
+
+#[cfg(all(test, feature = "gui-tests"))]
+mod tests;
+
+actions!(
+    regressify_desktop,
+    [
+        SaveDocument,
+        UndoDocument,
+        RedoDocument,
+        OpenWorkspace,
+        AddScenario,
+        AddViewport,
+        DuplicateItem,
+        MoveItemUp,
+        MoveItemDown
+    ]
+);
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+struct AddBrowserAction {
+    kind: String,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+struct ChooseField {
+    key: String,
+    value: String,
+}
+
+enum Control {
+    Input(Entity<InputState>),
+    Textarea(Entity<TextareaState>),
+    Boolean,
+    Choice,
+}
+
+struct Binding {
+    field: Field,
+    control: Control,
+}
+
+pub struct Workbench {
+    session: Session,
+    source: Entity<EditorState>,
+    resolved: Entity<EditorState>,
+    search: Entity<InputState>,
+    bindings: Vec<Binding>,
+    _subscriptions: Vec<Subscription>,
+    field_subscriptions: Vec<Subscription>,
+    field_errors: BTreeMap<String, String>,
+    focus: FocusHandle,
+    value: Value,
+    effective: Value,
+    tab: usize,
+    advanced: bool,
+    busy: bool,
+    status: String,
+    diagnostic: Option<String>,
+    preferences: Preferences,
+}
+
+impl Workbench {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let source = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
+        });
+        let resolved = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
+        });
+        let search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search suites and scenarios"));
+        let source_subscription = cx.subscribe_in(&source, window, |this, state, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                let text = state.read(cx).value().to_string();
+                if let Some(open) = &mut this.session.open
+                    && open.document.source() != text
+                {
+                    match open.document.set_source(text) {
+                        Ok(()) => {
+                            this.field_errors.clear();
+                            this.refresh_value();
+                        }
+                        Err(error) => this.status = format!("{error:#}"),
+                    }
+                    cx.notify();
+                }
+            }
+        });
+        let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        let preferences = Preferences::path().and_then(|path| Preferences::load(&path));
+        let status = preferences
+            .as_ref()
+            .err()
+            .map(|error| format!("{error:#}"))
+            .unwrap_or_else(|| "Ready".into());
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+        Self {
+            session: Session::default(),
+            source,
+            resolved,
+            search,
+            bindings: Vec::new(),
+            _subscriptions: vec![source_subscription, search_subscription],
+            field_subscriptions: Vec::new(),
+            field_errors: BTreeMap::new(),
+            focus,
+            value: Value::Null,
+            effective: Value::Null,
+            tab: 0,
+            advanced: false,
+            busy: false,
+            status,
+            diagnostic: None,
+            preferences: preferences.unwrap_or_default(),
+        }
+    }
+
+    /// All potentially slow filesystem work is completed away from the UI thread.
+    fn task<T: Send + 'static>(
+        &mut self,
+        message: &str,
+        job: impl FnOnce() -> Result<T> + Send + 'static,
+        done: impl FnOnce(&mut Self, T, &mut Window, &mut Context<Self>) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        self.busy = true;
+        self.status = message.into();
+        let task = cx.background_executor().spawn(async move { job() });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                match result {
+                    Ok(value) => done(this, value, window, cx),
+                    Err(error) => this.status = format!("{error:#}"),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn load_workspace(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if self.unsaved() {
+            self.status = "Save the current document before opening another workspace".into();
+            cx.notify();
+            return;
+        }
+        self.task(
+            "Opening workspace...",
+            move || {
+                let mut session = Session::default();
+                session.connect(&path)?;
+                Ok(session)
+            },
+            |this, session, window, cx| {
+                this.session = session;
+                if let Some(workspace) = &this.session.workspace {
+                    this.preferences.remember(workspace);
+                    if let Err(error) =
+                        Preferences::path().and_then(|path| this.preferences.save(&path))
+                    {
+                        this.status = format!("Preferences: {error:#}");
+                    }
+                }
+                this.sync_editor(window, cx);
+                this.status = "Workspace opened".into();
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn choose_workspace(&mut self, _: &OpenWorkspace, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        cx.spawn_in(window, async move |view, cx| {
+            if let Some(folder) = rfd::AsyncFileDialog::new().pick_folder().await {
+                let _ = view.update_in(cx, |this, window, cx| {
+                    this.load_workspace(folder.path().to_path_buf(), window, cx)
+                });
+            }
+        })
+        .detach();
+    }
+
+    fn load_document(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
+        if self.unsaved() {
+            self.status = "Save the current document before opening another file".into();
+            cx.notify();
+            return;
+        }
+        let Some(workspace) = self.session.workspace.clone() else {
+            return;
+        };
+        self.task(
+            "Loading document...",
+            move || workspace.open_document(entry),
+            |this, open, window, cx| {
+                this.session.open = Some(open);
+                this.session.selection = Selection::Root;
+                this.tab = if this
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.entry.kind == DocumentKind::Data)
+                {
+                    1
+                } else {
+                    0
+                };
+                this.sync_editor(window, cx);
+                this.status = "Document loaded".into();
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn unsaved(&self) -> bool {
+        self.session.dirty() || !self.field_errors.is_empty()
+    }
+
+    fn save_document(&mut self, _: &SaveDocument, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || !self.field_errors.is_empty() {
+            return;
+        }
+        let snapshot = (|| -> Result<_> {
+            let workspace = self
+                .session
+                .workspace
+                .clone()
+                .ok_or_else(|| anyhow!("Open a workspace first"))?;
+            let open = self
+                .session
+                .open
+                .as_ref()
+                .ok_or_else(|| anyhow!("Open a document first"))?;
+            let mut document = Document::new(
+                open.document.kind,
+                open.document.format,
+                open.document.saved_source().into(),
+            )?;
+            document.set_source(open.document.source().into())?;
+            Ok((
+                workspace,
+                OpenDocument {
+                    entry: open.entry.clone(),
+                    document,
+                },
+            ))
+        })();
+        match snapshot {
+            Ok((workspace, mut snapshot)) => self.task(
+                "Saving...",
+                move || workspace.save(&mut snapshot),
+                |this, (), _, _| {
+                    if let Some(open) = &mut this.session.open {
+                        open.document.mark_saved();
+                    }
+                    this.status = "Saved".into();
+                },
+                window,
+                cx,
+            ),
+            Err(error) => {
+                self.status = format!("{error:#}");
+                cx.notify();
+            }
+        }
+    }
+
+    fn undo_document(&mut self, _: &UndoDocument, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if let Some(open) = &mut self.session.open {
+            open.document.undo();
+        }
+        self.session.reconcile_selection();
+        self.sync_editor(window, cx);
+    }
+
+    fn redo_document(&mut self, _: &RedoDocument, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        if let Some(open) = &mut self.session.open {
+            open.document.redo();
+        }
+        self.session.reconcile_selection();
+        self.sync_editor(window, cx);
+    }
+
+    fn edit(
+        &mut self,
+        operation: impl FnOnce(&mut Session) -> Result<()>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        match operation(&mut self.session) {
+            Ok(()) => {
+                self.status = "Unsaved changes".into();
+                self.sync_editor(window, cx);
+            }
+            Err(error) => {
+                self.status = format!("{error:#}");
+                cx.notify();
+            }
+        }
+    }
+
+    fn refresh_value(&mut self) {
+        self.value = self.session.value().unwrap_or(Value::Null);
+        self.diagnostic = self
+            .session
+            .open
+            .as_ref()
+            .and_then(|open| open.document.validate().err())
+            .map(|error| format!("{error:#}"));
+    }
+
+    fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let source = self
+            .session
+            .open
+            .as_ref()
+            .map(|open| open.document.source().to_string())
+            .unwrap_or_default();
+        if self.source.read(cx).value().as_ref() != source {
+            self.source
+                .update(cx, |state, cx| state.set_value(source, window, cx));
+        }
+        self.rebuild_fields(window, cx);
+        cx.notify();
+    }
+
+    fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_value();
+        self.bindings.clear();
+        self.field_subscriptions.clear();
+        self.field_errors.clear();
+        self.effective = self.session.effective().unwrap_or(Value::Null);
+        let resolved = self
+            .session
+            .effective()
+            .and_then(|value| Ok(serde_json::to_string_pretty(&value)?));
+        self.resolved.update(cx, |state, cx| {
+            state.set_value(
+                resolved.unwrap_or_else(|error| format!("{error:#}")),
+                window,
+                cx,
+            )
+        });
+        let fields = self
+            .session
+            .scope()
+            .and_then(|scope| scope.map(|scope| schema::fields(&scope)).transpose());
+        let Ok(Some(fields)) = fields else {
+            return;
+        };
+        for field in fields {
+            let value = self
+                .value
+                .pointer(&self.session.selection.path())
+                .and_then(|value| value.get(&field.key))
+                .unwrap_or(&Value::Null);
+            let text = field.display(value);
+            let placeholder = field.display(&self.effective[&schema::effective_key(&field.key)]);
+            let control = match &field.kind {
+                FieldKind::Boolean => Control::Boolean,
+                FieldKind::Choice(_) => Control::Choice,
+                FieldKind::List { .. } | FieldKind::Structured => {
+                    let state = cx.new(|cx| {
+                        TextareaState::new(window, cx)
+                            .rows(3)
+                            .default_value(text)
+                            .placeholder(placeholder)
+                    });
+                    let descriptor = field.clone();
+                    self.field_subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, state, event, window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.change_field(
+                                    &descriptor,
+                                    &state.read(cx).value().to_string(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    ));
+                    Control::Textarea(state)
+                }
+                _ => {
+                    let state = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .default_value(text)
+                            .placeholder(placeholder)
+                    });
+                    let descriptor = field.clone();
+                    self.field_subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, state, event, window, cx| {
+                            if matches!(event, InputEvent::Change) {
+                                this.change_field(
+                                    &descriptor,
+                                    &state.read(cx).value().to_string(),
+                                    window,
+                                    cx,
+                                );
+                            }
+                        },
+                    ));
+                    Control::Input(state)
+                }
+            };
+            self.bindings.push(Binding { field, control });
+        }
+    }
+
+    fn change_field(
+        &mut self,
+        field: &Field,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        match field
+            .parse(text)
+            .and_then(|value| self.session.set_field(&field.key, Some(value)))
+        {
+            Ok(()) => {
+                self.field_errors.remove(&field.key);
+                self.refresh_value();
+                if let Some(open) = &self.session.open {
+                    let source = open.document.source().to_string();
+                    self.source
+                        .update(cx, |state, cx| state.set_value(source, window, cx));
+                }
+                self.status = "Unsaved changes".into();
+            }
+            Err(error) => {
+                self.field_errors
+                    .insert(field.key.clone(), format!("{error:#}"));
+            }
+        }
+        cx.notify();
+    }
+
+    fn select(&mut self, selection: Selection, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || !self.field_errors.is_empty() {
+            return;
+        }
+        match self.session.select(selection) {
+            Ok(()) => {
+                self.tab = 0;
+                self.rebuild_fields(window, cx);
+            }
+            Err(error) => self.status = format!("{error:#}"),
+        }
+        cx.notify();
+    }
+
+    fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let open = self.session.open.as_ref();
+        let focus = self.focus.clone();
+        div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .text_lg()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .mr_4()
+                    .child("Regressify"),
+            )
+            .child(
+                Button::new("open-workspace")
+                    .icon(IconName::FolderOpen)
+                    .label("Open workspace")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.choose_workspace(&OpenWorkspace, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("save")
+                    .icon(IconName::Check)
+                    .label("Save")
+                    .tooltip("Save document")
+                    .disabled(
+                        self.busy
+                            || !self.unsaved()
+                            || self.diagnostic.is_some()
+                            || !self.field_errors.is_empty(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.save_document(&SaveDocument, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("undo")
+                    .icon(IconName::Undo)
+                    .tooltip("Undo document edit")
+                    .disabled(self.busy || !open.is_some_and(|open| open.document.can_undo()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.undo_document(&UndoDocument, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("redo")
+                    .icon(IconName::Redo)
+                    .tooltip("Redo document edit")
+                    .disabled(self.busy || !open.is_some_and(|open| open.document.can_redo()))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.redo_document(&RedoDocument, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("add-item")
+                    .icon(IconName::Plus)
+                    .label("Add")
+                    .disabled(self.busy || open.is_none())
+                    .dropdown_menu(move |menu, _, _| {
+                        let mut menu = menu
+                            .action_context(focus.clone())
+                            .menu("Scenario", Box::new(AddScenario))
+                            .menu("Viewport", Box::new(AddViewport))
+                            .separator();
+                        for action in ACTIONS {
+                            menu = menu.menu(
+                                *action,
+                                Box::new(AddBrowserAction {
+                                    kind: action.to_string(),
+                                }),
+                            );
+                        }
+                        menu
+                    }),
+            )
+            .child(
+                Button::new("duplicate-item")
+                    .icon(IconName::Copy)
+                    .tooltip("Duplicate selected item")
+                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.edit(Session::duplicate_selected, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("move-up")
+                    .icon(IconName::ArrowUp)
+                    .tooltip("Move selected item up")
+                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.edit(|session| session.move_selected(-1), window, cx)
+                    })),
+            )
+            .child(
+                Button::new("move-down")
+                    .icon(IconName::ArrowDown)
+                    .tooltip("Move selected item down")
+                    .disabled(self.busy || self.session.selection == Selection::Root)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.edit(|session| session.move_selected(1), window, cx)
+                    })),
+            )
+            .into_any_element()
+    }
+
+    fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+        let query = self.search.read(cx).value().to_lowercase();
+        let mut navigation = div()
+            .id("navigator")
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .gap_1()
+            .p_3()
+            .child(
+                Input::new(&self.search)
+                    .id("navigator-search")
+                    .prefix(IconName::Search)
+                    .small(),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .py_2()
+                    .child("WORKSPACE"),
+            );
+        if self.session.workspace.is_none() {
+            for (index, path) in self.preferences.recent_workspaces.iter().enumerate() {
+                let path = path.clone();
+                navigation = navigation.child(
+                    Button::new(("recent", index))
+                        .ghost()
+                        .label(
+                            path.file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            this.load_workspace(path.clone(), window, cx)
+                        })),
+                );
+            }
+        }
+        let mut files = div()
+            .id("workspace-files")
+            .flex()
+            .flex_col()
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .gap_1();
+        for (index, entry) in self.session.entries.iter().enumerate() {
+            let current = self
+                .session
+                .open
+                .as_ref()
+                .is_some_and(|open| open.entry.path == entry.path);
+            if !entry.label().to_lowercase().contains(&query) && !current {
+                continue;
+            }
+            let entry = entry.clone();
+            files = files.child(
+                Button::new(("file", index))
+                    .ghost()
+                    .selected(current && self.session.selection == Selection::Root)
+                    .label(
+                        entry
+                            .path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                    .tooltip(entry.label())
+                    .w_full()
+                    .justify_start()
+                    .disabled(self.busy)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        if this
+                            .session
+                            .open
+                            .as_ref()
+                            .is_some_and(|open| open.entry.path == entry.path)
+                        {
+                            this.select(Selection::Root, window, cx);
+                        } else {
+                            this.load_document(entry.clone(), window, cx);
+                        }
+                    })),
+            );
+            if current {
+                let items = self.value["scenarios"]
+                    .as_array()
+                    .or_else(|| self.value.as_array());
+                if let Some(items) = items {
+                    for (scenario, value) in items.iter().enumerate() {
+                        let label = value["label"]
+                            .as_str()
+                            .or_else(|| value["id"].as_str())
+                            .unwrap_or("Untitled")
+                            .to_string();
+                        let is_viewport = self.value.is_array();
+                        let selection = if is_viewport {
+                            Selection::Viewport(scenario)
+                        } else {
+                            Selection::Scenario(scenario)
+                        };
+                        if query.is_empty()
+                            || label.to_lowercase().contains(&query)
+                            || self.session.selection.scenario() == Some(scenario)
+                        {
+                            files = files.child(
+                                Button::new(("scenario", scenario))
+                                    .ghost()
+                                    .small()
+                                    .label(label)
+                                    .selected(self.session.selection == selection)
+                                    .w_full()
+                                    .justify_start()
+                                    .pl_5()
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.select(selection, window, cx)
+                                    })),
+                            );
+                            if self.session.selection.scenario() == Some(scenario)
+                                && let Some(actions) = value["actions"].as_array()
+                            {
+                                for (index, action) in actions.iter().enumerate() {
+                                    let name = ACTIONS
+                                        .iter()
+                                        .find(|name| action.get(**name).is_some())
+                                        .copied()
+                                        .unwrap_or("unknown");
+                                    let selection = Selection::Action { scenario, index };
+                                    files = files.child(
+                                        Button::new(("action", index))
+                                            .ghost()
+                                            .small()
+                                            .label(format!("{}. {name}", index + 1))
+                                            .w_full()
+                                            .justify_start()
+                                            .pl_8()
+                                            .selected(self.session.selection == selection)
+                                            .disabled(self.busy)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.select(selection, window, cx)
+                                            })),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        navigation.child(files).into_any_element()
+    }
+
+    fn render_fields(&self, cx: &mut Context<Self>) -> AnyElement {
+        let selected = self
+            .value
+            .pointer(&self.session.selection.path())
+            .unwrap_or(&Value::Null);
+        let mut form = div()
+            .id("field-form")
+            .flex()
+            .flex_col()
+            .gap_4()
+            .p_5()
+            .w_full();
+        for binding in &self.bindings {
+            let field = &binding.field;
+            if !self.advanced
+                && !field.required
+                && self.session.selection == Selection::Root
+                && ![
+                    "id",
+                    "browser",
+                    "viewportNames",
+                    "misMatchThreshold",
+                    "postInteractionWait",
+                    "asyncCaptureLimit",
+                    "asyncCompareLimit",
+                ]
+                .contains(&field.key.as_str())
+            {
+                continue;
+            }
+            let value = selected.get(&field.key).unwrap_or(&Value::Null);
+            let explicit = !value.is_null();
+            let field_id = SharedString::from(format!("field-{}", field.key));
+            let mut row = div().flex().flex_col().gap_1().w_full().max_w(px(820.));
+            let key = field.key.clone();
+            row = row.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!(
+                                "{}{}",
+                                field.label,
+                                if field.required { " *" } else { "" }
+                            )),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(if field.required {
+                                        "Required"
+                                    } else if explicit {
+                                        "Override"
+                                    } else {
+                                        "Inherited"
+                                    }),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!("reset-{key}")))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Undo)
+                                    .tooltip("Use inherited value")
+                                    .disabled(self.busy || field.required || !explicit)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.edit(
+                                            |session| session.set_field(&key, None),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            ),
+                    ),
+            );
+            let control = match &binding.control {
+                Control::Input(state) => Input::new(state)
+                    .id(field_id)
+                    .disabled(self.busy)
+                    .into_any_element(),
+                Control::Textarea(state) => div()
+                    .id(field_id)
+                    .child(Textarea::new(state).disabled(self.busy).h(px(96.)))
+                    .into_any_element(),
+                Control::Boolean => {
+                    let descriptor = field.clone();
+                    let checked = value
+                        .as_bool()
+                        .or_else(|| self.effective[&schema::effective_key(&field.key)].as_bool())
+                        .unwrap_or(false);
+                    Checkbox::new(field_id)
+                        .checked(checked)
+                        .label(field.label.clone())
+                        .disabled(self.busy)
+                        .on_change(cx.listener(move |this, checked, window, cx| {
+                            this.change_field(
+                                &descriptor,
+                                if *checked { "true" } else { "false" },
+                                window,
+                                cx,
+                            )
+                        }))
+                        .into_any_element()
+                }
+                Control::Choice => {
+                    let choices = if let FieldKind::Choice(choices) = &field.kind {
+                        choices.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    let key = field.key.clone();
+                    let focus = self.focus.clone();
+                    Button::new(field_id)
+                        .label(
+                            value
+                                .as_str()
+                                .or_else(|| self.effective[&field.key].as_str())
+                                .unwrap_or("Inherited")
+                                .to_string(),
+                        )
+                        .disabled(self.busy)
+                        .dropdown_menu(move |menu, _, _| {
+                            let mut menu = menu.action_context(focus.clone());
+                            for value in &choices {
+                                menu = menu.menu(
+                                    value.clone(),
+                                    Box::new(ChooseField {
+                                        key: key.clone(),
+                                        value: value.clone(),
+                                    }),
+                                );
+                            }
+                            menu
+                        })
+                        .into_any_element()
+                }
+            };
+            row = row.child(control);
+            if let Some(error) = self.field_errors.get(&field.key) {
+                row = row.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(error.clone()),
+                );
+            }
+            form = form.child(row);
+        }
+        if self.bindings.is_empty() {
+            form = form.child(div().text_color(cx.theme().muted_foreground).child(
+                if self.session.open.is_some() {
+                    "No fields selected"
+                } else {
+                    "No document open"
+                },
+            ));
+        }
+        div()
+            .id("field-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(form)
+            .into_any_element()
+    }
+
+    fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
+        let title = self
+            .session
+            .open
+            .as_ref()
+            .map(|open| {
+                format!(
+                    "{}{}",
+                    open.entry.label(),
+                    if self.unsaved() { " *" } else { "" }
+                )
+            })
+            .unwrap_or_else(|| "Workspace".into());
+        let content = match self.tab {
+            1 => div()
+                .id("source-editor")
+                .size_full()
+                .child(
+                    CodeEditor::new(&self.source)
+                        .size_full()
+                        .disabled(self.busy || self.session.open.is_none()),
+                )
+                .into_any_element(),
+            2 => div()
+                .id("effective-editor")
+                .size_full()
+                .child(CodeEditor::new(&self.resolved).size_full().readonly(true))
+                .into_any_element(),
+            _ => self.render_fields(cx),
+        };
+        div()
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .child(
+                div()
+                    .px_4()
+                    .py_2()
+                    .text_sm()
+                    .font_weight(FontWeight::MEDIUM)
+                    .truncate()
+                    .child(title),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .px_3()
+                    .child(
+                        TabBar::new("editor-tabs")
+                            .underline()
+                            .selected_index(self.tab)
+                            .on_click(cx.listener(|this, index, window, cx| {
+                                if !this.field_errors.is_empty() {
+                                    return;
+                                }
+                                this.tab = *index;
+                                this.session.reconcile_selection();
+                                this.rebuild_fields(window, cx);
+                                cx.notify();
+                            }))
+                            .child(Tab::new().label("Fields"))
+                            .child(Tab::new().label("Source"))
+                            .child(Tab::new().label("Effective")),
+                    )
+                    .child(
+                        Checkbox::new("advanced-fields")
+                            .label("Advanced")
+                            .checked(self.advanced)
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.advanced = *checked;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().child(content))
+            .children(self.diagnostic.as_ref().map(|diagnostic| {
+                div()
+                    .id("diagnostic")
+                    .role(Role::Alert)
+                    .aria_label(diagnostic.clone())
+                    .test_support()
+                    .max_h(px(92.))
+                    .overflow_y_scroll()
+                    .px_4()
+                    .py_2()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child(diagnostic.clone())
+            }))
+            .into_any_element()
+    }
+}
+
+impl Render for Workbench {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let navigation = self.render_navigation(cx);
+        let editor = self.render_editor(cx);
+        div()
+            .id("workbench")
+            .key_context("Regressify")
+            .track_focus(&self.focus)
+            .flex()
+            .flex_col()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .text_sm()
+            .on_action(cx.listener(Self::save_document))
+            .on_action(cx.listener(Self::undo_document))
+            .on_action(cx.listener(Self::redo_document))
+            .on_action(cx.listener(Self::choose_workspace))
+            .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
+                this.edit(Session::add_scenario, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &AddViewport, window, cx| {
+                this.edit(Session::add_viewport, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DuplicateItem, window, cx| {
+                this.edit(Session::duplicate_selected, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveItemUp, window, cx| {
+                this.edit(|session| session.move_selected(-1), window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &MoveItemDown, window, cx| {
+                this.edit(|session| session.move_selected(1), window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &AddBrowserAction, window, cx| {
+                this.edit(|session| session.add_action(&action.kind), window, cx)
+            }))
+            .on_action(cx.listener(|this, action: &ChooseField, window, cx| {
+                this.edit(
+                    |session| session.set_field(&action.key, Some(json!(action.value))),
+                    window,
+                    cx,
+                )
+            }))
+            .child(self.render_toolbar(cx))
+            .child(
+                div().flex_1().min_h_0().child(
+                    h_resizable("workspace-layout")
+                        .child(
+                            resizable_panel()
+                                .size(px(280.))
+                                .size_range(px(220.)..px(440.))
+                                .child(navigation),
+                        )
+                        .child(resizable_panel().child(editor)),
+                ),
+            )
+            .child(
+                div()
+                    .id("status")
+                    .role(Role::Status)
+                    .aria_label(self.status.clone())
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_4()
+                    .py_2()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(div().flex_1().truncate().child(self.status.clone()))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if self.busy {
+                                "Working"
+                            } else if self.unsaved() {
+                                "Modified"
+                            } else {
+                                "Ready"
+                            }),
+                    ),
+            )
+            .children(Root::render_dialog_layer(window, cx))
+            .children(Root::render_sheet_layer(window, cx))
+            .children(Root::render_notification_layer(window, cx))
+    }
+}
+
+pub fn launch(root: Option<PathBuf>) {
+    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
+        gpui_kit::init(cx);
+        Theme::change(ThemeMode::Light, None, cx);
+        let modifier = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        cx.bind_keys([
+            KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
+            KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
+            KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
+            KeyBinding::new(&format!("{modifier}-shift-z"), RedoDocument, Some("Regressify")),
+        ]);
+        let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
+        cx.spawn(async move |cx| {
+            let result = cx.open_window(WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(1000.), px(640.))),
+                titlebar: Some(TitlebarOptions { title: Some("Regressify Desktop".into()), ..Default::default() }),
+                ..Default::default()
+            }, |window, cx| {
+                let view = cx.new(|cx| Workbench::new(window, cx));
+                let weak = view.downgrade();
+                window.on_window_should_close(cx, move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        if this.unsaved() || this.busy { this.status = "Save changes and finish the current operation before closing".into(); cx.notify(); false }
+                        else { cx.quit(); true }
+                    }).unwrap_or(true)
+                });
+                if let Some(root) = root { view.update(cx, |this, cx| this.load_workspace(root, window, cx)); }
+                cx.new(|cx| Root::new(view, window, cx))
+            });
+            if let Err(error) = result { eprintln!("Unable to open Regressify Desktop: {error:#}"); }
+        }).detach();
+    });
+}

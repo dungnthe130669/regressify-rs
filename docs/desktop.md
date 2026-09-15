@@ -12,6 +12,7 @@ Windows, install the Visual Studio C++ build tools and Windows SDK.
 ```sh
 cargo build --features gui --bins
 cargo run --features gui --bin regressify-desktop
+cargo run --features gui --bin regressify-desktop -- /path/to/workspace
 ```
 
 The `gui` feature is opt-in. `cargo build` and `cargo run -- test` continue to
@@ -25,6 +26,7 @@ separate CLI process so run-specific state is isolated.
 cargo test --all-targets
 cargo test --features desktop --lib desktop::
 cargo check --features gui --bin regressify-desktop
+cargo test --features gui-tests --lib desktop::ui::tests -- --test-threads=1
 ```
 
 A successful compile does not replace a native smoke test. Verify keyboard
@@ -114,3 +116,24 @@ silently edit a different item.
 New nested values use YAML flow notation to remain valid at any indentation.
 Existing document nodes and their comments are retained. JSON flow notation is
 valid YAML, so these files remain compatible with the existing CLI parser.
+
+## Editor Workflow
+
+Open a workspace, then select a configuration file or test suite in the left
+navigator. Select a scenario to edit its fields and reveal its actions. The Add
+menu offers scenarios, viewports, and every supported action. Duplicate and
+move controls operate on the selected item.
+
+Fields presents guided controls; Advanced reveals all optional root settings.
+Source exposes the complete YAML/JSON with syntax highlighting and built-in
+search. Effective displays the resolved scenario configuration. Invalid source
+or field values are retained as drafts and block saving.
+
+Use Ctrl+S to save, Ctrl+O to open a workspace, Ctrl+Z to undo, and Ctrl+Shift+Z
+to redo (Cmd on macOS). Text inputs also retain their native editing shortcuts.
+The toolbar undo/redo commands operate on the complete document history.
+
+The `gui-tests` feature enables GPUI's headless interaction instrumentation.
+These tests operate on the production view, not a duplicate test-only UI. They
+verify events, state, and layout bounds, but are not pixel screenshots or full
+operating-system IME tests.

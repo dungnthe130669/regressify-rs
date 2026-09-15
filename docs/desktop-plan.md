@@ -50,21 +50,21 @@ cancellation, unsaved changes, invalid paths, and conflicting saves are tested.
 
 ### 3. Guided Editing
 
-- [ ] Edit all workspace settings using labeled, typed fields.
+- [x] Edit all workspace settings using labeled, typed fields.
 - [ ] Edit suite settings and create, duplicate, rename, reorder, and remove
   scenarios.
-- [ ] Edit scenario settings, dependencies, restore state, URLs, viewports,
+- [x] Edit scenario settings, dependencies, restore state, URLs, viewports,
   capture selectors, waits, and overrides.
 - [ ] Add, duplicate, reorder, and remove every supported action type: check,
   click, focus, goto, hide, hover, input, persist, press, remove, save, select,
   scroll, uncheck, and wait.
-- [ ] Support frame chains, file uploads, optional values, and action-specific
+- [x] Support frame chains, file uploads, optional values, and action-specific
   fields without changing the existing serialization format.
 - [ ] Distinguish inherited values from explicit false, zero, and empty values;
   show resolved values and offer reset-to-inherited controls.
 - [ ] Edit viewport definitions.
-- [ ] Provide YAML/JSON source editing, parse/type diagnostics, and undo/redo.
-- [ ] Keep guided editing and source editing synchronized through one document.
+- [x] Provide YAML/JSON source editing, parse/type diagnostics, and undo/redo.
+- [x] Keep guided editing and source editing synchronized through one document.
 
 Acceptance: every serialized property has a guided or structured field; unknown
 properties and invalid types surface as diagnostics; editing does not introduce
@@ -162,3 +162,7 @@ check complete merely because compilation passed.
   scenario duplication without ID collisions, selection repair, grouped undo,
   unsaved navigation guards, and rollback of failed compound edits. All 33
   desktop model tests pass together.
+- First native editor: desktop compilation and three GPUI production-view tests
+  pass on Windows. Tests type into fields, save asynchronously, duplicate/undo
+  scenarios, and verify that invalid source exposes an alert and cannot save.
+  GPUI input subscriptions are deferred; tests wait outside window-update borrows.
