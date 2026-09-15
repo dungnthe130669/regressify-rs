@@ -142,3 +142,7 @@ check complete merely because compilation passed.
   preservation, empty and indentationless lists, history limits, validation,
   multi-document rejection, and all 15 action templates. The model rejects a
   generated edit if its parsed meaning differs from the requested change.
+- Workspace persistence: six Windows tests pass for create/save/reload,
+  external-change conflicts, duplicate-key rejection, suite copy/rename/delete,
+  portable path containment, and bounded recent-workspace preferences. A Unix
+  symlink-escape regression is platform-gated.

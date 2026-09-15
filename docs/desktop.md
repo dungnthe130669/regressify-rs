@@ -43,3 +43,14 @@ losslessly, the operation fails and the original source remains untouched.
 Source drafts may be temporarily invalid. Validation is a mandatory save gate.
 Undo/redo stores exact source snapshots, limited to 100 entries and a 16 MiB undo
 budget. Individual documents are limited to 4 MiB for interactive editing.
+
+Saves compare the file against its last loaded version and refuse to overwrite
+external edits. Reload explicitly discards the draft; Save As preserves it in a
+new file and never replaces an existing destination. Changing format with Save As
+converts the data and does not preserve YAML comments in JSON.
+
+Suite copies drop the suite-level `id` to prevent sharing output artifacts with
+the original. Renaming keeps IDs unchanged and requires saved content. File
+deletion is restricted to suites and requires a confirmation in the interface.
+Recent workspaces and the selected CLI executable are stored in the operating
+system's per-user application configuration directory, outside the test project.
