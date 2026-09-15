@@ -155,3 +155,6 @@ check complete merely because compilation passed.
   command failure, cancellation, and bounded log memory. The current CLI supports
   suite execution filters, not a per-scenario execution flag; scenario filtering
   in the desktop navigator does not silently change run scope.
+- Result model: three tests pass for pass/mismatch/engine-error classification,
+  malformed-report recovery, historical run discovery, artifact containment,
+  missing files, and PNG dimension validation using the existing CLI helper.

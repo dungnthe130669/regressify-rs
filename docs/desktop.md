@@ -89,3 +89,16 @@ hide the command's final state.
 
 `Completed` means the process exited zero. It does **not** mean visual tests
 passed. Scenario failures and mismatches are read from generated reports.
+
+## Results
+
+The results browser reads `bitmaps_test/<run>/report.json` under each suite's
+output directory. It keeps historical runs distinct and lists the newest first.
+An invalid report produces a warning without hiding valid reports. Discovery
+loads at most 1,000 reports, with a 16 MiB limit per report.
+
+Pass, visual mismatch, and engine/capture error are separate outcomes. Unknown
+future statuses are never shown as passed. Reference, test, and diff paths are
+resolved relative to `html_report`, matching the report generator, and must stay
+inside the selected output directory. Missing images remain recoverable errors.
+PNG dimensions are bounded before decoding with the same limits as the CLI.
