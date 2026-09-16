@@ -83,6 +83,9 @@ impl RunPanel {
     pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
         &self.manager.progress
     }
+    pub(super) fn requires_suites(&self) -> bool {
+        self.command.supports_suites()
+    }
     pub(super) fn cancel(&mut self, cx: &mut Context<Self>) {
         self.manager.cancel();
         self.status = "Cancelling process tree...".into();

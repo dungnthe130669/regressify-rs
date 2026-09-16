@@ -133,6 +133,9 @@ approve, and optimize require confirmation.
 The CLI has no single-scenario run flag. Selecting a scenario for editing does
 not restrict execution to it. Suite selections use exact escaped names;
 compare and approve resolve each selected suite's explicit output ID.
+The selected suite catalog is refreshed immediately before execution. A removed
+or newly invalid selection stops the run for review, while updated output IDs
+are resolved from disk. Workspace-only commands do not require valid suites.
 For duplicate names, `.tests.yaml` takes precedence over `.tests.yml`, then
 `.tests.json`. Run suite rejects a shadowed file and names the competing path.
 Same-priority duplicates and reserved `all` selected-file runs are rejected.

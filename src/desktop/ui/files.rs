@@ -258,7 +258,7 @@ impl Workbench {
                 }
             }
             Pending::Close => cx.quit(),
-            Pending::Run => self.runs.update(cx, |panel, cx| panel.start(window, cx)),
+            Pending::Run => self.start_selected_run(window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
         }
     }

@@ -329,6 +329,30 @@ impl Workbench {
             .update(cx, |panel, cx| panel.update_catalog(suites, error, cx));
     }
 
+    fn start_selected_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        if !self.runs.read(cx).requires_suites() {
+            self.runs.update(cx, |panel, cx| panel.start(window, cx));
+            return;
+        }
+        let Some(workspace) = self.session.workspace.clone() else {
+            return;
+        };
+        let selected_count = self.runs.read(cx).selected_count();
+        self.task("Validating selected suites...", move || workspace.suite_catalog(), move |this, suites, window, cx| {
+            this.session.suites = suites;
+            this.session.suite_error = None;
+            this.sync_suites(cx);
+            if this.runs.read(cx).selected_count() != selected_count {
+                this.status = "Selected suites changed or contain errors; review the selection before running".into();
+                return;
+            }
+            this.runs.update(cx, |panel, cx| panel.start(window, cx));
+        }, window, cx);
+    }
+
     fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.runs.read(cx).running() || self.busy {
             self.status =
@@ -891,7 +915,7 @@ impl Workbench {
                         Checkbox::new("sidebar-select-all")
                             .label("All")
                             .checked(
-                                !self.session.suites.is_empty()
+                                self.runs.read(cx).selected_count() > 0
                                     && self.runs.read(cx).selected_count()
                                         == self
                                             .session

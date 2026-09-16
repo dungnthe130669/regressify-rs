@@ -272,6 +272,30 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
     .unwrap();
 }
 
+#[gpui_kit::test]
+async fn run_preflight_rejects_a_selected_suite_changed_on_disk(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+            std::fs::write(
+                directory.path().join("visual_tests/ui-test.tests.yaml"),
+                "scenarios: [",
+            )
+            .unwrap();
+            this.start_selected_run(window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| window.try_find("status").is_some_and(|status| status.label() == Some("Selected suites changed or contain errors; review the selection before running"))).await;
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert!(view.read(cx).session.suites[0].error.is_some());
+    });
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));
