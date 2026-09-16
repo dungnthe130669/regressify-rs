@@ -612,15 +612,62 @@ fn validate_typed_source(document: &Document) -> Result<()> {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemePreference {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemePreference {
+    pub fn is_dark(self, system_dark: bool) -> bool {
+        match self {
+            Self::System => system_dark,
+            Self::Light => false,
+            Self::Dark => true,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
     pub recent_workspaces: Vec<PathBuf>,
     pub dark_mode: bool,
     pub navigator_hidden: bool,
+    #[serde(default)]
+    pub theme: Option<ThemePreference>,
+}
+
+impl Default for Preferences {
+    fn default() -> Self {
+        Self {
+            recent_workspaces: Vec::new(),
+            dark_mode: false,
+            navigator_hidden: false,
+            theme: Some(ThemePreference::System),
+        }
+    }
 }
 
 impl Preferences {
+    pub fn theme_preference(&self) -> ThemePreference {
+        self.theme.unwrap_or(if self.dark_mode {
+            ThemePreference::Dark
+        } else {
+            ThemePreference::Light
+        })
+    }
+
+    pub fn set_theme_preference(&mut self, preference: ThemePreference) {
+        self.theme = Some(preference);
+        self.dark_mode = preference == ThemePreference::Dark;
+    }
+
     pub fn path() -> Result<PathBuf> {
         directories::ProjectDirs::from("", "Regressify", "Regressify Desktop")
             .map(|directories| directories.config_dir().join("settings.json"))
@@ -656,6 +703,53 @@ mod tests {
     use super::super::document::Edit;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn theme_preferences_preserve_legacy_choices_and_follow_system_only_when_selected() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("appearance.json");
+        assert_eq!(
+            Preferences::load(&path).unwrap().theme_preference(),
+            ThemePreference::System
+        );
+        for (json, expected) in [
+            (r#"{"darkMode":true}"#, ThemePreference::Dark),
+            (r#"{"darkMode":false}"#, ThemePreference::Light),
+            (
+                r#"{"darkMode":true,"theme":"system"}"#,
+                ThemePreference::System,
+            ),
+            (
+                r#"{"darkMode":true,"theme":"light"}"#,
+                ThemePreference::Light,
+            ),
+        ] {
+            assert_eq!(
+                serde_json::from_str::<Preferences>(json)
+                    .unwrap()
+                    .theme_preference(),
+                expected
+            );
+        }
+        for preference in [
+            ThemePreference::System,
+            ThemePreference::Light,
+            ThemePreference::Dark,
+        ] {
+            let mut preferences = Preferences::default();
+            preferences.set_theme_preference(preference);
+            preferences.save(&path).unwrap();
+            assert_eq!(
+                Preferences::load(&path).unwrap().theme_preference(),
+                preference
+            );
+        }
+        assert!(ThemePreference::System.is_dark(true));
+        assert!(!ThemePreference::System.is_dark(false));
+        assert!(!ThemePreference::Light.is_dark(true));
+        assert!(ThemePreference::Dark.is_dark(false));
+        assert!(serde_json::from_str::<Preferences>(r#"{"theme":"unknown"}"#).is_err());
+    }
 
     #[test]
     fn displayed_paths_remove_extended_prefixes_without_losing_network_roots() {

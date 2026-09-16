@@ -80,6 +80,7 @@ impl Workbench {
                         })),
                 )
             })
+            .child(self.render_theme_picker())
             .child(self.file_menu())
             .child(
                 Button::new("open-workspace")

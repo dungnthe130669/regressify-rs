@@ -163,6 +163,9 @@ impl Workbench {
         let scenario_search_subscription =
             cx.subscribe(&scenario_search, |_, _, _: &InputEvent, cx| cx.notify());
         let source_observer = cx.observe(&source, |_, _, cx| cx.notify());
+        let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
+            this.system_appearance_changed(window.appearance(), window, cx);
+        });
         let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a setting"));
         let field_search_subscription =
             cx.subscribe(&field_search, |_, _, _: &InputEvent, cx| cx.notify());
@@ -210,6 +213,7 @@ impl Workbench {
                 source_observer,
                 scenario_search_subscription,
                 results_subscription,
+                appearance_subscription,
             ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
@@ -1900,6 +1904,7 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)
@@ -2031,11 +2036,11 @@ pub fn launch(root: Option<PathBuf>) {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
-            let dark = Preferences::path()
+            let preference = Preferences::path()
                 .and_then(|path| Preferences::load(&path))
-                .map(|preferences| preferences.dark_mode)
-                .unwrap_or(false);
-            design::apply_theme(dark, None, cx);
+                .map(|preferences| preferences.theme_preference())
+                .unwrap_or_default();
+            design::apply_preference(preference, None, cx);
             bind_keys(cx);
             let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
             cx.spawn(async move |cx| {

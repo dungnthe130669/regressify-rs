@@ -8,6 +8,95 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore_system_changes(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::workspace::{Preferences, ThemePreference};
+    use gpui_kit::component::ActiveTheme;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        assert!(view.read(cx).session.dirty());
+    })
+    .unwrap();
+    let original = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    for preference in [
+        ThemePreference::Dark,
+        ThemePreference::Light,
+        ThemePreference::System,
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.change_theme(&super::design::ChooseTheme { preference }, window, cx)
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            !view.read(cx).busy
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let expected = match preference {
+                ThemePreference::System => "Appearance: System",
+                ThemePreference::Light => "Appearance: Light",
+                ThemePreference::Dark => "Appearance: Dark",
+            };
+            window.render_frame(cx);
+            assert_eq!(window.find("theme-picker").label(), Some(expected));
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                original
+            );
+            assert!(view.read(cx).session.dirty());
+            if preference != ThemePreference::System {
+                assert_eq!(
+                    cx.theme().mode.is_dark(),
+                    preference == ThemePreference::Dark
+                );
+            }
+            view.update(cx, |this, cx| {
+                this.system_appearance_changed(gpui_kit::WindowAppearance::Dark, window, cx)
+            });
+            assert_eq!(
+                cx.theme().mode.is_dark(),
+                preference != ThemePreference::Light
+            );
+            view.update(cx, |this, cx| {
+                this.system_appearance_changed(gpui_kit::WindowAppearance::Light, window, cx)
+            });
+            assert_eq!(
+                cx.theme().mode.is_dark(),
+                preference == ThemePreference::Dark
+            );
+        })
+        .unwrap();
+        assert_eq!(
+            Preferences::load(&directory.path().join("desktop-preferences.json"))
+                .unwrap()
+                .theme_preference(),
+            preference
+        );
+    }
+}
+
+#[gpui_kit::test]
 fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

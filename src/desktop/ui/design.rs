@@ -1,5 +1,36 @@
 use super::*;
 
+use crate::desktop::workspace::ThemePreference;
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct ChooseTheme {
+    pub preference: ThemePreference,
+}
+
+pub(super) fn apply_preference(
+    preference: ThemePreference,
+    window: Option<&mut Window>,
+    cx: &mut App,
+) {
+    cx.set_window_appearance(match preference {
+        ThemePreference::System => None,
+        ThemePreference::Light => Some(WindowAppearance::Light),
+        ThemePreference::Dark => Some(WindowAppearance::Dark),
+    });
+    let appearance = window
+        .as_ref()
+        .map(|window| window.appearance())
+        .unwrap_or_else(|| cx.window_appearance());
+    apply_theme(
+        preference.is_dark(matches!(
+            appearance,
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        )),
+        window,
+        cx,
+    );
+}
+
 pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App) {
     Theme::change(
         if dark {
@@ -81,5 +112,72 @@ pub(super) fn group(key: &str) -> (usize, &'static str) {
         "hideSelectors" | "removeSelectors" | "cssOverridePath" | "jsOnReadyPath"
         | "useCssOverride" | "urlReplacements" => (4, "Page setup"),
         _ => (5, "Behavior"),
+    }
+}
+
+impl Workbench {
+    pub(super) fn change_theme(
+        &mut self,
+        action: &ChooseTheme,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.preferences.theme_preference() == action.preference {
+            return;
+        }
+        self.preferences.set_theme_preference(action.preference);
+        apply_preference(action.preference, Some(window), cx);
+        self.save_preferences(window, cx);
+    }
+
+    pub(super) fn system_appearance_changed(
+        &mut self,
+        appearance: WindowAppearance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.preferences.theme_preference() == ThemePreference::System {
+            apply_theme(
+                matches!(
+                    appearance,
+                    WindowAppearance::Dark | WindowAppearance::VibrantDark
+                ),
+                Some(window),
+                cx,
+            );
+            cx.notify();
+        }
+    }
+
+    pub(super) fn render_theme_picker(&self) -> AnyElement {
+        let preference = self.preferences.theme_preference();
+        let (label, icon) = match preference {
+            ThemePreference::System => ("System", gpui_kit::assets::IconName::Monitor),
+            ThemePreference::Light => ("Light", gpui_kit::assets::IconName::Sun),
+            ThemePreference::Dark => ("Dark", gpui_kit::assets::IconName::Moon),
+        };
+        let focus = self.focus.clone();
+        Button::new("theme-picker")
+            .ghost()
+            .icon(icon)
+            .accessibility_label(format!("Appearance: {label}"))
+            .tooltip(format!("Appearance: {label}"))
+            .disabled(self.busy)
+            .dropdown_menu(move |menu, _, _| {
+                let mut menu = menu.action_context(focus.clone());
+                for (choice, label) in [
+                    (ThemePreference::System, "System"),
+                    (ThemePreference::Light, "Light"),
+                    (ThemePreference::Dark, "Dark"),
+                ] {
+                    menu = menu.menu_with_check(
+                        label,
+                        preference == choice,
+                        Box::new(ChooseTheme { preference: choice }),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
     }
 }

@@ -147,9 +147,12 @@ impl Workbench {
             Operation::Refresh => self.refresh_files(window, cx),
             Operation::CloseWorkspace => self.guard(Pending::CloseWorkspace, window, cx),
             Operation::Theme => {
-                self.preferences.dark_mode = !self.preferences.dark_mode;
-                design::apply_theme(self.preferences.dark_mode, Some(window), cx);
-                self.save_preferences(window, cx);
+                let preference = if cx.theme().mode.is_dark() {
+                    crate::desktop::workspace::ThemePreference::Light
+                } else {
+                    crate::desktop::workspace::ThemePreference::Dark
+                };
+                self.change_theme(&design::ChooseTheme { preference }, window, cx);
             }
         }
     }
