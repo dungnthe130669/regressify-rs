@@ -7,6 +7,9 @@ isolated bundled-engine execution, and visual report review. See
 
 ## Build and Launch
 
+The Windows GUI binary reserves an 8 MiB main-thread stack for GPUI rendering,
+including debug builds. This linker setting does not apply to the CLI binary.
+
 Use stable Rust and native build tools. Windows requires Visual Studio C++ build
 tools and the Windows SDK. Other GPUI platform prerequisites are documented at
 <https://gpui-kit.com/docs/installation>.

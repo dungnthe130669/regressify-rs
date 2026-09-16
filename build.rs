@@ -59,6 +59,18 @@ fn main() {
     // Always embed the git hash so it is available to every build profile.
     emit_git_hash();
 
+    // GPUI's debug render trees exceed Windows' default 1 MiB main-thread stack.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var_os("CARGO_FEATURE_GUI").is_some()
+    {
+        let argument = if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            "/STACK:8388608"
+        } else {
+            "-Wl,--stack,8388608"
+        };
+        println!("cargo:rustc-link-arg-bin=regressify-desktop={argument}");
+    }
+
     if std::env::var("CARGO_CFG_TARGET_OS").unwrap() != "windows"
         && std::env::var("PROFILE").unwrap() != "release"
     {
