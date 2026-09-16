@@ -296,6 +296,146 @@ async fn run_preflight_rejects_a_selected_suite_changed_on_disk(cx: &mut TestApp
     });
 }
 
+#[gpui_kit::test]
+async fn navigator_search_opens_a_scenario_in_another_suite(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.workspace.as_ref().unwrap().create_document(
+                Path::new("visual_tests/checkout.tests.yaml"),
+                crate::desktop::document::DocumentKind::Suite,
+                "scenarios:\n  - label: Payment confirmation\n    url: https://example.com/receipt\n",
+            ).unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+        });
+        window.render_frame(cx);
+        window.click("navigator-search", cx);
+        window.input("confirmation", cx);
+    }).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("scenario:visual_tests/checkout.tests.yaml:0")
+            .is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("scenario:visual_tests/checkout.tests.yaml:0", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("field-url")
+            .is_some_and(|field| field.value() == Some("https://example.com/receipt"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            Path::new("visual_tests/checkout.tests.yaml")
+        );
+        assert!(!view.read(cx).session.dirty());
+    });
+}
+
+#[gpui_kit::test]
+async fn scenario_quick_navigation_keeps_its_destination_after_saving(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        view.update(cx, |this, cx| {
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second")
+                .unwrap();
+            this.open_location(open.entry, Selection::Scenario(0), window, cx);
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).session.dirty());
+        window.click("guard-save", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Document loaded"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("second")
+        );
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        assert!(!view.read(cx).session.dirty());
+    });
+    let original: serde_json::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(original["scenarios"].as_array().unwrap().len(), 2);
+}
+
+#[gpui_kit::test]
+async fn navigator_reports_empty_results_and_has_a_keyboard_entry(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-p"
+            } else {
+                "ctrl-p"
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("navigator-search")
+            .is_some_and(|input| input.focused() == Some(true))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("does-not-exist", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("navigator-empty").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("navigator-search", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.within("navigator-filter").click(1_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("navigator-empty").is_some()
+    })
+    .await;
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));

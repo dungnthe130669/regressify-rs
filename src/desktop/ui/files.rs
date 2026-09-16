@@ -24,7 +24,7 @@ pub(super) struct FileCommand {
 #[derive(Clone)]
 pub(super) enum Pending {
     Workspace(PathBuf),
-    Document(Entry),
+    Location(Entry, Selection),
     Name(Operation),
     Reload,
     Close,
@@ -250,7 +250,7 @@ impl Workbench {
     ) {
         match pending {
             Pending::Workspace(path) => self.load_workspace(path, window, cx),
-            Pending::Document(entry) => self.load_document(entry, window, cx),
+            Pending::Location(entry, selection) => self.open_location(entry, selection, window, cx),
             Pending::Name(operation) => self.name_dialog(operation, window, cx),
             Pending::Reload => {
                 if let Some(entry) = self.session.open.as_ref().map(|open| open.entry.clone()) {

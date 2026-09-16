@@ -29,6 +29,12 @@ are not included.
 
 ## Workspace and Files
 
+The navigator searches suite paths and scenario labels, IDs, and URLs across the
+workspace. Matching scenarios open directly in Fields, retaining the destination
+through a Save/Discard/Cancel prompt. Expand or collapse suite outlines without
+opening their files. Selected suites narrows the navigator to the run selection;
+clearing search restores the complete list. Ctrl+P (Cmd+P on macOS) focuses search.
+
 The navigator lists workspace configuration, suites under `visual_tests`, and
 YAML/JSON under `common`. Select a suite, then a scenario to reveal its actions.
 Search filters labels. Open configuration file adds other workspace-relative

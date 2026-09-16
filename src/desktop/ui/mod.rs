@@ -1,6 +1,9 @@
 //! Native workbench. Domain edits stay in the headless desktop models.
 
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use anyhow::{Result, anyhow};
 use gpui_kit::component::{
@@ -44,7 +47,8 @@ actions!(
         AddViewport,
         DuplicateItem,
         MoveItemUp,
-        MoveItemDown
+        MoveItemDown,
+        FocusNavigator
     ]
 );
 
@@ -95,6 +99,8 @@ pub struct Workbench {
     results: Entity<reports::ResultsPanel>,
     main_tab: usize,
     overview: bool,
+    expanded_suites: BTreeSet<PathBuf>,
+    selected_only: bool,
 }
 
 impl Workbench {
@@ -176,6 +182,8 @@ impl Workbench {
             results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
             main_tab: 0,
             overview: true,
+            expanded_suites: BTreeSet::new(),
+            selected_only: false,
         }
     }
 
@@ -235,6 +243,8 @@ impl Workbench {
                 this.overview = true;
                 this.tab = 0;
                 this.advanced = false;
+                this.expanded_suites.clear();
+                this.selected_only = false;
                 this.search
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 this.results.update(cx, |panel, cx| panel.clear(window, cx));
@@ -273,8 +283,37 @@ impl Workbench {
     }
 
     fn load_document(&mut self, entry: Entry, window: &mut Window, cx: &mut Context<Self>) {
+        self.load_document_at(entry, Selection::Root, window, cx);
+    }
+
+    fn open_location(
+        &mut self,
+        entry: Entry,
+        selection: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| open.entry.path == entry.path)
+        {
+            self.select(selection, window, cx);
+        } else {
+            self.load_document_at(entry, selection, window, cx);
+        }
+    }
+
+    fn load_document_at(
+        &mut self,
+        entry: Entry,
+        selection: Selection,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.unsaved() {
-            self.guard(files::Pending::Document(entry), window, cx);
+            self.guard(files::Pending::Location(entry, selection), window, cx);
             return;
         }
         let Some(workspace) = self.session.workspace.clone() else {
@@ -283,11 +322,13 @@ impl Workbench {
         self.task(
             "Loading document...",
             move || workspace.open_document(entry),
-            |this, open, window, cx| {
+            move |this, open, window, cx| {
+                this.expanded_suites.insert(open.entry.path.clone());
                 this.session.open = Some(open);
                 this.overview = false;
                 this.main_tab = 0;
-                this.session.selection = Selection::Root;
+                this.session.selection = selection;
+                this.session.reconcile_selection();
                 this.tab = if this
                     .session
                     .open
@@ -734,6 +775,9 @@ impl Workbench {
         }
         match self.session.select(selection) {
             Ok(()) => {
+                if let Some(open) = &self.session.open {
+                    self.expanded_suites.insert(open.entry.path.clone());
+                }
                 self.tab = 0;
                 self.overview = false;
                 self.main_tab = 0;
@@ -861,7 +905,7 @@ impl Workbench {
     }
 
     fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.search.read(cx).value().to_lowercase();
+        let query = self.search.read(cx).value().trim().to_lowercase();
         let mut navigation = div()
             .id("navigator")
             .flex()
@@ -887,6 +931,7 @@ impl Workbench {
                 Input::new(&self.search)
                     .id("navigator-search")
                     .prefix(IconName::Search)
+                    .cleanable(true)
                     .small(),
             )
             .child(
@@ -904,6 +949,18 @@ impl Workbench {
                     ),
             );
         if self.session.workspace.is_some() {
+            navigation = navigation.child(
+                TabBar::new("navigator-filter")
+                    .segmented()
+                    .small()
+                    .selected_index(usize::from(self.selected_only))
+                    .on_click(cx.listener(|this, index, _, cx| {
+                        this.selected_only = *index == 1;
+                        cx.notify();
+                    }))
+                    .child(Tab::new().label("All files"))
+                    .child(Tab::new().label("Selected suites")),
+            );
             navigation = navigation.child(
                 div()
                     .flex()
@@ -969,26 +1026,79 @@ impl Workbench {
             .min_h_0()
             .overflow_y_scroll()
             .gap_1();
+        let mut visible_files = 0;
         for (index, entry) in self.session.entries.iter().enumerate() {
             let current = self
                 .session
                 .open
                 .as_ref()
                 .is_some_and(|open| open.entry.path == entry.path);
-            if !entry.label().to_lowercase().contains(&query) && !current {
-                continue;
-            }
             let entry = entry.clone();
             let suite = self
                 .session
                 .suites
                 .iter()
                 .find(|suite| suite.entry.path == entry.path);
+            if self.selected_only
+                && !suite.is_some_and(|suite| self.runs.read(cx).selected(&suite.name))
+            {
+                continue;
+            }
+            let file_match = entry.label().to_lowercase().contains(&query);
+            let scenario_match = suite.is_some_and(|suite| {
+                suite.scenarios.iter().any(|scenario| {
+                    [&scenario.label, &scenario.id, &scenario.url]
+                        .iter()
+                        .any(|value| value.to_lowercase().contains(&query))
+                })
+            });
+            let draft_match = current
+                && self
+                    .value
+                    .get("scenarios")
+                    .and_then(Value::as_array)
+                    .is_some_and(|scenarios| {
+                        scenarios.iter().any(|scenario| {
+                            ["label", "id", "url"].iter().any(|key| {
+                                scenario[*key]
+                                    .as_str()
+                                    .is_some_and(|text| text.to_lowercase().contains(&query))
+                            })
+                        })
+                    });
+            if !query.is_empty() && !file_match && !scenario_match && !draft_match {
+                continue;
+            }
+            visible_files += 1;
+            let expanded = self.expanded_suites.contains(&entry.path) || !query.is_empty();
             let mut row = div().flex().items_center().gap_1();
             if let Some(suite) = suite {
+                let path = entry.path.clone();
+                row = row.child(
+                    Button::new(("expand-suite", index))
+                        .ghost()
+                        .xsmall()
+                        .icon(if expanded {
+                            IconName::ChevronDown
+                        } else {
+                            IconName::ChevronRight
+                        })
+                        .tooltip(if expanded {
+                            "Collapse scenarios"
+                        } else {
+                            "Expand scenarios"
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            if !this.expanded_suites.remove(&path) {
+                                this.expanded_suites.insert(path.clone());
+                            }
+                            cx.notify();
+                        })),
+                );
                 let name = suite.name.clone();
                 row = row.child(
                     Checkbox::new(("sidebar-suite", index))
+                        .label("")
                         .checked(self.runs.read(cx).selected(&name))
                         .disabled(
                             self.busy || self.runs.read(cx).running() || suite.error.is_some(),
@@ -1037,7 +1147,8 @@ impl Workbench {
                                 .into_owned(),
                         )
                         .tooltip(entry.label())
-                        .w_full()
+                        .flex_1()
+                        .min_w_0()
                         .justify_start()
                         .disabled(self.busy)
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -1058,7 +1169,7 @@ impl Workbench {
                         .map(|(status, color)| div().text_xs().text_color(color).child(status)),
                 ),
             );
-            if current {
+            if current && expanded {
                 let items = self.value["scenarios"]
                     .as_array()
                     .or_else(|| self.value.as_array());
@@ -1076,8 +1187,13 @@ impl Workbench {
                             Selection::Scenario(scenario)
                         };
                         if query.is_empty()
+                            || file_match
                             || label.to_lowercase().contains(&query)
-                            || self.session.selection.scenario() == Some(scenario)
+                            || ["id", "url"].iter().any(|key| {
+                                value[*key]
+                                    .as_str()
+                                    .is_some_and(|text| text.to_lowercase().contains(&query))
+                            })
                         {
                             files = files.child(
                                 Button::new(("scenario", scenario))
@@ -1138,7 +1254,62 @@ impl Workbench {
                         }
                     }
                 }
+            } else if expanded && let Some(suite) = suite {
+                for (scenario, details) in suite.scenarios.iter().enumerate() {
+                    if !file_match
+                        && ![&details.label, &details.id, &details.url]
+                            .iter()
+                            .any(|text| text.to_lowercase().contains(&query))
+                    {
+                        continue;
+                    }
+                    let entry = suite.entry.clone();
+                    files = files.child(
+                        Button::new(SharedString::from(format!(
+                            "scenario:{}:{scenario}",
+                            entry.label()
+                        )))
+                        .ghost()
+                        .small()
+                        .accessibility_label(details.label.clone())
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_left()
+                                .truncate()
+                                .child(details.label.clone()),
+                        )
+                        .tooltip(format!("{}\n{}", details.label, details.url))
+                        .w_full()
+                        .pl_5()
+                        .disabled(self.busy)
+                        .on_click(cx.listener(
+                            move |this, _, window, cx| {
+                                this.open_location(
+                                    entry.clone(),
+                                    Selection::Scenario(scenario),
+                                    window,
+                                    cx,
+                                )
+                            },
+                        )),
+                    );
+                }
             }
+        }
+        if visible_files == 0 && self.session.workspace.is_some() {
+            files = files.child(
+                div()
+                    .id("navigator-empty")
+                    .role(Role::Status)
+                    .aria_label("No matches")
+                    .test_support()
+                    .py_6()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No matches"),
+            );
         }
         navigation.child(files).into_any_element()
     }
@@ -1590,6 +1761,9 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::undo_document))
             .on_action(cx.listener(Self::redo_document))
             .on_action(cx.listener(Self::choose_workspace))
+            .on_action(cx.listener(|this, _: &FocusNavigator, window, cx| {
+                window.focus(&this.search.read(cx).focus_handle(cx), cx)
+            }))
             .on_action(cx.listener(Self::file_command))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)
@@ -1777,6 +1951,7 @@ fn bind_keys(cx: &mut App) {
         "ctrl"
     };
     cx.bind_keys([
+        KeyBinding::new(&format!("{modifier}-p"), FocusNavigator, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),
