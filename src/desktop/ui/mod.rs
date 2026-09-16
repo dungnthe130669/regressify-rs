@@ -27,6 +27,7 @@ use super::{
     workspace::{Entry, OpenDocument, Preferences},
 };
 
+mod choices;
 mod design;
 mod files;
 mod overview;
@@ -117,6 +118,7 @@ pub struct Workbench {
     field_search: Entity<InputState>,
     overrides_only: bool,
     collapsed_fields: BTreeSet<usize>,
+    viewport_choices: choices::ViewportChoices,
 }
 
 impl Workbench {
@@ -219,6 +221,7 @@ impl Workbench {
             field_search,
             overrides_only: false,
             collapsed_fields: BTreeSet::new(),
+            viewport_choices: choices::ViewportChoices::default(),
         }
     }
 
@@ -677,6 +680,7 @@ impl Workbench {
     }
 
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewport_choices.invalidate();
         self.session.refresh_catalog();
         self.sync_suites(cx);
         let source = self
@@ -1435,6 +1439,7 @@ impl Workbench {
             .unwrap_or_else(|error| format!("{error:#}"));
         self.resolved
             .update(cx, |state, cx| state.set_value(text, window, cx));
+        self.load_viewport_choices(window, cx);
     }
 
     fn field_hint(&self, field: &Field, explicit: bool) -> String {
@@ -1841,6 +1846,9 @@ impl Workbench {
                 }
             };
             row = row.child(control);
+            if let Some(choices) = self.render_list_choices(field, value, cx) {
+                row = row.child(choices);
+            }
             if field.key == "file" {
                 let key = field.key.clone();
                 row = row.child(
@@ -2269,6 +2277,7 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)
             }))

@@ -158,6 +158,23 @@ impl SuiteSelection {
     }
 }
 
+impl ScenarioSummary {
+    pub fn from_scenario(scenario: &crate::types::TestScenario) -> Self {
+        let id = scenario.id.clone().unwrap_or_else(|| {
+            scenario
+                .label
+                .as_deref()
+                .map(crate::helpers::slugify)
+                .unwrap_or_else(|| crate::snapshot::get_asset_version(scenario.url.as_bytes(), 20))
+        });
+        Self {
+            label: scenario.label.clone().unwrap_or_else(|| id.clone()),
+            id,
+            url: scenario.url.clone(),
+        }
+    }
+}
+
 impl Workspace {
     pub fn open(root: &Path) -> Result<Self> {
         let root = root
@@ -258,6 +275,30 @@ impl Workspace {
         Ok(OpenDocument { entry, document })
     }
 
+    pub fn viewport_choices(
+        &self,
+        path: &Path,
+        explicit: bool,
+    ) -> Result<Vec<crate::config::viewports::ViewportDef>> {
+        let resolved = self.resolve(path)?;
+        if !resolved.exists() && !explicit {
+            return Ok(Vec::new());
+        }
+        ensure!(
+            resolved.is_file(),
+            "Viewport file '{}' does not exist",
+            path.display()
+        );
+        let document = self
+            .open_document(Entry {
+                path: path.into(),
+                kind: DocumentKind::Viewports,
+            })?
+            .document;
+        document.validate()?;
+        Ok(serde_json::from_value(document.value()?)?)
+    }
+
     pub fn suite_catalog(&self) -> Result<Vec<SuiteSummary>> {
         let directory = self.resolve(Path::new("visual_tests"))?;
         if !directory.exists() {
@@ -290,25 +331,7 @@ impl Workspace {
                         suite
                             .scenarios
                             .iter()
-                            .map(|scenario| {
-                                let id = scenario.id.clone().unwrap_or_else(|| {
-                                    scenario
-                                        .label
-                                        .as_deref()
-                                        .map(crate::helpers::slugify)
-                                        .unwrap_or_else(|| {
-                                            crate::snapshot::get_asset_version(
-                                                scenario.url.as_bytes(),
-                                                20,
-                                            )
-                                        })
-                                });
-                                ScenarioSummary {
-                                    label: scenario.label.clone().unwrap_or_else(|| id.clone()),
-                                    id,
-                                    url: scenario.url.clone(),
-                                }
-                            })
+                            .map(ScenarioSummary::from_scenario)
                             .collect()
                     })
                     .unwrap_or_default();
@@ -615,6 +638,35 @@ mod tests {
     use super::super::document::Edit;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn viewport_choices_validate_files_and_respect_workspace_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let path = Path::new("common/_viewports.yaml");
+        assert!(workspace.viewport_choices(path, false).unwrap().is_empty());
+        assert!(workspace.viewport_choices(path, true).is_err());
+        fs::create_dir_all(directory.path().join("common")).unwrap();
+        fs::write(
+            directory.path().join(path),
+            "- label: Phone\n  width: 390\n  height: 844\n",
+        )
+        .unwrap();
+        let choices = workspace.viewport_choices(path, true).unwrap();
+        assert_eq!(choices[0].label, "Phone");
+        assert_eq!(choices[0].width, 390);
+        assert!(
+            workspace
+                .viewport_choices(Path::new("../outside.yaml"), true)
+                .is_err()
+        );
+        fs::write(
+            directory.path().join(path),
+            "- label: Phone\n  width: 0\n  height: 844\n",
+        )
+        .unwrap();
+        assert!(workspace.viewport_choices(path, true).is_err());
+    }
 
     #[test]
     fn create_edit_save_and_reload_suite() {

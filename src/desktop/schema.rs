@@ -39,6 +39,51 @@ pub struct Field {
 }
 
 impl Field {
+    pub fn toggle_list_choice(
+        &self,
+        explicit: &Value,
+        inherited: &Value,
+        choice: &str,
+        available: &[String],
+    ) -> Result<Value> {
+        ensure!(
+            matches!(self.kind, FieldKind::List { .. }),
+            "{} is not a list",
+            self.label
+        );
+        let current = if explicit.is_null() {
+            inherited
+        } else {
+            explicit
+        };
+        let mut values = string_values(current);
+        let viewports = self.key == "viewportNames";
+        if viewports && values.is_empty() {
+            values = available.to_vec();
+        }
+        let matches = |value: &str| {
+            if viewports {
+                value.eq_ignore_ascii_case(choice)
+            } else {
+                value == choice
+            }
+        };
+        if values.iter().any(|value| matches(value)) {
+            ensure!(
+                !viewports || values.iter().any(|value| !matches(value)),
+                "At least one viewport must remain selected"
+            );
+            values.retain(|value| !matches(value));
+        } else {
+            ensure!(
+                available.iter().any(|value| matches(value)),
+                "Unknown choice '{choice}'"
+            );
+            values.push(choice.into());
+        }
+        Ok(json!(values))
+    }
+
     pub fn stepped_value(&self, value: &Value, increase: bool) -> Result<Value> {
         ensure!(
             matches!(self.kind, FieldKind::Number { .. }),
@@ -137,6 +182,46 @@ impl Field {
             _ => value.to_string(),
         }
     }
+}
+
+pub fn string_values(value: &Value) -> Vec<String> {
+    match value {
+        Value::String(value) => vec![value.clone()],
+        Value::Array(values) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+pub fn dependency_choices(
+    suite: &Value,
+    current: Option<usize>,
+) -> Vec<super::workspace::ScenarioSummary> {
+    let Ok(suite) = serde_json::from_value::<TestSuite>(suite.clone()) else {
+        return Vec::new();
+    };
+    let mut counts = std::collections::HashMap::new();
+    let scenarios = suite
+        .scenarios
+        .iter()
+        .map(super::workspace::ScenarioSummary::from_scenario)
+        .collect::<Vec<_>>();
+    for scenario in &scenarios {
+        *counts.entry(scenario.id.to_ascii_lowercase()).or_insert(0) += 1;
+    }
+    scenarios
+        .into_iter()
+        .enumerate()
+        .filter(|(index, scenario)| {
+            Some(*index) != current
+                && !scenario.id.is_empty()
+                && counts[&scenario.id.to_ascii_lowercase()] == 1
+        })
+        .map(|(_, scenario)| scenario)
+        .collect()
 }
 
 pub fn fields(scope: &Scope) -> Result<Vec<Field>> {
@@ -350,6 +435,61 @@ pub fn origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_choices_preserve_inheritance_custom_values_and_viewport_all_semantics() {
+        let fields = fields(&Scope::Scenario).unwrap();
+        let viewports = fields
+            .iter()
+            .find(|field| field.key == "viewportNames")
+            .unwrap();
+        let names = vec!["phone".into(), "desktop".into()];
+        assert_eq!(
+            viewports
+                .toggle_list_choice(&Value::Null, &Value::Null, "desktop", &names)
+                .unwrap(),
+            json!(["phone"])
+        );
+        assert!(
+            viewports
+                .toggle_list_choice(&json!(["phone"]), &Value::Null, "phone", &names)
+                .is_err()
+        );
+        assert_eq!(
+            viewports
+                .toggle_list_choice(&Value::Null, &json!(["desktop"]), "phone", &names)
+                .unwrap(),
+            json!(["desktop", "phone"])
+        );
+        assert_eq!(
+            viewports
+                .toggle_list_choice(&json!(["custom", "PHONE"]), &Value::Null, "phone", &names)
+                .unwrap(),
+            json!(["custom"])
+        );
+        let needs = fields.iter().find(|field| field.key == "needs").unwrap();
+        assert_eq!(
+            needs
+                .toggle_list_choice(&json!("login"), &Value::Null, "login", &["login".into()])
+                .unwrap(),
+            json!([])
+        );
+    }
+
+    #[test]
+    fn dependency_choices_follow_draft_ids_and_exclude_self_or_collisions() {
+        let suite = json!({"scenarios": [
+            {"url": "/", "label": "Current"}, {"url": "/login", "label": "Sign in"},
+            {"url": "/", "id": "setup"}, {"url": "/", "id": "duplicate"}, {"url": "/", "id": "DUPLICATE"}
+        ]});
+        assert_eq!(
+            dependency_choices(&suite, Some(0))
+                .iter()
+                .map(|scenario| scenario.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sign-in", "setup"]
+        );
+    }
 
     #[test]
     fn numeric_steps_respect_field_ranges_and_types() {

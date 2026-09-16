@@ -187,6 +187,113 @@ async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+async fn guided_choices_keep_inherited_viewports_and_draft_dependencies_consistent(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(directory.path().join("common/_viewports.yaml"), "- label: phone\n  width: 390\n  height: 844\n- label: desktop\n  width: 1280\n  height: 720\n").unwrap();
+    std::fs::write(
+        directory.path().join("regressify.yaml"),
+        "viewportNames: [desktop]\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.field_search
+                .update(cx, |state, cx| state.set_value("viewportNames", window, cx))
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-viewportNames").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.toggle_list_choice(
+                &super::choices::ToggleListChoice {
+                    key: "viewportNames".into(),
+                    value: "phone".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["viewportNames"],
+                serde_json::json!(["desktop", "phone"])
+            );
+            this.toggle_list_choice(
+                &super::choices::ToggleListChoice {
+                    key: "viewportNames".into(),
+                    value: "desktop".into(),
+                },
+                window,
+                cx,
+            );
+            this.toggle_list_choice(
+                &super::choices::ToggleListChoice {
+                    key: "viewportNames".into(),
+                    value: "phone".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["viewportNames"],
+                serde_json::json!(["phone"])
+            );
+            this.edit(
+                |session| {
+                    session.add_scenario()?;
+                    session.set_field("label", Some(serde_json::json!("Log in first")))?;
+                    session.select(Selection::Scenario(0))
+                },
+                window,
+                cx,
+            );
+            this.field_search
+                .update(cx, |state, cx| state.set_value("needs", window, cx));
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-needs").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.toggle_list_choice(
+                &super::choices::ToggleListChoice {
+                    key: "needs".into(),
+                    value: "log-in-first".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["needs"],
+                serde_json::json!(["log-in-first"])
+            );
+            this.toggle_list_choice(
+                &super::choices::ToggleListChoice {
+                    key: "needs".into(),
+                    value: "log-in-first".into(),
+                },
+                window,
+                cx,
+            );
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["needs"],
+                serde_json::json!([])
+            );
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
     cx: &mut TestAppContext,
 ) {

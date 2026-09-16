@@ -102,6 +102,15 @@ steppers start from the effective inherited value; mismatch percentages remain
 within 0-100 and concurrency counts remain positive. File pickers sit beside
 their input. Field-issue links reveal the affected control even under filters.
 
+Viewport and dependency lists retain free-form input and also offer checked
+choice menus. Viewports load asynchronously from the effective viewport file,
+including custom names and dimensions. Inherited or empty viewport lists mean
+all viewports, as in the CLI; the picker keeps at least one selected. Unknown
+existing values remain editable instead of being silently removed. Dependencies
+use IDs from the current unsaved suite and exclude the current scenario and
+ambiguous duplicate IDs. Missing or invalid explicit viewport files display a
+recoverable warning beside the field.
+
 The workspace opens to an overview with suite/scenario totals, selection counts,
 configuration issues, and per-suite status. Edit opens the selected suite; Overview
 returns to the workspace without discarding an open draft. The header identifies
