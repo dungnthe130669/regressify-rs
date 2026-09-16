@@ -157,9 +157,10 @@ fn build_capture_jobs(
                     scenario_id: scenario.id.clone().unwrap_or_default(),
                     label: scenario
                         .label
-                        .clone()
-                        .or_else(|| scenario.id.clone())
-                        .unwrap_or_else(|| format!("Scenario {}", job.scenario_idx + 1)),
+                        .as_deref()
+                        .filter(|label| !label.trim().is_empty())
+                        .unwrap_or(&scenario.url)
+                        .to_string(),
                     viewport: job
                         .viewport
                         .as_ref()
@@ -929,6 +930,15 @@ fn report_page_urls(
     Ok(capture::ReportPageUrls {
         reference_url: scenario.url.clone(),
         url,
+        scenario_id: scenario.id.clone(),
+        scenario_label: Some(
+            scenario
+                .label
+                .as_deref()
+                .filter(|label| !label.trim().is_empty())
+                .unwrap_or(&scenario.url)
+                .to_string(),
+        ),
     })
 }
 
@@ -1428,7 +1438,8 @@ mod tests {
 
     #[test]
     fn report_page_urls_keep_reference_urls_and_apply_test_replacements() {
-        let scenario = scenario("home", None);
+        let mut scenario = scenario("home", None);
+        scenario.label = Some("Home page".into());
         let replacements = vec![UrlReplacement {
             ref_pattern: "https://example.com".to_string(),
             test: "https://staging.example.com".to_string(),
@@ -1443,6 +1454,16 @@ mod tests {
         assert_eq!(test_urls.url, "https://staging.example.com/home");
         assert_eq!(reference_urls.reference_url, "https://example.com/home");
         assert_eq!(reference_urls.url, "https://example.com/home");
+        assert_eq!(test_urls.scenario_id.as_deref(), Some("home"));
+        assert_eq!(test_urls.scenario_label.as_deref(), Some("Home page"));
+        scenario.label = None;
+        assert_eq!(
+            report_page_urls(&scenario, &replacements, true)
+                .unwrap()
+                .scenario_label
+                .as_deref(),
+            Some("https://example.com/home")
+        );
     }
 
     #[test]

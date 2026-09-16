@@ -34,6 +34,10 @@ struct ReportTest {
 #[serde(rename_all = "camelCase")]
 struct ReportPair {
     label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scenario_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scenario_label: Option<String>,
     reference: String,
     test: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -391,6 +395,8 @@ fn report_pair(
 ) -> ReportPair {
     ReportPair {
         label,
+        scenario_id: page_urls.and_then(|urls| urls.scenario_id.clone()),
+        scenario_label: page_urls.and_then(|urls| urls.scenario_label.clone()),
         reference: format!("../bitmaps_reference/{}", screenshot_name),
         test: relative_test,
         reference_url: page_urls.map(|urls| urls.reference_url.clone()),
@@ -687,7 +693,11 @@ pub fn generate_comparison_report(
             progress::emit(ProgressEvent::Compared {
                 suite_id: suite_id.into(),
                 capture: screenshot_key(&test.pair.file_name).into(),
-                label: test.pair.label.clone(),
+                label: test
+                    .pair
+                    .scenario_label
+                    .clone()
+                    .unwrap_or_else(|| test.pair.label.clone()),
                 passed: test.status == "pass",
                 error: test
                     .pair
@@ -887,6 +897,8 @@ mod tests {
                 captures: BTreeMap::from([(
                     "home__FINAL".to_string(),
                     ReportPageUrls {
+                        scenario_id: Some("home".into()),
+                        scenario_label: Some("Home page".into()),
                         reference_url: "https://www.example.com/home".to_string(),
                         url: "https://test.example.com/home".to_string(),
                     },
@@ -911,6 +923,12 @@ mod tests {
         let config = fs::read_to_string(suite_dir.join("html_report/config.js")).unwrap();
         assert!(config.contains("\"referenceUrl\": \"https://www.example.com/home\""));
         assert!(config.contains("\"url\": \"https://test.example.com/home\""));
+        assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
+        assert_eq!(report["tests"][0]["pair"]["scenarioLabel"], "Home page");
+        assert_eq!(report["tests"][0]["pair"]["label"], "home FINAL");
+        let legacy: ReportPageUrls = serde_json::from_value(serde_json::json!({"referenceUrl": "https://example.com", "url": "https://example.com"})).unwrap();
+        assert!(legacy.scenario_id.is_none());
+        assert!(legacy.scenario_label.is_none());
     }
 
     #[test]

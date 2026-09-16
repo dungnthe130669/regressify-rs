@@ -263,6 +263,15 @@ tabs; live running/finished counts remain visible in the workspace navigator.
 
 ## Reviewing Results
 
+Capture rows use scenario labels, with viewport and saved-step/target details on
+the secondary line. Newly captured labels are preserved in report metadata;
+older runs resolve names from the current workspace where an ID matches
+unambiguously. Unresolved generated IDs fall back to the recorded page URL or an
+unnamed-scenario label. Raw capture IDs remain searchable and available in
+tooltips. Generated desktop run UUIDs are presented as report timestamps;
+timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
+unchanged, and the original run ID is available in the report-picker tooltip.
+
 Results refreshes on opening and after commands finish using current output
 options. It loads each suite's `bitmaps_test/<run>/report.json`, newest first,
 retaining a selected report/capture on refresh when it still exists. Filter

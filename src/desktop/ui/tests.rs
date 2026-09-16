@@ -1743,6 +1743,75 @@ async fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mu
 }
 
 #[gpui_kit::test]
+async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let run = directory
+        .path()
+        .join(".regressify/0123456789abcdef/bitmaps_test/desktop-0123456789abcdef0123456789abcdef");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "0123456789abcdef", "tests": [
+        {"status": "pass", "pair": {"label": "8ac900fea19642cc0000 phone FINAL", "fileName": "8ac900fea19642cc0000_phone__FINAL.png"}},
+        {"status": "fail", "pair": {"label": "8ac900fea19642cc0000 phone $receipt", "fileName": "8ac900fea19642cc0000_phone__$receipt.png", "scenarioId": "8ac900fea19642cc0000", "scenarioLabel": "Payment at capture time"}}
+    ]})).unwrap()).unwrap();
+    std::fs::write(directory.path().join("visual_tests/ui-test.tests.yaml"), "id: 0123456789abcdef\nscenarios:\n- id: 8ac900fea19642cc0000\n  label: Payment confirmation\n  url: https://example.com/receipt\n").unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let entry = this.session.open.as_ref().unwrap().entry.clone();
+            this.session.load(entry).unwrap();
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Payment confirmation"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let report = window.find("report-picker");
+        let label = report.label().unwrap_or_default();
+        assert!(label.starts_with("ui-test / "), "{label}");
+        assert!(!label.contains("desktop-"));
+        assert_eq!(
+            window.find(("capture", 0_usize)).label(),
+            Some("Passed Payment confirmation")
+        );
+        window.click("next-capture", cx);
+        assert_eq!(
+            window.find("capture-heading").label(),
+            Some("Payment at capture time")
+        );
+        window.click("capture-search", cx);
+        window.input("8ac900", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("capture-position")
+            .is_some_and(|position| position.label() == Some("2 of 2"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("capture-search", cx);
+        window.press("ctrl-a", cx);
+        window.input("at capture time", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("capture-position")
+            .is_some_and(|position| position.label() == Some("1 of 1"))
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join(".regressify");

@@ -11,6 +11,8 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::Deserialize;
 use walkdir::WalkDir;
 
+use super::workspace::{Entry, SuiteSummary};
+
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REPORTS: usize = 1000;
 
@@ -36,6 +38,8 @@ impl Outcome {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Report {
     pub id: String,
+    #[serde(default)]
+    pub test_suite: String,
     pub tests: Vec<TestResult>,
 }
 
@@ -69,6 +73,12 @@ impl TestResult {
 pub struct Pair {
     #[serde(default)]
     pub label: String,
+    pub scenario_id: Option<String>,
+    pub scenario_label: Option<String>,
+    #[serde(default)]
+    pub file_name: String,
+    #[serde(skip)]
+    pub display: CaptureDisplay,
     pub reference: Option<String>,
     pub test: Option<String>,
     pub diff_image: Option<String>,
@@ -78,6 +88,172 @@ pub struct Pair {
     #[serde(default)]
     pub selector: String,
     pub diff: Option<Difference>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CaptureDisplay {
+    pub title: String,
+    pub detail: String,
+    pub scenario_index: Option<usize>,
+}
+
+impl Pair {
+    pub fn capture_key(&self) -> &str {
+        let filename = if self.file_name.is_empty() {
+            self.test
+                .as_deref()
+                .or(self.reference.as_deref())
+                .unwrap_or(&self.label)
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(&self.label)
+        } else {
+            &self.file_name
+        };
+        filename.strip_suffix(".png").unwrap_or(filename)
+    }
+
+    pub fn matches(&self, query: &str) -> bool {
+        let fields: [&str; 8] = [
+            &self.display.title,
+            &self.display.detail,
+            &self.label,
+            &self.file_name,
+            self.scenario_id.as_deref().unwrap_or_default(),
+            self.url.as_deref().unwrap_or_default(),
+            self.reference_url.as_deref().unwrap_or_default(),
+            self.engine_error_msg.as_deref().unwrap_or_default(),
+        ];
+        fields
+            .iter()
+            .any(|text| text.to_lowercase().contains(query))
+            || self.capture_key().to_lowercase().contains(query)
+    }
+
+    fn resolve_name(&mut self, suite: Option<&SuiteSummary>) {
+        let key = self.capture_key();
+        let scenarios = suite
+            .map(|suite| suite.scenarios.as_slice())
+            .unwrap_or_default();
+        let mut matches = scenarios
+            .iter()
+            .enumerate()
+            .filter(|(_, scenario)| {
+                if let Some(id) = &self.scenario_id {
+                    return scenario.id == *id;
+                }
+                !scenario.id.is_empty()
+                    && key
+                        .strip_prefix(&scenario.id)
+                        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with('_'))
+            })
+            .collect::<Vec<_>>();
+        let longest = matches.iter().map(|(_, scenario)| scenario.id.len()).max();
+        matches.retain(|(_, scenario)| Some(scenario.id.len()) == longest);
+        let matched = (matches.len() == 1).then(|| matches[0]);
+        let id = self
+            .scenario_id
+            .as_deref()
+            .or_else(|| matched.map(|(_, scenario)| scenario.id.as_str()));
+        let (viewport, target) = id
+            .and_then(|id| key.strip_prefix(id))
+            .map(|suffix| {
+                if let Some(target) = suffix.strip_prefix("__") {
+                    ("", target)
+                } else {
+                    suffix
+                        .strip_prefix('_')
+                        .unwrap_or(suffix)
+                        .split_once("__")
+                        .unwrap_or(("", ""))
+                }
+            })
+            .unwrap_or_else(|| {
+                let (prefix, target) = key.split_once("__").unwrap_or((key, ""));
+                let viewport = prefix
+                    .split_once('_')
+                    .filter(|(prefix, _)| generated_id(prefix))
+                    .map_or("", |(_, viewport)| viewport);
+                (viewport, target)
+            });
+        let generated = self.label.is_empty()
+            || self.label.contains("__")
+            || self.label == key.replace('_', " ")
+            || self.label == key.replace("__", " ")
+            || self.label
+                == key
+                    .replace('_', " ")
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+        let name = self
+            .scenario_label
+            .as_deref()
+            .filter(|label| !label.trim().is_empty())
+            .or_else(|| {
+                matched.map(|(_, scenario)| {
+                    if scenario.label == scenario.id {
+                        scenario.url.as_str()
+                    } else {
+                        scenario.label.as_str()
+                    }
+                })
+            })
+            .or_else(|| (!generated).then_some(self.label.as_str()))
+            .or(self.url.as_deref())
+            .or(self.reference_url.as_deref());
+        let title = name
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let prefix = key.split_once("__").map_or(key, |(prefix, _)| prefix);
+                if generated_id(prefix.split('_').next().unwrap_or(prefix)) {
+                    "Unnamed scenario".into()
+                } else {
+                    humanize(prefix)
+                }
+            });
+        let capture = match target {
+            "FINAL" => "Full page".into(),
+            "VIEWPORT" => "Viewport capture".into(),
+            target if target.starts_with('$') => format!("Saved: {}", &target[1..]),
+            target if target.starts_with("SELECTOR-") => "Element capture".into(),
+            _ => match self.selector.as_str() {
+                "document" => "Full page".into(),
+                "viewport" => "Viewport capture".into(),
+                selector if selector.starts_with("save:") => format!("Saved: {}", &selector[5..]),
+                selector if selector.starts_with("SELECTOR-") => "Element capture".into(),
+                selector => selector.to_string(),
+            },
+        };
+        let detail = [humanize(viewport), capture]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        self.display = CaptureDisplay {
+            title,
+            detail,
+            scenario_index: matched.map(|(index, _)| index),
+        };
+    }
+}
+
+fn generated_id(text: &str) -> bool {
+    text.len() >= 16 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn humanize(text: &str) -> String {
+    let text = text
+        .split(['_', '-'])
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut characters = text.chars();
+    characters
+        .next()
+        .map(|first| first.to_uppercase().collect::<String>() + characters.as_str())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -95,11 +271,33 @@ pub struct ReportEntry {
     pub run_id: String,
     pub modified: SystemTime,
     pub report: Report,
+    pub suite_name: String,
+    pub source: Option<Entry>,
 }
 
 impl ReportEntry {
     pub fn label(&self) -> String {
-        format!("{} / {}", self.report.id, self.run_id)
+        let generated = self
+            .run_id
+            .strip_prefix("desktop-")
+            .is_some_and(generated_id);
+        let captured = chrono::NaiveDateTime::parse_from_str(&self.run_id, "%Y%m%d_%H%M%S_%f")
+            .or_else(|_| chrono::NaiveDateTime::parse_from_str(&self.run_id, "%Y%m%d_%H%M%S"))
+            .ok();
+        let run = if let Some(captured) = captured {
+            captured
+                .and_utc()
+                .with_timezone(&chrono::Local)
+                .format("%d %b %Y %H:%M:%S")
+                .to_string()
+        } else if generated {
+            chrono::DateTime::<chrono::Local>::from(self.modified)
+                .format("%d %b %Y %H:%M:%S")
+                .to_string()
+        } else {
+            self.run_id.clone()
+        };
+        format!("{} / {run}", self.suite_name)
     }
 
     pub fn counts(&self) -> (usize, usize, usize) {
@@ -174,6 +372,29 @@ pub struct Catalog {
 }
 
 impl Catalog {
+    pub fn resolve_names(&mut self, suites: &[SuiteSummary]) {
+        for report in &mut self.reports {
+            let candidates = suites
+                .iter()
+                .filter(|suite| {
+                    suite.error.is_none() && suite.output_id.eq_ignore_ascii_case(&report.report.id)
+                })
+                .collect::<Vec<_>>();
+            let suite = (candidates.len() == 1).then(|| candidates[0]);
+            report.suite_name = suite.map(|suite| suite.name.clone()).unwrap_or_else(|| {
+                if report.report.test_suite.is_empty() {
+                    report.report.id.clone()
+                } else {
+                    report.report.test_suite.clone()
+                }
+            });
+            report.source = suite.map(|suite| suite.entry.clone());
+            for test in &mut report.report.tests {
+                test.pair.resolve_name(suite);
+            }
+        }
+    }
+
     pub fn load(output_root: &Path) -> Result<Self> {
         if !output_root.exists() {
             return Ok(Self::default());
@@ -212,6 +433,7 @@ impl Catalog {
                 )),
             }
         }
+        catalog.resolve_names(&[]);
         Ok(catalog)
     }
 }
@@ -262,6 +484,8 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
         run_id,
         modified,
         report,
+        suite_name: String::new(),
+        source: None,
     })
 }
 
@@ -269,6 +493,92 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn suite() -> SuiteSummary {
+        use super::super::{document::DocumentKind, workspace::ScenarioSummary};
+        SuiteSummary {
+            entry: Entry {
+                path: "visual_tests/checkout.tests.yaml".into(),
+                kind: DocumentKind::Suite,
+            },
+            name: "checkout".into(),
+            output_id: "shop".into(),
+            error: None,
+            scenarios: vec![
+                ScenarioSummary {
+                    id: "8ac900fea19642cc0000".into(),
+                    label: "Payment confirmation".into(),
+                    url: "https://example.com/receipt".into(),
+                },
+                ScenarioSummary {
+                    id: "checkout".into(),
+                    label: "Order summary".into(),
+                    url: "/order".into(),
+                },
+                ScenarioSummary {
+                    id: "checkout_extra".into(),
+                    label: "Extra details".into(),
+                    url: "/extras".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn result_names_prefer_captured_labels_without_changing_capture_keys() {
+        let mut pair: Pair = serde_json::from_value(json!({
+            "label": "8ac900fea19642cc0000 desktop FINAL",
+            "fileName": "8ac900fea19642cc0000_desktop__FINAL.png",
+            "scenarioId": "8ac900fea19642cc0000", "scenarioLabel": "Name at capture time"
+        }))
+        .unwrap();
+        pair.resolve_name(Some(&suite()));
+        assert_eq!(pair.display.title, "Name at capture time");
+        assert_eq!(pair.display.detail, "Desktop / Full page");
+        assert_eq!(pair.display.scenario_index, Some(0));
+        assert_eq!(pair.capture_key(), "8ac900fea19642cc0000_desktop__FINAL");
+        assert!(pair.matches("name at capture"));
+        assert!(pair.matches("8ac900"));
+        pair.resolve_name(None);
+        assert_eq!(pair.display.title, "Name at capture time");
+        assert!(pair.display.scenario_index.is_none());
+    }
+
+    #[test]
+    fn legacy_names_match_whole_ids_and_keep_capture_context_separate() {
+        let mut pair: Pair = serde_json::from_value(json!({
+            "label": "8ac900fea19642cc0000 phone $after-login", "test": "../bitmaps_test/run/8ac900fea19642cc0000_phone__$after-login.png"
+        })).unwrap();
+        pair.resolve_name(Some(&suite()));
+        assert_eq!(pair.display.title, "Payment confirmation");
+        assert_eq!(pair.display.detail, "Phone / Saved: after-login");
+        pair.file_name = "checkout_extra__VIEWPORT.png".into();
+        pair.resolve_name(Some(&suite()));
+        assert_eq!(pair.display.title, "Extra details");
+        assert_eq!(pair.display.scenario_index, Some(2));
+        pair.file_name = "checkouts__FINAL.png".into();
+        pair.resolve_name(Some(&suite()));
+        assert!(pair.display.scenario_index.is_none());
+    }
+
+    #[test]
+    fn unknown_generated_names_use_urls_and_ambiguous_suites_do_not_guess() {
+        let mut pair: Pair = serde_json::from_value(json!({"label": "8ac900fea19642cc0000 FINAL", "fileName": "8ac900fea19642cc0000__FINAL.png", "url": "https://example.com/receipt"})).unwrap();
+        pair.resolve_name(None);
+        assert_eq!(pair.display.title, "https://example.com/receipt");
+        pair.url = None;
+        pair.resolve_name(None);
+        assert_eq!(pair.display.title, "Unnamed scenario");
+        let directory = tempfile::tempdir().unwrap();
+        fixture(directory.path(), "desktop-0123456789abcdef0123456789abcdef");
+        let mut catalog = Catalog::load(directory.path()).unwrap();
+        catalog.resolve_names(&[suite()]);
+        assert!(catalog.reports[0].label().starts_with("checkout / "));
+        assert!(!catalog.reports[0].label().contains("desktop-"));
+        assert!(catalog.reports[0].source.is_some());
+        catalog.resolve_names(&[suite(), suite()]);
+        assert!(catalog.reports[0].source.is_none());
+    }
 
     fn fixture(root: &Path, run: &str) -> PathBuf {
         let run_directory = root.join("shop/bitmaps_test").join(run);

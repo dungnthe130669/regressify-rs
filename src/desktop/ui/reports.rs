@@ -27,6 +27,7 @@ struct LoadedImage {
 pub(super) struct ResultsPanel {
     root: Option<PathBuf>,
     catalog: Catalog,
+    suites: Vec<crate::desktop::workspace::SuiteSummary>,
     report: usize,
     capture: Option<usize>,
     filter: usize,
@@ -46,10 +47,15 @@ pub(super) struct ResultsPanel {
 }
 
 impl ResultsPanel {
+    pub(super) fn set_suites(&mut self, suites: Vec<crate::desktop::workspace::SuiteSummary>) {
+        self.suites = suites;
+    }
+
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         self.root = None;
         self.catalog = Catalog::default();
+        self.suites.clear();
         self.report = 0;
         self.capture = None;
         self.filter = 0;
@@ -75,6 +81,7 @@ impl ResultsPanel {
         Self {
             root: None,
             catalog: Catalog::default(),
+            suites: Vec::new(),
             report: 0,
             capture: None,
             filter: 0,
@@ -105,9 +112,12 @@ impl ResultsPanel {
         self.image_loading = false;
         self.previews.clear();
         self.status = "Loading reports...".into();
-        let task = cx
-            .background_executor()
-            .spawn(async move { Catalog::load(&root) });
+        let suites = self.suites.clone();
+        let task = cx.background_executor().spawn(async move {
+            let mut catalog = Catalog::load(&root)?;
+            catalog.resolve_names(&suites);
+            Ok::<_, anyhow::Error>(catalog)
+        });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
             let _ = view.update_in(cx, |this, window, cx| {
@@ -273,16 +283,7 @@ impl ResultsPanel {
                             2 => test.outcome() == Outcome::Passed,
                             _ => true,
                         };
-                        status
-                            && (query.is_empty()
-                                || test.pair.label.to_lowercase().contains(&query)
-                                || test
-                                    .pair
-                                    .engine_error_msg
-                                    .as_deref()
-                                    .unwrap_or_default()
-                                    .to_lowercase()
-                                    .contains(&query))
+                        status && (query.is_empty() || test.pair.matches(&query))
                     })
                     .map(|(index, _)| index)
                     .collect()
@@ -440,7 +441,11 @@ impl ResultsPanel {
                         .h(px(56.))
                         .justify_start()
                         .selected(self.capture == Some(index))
-                        .accessibility_label(format!("{} {}", outcome.label(), test.pair.label))
+                        .accessibility_label(format!(
+                            "{} {}",
+                            outcome.label(),
+                            test.pair.display.title
+                        ))
                         .child(
                             div()
                                 .flex()
@@ -469,21 +474,34 @@ impl ResultsPanel {
                                             div()
                                                 .truncate()
                                                 .text_color(cx.theme().foreground)
-                                                .child(test.pair.label.clone()),
+                                                .child(test.pair.display.title.clone()),
                                         )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .text_color(color)
-                                                .child(outcome.label()),
-                                        ),
+                                        .child(div().text_xs().truncate().text_color(color).child(
+                                            if test.pair.display.detail.is_empty() {
+                                                outcome.label().to_string()
+                                            } else {
+                                                format!(
+                                                    "{} / {}",
+                                                    outcome.label(),
+                                                    test.pair.display.detail
+                                                )
+                                            },
+                                        )),
                                 ),
                         )
                         .tooltip(
                             test.pair
                                 .engine_error_msg
                                 .clone()
-                                .unwrap_or_else(|| test.pair.label.clone()),
+                                .map(|error| format!("{error}\n{}", test.pair.capture_key()))
+                                .unwrap_or_else(|| {
+                                    format!(
+                                        "{}\n{}\n{}",
+                                        test.pair.display.title,
+                                        test.pair.display.detail,
+                                        test.pair.capture_key()
+                                    )
+                                }),
                         )
                         .text_color(color)
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -634,7 +652,7 @@ impl ResultsPanel {
                 .and_then(|index| report.report.tests.get(index))
         });
         let title = test
-            .map(|test| test.pair.label.clone())
+            .map(|test| test.pair.display.title.clone())
             .unwrap_or_else(|| "Comparison".into());
         let filtered = self.filtered(cx);
         let position = self
@@ -945,6 +963,18 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("report-picker")
                             .label(report_name)
+                            .tooltip(
+                                self.selected_report()
+                                    .map(|report| {
+                                        format!(
+                                            "Suite ID: {}\nRun ID: {}\n{}",
+                                            report.report.id,
+                                            report.run_id,
+                                            display_path(&report.path)
+                                        )
+                                    })
+                                    .unwrap_or_default(),
+                            )
                             .disabled(self.loading || reports.is_empty())
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu.action_context(focus.clone()).scrollable(true);

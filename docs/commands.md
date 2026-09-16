@@ -108,4 +108,10 @@ when URL replacements are active, its corresponding test page. Run `test` or
 `ref` once after upgrading to add this metadata to an existing suite; standalone
 `compare` reuses it without needing another browser capture.
 
+Capture metadata also records the scenario ID and human label (or page URL when
+unlabelled). Reports expose these as optional `scenarioId` and `scenarioLabel`
+fields. The desktop uses the captured name even if the scenario is later renamed
+or removed. Screenshot names, matching keys, and exit-code behavior are unchanged.
+Older manifests without these fields remain readable.
+
 Older capture runs without ordering or threshold manifests remain comparable: missing ordering data uses alphabetical output and missing threshold data uses the command threshold. A present malformed manifest is treated as an artifact error and fails the command.

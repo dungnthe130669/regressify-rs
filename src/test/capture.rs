@@ -361,6 +361,10 @@ pub(crate) struct ReportOrderManifest {
 pub(crate) struct ReportPageUrls {
     pub reference_url: String,
     pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_label: Option<String>,
 }
 
 /// Per-capture page URLs preserved for report regeneration and standalone
@@ -1089,6 +1093,8 @@ mod tests {
             captures: BTreeMap::from([(
                 "home__FINAL".to_string(),
                 ReportPageUrls {
+                    scenario_id: None,
+                    scenario_label: None,
                     reference_url: "https://www.example.com/home".to_string(),
                     url: "https://test.example.com/home".to_string(),
                 },

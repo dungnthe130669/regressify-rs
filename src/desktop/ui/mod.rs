@@ -407,10 +407,12 @@ impl Workbench {
     }
 
     fn refresh_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let suites = self.session.suites.clone();
         match self.runs.read(cx).output_root() {
-            Ok(root) => self
-                .results
-                .update(cx, |panel, cx| panel.refresh(root, window, cx)),
+            Ok(root) => self.results.update(cx, |panel, cx| {
+                panel.set_suites(suites);
+                panel.refresh(root, window, cx);
+            }),
             Err(error) => {
                 self.status = format!("{error:#}");
                 cx.notify();
