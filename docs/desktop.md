@@ -62,6 +62,11 @@ Choose Initialize workspace in Runs to invoke the existing non-destructive
 
 ## Editing
 
+The navigator can be hidden for a wider editor or comparison preview; its
+visibility is saved with appearance preferences. Editor, Runs, and Results keep
+their state while switching views. Document and parent-scenario breadcrumbs
+navigate without changing source or bypassing draft validation.
+
 Find a setting searches names, keys, descriptions, and groups, including advanced
 settings. Overrides only narrows the form to explicit values. Groups can be
 collapsed independently or expanded together without changing the draft. Numeric
@@ -214,6 +219,10 @@ toolbar Undo/Redo always use complete document history.
 | Shortcut | Command |
 | --- | --- |
 | Ctrl+O | Open workspace |
+| Ctrl+P | Search suites and scenarios; reopen a hidden navigator |
+| Ctrl+B | Toggle navigator |
+| Ctrl+1 / Ctrl+2 / Ctrl+3 | Editor / Runs / Results |
+| Ctrl+Shift+F | Find a setting |
 | Ctrl+N | New suite |
 | Ctrl+S | Save |
 | Ctrl+Shift+S | Save As |

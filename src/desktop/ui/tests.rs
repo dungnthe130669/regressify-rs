@@ -536,6 +536,8 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
     let handle = cx.open_window(size(px(1280.), px(820.)), |window, cx| {
         let view = cx.new(|cx| Workbench::new(window, cx));
         view.update(cx, |this, cx| {
+            this.preferences = crate::desktop::workspace::Preferences::default();
+            this.preferences_path = Some(root.join("desktop-preferences.json"));
             this.session.connect(root).unwrap();
             this.runs.update(cx, |panel, cx| {
                 panel.set_workspace(root.to_path_buf(), window, cx)
@@ -555,6 +557,126 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
         Root::new(view, window, cx)
     });
     (handle, created.unwrap())
+}
+
+#[gpui_kit::test]
+async fn layout_and_view_shortcuts_preserve_the_open_draft(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press(&format!("{modifier}-a"), cx);
+        window.input("https://example.com/preserved", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["url"]
+            == "https://example.com/preserved"
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&format!("{modifier}-b"), cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        !view.read(cx).busy && window.try_find("workspace-navigation").is_none()
+    })
+    .await;
+    let preferences = directory.path().join("desktop-preferences.json");
+    assert!(
+        crate::desktop::workspace::Preferences::load(&preferences)
+            .unwrap()
+            .navigator_hidden
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(&format!("{modifier}-2"), cx);
+        assert_eq!(view.read(cx).main_tab, 1);
+        window.press(&format!("{modifier}-3"), cx);
+        assert_eq!(view.read(cx).main_tab, 2);
+        window.press(&format!("{modifier}-1"), cx);
+        assert_eq!(view.read(cx).main_tab, 0);
+        assert_eq!(
+            window.find("field-url").value(),
+            Some("https://example.com/preserved")
+        );
+        assert!(view.read(cx).session.dirty());
+        window.press(&format!("{modifier}-shift-f"), cx);
+        assert!(
+            view.read(cx)
+                .field_search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        window.press(&format!("{modifier}-p"), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        !view.read(cx).busy && window.try_find("workspace-navigation").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(
+            view.read(cx)
+                .search
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["url"],
+            "https://example.com/preserved"
+        );
+    })
+    .unwrap();
+    assert!(
+        !crate::desktop::workspace::Preferences::load(&preferences)
+            .unwrap()
+            .navigator_hidden
+    );
+}
+
+#[gpui_kit::test]
+fn action_breadcrumbs_navigate_without_mutating_the_document(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(|session| session.add_action("click"), window, cx)
+        });
+        window.render_frame(cx);
+        let source = view
+            .read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string();
+        assert_eq!(window.find("editor-heading").label(), Some("1. click"));
+        window.click("breadcrumb-scenario", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        window.click("breadcrumb-document", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Root);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            source
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]

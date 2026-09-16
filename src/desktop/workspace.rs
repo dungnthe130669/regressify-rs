@@ -576,6 +576,7 @@ fn validate_typed_source(document: &Document) -> Result<()> {
 pub struct Preferences {
     pub recent_workspaces: Vec<PathBuf>,
     pub dark_mode: bool,
+    pub navigator_hidden: bool,
 }
 
 impl Preferences {
@@ -763,7 +764,12 @@ mod tests {
         assert_eq!(preferences.recent_workspaces.len(), 10);
         assert_eq!(preferences.recent_workspaces[0], workspace.root);
         let path = directory.path().join("settings.json");
+        preferences.navigator_hidden = true;
         preferences.save(&path).unwrap();
+        assert!(Preferences::load(&path).unwrap().navigator_hidden);
+        let legacy: Preferences = serde_json::from_str(r#"{"darkMode":true}"#).unwrap();
+        assert!(legacy.dark_mode);
+        assert!(!legacy.navigator_hidden);
         assert_eq!(
             Preferences::load(&path).unwrap().recent_workspaces,
             preferences.recent_workspaces

@@ -48,7 +48,9 @@ actions!(
         DuplicateItem,
         MoveItemUp,
         MoveItemDown,
-        FocusNavigator
+        FocusNavigator,
+        FocusSettings,
+        ToggleNavigator
     ]
 );
 
@@ -61,6 +63,11 @@ struct AddBrowserAction {
 struct ChooseField {
     key: String,
     value: String,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+struct SelectView {
+    index: usize,
 }
 
 enum Control {
@@ -94,6 +101,7 @@ pub struct Workbench {
     status: String,
     diagnostic: Option<String>,
     preferences: Preferences,
+    preferences_path: Option<PathBuf>,
     modal: Entity<files::ModalState>,
     runs: Entity<runs::RunPanel>,
     results: Entity<reports::ResultsPanel>,
@@ -188,6 +196,7 @@ impl Workbench {
             status,
             diagnostic: None,
             preferences: preferences.unwrap_or_default(),
+            preferences_path: Preferences::path().ok(),
             modal: cx.new(|_| files::ModalState::default()),
             runs,
             results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
@@ -267,8 +276,11 @@ impl Workbench {
                     let root = workspace.root.clone();
                     this.runs
                         .update(cx, |panel, cx| panel.set_workspace(root, window, cx));
-                    if let Err(error) =
-                        Preferences::path().and_then(|path| this.preferences.save(&path))
+                    if let Err(error) = this
+                        .preferences_path
+                        .as_deref()
+                        .ok_or_else(|| anyhow!("Cannot determine the preferences path"))
+                        .and_then(|path| this.preferences.save(path))
                     {
                         this.status = format!("Preferences: {error:#}");
                     }
@@ -1859,10 +1871,58 @@ impl Workbench {
                     .gap_2()
                     .child(
                         div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
                             .text_xs()
                             .text_color(cx.theme().muted_foreground)
-                            .truncate()
-                            .child(title),
+                            .child(
+                                Button::new("breadcrumb-document")
+                                    .ghost()
+                                    .xsmall()
+                                    .accessibility_label(title.clone())
+                                    .tooltip(title.clone())
+                                    .min_w_0()
+                                    .max_w(px(520.))
+                                    .child(div().truncate().child(title))
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.select(Selection::Root, window, cx)
+                                    })),
+                            )
+                            .when_some(
+                                self.session.selection.scenario().filter(|_| {
+                                    matches!(self.session.selection, Selection::Action { .. })
+                                }),
+                                |row, scenario| {
+                                    row.child(Icon::new(IconName::ChevronRight).xsmall()).child(
+                                        Button::new("breadcrumb-scenario")
+                                            .ghost()
+                                            .xsmall()
+                                            .min_w_0()
+                                            .max_w(px(360.))
+                                            .accessibility_label("Parent scenario")
+                                            .tooltip("Open parent scenario")
+                                            .child(
+                                                div().truncate().child(
+                                                    self.value["scenarios"][scenario]["label"]
+                                                        .as_str()
+                                                        .unwrap_or("Scenario")
+                                                        .to_string(),
+                                                ),
+                                            )
+                                            .disabled(self.busy)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.select(
+                                                    Selection::Scenario(scenario),
+                                                    window,
+                                                    cx,
+                                                )
+                                            })),
+                                    )
+                                },
+                            ),
                     )
                     .child(
                         div()
@@ -2028,17 +2088,79 @@ impl Workbench {
                 .into(),
         }
     }
+
+    fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let preferences = self.preferences.clone();
+        let path = self.preferences_path.clone();
+        self.task(
+            "Saving preferences...",
+            move || {
+                preferences
+                    .save(&path.ok_or_else(|| anyhow!("Cannot determine the preferences path"))?)
+            },
+            |this, (), _, _| this.status = "Preferences saved".into(),
+            window,
+            cx,
+        );
+    }
+
+    fn toggle_navigator(
+        &mut self,
+        _: &ToggleNavigator,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        self.preferences.navigator_hidden = !self.preferences.navigator_hidden;
+        if self.preferences.navigator_hidden {
+            window.focus(&self.focus, cx);
+        }
+        self.save_preferences(window, cx);
+    }
+
+    fn select_view(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if index > 2 {
+            return;
+        }
+        let changed = self.main_tab != index;
+        self.main_tab = index;
+        window.focus(&self.focus, cx);
+        if changed && index == 2 {
+            self.refresh_results(window, cx);
+        }
+        cx.notify();
+    }
 }
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let navigation = self.render_navigation(cx);
         let editor = if self.main_tab == 2 {
             self.results.clone().into_any_element()
         } else if self.main_tab == 1 {
             self.runs.clone().into_any_element()
         } else {
             self.render_editor(cx)
+        };
+        let layout = if self.preferences.navigator_hidden {
+            editor
+        } else {
+            h_resizable("workspace-layout")
+                .child(
+                    resizable_panel()
+                        .size(px(280.))
+                        .size_range(px(220.)..px(440.))
+                        .child(
+                            div()
+                                .id("workspace-navigation")
+                                .test_support()
+                                .size_full()
+                                .child(self.render_navigation(cx)),
+                        ),
+                )
+                .child(resizable_panel().child(editor))
+                .into_any_element()
         };
         div()
             .id("workbench")
@@ -2055,7 +2177,28 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::redo_document))
             .on_action(cx.listener(Self::choose_workspace))
             .on_action(cx.listener(|this, _: &FocusNavigator, window, cx| {
+                if this.preferences.navigator_hidden {
+                    this.toggle_navigator(&ToggleNavigator, window, cx);
+                }
+                cx.notify();
                 window.focus(&this.search.read(cx).focus_handle(cx), cx)
+            }))
+            .on_action(cx.listener(Self::toggle_navigator))
+            .on_action(cx.listener(|this, action: &SelectView, window, cx| {
+                this.select_view(action.index, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &FocusSettings, window, cx| {
+                if this.session.open.is_none() {
+                    return;
+                }
+                this.select_view(0, window, cx);
+                this.overview = false;
+                if this.tab != 0 && this.field_errors.is_empty() {
+                    this.rebuild_fields(window, cx);
+                }
+                this.tab = 0;
+                window.focus(&this.field_search.read(cx).focus_handle(cx), cx);
+                cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
@@ -2089,25 +2232,41 @@ impl Render for Workbench {
                 div()
                     .flex()
                     .items_center()
-                    .justify_between()
+                    .gap_3()
                     .px_4()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(
+                        Button::new("toggle-navigation")
+                            .ghost()
+                            .small()
+                            .icon(if self.preferences.navigator_hidden {
+                                gpui_kit::assets::IconName::PanelLeftOpen
+                            } else {
+                                gpui_kit::assets::IconName::PanelLeftClose
+                            })
+                            .tooltip(if self.preferences.navigator_hidden {
+                                "Show navigator"
+                            } else {
+                                "Hide navigator"
+                            })
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_navigator(&ToggleNavigator, window, cx)
+                            })),
+                    )
                     .child(
                         TabBar::new("workbench-tabs")
                             .underline()
                             .selected_index(self.main_tab)
                             .on_click(cx.listener(|this, index, window, cx| {
-                                this.main_tab = *index;
-                                if *index == 2 {
-                                    this.refresh_results(window, cx);
-                                }
-                                cx.notify();
+                                this.select_view(*index, window, cx);
                             }))
                             .child(Tab::new().label("Editor"))
                             .child(Tab::new().label("Runs"))
                             .child(Tab::new().label("Results")),
                     )
+                    .child(div().flex_1())
                     .child(
                         Button::new("run-suite")
                             .ghost()
@@ -2128,18 +2287,7 @@ impl Render for Workbench {
                             })),
                     ),
             )
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("workspace-layout")
-                        .child(
-                            resizable_panel()
-                                .size(px(280.))
-                                .size_range(px(220.)..px(440.))
-                                .child(navigation),
-                        )
-                        .child(resizable_panel().child(editor)),
-                ),
-            )
+            .child(div().flex_1().min_h_0().child(layout))
             .child(
                 div()
                     .id("status")
@@ -2245,6 +2393,31 @@ fn bind_keys(cx: &mut App) {
     };
     cx.bind_keys([
         KeyBinding::new(&format!("{modifier}-p"), FocusNavigator, Some("Regressify")),
+        KeyBinding::new(
+            &format!("{modifier}-b"),
+            ToggleNavigator,
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-shift-f"),
+            FocusSettings,
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-1"),
+            SelectView { index: 0 },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-2"),
+            SelectView { index: 1 },
+            Some("Regressify"),
+        ),
+        KeyBinding::new(
+            &format!("{modifier}-3"),
+            SelectView { index: 2 },
+            Some("Regressify"),
+        ),
         KeyBinding::new(&format!("{modifier}-s"), SaveDocument, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-o"), OpenWorkspace, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-z"), UndoDocument, Some("Regressify")),

@@ -149,14 +149,7 @@ impl Workbench {
             Operation::Theme => {
                 self.preferences.dark_mode = !self.preferences.dark_mode;
                 design::apply_theme(self.preferences.dark_mode, Some(window), cx);
-                let preferences = self.preferences.clone();
-                self.task(
-                    "Saving appearance...",
-                    move || preferences.save(&Preferences::path()?),
-                    |this, (), _, _| this.status = "Appearance saved".into(),
-                    window,
-                    cx,
-                );
+                self.save_preferences(window, cx);
             }
         }
     }
