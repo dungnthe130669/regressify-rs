@@ -50,13 +50,44 @@ multi-suite checklist, and bundled-engine init at 1600x1000 and 1080x720. With
 `-Capture`, two local suites and three real Chromium scenarios transition from
 queued/running through capture and comparison to passed in the Activity view.
 
-Final improvement gates: 347 library/UI tests and two standalone-worker
+First improvement pass gates: 347 library/UI tests and two standalone-worker
 integration tests pass, including execution with no CLI binary beside the app.
 The default CLI gate passes 281 tests. Formatting and strict production-library
 Clippy pass. Ten native window captures passed nonblank pixel checks, with the
 overview, compact editor, live activity, and final scenario outcomes inspected.
 The native worker completed all three local Chromium scenarios successfully;
 startup stderr was empty. CI definitions are updated but were not run remotely.
+
+## Usability Refinements
+
+- [x] Search suite paths and scenario labels, IDs, and URLs across the workspace;
+  open matching scenarios directly while preserving save/discard destinations.
+- [x] Expand or collapse suite outlines and filter the navigator to selected suites.
+- [x] Search settings, including advanced properties and descriptions; filter to
+  overrides and collapse groups without rebuilding retained field controls.
+- [x] Add inherited-value numeric steppers, inline file pickers, selection headings,
+  and document/parent-scenario breadcrumbs.
+- [x] Reveal and focus invalid fields, reset one override without losing other
+  invalid drafts, and flush pending text before navigation and structural edits.
+- [x] Save navigator visibility and add keyboard access to search, settings,
+  Editor, Runs, and Results without discarding view state.
+- [x] Keep result previews synchronized with filters and searches; provide
+  capture navigation, failure jumps, automatic pagination, and actual-size reset.
+- [x] Expand comparison previews without losing loaded images, filters, or zoom;
+  verify full-width and compact layouts using native window captures.
+- [x] Fix Windows debug startup stack exhaustion with a GUI-only linker reserve.
+- [x] Extend native smoke coverage, regression tests, and the desktop guide;
+  commit each completed unit.
+
+Refinement gates: 358 library/UI tests (including 30 production UI interaction
+tests), two standalone-worker integration tests, and 281 default CLI tests pass.
+Formatting and strict production-library Clippy pass. The final Windows native
+smoke run generated 13 nonblank captures at 1600x1000 and 1080x720, exercised
+layout toggles and actual-size previews, and passed all three local Chromium
+scenarios across two suites. Editor, comparison, and completed activity captures
+were inspected; startup stderr was empty. Native macOS/Linux, full IME, and
+screen-reader end-to-end validation remain platform follow-ups. Remote CI was
+not executed during this pass.
 
 ## Delivery Checklist
 

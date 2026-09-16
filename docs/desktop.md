@@ -272,7 +272,12 @@ directly, checks nonblank pixels, and leaves screenshots for review. By default 
 no browser scenarios or downloads. `-SkipBuild` uses the existing debug
 binaries; `-KeepOpen` leaves the fixture open for inspection.
 
-Windows native validation covers 1600x1000 and 1080x720. Full IME composition,
+The native workflow also exercises navigator visibility, expanded comparison,
+compact side-by-side previews, and actual-size reset. Close any existing desktop
+window before starting the smoke check; the single-instance guard still applies.
+
+Windows native validation covers 1600x1000 and 1080x720 with 13 window captures.
+Full IME composition,
 screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
 validation there. Signed installers, cloud accounts, collaborative editing,
