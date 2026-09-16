@@ -141,6 +141,20 @@ pub(crate) fn scenario_capture_order_keys(
     }
 }
 
+pub(crate) fn capture_progress_keys(
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+    viewport: Option<&str>,
+) -> Result<Vec<String>> {
+    let Some(scenario_id) = scenario.id.as_deref() else {
+        return Ok(Vec::new());
+    };
+    Ok(scenario_screenshot_types(scenario, all_scenarios)?
+        .iter()
+        .map(|screenshot_type| final_screenshot_order_key(scenario_id, viewport, screenshot_type))
+        .collect())
+}
+
 fn scenario_screenshot_types(
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],

@@ -11,6 +11,7 @@ pub mod github;
 pub mod helpers;
 pub mod init;
 pub mod optimizer;
+pub mod progress;
 pub mod snapshot;
 pub mod test;
 pub mod types;

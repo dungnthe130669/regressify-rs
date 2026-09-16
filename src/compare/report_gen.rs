@@ -9,6 +9,7 @@ use serde::Serialize;
 
 use crate::compare::image_compare::{CompareResult, compare_images};
 use crate::helpers::{copy_file_atomically, write_file_atomically};
+use crate::progress::{self, Event as ProgressEvent};
 use crate::test::capture::{
     REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_THRESHOLDS_FILE, REPORT_URLS_FILE,
     REPORT_URLS_VERSION, ReportOrderManifest, ReportPageUrls, ReportUrlsManifest,
@@ -462,6 +463,9 @@ pub fn generate_comparison_report(
     if !tests_dir.exists() {
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
     }
+    progress::emit(ProgressEvent::Comparing {
+        suite_id: suite_id.into(),
+    });
 
     let reference_dir = suite_dir.join("bitmaps_reference");
     let bitmaps_test_dir = suite_dir.join("bitmaps_test").join(test_date);
@@ -678,6 +682,21 @@ pub fn generate_comparison_report(
     }
 
     // Generate report.json
+    if progress::enabled() {
+        for test in &report_tests {
+            progress::emit(ProgressEvent::Compared {
+                suite_id: suite_id.into(),
+                capture: screenshot_key(&test.pair.file_name).into(),
+                label: test.pair.label.clone(),
+                passed: test.status == "pass",
+                error: test
+                    .pair
+                    .engine_error_msg
+                    .clone()
+                    .or_else(|| (test.status != "pass").then(|| "Visual mismatch".into())),
+            });
+        }
+    }
     let report = ReportConfig {
         test_suite: suite_id.to_string(),
         id: suite_id.to_string(),
@@ -692,6 +711,9 @@ pub fn generate_comparison_report(
     let config_js = format!("report({});", report_json);
     let config_path = html_report_dir.join("config.js");
     write_file_atomically(&config_path, config_js.as_bytes())?;
+    progress::emit(ProgressEvent::SuiteFinished {
+        id: suite_id.into(),
+    });
 
     // Print summary
     let pass_count = report.tests.iter().filter(|t| t.status == "pass").count();

@@ -17,12 +17,13 @@ use crate::{
     compare::report_gen::{generate_comparison_report, validate_capture_run_inventory},
     config::{self, replacements},
     helpers::{OnceLockExtensions, copy_file_atomically, is_windows_reserved_path_component},
+    progress::{self, Event as ProgressEvent},
     snapshot,
     test::{
         browsers::fetcher,
         capture,
         test_scenario::{
-            ScenarioRequest, collect_url_replacements, make_log_prefix,
+            ScenarioRequest, capture_progress_keys, collect_url_replacements, make_log_prefix,
             scenario_capture_order_keys, scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
@@ -51,6 +52,7 @@ const MAX_OUTPUT_IDENTIFIER_BYTES: usize = 80;
 /// scenario/viewport pair runs as its own task with its own browser and index.
 struct CaptureJob {
     suite: Arc<TestSuite>,
+    suite_name: String,
     suite_semaphore: Arc<Semaphore>,
     scenario_idx: usize,
     viewport: Option<config::viewports::ViewportDef>,
@@ -110,7 +112,13 @@ fn build_capture_jobs(
     workspace_config: &config::WorkspaceConfig,
 ) -> Result<Vec<CaptureJob>> {
     let mut jobs = Vec::new();
-    for (_input, suite) in parsed_suites {
+    for (input, suite) in parsed_suites {
+        if progress::enabled() {
+            progress::emit(ProgressEvent::SuiteQueued {
+                id: suite.id.clone().unwrap_or_else(|| input.name.clone()),
+                name: input.name.clone(),
+            });
+        }
         let suite_semaphore = Arc::new(Semaphore::new(config::resolve_async_capture_limit(
             workspace_config,
             suite,
@@ -124,6 +132,7 @@ fn build_capture_jobs(
             for viewport in viewports {
                 jobs.push(CaptureJob {
                     suite: suite.clone(),
+                    suite_name: input.name.clone(),
                     suite_semaphore: suite_semaphore.clone(),
                     scenario_idx,
                     viewport,
@@ -132,8 +141,40 @@ fn build_capture_jobs(
             }
         }
     }
-    for (i, job) in jobs.iter_mut().enumerate() {
-        job.index = i + 1;
+    for (index, job) in jobs.iter_mut().enumerate() {
+        job.index = index + 1;
+        if progress::enabled() {
+            let scenario = &job.suite.scenarios[job.scenario_idx];
+            progress::emit(ProgressEvent::Queued {
+                job: progress::Job {
+                    id: job.index,
+                    suite_id: job
+                        .suite
+                        .id
+                        .clone()
+                        .unwrap_or_else(|| job.suite_name.clone()),
+                    suite_name: job.suite_name.clone(),
+                    scenario_id: scenario.id.clone().unwrap_or_default(),
+                    label: scenario
+                        .label
+                        .clone()
+                        .or_else(|| scenario.id.clone())
+                        .unwrap_or_else(|| format!("Scenario {}", job.scenario_idx + 1)),
+                    viewport: job
+                        .viewport
+                        .as_ref()
+                        .map(|viewport| viewport.label.clone())
+                        .unwrap_or_else(|| "Default".into()),
+                    captures: capture_progress_keys(
+                        scenario,
+                        &job.suite.scenarios,
+                        job.viewport
+                            .as_ref()
+                            .map(|viewport| viewport.label.as_str()),
+                    )?,
+                },
+            });
+        }
     }
     Ok(jobs)
 }
@@ -150,12 +191,16 @@ fn spawn_capture_jobs(
     active_replacements: &Arc<Vec<UrlReplacement>>,
     apply_url_replacements: bool,
 ) -> Vec<JoinHandle<TaskStatus>> {
+    progress::emit(ProgressEvent::Phase {
+        name: "Capturing scenarios".into(),
+    });
     let total = jobs.len();
     let mut handles = Vec::with_capacity(total);
 
     for job in jobs {
         let CaptureJob {
             suite,
+            suite_name: _,
             suite_semaphore,
             scenario_idx,
             viewport,
@@ -171,15 +216,21 @@ fn spawn_capture_jobs(
             let Ok((_suite_permit, _global_permit)) = acquire_capture_permits(suite_sem, sem).await
             else {
                 eprintln!("  {} Capture semaphore closed", "ERROR:".red());
+                progress::emit(ProgressEvent::Captured {
+                    id: index,
+                    error: Some("Capture semaphore closed".into()),
+                    infrastructure: true,
+                });
                 return TaskStatus::InfraFailed;
             };
+            progress::emit(ProgressEvent::Started { id: index });
             let log_prefix = make_log_prefix(index, total);
             let label = suite.scenarios[scenario_idx]
                 .label
                 .as_deref()
                 .or(suite.scenarios[scenario_idx].id.as_deref())
                 .unwrap_or("unknown");
-            match exec_single_scenario(
+            let outcome = exec_single_scenario(
                 &exe_path,
                 ScenarioRequest {
                     test_suite: &suite,
@@ -193,8 +244,18 @@ fn spawn_capture_jobs(
                     total,
                 },
             )
-            .await
-            {
+            .await;
+            let (error, infrastructure) = match &outcome {
+                ScenarioOutcome::Passed => (None, false),
+                ScenarioOutcome::PageFailed(error) => (Some(format!("{error:#}")), false),
+                ScenarioOutcome::InfraFailed(error) => (Some(format!("{error:#}")), true),
+            };
+            progress::emit(ProgressEvent::Captured {
+                id: index,
+                error,
+                infrastructure,
+            });
+            match outcome {
                 ScenarioOutcome::Passed => TaskStatus::Passed,
                 ScenarioOutcome::PageFailed(e) => {
                     // Page errors (timeout, not found, ...) are expected for a
@@ -971,6 +1032,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref())?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
+        progress::emit(ProgressEvent::Phase {
+            name: "Installing Chromium".into(),
+        });
         Some(
             fetcher()
                 .await
@@ -1038,6 +1102,9 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
             }
         }
         eprintln!("Test suite '{}' completed.", input.name);
+        progress::emit(ProgressEvent::SuiteFinished {
+            id: suite.id.clone().unwrap_or_else(|| input.name.clone()),
+        });
     }
 
     generate_snapshot_reports()?;
@@ -1118,6 +1185,9 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref())?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
+        progress::emit(ProgressEvent::Phase {
+            name: "Installing Chromium".into(),
+        });
         Some(
             fetcher()
                 .await
@@ -1271,6 +1341,9 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 }
 
 fn generate_snapshot_reports() -> Result<()> {
+    progress::emit(ProgressEvent::Phase {
+        name: "Generating report".into(),
+    });
     snapshot::snapshot(SnapshotArgs {
         title: "Visual Tests Summary | Regressify".to_string(),
         heading: "Visual Tests Summary".to_string(),

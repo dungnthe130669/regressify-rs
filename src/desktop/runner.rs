@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender},
     },
@@ -21,6 +21,7 @@ use command_group::CommandGroup;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
+use crate::progress::{EventReader, LiveProgress};
 
 const LOG_QUEUE_CAPACITY: usize = 256;
 const MAX_LOG_CHUNK: usize = 16 * 1024;
@@ -314,14 +315,26 @@ struct RunHandle {
     cancel: SyncSender<()>,
     worker: Option<JoinHandle<RunOutcome>>,
     omitted: Arc<AtomicUsize>,
+    progress: Arc<Mutex<LiveProgress>>,
+    _events_file: Option<tempfile::NamedTempFile>,
 }
 
 impl RunHandle {
-    fn spawn(mut command: Command, payload: Option<Vec<u8>>) -> Result<Self> {
+    fn spawn(
+        mut command: Command,
+        payload: Option<Vec<u8>>,
+        events_file: Option<tempfile::NamedTempFile>,
+    ) -> Result<Self> {
         let (sender, logs) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let (cancel, cancellation) = mpsc::sync_channel(1);
         let omitted = Arc::new(AtomicUsize::new(0));
         let lost = omitted.clone();
+        let mut events = events_file
+            .as_ref()
+            .map(|file| EventReader::open(file.path()))
+            .transpose()?;
+        let progress = Arc::new(Mutex::new(LiveProgress::default()));
+        let live = progress.clone();
         let worker = thread::Builder::new()
             .name("regressify-run".into())
             .spawn(move || {
@@ -355,45 +368,79 @@ impl RunHandle {
                             return Err(error);
                         }
                     }
-                    let outcome = loop {
-                        if let Some(status) = child.try_wait()? {
-                            break if status.success() {
-                                RunOutcome::Completed
-                            } else {
-                                RunOutcome::Failed(format!(
-                                    "Engine worker exited with {}",
-                                    status
-                                        .code()
-                                        .map(|code| code.to_string())
-                                        .unwrap_or_else(|| "a signal".into())
-                                ))
-                            };
-                        }
-                        match cancellation.recv_timeout(Duration::from_millis(50)) {
-                            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                child
-                                    .kill()
-                                    .context("Cannot terminate the engine process group")?;
-                                child.wait()?;
-                                break RunOutcome::Cancelled;
+                    let outcome = (|| -> Result<RunOutcome> {
+                        loop {
+                            if let Some(events) = &mut events {
+                                let mut state = live
+                                    .lock()
+                                    .map_err(|_| anyhow!("Run progress is unavailable"))?;
+                                events.drain(|record| state.apply(record))?;
                             }
-                            Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            if let Some(status) = child.try_wait()? {
+                                if let Some(events) = &mut events {
+                                    let mut state = live
+                                        .lock()
+                                        .map_err(|_| anyhow!("Run progress is unavailable"))?;
+                                    events.drain(|record| state.apply(record))?;
+                                    events.complete()?;
+                                }
+                                break Ok(if status.success() {
+                                    RunOutcome::Completed
+                                } else {
+                                    RunOutcome::Failed(format!(
+                                        "Engine worker exited with {}",
+                                        status
+                                            .code()
+                                            .map(|code| code.to_string())
+                                            .unwrap_or_else(|| "a signal".into())
+                                    ))
+                                });
+                            }
+                            match cancellation.recv_timeout(Duration::from_millis(50)) {
+                                Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                    child
+                                        .kill()
+                                        .context("Cannot terminate the engine process group")?;
+                                    child.wait()?;
+                                    break Ok(RunOutcome::Cancelled);
+                                }
+                                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                            }
                         }
-                    };
+                    })();
+                    if outcome.is_err() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
                     for reader in readers {
                         reader
                             .join()
                             .map_err(|_| anyhow!("Log reader stopped unexpectedly"))??;
                     }
-                    Ok(outcome)
+                    outcome
                 })();
-                result.unwrap_or_else(|error| RunOutcome::Failed(format!("{error:#}")))
+                let outcome =
+                    result.unwrap_or_else(|error| RunOutcome::Failed(format!("{error:#}")));
+                if let Ok(mut state) = live.lock() {
+                    match &outcome {
+                        RunOutcome::Cancelled => state.end(true, None),
+                        RunOutcome::Failed(error) => {
+                            let message = state.error.clone().unwrap_or_else(|| error.clone());
+                            state.end(false, Some(message));
+                        }
+                        RunOutcome::Completed if !state.finished => state.end(false, None),
+                        _ => {}
+                    }
+                }
+                outcome
             })?;
         Ok(Self {
             logs,
             cancel,
             worker: Some(worker),
             omitted,
+            progress,
+            _events_file: events_file,
         })
     }
 
@@ -448,6 +495,7 @@ pub struct RunManager {
     pub request: Option<RunRequest>,
     pub omitted_chunks: usize,
     log_bytes: usize,
+    pub progress: LiveProgress,
 }
 
 impl RunManager {
@@ -461,12 +509,17 @@ impl RunManager {
             request.options.run_id = format!("desktop-{}", uuid::Uuid::new_v4().simple());
         }
         let command = request.process()?;
-        let payload = serde_json::to_vec(&request)?;
+        let events = tempfile::NamedTempFile::new()?;
+        let payload = serde_json::to_vec(&super::worker::WorkerRequest {
+            run: request.clone(),
+            events_path: Some(events.path().into()),
+        })?;
         ensure!(
             payload.len() <= super::worker::MAX_REQUEST_BYTES,
             "Run request exceeds 1 MiB"
         );
-        self.active = Some(RunHandle::spawn(command, Some(payload))?);
+        self.active = Some(RunHandle::spawn(command, Some(payload), Some(events))?);
+        self.progress = LiveProgress::default();
         self.logs.clear();
         self.log_bytes = 0;
         self.omitted_chunks = 0;
@@ -489,6 +542,9 @@ impl RunManager {
         let lines = active.logs.try_iter().collect::<Vec<_>>();
         self.omitted_chunks = active.omitted.load(Ordering::Relaxed);
         let finished = active.worker.as_ref().is_some_and(JoinHandle::is_finished);
+        if let Ok(state) = active.progress.lock() {
+            self.progress = state.clone();
+        }
         for line in lines {
             self.push_log(line);
         }
@@ -597,6 +653,32 @@ mod tests {
         };
         println!("fixture stdout");
         eprintln!("fixture stderr");
+        if mode == "progress" {
+            let path = std::env::var_os("REGRESSIFY_PROGRESS_FIXTURE").unwrap();
+            crate::progress::install(Path::new(&path)).unwrap();
+            for index in 0..2000 {
+                println!("log record {index}");
+            }
+            crate::progress::emit(crate::progress::Event::Queued {
+                job: crate::progress::Job {
+                    id: 1,
+                    suite_id: "shop".into(),
+                    suite_name: "shop".into(),
+                    scenario_id: "home".into(),
+                    label: "Home".into(),
+                    viewport: "desktop".into(),
+                    captures: vec!["home__FINAL".into()],
+                },
+            });
+            crate::progress::emit(crate::progress::Event::Started { id: 1 });
+            crate::progress::emit(crate::progress::Event::Captured {
+                id: 1,
+                error: None,
+                infrastructure: false,
+            });
+            crate::progress::emit(crate::progress::Event::Finished { error: None });
+            crate::progress::finish().unwrap();
+        }
         if mode == "wait" {
             thread::park();
         }
@@ -608,7 +690,7 @@ mod tests {
     #[test]
     fn subprocess_reads_both_streams_and_distinguishes_failure() {
         for (mode, success) in [("complete", true), ("fail", false)] {
-            let mut handle = RunHandle::spawn(fixture(mode), None).unwrap();
+            let mut handle = RunHandle::spawn(fixture(mode), None, None).unwrap();
             let outcome = handle.worker.take().unwrap().join().unwrap();
             assert_eq!(outcome == RunOutcome::Completed, success);
             let logs = handle.logs.try_iter().collect::<Vec<_>>();
@@ -625,7 +707,7 @@ mod tests {
 
     #[test]
     fn cancellation_stops_a_running_process_group() {
-        let mut handle = RunHandle::spawn(fixture("wait"), None).unwrap();
+        let mut handle = RunHandle::spawn(fixture("wait"), None, None).unwrap();
         handle.logs.recv_timeout(Duration::from_secs(10)).unwrap();
         handle.cancel();
         assert_eq!(
@@ -645,5 +727,19 @@ mod tests {
         }
         assert!(manager.log_bytes <= MAX_LOG_BYTES);
         assert!(!manager.logs.is_empty());
+    }
+
+    #[test]
+    fn progress_survives_a_full_console_log_queue() {
+        let events = tempfile::NamedTempFile::new().unwrap();
+        let mut command = fixture("progress");
+        command.env("REGRESSIFY_PROGRESS_FIXTURE", events.path());
+        let mut handle = RunHandle::spawn(command, None, Some(events)).unwrap();
+        let outcome = handle.worker.take().unwrap().join().unwrap();
+        assert_eq!(outcome, RunOutcome::Completed);
+        assert!(handle.omitted.load(Ordering::Relaxed) > 0);
+        let progress = handle.progress.lock().unwrap();
+        assert!(progress.finished);
+        assert_eq!(progress.counts(None).captured, 1);
     }
 }

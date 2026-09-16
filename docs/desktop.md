@@ -134,6 +134,13 @@ CLI/script logs can still contain project-provided data.
 missing references, and mismatches are report outcomes. Configuration,
 infrastructure, and artifact-write errors are command failures.
 
+The engine emits versioned progress events independently of console logs. Each
+scenario/viewport job reports queued, running, capture completion, comparison,
+and failure states. Screenshot keys connect visual comparisons to their original
+jobs; a scenario is visually passed only after all of its screenshots pass.
+Cancellation resolves queued/running jobs explicitly. The worker writes events
+to a private temporary file so an overflowing log queue cannot drop status updates.
+
 ## Reviewing Results
 
 Results refreshes on opening and after commands finish using current output

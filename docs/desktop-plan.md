@@ -39,6 +39,12 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
 - [ ] Update tests, documentation, CI, and native smoke coverage; commit each
   completed unit and distinguish local verification from platform follow-ups.
 
+Backend verification: the standalone desktop worker initializes a workspace
+without a CLI executable. Typed progress tests cover parallel suites, multiple
+captures per scenario, partial records, cancellation, and saturated log queues.
+A real two-suite comparison integration test reports one pass and one mismatch
+while preserving the zero-exit visual-failure contract.
+
 ### 1. Foundation
 
 - [x] Extract a shared library without changing CLI behavior.

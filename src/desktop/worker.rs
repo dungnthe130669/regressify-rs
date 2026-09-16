@@ -1,15 +1,23 @@
 //! The desktop executable doubles as its isolated, headless engine worker.
 
-use std::io::Read;
+use std::{io::Read, path::PathBuf};
 
 use anyhow::{Context, Result, ensure};
+use serde::{Deserialize, Serialize};
 
 use super::runner::RunRequest;
 
 pub const WORKER_FLAG: &str = "--internal-worker";
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 
-pub fn read_request(input: impl Read) -> Result<RunRequest> {
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerRequest {
+    pub run: RunRequest,
+    pub events_path: Option<PathBuf>,
+}
+
+pub fn read_request(input: impl Read) -> Result<WorkerRequest> {
     let mut bytes = Vec::new();
     input
         .take(MAX_REQUEST_BYTES as u64 + 1)
@@ -23,11 +31,21 @@ pub fn read_request(input: impl Read) -> Result<RunRequest> {
 
 pub fn run_stdio() -> Result<()> {
     let request = read_request(std::io::stdin().lock())?;
-    let cli = request.cli()?;
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()?
-        .block_on(crate::application::execute(cli))
+    if let Some(path) = &request.events_path {
+        crate::progress::install(path)?;
+    }
+    let result = (|| -> Result<()> {
+        let cli = request.run.cli()?;
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()?
+            .block_on(crate::application::execute(cli))
+    })();
+    crate::progress::emit(crate::progress::Event::Finished {
+        error: result.as_ref().err().map(|error| format!("{error:#}")),
+    });
+    crate::progress::finish()?;
+    result
 }
 
 #[cfg(test)]
@@ -42,10 +60,14 @@ mod tests {
             command: RunCommand::Init,
             options: RunOptions::default(),
         };
-        let encoded = serde_json::to_vec(&request).unwrap();
+        let encoded = serde_json::to_vec(&WorkerRequest {
+            run: request.clone(),
+            events_path: None,
+        })
+        .unwrap();
         let decoded = read_request(encoded.as_slice()).unwrap();
-        assert_eq!(decoded.root, request.root);
-        assert_eq!(decoded.command, request.command);
+        assert_eq!(decoded.run.root, request.root);
+        assert_eq!(decoded.run.command, request.command);
         assert!(read_request(b"not JSON".as_slice()).is_err());
         assert!(read_request(vec![b' '; MAX_REQUEST_BYTES + 1].as_slice()).is_err());
     }

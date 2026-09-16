@@ -18,6 +18,17 @@ use crate::{
 pub async fn execute(cli: Cli) -> Result<()> {
     set_root(&cli)?;
     set_global_vars(&cli)?;
+    let phase = match &cli.command {
+        Command::Test(_) | Command::Ref(_) => "Validating test suites",
+        Command::Compare(_) => "Comparing screenshots",
+        Command::Approve(_) => "Approving baselines",
+        Command::Snapshot(_) => "Generating report",
+        Command::Optimize(_) => "Optimizing images",
+        Command::Install => "Installing Chromium",
+        Command::Init => "Initializing workspace",
+        Command::Version => "Reading version",
+    };
+    crate::progress::emit(crate::progress::Event::Phase { name: phase.into() });
 
     match cli.command {
         Command::Init => init::init(),
