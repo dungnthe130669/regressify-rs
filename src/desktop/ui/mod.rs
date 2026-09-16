@@ -24,7 +24,9 @@ use super::{
     workspace::{Entry, OpenDocument, Preferences},
 };
 
+mod design;
 mod files;
+mod overview;
 mod reports;
 mod runs;
 
@@ -92,6 +94,7 @@ pub struct Workbench {
     runs: Entity<runs::RunPanel>,
     results: Entity<reports::ResultsPanel>,
     main_tab: usize,
+    overview: bool,
 }
 
 impl Workbench {
@@ -172,6 +175,7 @@ impl Workbench {
             runs,
             results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
             main_tab: 0,
+            overview: true,
         }
     }
 
@@ -228,6 +232,7 @@ impl Workbench {
             |this, session, window, cx| {
                 this.session = session;
                 this.main_tab = 0;
+                this.overview = true;
                 this.tab = 0;
                 this.advanced = false;
                 this.search
@@ -280,6 +285,8 @@ impl Workbench {
             move || workspace.open_document(entry),
             |this, open, window, cx| {
                 this.session.open = Some(open);
+                this.overview = false;
+                this.main_tab = 0;
                 this.session.selection = Selection::Root;
                 this.tab = if this
                     .session
@@ -704,6 +711,8 @@ impl Workbench {
         match self.session.select(selection) {
             Ok(()) => {
                 self.tab = 0;
+                self.overview = false;
+                self.main_tab = 0;
                 self.rebuild_fields(window, cx);
             }
             Err(error) => self.status = format!("{error:#}"),
@@ -714,6 +723,9 @@ impl Workbench {
     fn render_toolbar(&self, cx: &mut Context<Self>) -> AnyElement {
         let open = self.session.open.as_ref();
         let focus = self.focus.clone();
+        let add_scenario = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
+        let add_viewport = open.is_some_and(|open| open.entry.kind == DocumentKind::Viewports);
+        let add_action = self.session.selection.scenario().is_some();
         div()
             .flex()
             .items_center()
@@ -723,23 +735,6 @@ impl Workbench {
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(
-                div()
-                    .text_lg()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .mr_4()
-                    .child("Regressify"),
-            )
-            .child(self.file_menu())
-            .child(
-                Button::new("open-workspace")
-                    .icon(IconName::FolderOpen)
-                    .label("Open workspace")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.choose_workspace(&OpenWorkspace, window, cx)
-                    })),
-            )
             .child(
                 Button::new("save")
                     .icon(gpui_kit::assets::IconName::Save)
@@ -757,6 +752,7 @@ impl Workbench {
             )
             .child(
                 Button::new("undo")
+                    .ghost()
                     .icon(IconName::Undo)
                     .tooltip("Undo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_undo()))
@@ -766,6 +762,7 @@ impl Workbench {
             )
             .child(
                 Button::new("redo")
+                    .ghost()
                     .icon(IconName::Redo)
                     .tooltip("Redo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_redo()))
@@ -781,15 +778,16 @@ impl Workbench {
                     .dropdown_menu(move |menu, _, _| {
                         let mut menu = menu
                             .action_context(focus.clone())
-                            .menu("Scenario", Box::new(AddScenario))
-                            .menu("Viewport", Box::new(AddViewport))
+                            .menu_with_disabled("Scenario", Box::new(AddScenario), !add_scenario)
+                            .menu_with_disabled("Viewport", Box::new(AddViewport), !add_viewport)
                             .separator();
                         for action in ACTIONS {
-                            menu = menu.menu(
+                            menu = menu.menu_with_disabled(
                                 *action,
                                 Box::new(AddBrowserAction {
                                     kind: action.to_string(),
                                 }),
+                                !add_action,
                             );
                         }
                         menu
@@ -797,6 +795,7 @@ impl Workbench {
             )
             .child(
                 Button::new("duplicate-item")
+                    .ghost()
                     .icon(IconName::Copy)
                     .tooltip("Duplicate selected item")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -806,6 +805,7 @@ impl Workbench {
             )
             .child(
                 Button::new("remove-item")
+                    .ghost()
                     .icon(gpui_kit::assets::IconName::Trash)
                     .tooltip("Remove selected item")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -815,6 +815,7 @@ impl Workbench {
             )
             .child(
                 Button::new("move-up")
+                    .ghost()
                     .icon(IconName::ArrowUp)
                     .tooltip("Move selected item up")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -824,6 +825,7 @@ impl Workbench {
             )
             .child(
                 Button::new("move-down")
+                    .ghost()
                     .icon(IconName::ArrowDown)
                     .tooltip("Move selected item down")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -844,6 +846,19 @@ impl Workbench {
             .min_w_0()
             .gap_1()
             .p_3()
+            .bg(cx.theme().muted.opacity(0.55))
+            .child(
+                Button::new("workspace-overview")
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::LayoutDashboard)
+                    .label("Overview")
+                    .selected(self.overview && self.main_tab == 0)
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.overview = true;
+                        this.main_tab = 0;
+                        cx.notify();
+                    })),
+            )
             .child(
                 Input::new(&self.search)
                     .id("navigator-search")
@@ -960,12 +975,36 @@ impl Workbench {
                         })),
                 );
             }
+            let live_status = suite.and_then(|suite| {
+                let counts = self.runs.read(cx).progress().counts(Some(&suite.output_id));
+                if counts.running > 0 {
+                    Some(("Running", cx.theme().primary))
+                } else if counts.failed > 0 {
+                    Some(("Failed", cx.theme().danger))
+                } else if counts.passed > 0 {
+                    Some(("Passed", cx.theme().success))
+                } else if counts.queued > 0 {
+                    Some(("Queued", cx.theme().muted_foreground))
+                } else {
+                    None
+                }
+            });
             files = files.child(
                 row.child(
                     Button::new(("file", index))
                         .ghost()
                         .selected(current && self.session.selection == Selection::Root)
-                        .label(
+                        .child(
+                            div().flex_1().min_w_0().text_left().truncate().child(
+                                entry
+                                    .path
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            ),
+                        )
+                        .accessibility_label(
                             entry
                                 .path
                                 .file_name()
@@ -989,6 +1028,10 @@ impl Workbench {
                                 this.load_document(entry.clone(), window, cx);
                             }
                         })),
+                )
+                .children(
+                    live_status
+                        .map(|(status, color)| div().text_xs().text_color(color).child(status)),
                 ),
             );
             if current {
@@ -1016,7 +1059,15 @@ impl Workbench {
                                 Button::new(("scenario", scenario))
                                     .ghost()
                                     .small()
-                                    .label(label)
+                                    .accessibility_label(label.clone())
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_left()
+                                            .truncate()
+                                            .child(label),
+                                    )
                                     .selected(self.session.selection == selection)
                                     .w_full()
                                     .justify_start()
@@ -1040,7 +1091,15 @@ impl Workbench {
                                         Button::new(("action", index))
                                             .ghost()
                                             .small()
-                                            .label(format!("{}. {name}", index + 1))
+                                            .accessibility_label(format!("{}. {name}", index + 1))
+                                            .child(
+                                                div()
+                                                    .flex_1()
+                                                    .min_w_0()
+                                                    .text_left()
+                                                    .truncate()
+                                                    .child(format!("{}. {name}", index + 1)),
+                                            )
                                             .w_full()
                                             .justify_start()
                                             .pl_8()
@@ -1132,10 +1191,24 @@ impl Workbench {
             .id("field-form")
             .flex()
             .flex_col()
-            .gap_4()
-            .p_5()
+            .gap_5()
+            .p_6()
             .w_full();
-        for binding in &self.bindings {
+        let action = matches!(self.session.selection, Selection::Action { .. });
+        let mut bindings: Vec<_> = self.bindings.iter().enumerate().collect();
+        bindings.sort_by_key(|(index, binding)| {
+            (
+                if action {
+                    0
+                } else {
+                    design::group(&binding.field.key).0
+                },
+                *index,
+            )
+        });
+        let mut current_group = None;
+        let mut section = div().grid().grid_cols(2).gap_4();
+        for (_, binding) in bindings {
             let field = &binding.field;
             if !self.advanced
                 && !field.required
@@ -1153,10 +1226,45 @@ impl Workbench {
             {
                 continue;
             }
+            let group = if action {
+                (0, "Action properties")
+            } else {
+                design::group(&field.key)
+            };
+            if current_group != Some(group.0) {
+                if current_group.is_some() {
+                    form = form.child(section);
+                }
+                form = form.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .pt_1()
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(group.1),
+                        )
+                        .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
+                );
+                section = div().grid().grid_cols(2).gap_4();
+                current_group = Some(group.0);
+            }
             let value = selected.get(&field.key).unwrap_or(&Value::Null);
             let explicit = !value.is_null();
             let field_id = SharedString::from(format!("field-{}", field.key));
-            let mut row = div().flex().flex_col().gap_1().w_full().max_w(px(820.));
+            let wide = matches!(field.kind, FieldKind::List { .. } | FieldKind::Structured)
+                || matches!(field.key.as_str(), "url" | "description")
+                || action;
+            let mut row = div()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .w_full()
+                .min_w_0()
+                .when(wide, |row| row.col_span(2));
             let key = field.key.clone();
             row = row.child(
                 div()
@@ -1187,7 +1295,7 @@ impl Workbench {
                                     .role(Role::Status)
                                     .aria_label(self.field_hint(field, explicit))
                                     .test_support()
-                                    .max_w(px(340.))
+                                    .max_w(px(if wide { 300. } else { 150. }))
                                     .truncate()
                                     .child(self.field_hint(field, explicit)),
                             )
@@ -1220,11 +1328,12 @@ impl Workbench {
             let control = match &binding.control {
                 Control::Input(state) => Input::new(state)
                     .id(field_id)
+                    .small()
                     .disabled(self.busy)
                     .into_any_element(),
                 Control::Textarea(state) => div()
                     .id(field_id)
-                    .child(Textarea::new(state).disabled(self.busy).h(px(96.)))
+                    .child(Textarea::new(state).disabled(self.busy).h(px(72.)))
                     .into_any_element(),
                 Control::Boolean => {
                     let descriptor = field.clone();
@@ -1302,7 +1411,10 @@ impl Workbench {
                         .child(error.clone()),
                 );
             }
-            form = form.child(row);
+            section = section.child(row);
+        }
+        if current_group.is_some() {
+            form = form.child(section);
         }
         if self.bindings.is_empty() {
             form = form.child(div().text_color(cx.theme().muted_foreground).child(
@@ -1322,6 +1434,9 @@ impl Workbench {
     }
 
     fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.overview || self.session.open.is_none() {
+            return self.render_overview(cx);
+        }
         let title = self
             .session
             .open
@@ -1362,11 +1477,12 @@ impl Workbench {
             .flex_col()
             .size_full()
             .min_w_0()
+            .child(self.render_toolbar(cx))
             .child(
                 div()
                     .px_4()
-                    .py_2()
-                    .text_sm()
+                    .py_4()
+                    .text_lg()
                     .font_weight(FontWeight::MEDIUM)
                     .truncate()
                     .child(title),
@@ -1378,7 +1494,8 @@ impl Workbench {
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .px_3()
+                    .px_5()
+                    .bg(cx.theme().muted.opacity(0.45))
                     .child(
                         TabBar::new("editor-tabs")
                             .underline()
@@ -1475,7 +1592,8 @@ impl Render for Workbench {
                     cx,
                 )
             }))
-            .child(self.render_toolbar(cx))
+            .font_family(cx.theme().font_family.clone())
+            .child(self.render_header(cx))
             .child(
                 div()
                     .flex()
@@ -1573,15 +1691,7 @@ pub fn launch(root: Option<PathBuf>) {
                 .and_then(|path| Preferences::load(&path))
                 .map(|preferences| preferences.dark_mode)
                 .unwrap_or(false);
-            Theme::change(
-                if dark {
-                    ThemeMode::Dark
-                } else {
-                    ThemeMode::Light
-                },
-                None,
-                cx,
-            );
+            design::apply_theme(dark, None, cx);
             bind_keys(cx);
             let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
             cx.spawn(async move |cx| {

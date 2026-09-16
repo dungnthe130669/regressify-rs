@@ -148,15 +148,7 @@ impl Workbench {
             Operation::CloseWorkspace => self.guard(Pending::CloseWorkspace, window, cx),
             Operation::Theme => {
                 self.preferences.dark_mode = !self.preferences.dark_mode;
-                Theme::change(
-                    if self.preferences.dark_mode {
-                        ThemeMode::Dark
-                    } else {
-                        ThemeMode::Light
-                    },
-                    Some(window),
-                    cx,
-                );
+                design::apply_theme(self.preferences.dark_mode, Some(window), cx);
                 let preferences = self.preferences.clone();
                 self.task(
                     "Saving appearance...",
@@ -424,6 +416,8 @@ impl Workbench {
             },
             |this, (open, entries), window, cx| {
                 this.session.open = Some(open);
+                this.overview = false;
+                this.main_tab = 0;
                 this.session.entries = entries;
                 this.session.selection = Selection::Root;
                 this.tab = 0;

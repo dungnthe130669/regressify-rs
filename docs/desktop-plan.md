@@ -34,7 +34,7 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
   an explicit run scope; never silently run all suites for an empty selection.
 - [x] Keep exactly one active workspace, clear workspace-owned state on switch,
   guard unsaved work, and prevent stale asynchronous results from crossing roots.
-- [ ] Redesign navigation, forms, execution, and results for a polished QA
+- [x] Redesign navigation, forms, execution, and results for a polished QA
   workbench with clear hierarchy, compact controls, and useful empty states.
 - [ ] Update tests, documentation, CI, and native smoke coverage; commit each
   completed unit and distinguish local verification from platform follow-ups.
@@ -44,6 +44,12 @@ without a CLI executable. Typed progress tests cover parallel suites, multiple
 captures per scenario, partial records, cancellation, and saturated log queues.
 A real two-suite comparison integration test reports one pass and one mismatch
 while preserving the zero-exit visual-failure contract.
+
+Native redesign verification: nineteen production UI tests pass. The Windows
+smoke test exercises the workspace overview, grouped editor, source/results,
+multi-suite checklist, and bundled-engine init at 1600x1000 and 1080x720. With
+`-Capture`, two local suites and three real Chromium scenarios transition from
+queued/running through capture and comparison to passed in the Activity view.
 
 ### 1. Foundation
 

@@ -56,9 +56,19 @@ Choose Initialize workspace in Runs to invoke the existing non-destructive
 
 ## Editing
 
+The workspace opens to an overview with suite/scenario totals, selection counts,
+configuration issues, and per-suite status. Edit opens the selected suite; Overview
+returns to the workspace without discarding an open draft. The header identifies
+the single active workspace and links to live execution while a run is active.
+
 Fields provides typed controls derived from the Rust schemas. Advanced reveals
 optional root settings. Source exposes complete YAML/JSON with highlighting,
 selection, native text editing, and search. Effective uses the real CLI resolver.
+
+Related fields are grouped into General, Capture, Session and dependencies,
+Execution, Page setup, and Behavior. Short values use a two-column layout; URLs
+and lists use the full width. Document actions stay with the editor. Light and
+dark appearances share restrained teal accents and consistent native typography.
 
 The Add menu supports scenarios, viewports, and all 15 action types. Selected
 items can be duplicated, reordered, and removed. Removal is confirmed and
@@ -218,11 +228,15 @@ In PowerShell 7 on an interactive Windows desktop:
 ./ci/desktop-smoke.ps1
 ```
 
-The script builds both binaries, creates an isolated synthetic workspace under
+Add `-Capture` to run three local fixture scenarios across two suites with an
+installed Chromium browser and assert their live pass counts. This uses local
+HTML only and does not contact an external test website or download a browser.
+
+The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
 and runs the actual CLI init command from the GUI. It captures the target window
-directly, checks nonblank pixels, and leaves six screenshots for review. It runs
-no website scenarios or browser downloads. `-SkipBuild` uses existing debug
+directly, checks nonblank pixels, and leaves screenshots for review. By default it runs
+no browser scenarios or downloads. `-SkipBuild` uses the existing debug
 binaries; `-KeepOpen` leaves the fixture open for inspection.
 
 Windows native validation covers 1600x1000 and 1080x720. Full IME composition,

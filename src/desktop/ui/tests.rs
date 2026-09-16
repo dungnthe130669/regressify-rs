@@ -281,6 +281,7 @@ async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
 
 fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<Workbench>) {
     cx.update(gpui_kit::init);
+    cx.update(|cx| super::design::apply_theme(false, None, cx));
     cx.update(super::bind_keys);
     let mut created = None;
     let handle = cx.open_window(size(px(1280.), px(820.)), |window, cx| {

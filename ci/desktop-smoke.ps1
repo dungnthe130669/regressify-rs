@@ -7,7 +7,8 @@ Artifacts and the fixture workspace remain under target/desktop-smoke.
 #>
 param(
     [switch]$SkipBuild,
-    [switch]$KeepOpen
+    [switch]$KeepOpen,
+    [switch]$Capture
 )
 
 $ErrorActionPreference = 'Stop'
@@ -20,7 +21,7 @@ if (-not $IsWindows) { throw 'This smoke test requires Windows.' }
 if (-not $SkipBuild) {
     Push-Location $repository
     try {
-        & cargo build --features gui --bins --quiet
+        & cargo build --features gui --bin regressify-desktop --quiet
         if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed.' }
     } finally { Pop-Location }
 }
@@ -90,7 +91,24 @@ Write-JsonFixture (Join-Path $workspace 'visual_tests/smoke.tests.json') ([order
         [ordered]@{ label = 'Signed-in account'; url = 'https://example.com/account'; actions = @() }
     )
 })
+Write-JsonFixture (Join-Path $workspace 'visual_tests/account.tests.json') ([ordered]@{
+    scenarios = @([ordered]@{ label = 'Profile'; url = 'https://example.com/profile'; actions = @() })
+})
 [System.IO.File]::WriteAllText((Join-Path $workspace 'regressify.yaml'), "bypassCsp: true`npostInteractionWait: 1000`n")
+if ($Capture) {
+    $page = Join-Path $workspace 'fixture.html'
+    [System.IO.File]::WriteAllText($page, '<!doctype html><html><head><title>QA fixture</title></head><body style="font:24px sans-serif;padding:48px;background:#f0f4f3"><h1>Checkout</h1><button id="continue">Continue</button><p>Order total: $42.00</p></body></html>')
+    $url = [System.Uri]::new($page).AbsoluteUri
+    Write-JsonFixture (Join-Path $workspace 'visual_tests/smoke.tests.json') ([ordered]@{
+        scenarios = @(
+            [ordered]@{ label = 'Checkout'; url = $url; actions = @(@{ wait = 5000 }, @{ click = '#continue' }) },
+            [ordered]@{ label = 'Signed-in account'; url = $url; actions = @(@{ wait = 2000 }) }
+        )
+    })
+    Write-JsonFixture (Join-Path $workspace 'visual_tests/account.tests.json') ([ordered]@{
+        scenarios = @([ordered]@{ label = 'Profile'; url = $url; actions = @(@{ wait = 5000 }) })
+    })
+}
 $output = Join-Path $workspace '.regressify/smoke'
 [System.IO.Directory]::CreateDirectory((Join-Path $output 'html_report')) | Out-Null
 Write-TestImage (Join-Path $output 'bitmaps_reference/checkout.png') ([System.Drawing.Color]::Teal)
@@ -122,7 +140,7 @@ function Wait-Control([string]$Name) {
         if ($null -ne $element -and -not $element.Current.IsOffscreen) { return $element }
         if ($process.HasExited) { throw "Desktop exited with code $($process.ExitCode)." }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
-    } while ($deadline.Elapsed.TotalSeconds -lt 15)
+    } while ($deadline.Elapsed.TotalSeconds -lt 60)
     throw "Native control '$Name' was not found."
 }
 
@@ -133,6 +151,8 @@ function Invoke-Control([string]$Name) {
         ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
     } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
+    } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
+        ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
     } else {
         $bounds = $element.Current.BoundingRectangle
         [RegressifySmokeNative]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) | Out-Null
@@ -182,6 +202,8 @@ try {
     [RegressifySmokeNative]::SetForegroundWindow($script:window) | Out-Null
     $screen = [System.Windows.Forms.Screen]::FromHandle($script:window).WorkingArea
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+    Wait-Control 'Workspace opened' | Out-Null
+    Capture-Window 'overview'
     Invoke-Control 'smoke.tests.json'
     Invoke-Control 'Checkout'
     Wait-Control 'Document loaded' | Out-Null
@@ -200,11 +222,26 @@ try {
     Invoke-Control 'Fields'
     Wait-Control 'Checkout' | Out-Null
     Capture-Window 'editor-compact'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Runs'
-    Invoke-Control 'Test'
+    Invoke-Control 'Suites'
+    Invoke-Control 'Select all'
+    Capture-Window 'suite-selection'
+    if ($Capture) {
+        Invoke-Control 'Test'
+        Invoke-Control 'Capture baseline'
+        Invoke-Control 'Run'
+        Invoke-Control 'Confirm'
+        Wait-Control 'Capturing scenarios' | Out-Null
+        Capture-Window 'live-capture'
+        Wait-Control 'Completed' | Out-Null
+        Wait-Control 'Passed: 3' | Out-Null
+        Capture-Window 'live-completed'
+        Invoke-Control 'Capture baseline'
+    } else { Invoke-Control 'Test' }
     Invoke-Control 'Initialize workspace'
     Invoke-Control 'Run'
-    Wait-Control 'Command completed; visual outcomes are in Results' | Out-Null
+    Wait-Control 'Completed' | Out-Null
     Capture-Window 'run-completed'
     if (-not (Test-Path (Join-Path $workspace 'common'))) { throw 'GUI init command did not create starter files.' }
     Write-Output "Native smoke test passed. Fixture: $workspace"
