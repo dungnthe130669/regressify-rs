@@ -30,9 +30,9 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
   external executable dependency. Verify standalone init and repeated runs.
 - [ ] Emit structured live suite/scenario/viewport progress, including queued,
   running, capture, comparison, failure, and cancellation states.
-- [ ] Provide checkbox-based multi-suite selection with select-all/clear and
+- [x] Provide checkbox-based multi-suite selection with select-all/clear and
   an explicit run scope; never silently run all suites for an empty selection.
-- [ ] Keep exactly one active workspace, clear workspace-owned state on switch,
+- [x] Keep exactly one active workspace, clear workspace-owned state on switch,
   guard unsaved work, and prevent stale asynchronous results from crossing roots.
 - [ ] Redesign navigation, forms, execution, and results for a polished QA
   workbench with clear hierarchy, compact controls, and useful empty states.

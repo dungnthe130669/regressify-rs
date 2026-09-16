@@ -110,6 +110,77 @@ async fn run_suite_refuses_a_file_shadowed_by_another_format(cx: &mut TestAppCon
     });
 }
 
+#[gpui_kit::test]
+async fn multiple_suites_can_be_checked_and_empty_selection_cannot_run(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.main_tab = 1;
+        });
+        window.render_frame(cx);
+        window.click("start-command", cx);
+        assert!(!view.read(cx).runs.read(cx).running());
+        window.click("suite-check-ui-test", cx);
+        window.click("suite-check-second", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_count(), 2);
+        assert_eq!(window.find("suite-check-ui-test").checked(), Some(true));
+        window.click("select-all-suites", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
+        window.click("start-command", cx);
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn switching_workspaces_discards_old_selection_and_closing_unloads_everything(
+    cx: &mut TestAppContext,
+) {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, first.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+            this.load_workspace(second.path().into(), window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Workspace opened"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx).session.workspace.as_ref().unwrap().root,
+            second.path().canonicalize().unwrap()
+        );
+        assert!(view.read(cx).session.open.is_none());
+        assert!(view.read(cx).session.suites.is_empty());
+        assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
+        assert_eq!(
+            view.read(cx).runs.read(cx).output_root().unwrap(),
+            second.path().canonicalize().unwrap().join(".regressify")
+        );
+        view.update(cx, |this, cx| this.close_workspace(window, cx));
+        assert!(view.read(cx).session.workspace.is_none());
+        assert!(view.read(cx).runs.read(cx).output_root().is_err());
+        assert!(view.read(cx).source.read(cx).value().is_empty());
+    })
+    .unwrap();
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));
@@ -136,6 +207,7 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
                 .create_suite("ui-test")
                 .unwrap();
             this.session.install_document(open).unwrap();
+            this.sync_suites(cx);
             this.select(Selection::Scenario(0), window, cx);
         });
         created = Some(view.clone());
@@ -470,6 +542,7 @@ fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppConte
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
             this.runs.update(cx, |panel, cx| {
                 panel.choose(crate::desktop::runner::RunCommand::Approve, window, cx)
             });

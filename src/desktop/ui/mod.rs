@@ -143,9 +143,11 @@ impl Workbench {
                     if let Err(error) = this.session.refresh() {
                         this.status = format!("{error:#}");
                     }
+                    this.sync_suites(cx);
                     this.refresh_results(window, cx);
                     cx.notify();
                 }
+                runs::RunEvent::SelectionChanged => cx.notify(),
             });
         Self {
             session: Session::default(),
@@ -225,6 +227,12 @@ impl Workbench {
             },
             |this, session, window, cx| {
                 this.session = session;
+                this.main_tab = 0;
+                this.tab = 0;
+                this.advanced = false;
+                this.search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                this.results.update(cx, |panel, cx| panel.clear(window, cx));
                 if let Some(workspace) = &this.session.workspace {
                     this.preferences.remember(workspace);
                     let root = workspace.root.clone();
@@ -305,6 +313,36 @@ impl Workbench {
                 cx.notify();
             }
         }
+    }
+
+    fn sync_suites(&mut self, cx: &mut Context<Self>) {
+        let suites = self.session.suites.clone();
+        let error = self.session.suite_error.clone();
+        self.runs
+            .update(cx, |panel, cx| panel.update_catalog(suites, error, cx));
+    }
+
+    fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.runs.read(cx).running() || self.busy {
+            self.status =
+                "Finish or cancel the active operation before closing the workspace".into();
+            cx.notify();
+            return;
+        }
+        match self.session.close() {
+            Ok(()) => {
+                self.runs.update(cx, |panel, cx| panel.clear(window, cx));
+                self.results.update(cx, |panel, cx| panel.clear(window, cx));
+                self.search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                self.main_tab = 0;
+                self.tab = 0;
+                self.sync_editor(window, cx);
+                self.status = "Workspace closed".into();
+            }
+            Err(error) => self.status = format!("{error:#}"),
+        }
+        cx.notify();
     }
 
     fn select_run_suite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -528,6 +566,8 @@ impl Workbench {
     }
 
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.session.refresh_catalog();
+        self.sync_suites(cx);
         let source = self
             .session
             .open
@@ -815,8 +855,44 @@ impl Workbench {
                     .text_xs()
                     .text_color(cx.theme().muted_foreground)
                     .py_2()
-                    .child("WORKSPACE"),
+                    .child(
+                        self.session
+                            .workspace
+                            .as_ref()
+                            .and_then(|workspace| workspace.root.file_name())
+                            .map(|name| name.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "RECENT WORKSPACES".into()),
+                    ),
             );
+        if self.session.workspace.is_some() {
+            navigation = navigation.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .py_2()
+                    .child(format!("{} selected", self.runs.read(cx).selected_count()))
+                    .child(
+                        Checkbox::new("sidebar-select-all")
+                            .label("All")
+                            .checked(
+                                !self.session.suites.is_empty()
+                                    && self.runs.read(cx).selected_count()
+                                        == self
+                                            .session
+                                            .suites
+                                            .iter()
+                                            .filter(|suite| suite.error.is_none())
+                                            .count(),
+                            )
+                            .disabled(self.busy || self.runs.read(cx).running())
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.runs
+                                    .update(cx, |panel, cx| panel.select_all(*checked, cx))
+                            })),
+                    ),
+            );
+        }
         if self.session.workspace.is_none() {
             for (index, path) in self.preferences.recent_workspaces.iter().enumerate() {
                 let path = path.clone();
@@ -853,34 +929,56 @@ impl Workbench {
                 continue;
             }
             let entry = entry.clone();
+            let suite = self
+                .session
+                .suites
+                .iter()
+                .find(|suite| suite.entry.path == entry.path);
+            let mut row = div().flex().items_center().gap_1();
+            if let Some(suite) = suite {
+                let name = suite.name.clone();
+                row = row.child(
+                    Checkbox::new(("sidebar-suite", index))
+                        .checked(self.runs.read(cx).selected(&name))
+                        .disabled(
+                            self.busy || self.runs.read(cx).running() || suite.error.is_some(),
+                        )
+                        .on_change(cx.listener(move |this, checked, _, cx| {
+                            this.runs
+                                .update(cx, |panel, cx| panel.toggle_suite(&name, *checked, cx))
+                        })),
+                );
+            }
             files = files.child(
-                Button::new(("file", index))
-                    .ghost()
-                    .selected(current && self.session.selection == Selection::Root)
-                    .label(
-                        entry
-                            .path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .into_owned(),
-                    )
-                    .tooltip(entry.label())
-                    .w_full()
-                    .justify_start()
-                    .disabled(self.busy)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if this
-                            .session
-                            .open
-                            .as_ref()
-                            .is_some_and(|open| open.entry.path == entry.path)
-                        {
-                            this.select(Selection::Root, window, cx);
-                        } else {
-                            this.load_document(entry.clone(), window, cx);
-                        }
-                    })),
+                row.child(
+                    Button::new(("file", index))
+                        .ghost()
+                        .selected(current && self.session.selection == Selection::Root)
+                        .label(
+                            entry
+                                .path
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .into_owned(),
+                        )
+                        .tooltip(entry.label())
+                        .w_full()
+                        .justify_start()
+                        .disabled(self.busy)
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this
+                                .session
+                                .open
+                                .as_ref()
+                                .is_some_and(|open| open.entry.path == entry.path)
+                            {
+                                this.select(Selection::Root, window, cx);
+                            } else {
+                                this.load_document(entry.clone(), window, cx);
+                            }
+                        })),
+                ),
             );
             if current {
                 let items = self.value["scenarios"]

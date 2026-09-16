@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use super::{
     document::{ACTIONS, DocumentKind, Edit, action_template},
     schema::{self, Scope},
-    workspace::{Entry, OpenDocument, Workspace},
+    workspace::{Entry, OpenDocument, SuiteSummary, Workspace},
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +57,8 @@ pub struct Session {
     pub entries: Vec<Entry>,
     pub open: Option<OpenDocument>,
     pub selection: Selection,
+    pub suites: Vec<SuiteSummary>,
+    pub suite_error: Option<String>,
 }
 
 impl Session {
@@ -72,6 +74,7 @@ impl Session {
         self.entries = entries;
         self.open = None;
         self.selection = Selection::Root;
+        self.refresh_catalog();
         Ok(())
     }
 
@@ -81,6 +84,31 @@ impl Session {
             .as_ref()
             .ok_or_else(|| anyhow!("Open a workspace first"))?
             .entries()?;
+        self.refresh_catalog();
+        Ok(())
+    }
+
+    pub fn refresh_catalog(&mut self) {
+        match self
+            .workspace
+            .as_ref()
+            .map(Workspace::suite_catalog)
+            .transpose()
+        {
+            Ok(suites) => {
+                self.suites = suites.unwrap_or_default();
+                self.suite_error = None;
+            }
+            Err(error) => {
+                self.suites.clear();
+                self.suite_error = Some(format!("{error:#}"));
+            }
+        }
+    }
+
+    pub fn close(&mut self) -> Result<()> {
+        ensure!(!self.dirty(), "Save or discard the current document first");
+        *self = Self::default();
         Ok(())
     }
 

@@ -13,6 +13,7 @@ pub(super) enum Operation {
     Browse,
     Refresh,
     Theme,
+    CloseWorkspace,
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -28,6 +29,7 @@ pub(super) enum Pending {
     Reload,
     Close,
     Run,
+    CloseWorkspace,
 }
 
 #[derive(Default)]
@@ -68,7 +70,9 @@ impl Workbench {
                 .map(|file| workspace.relative_file(file.path(), key == "file"))
                 .collect::<Result<Vec<_>>>();
             let _ = view.update_in(cx, |this, window, cx| {
-                if this.session.selection != selection
+                if this.session.workspace.as_ref().map(|active| &active.root)
+                    != Some(&workspace.root)
+                    || this.session.selection != selection
                     || this.session.open.as_ref().map(|open| &open.entry.path)
                         != document_path.as_ref()
                 {
@@ -141,6 +145,7 @@ impl Workbench {
             Operation::Viewports => self.create_config(true, window, cx),
             Operation::Browse => self.browse_document(window, cx),
             Operation::Refresh => self.refresh_files(window, cx),
+            Operation::CloseWorkspace => self.guard(Pending::CloseWorkspace, window, cx),
             Operation::Theme => {
                 self.preferences.dark_mode = !self.preferences.dark_mode;
                 Theme::change(
@@ -262,6 +267,7 @@ impl Workbench {
             }
             Pending::Close => cx.quit(),
             Pending::Run => self.runs.update(cx, |panel, cx| panel.start(window, cx)),
+            Pending::CloseWorkspace => self.close_workspace(window, cx),
         }
     }
 
@@ -648,6 +654,7 @@ pub(super) fn menu_entries() -> Vec<(&'static str, FileCommand)> {
         ("Open configuration file", Operation::Browse),
         ("Refresh files", Operation::Refresh),
         ("Toggle light/dark theme", Operation::Theme),
+        ("Close workspace", Operation::CloseWorkspace),
     ]
     .into_iter()
     .map(|(label, operation)| (label, FileCommand { operation }))

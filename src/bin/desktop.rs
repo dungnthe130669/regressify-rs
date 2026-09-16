@@ -23,6 +23,23 @@ fn main() -> ExitCode {
             }
         };
     }
-    regressify::desktop::ui::launch(DesktopArgs::parse().workspace);
+    let args = DesktopArgs::parse();
+    let instance = regressify::desktop::workspace::Preferences::path().and_then(|path| {
+        regressify::desktop::workspace::DesktopInstance::acquire(
+            &path.with_file_name("desktop.lock"),
+        )
+    });
+    let _instance = match instance {
+        Ok(instance) => instance,
+        Err(error) => {
+            rfd::MessageDialog::new()
+                .set_title("Regressify Desktop")
+                .set_description(error.to_string())
+                .set_level(rfd::MessageLevel::Info)
+                .show();
+            return ExitCode::FAILURE;
+        }
+    };
+    regressify::desktop::ui::launch(args.workspace);
     ExitCode::SUCCESS
 }

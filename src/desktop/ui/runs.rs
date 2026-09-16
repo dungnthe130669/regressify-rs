@@ -4,11 +4,13 @@ use std::time::Duration;
 
 use super::*;
 use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, RunRequest};
+use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
 
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
     Requested,
     Finished,
+    SelectionChanged,
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -31,6 +33,9 @@ pub(super) struct RunPanel {
     disabled: bool,
     confirmation: bool,
     log_text: String,
+    suites: Vec<SuiteSummary>,
+    selection: SuiteSelection,
+    catalog_error: Option<String>,
 }
 
 impl EventEmitter<RunEvent> for RunPanel {}
@@ -52,6 +57,9 @@ impl RunPanel {
             disabled: false,
             confirmation: false,
             log_text: String::new(),
+            suites: Vec::new(),
+            selection: SuiteSelection::default(),
+            catalog_error: None,
         };
         panel.rebuild(window, cx);
         panel
@@ -76,8 +84,8 @@ impl RunPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.clear(window, cx);
         self.root = Some(root);
-        self.options["suites"] = json!([]);
         self.confirmation = false;
         self.rebuild(window, cx);
         cx.notify();
@@ -92,9 +100,101 @@ impl RunPanel {
         if self.running() {
             return;
         }
-        self.options["suites"] = json!(suites);
+        self.selection.clear();
+        for suite in self
+            .suites
+            .iter()
+            .filter(|suite| suites.contains(&suite.name))
+        {
+            if let Err(error) = self.selection.toggle(suite, true) {
+                self.status = format!("{error:#}");
+            }
+        }
+        self.confirmation = false;
+        self.rebuild(window, cx);
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
+    }
+
+    pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.running() {
+            return;
+        }
+        self.root = None;
+        self.options = serde_json::to_value(RunOptions::default()).unwrap_or(Value::Null);
+        self.manager = RunManager::default();
+        self.command = RunCommand::Test;
+        self.selection.clear();
+        self.suites.clear();
+        self.catalog_error = None;
+        self.log_text.clear();
+        self.log
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.status = "No command running".into();
+        self.tab = 0;
+        self.confirmation = false;
         self.rebuild(window, cx);
         cx.notify();
+    }
+
+    pub(super) fn update_catalog(
+        &mut self,
+        suites: Vec<SuiteSummary>,
+        error: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() {
+            return;
+        }
+        self.selection.reconcile(&suites);
+        self.suites = suites;
+        self.catalog_error = error;
+        self.confirmation = false;
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
+    }
+
+    pub(super) fn selected(&self, name: &str) -> bool {
+        self.selection.contains(name)
+    }
+    pub(super) fn selected_count(&self) -> usize {
+        self.selection.len()
+    }
+    pub(super) fn toggle_suite(&mut self, name: &str, checked: bool, cx: &mut Context<Self>) {
+        if self.running() || self.disabled {
+            return;
+        }
+        if let Some(suite) = self.suites.iter().find(|suite| suite.name == name) {
+            if let Err(error) = self.selection.toggle(suite, checked) {
+                self.status = format!("{error:#}");
+            }
+            self.confirmation = false;
+            cx.emit(RunEvent::SelectionChanged);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn select_all(&mut self, selected: bool, cx: &mut Context<Self>) {
+        if self.running() || self.disabled {
+            return;
+        }
+        if selected {
+            self.selection.select_all(&self.suites);
+        } else {
+            self.selection.clear();
+        }
+        self.confirmation = false;
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
+    }
+
+    fn can_start(&self) -> bool {
+        !self.running()
+            && !self.disabled
+            && self.errors.is_empty()
+            && self.root.is_some()
+            && (!self.command.supports_suites()
+                || (!self.selection.is_empty() && self.catalog_error.is_none()))
     }
 
     pub(super) fn output_root(&self) -> Result<PathBuf> {
@@ -130,7 +230,7 @@ impl RunPanel {
         };
         for field in fields
             .into_iter()
-            .filter(|field| RunOptions::applies(&field.key, self.command))
+            .filter(|field| field.key != "suites" && RunOptions::applies(&field.key, self.command))
         {
             let text = field.display(&self.options[&field.key]);
             let control = match &field.kind {
@@ -189,7 +289,7 @@ impl RunPanel {
     }
 
     fn request_start(&mut self, cx: &mut Context<Self>) {
-        if self.running() || self.disabled || !self.errors.is_empty() {
+        if !self.can_start() {
             return;
         }
         if self.command.needs_confirmation() && !self.confirmation {
@@ -201,17 +301,24 @@ impl RunPanel {
     }
 
     pub(super) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.disabled || self.running() || !self.errors.is_empty() {
+        if !self.can_start() {
             return;
         }
         let request = (|| -> Result<_> {
+            let mut options: RunOptions = serde_json::from_value(self.options.clone())?;
+            if self.command.supports_suites() {
+                options.suites = self.selection.filters(
+                    &self.suites,
+                    matches!(self.command, RunCommand::Compare | RunCommand::Approve),
+                )?;
+            }
             Ok(RunRequest {
                 root: self
                     .root
                     .clone()
                     .ok_or_else(|| anyhow!("Open a workspace first"))?,
                 command: self.command,
-                options: serde_json::from_value(self.options.clone())?,
+                options,
             })
         })();
         match request.and_then(|request| self.manager.start(request)) {
@@ -279,6 +386,9 @@ impl RunPanel {
     fn render_options(&self, cx: &mut Context<Self>) -> AnyElement {
         let disabled = self.running() || self.disabled;
         let mut fields = div().flex().flex_col().gap_4().p_5().max_w(px(820.));
+        if self.command.supports_suites() {
+            fields = fields.child(self.render_selection(cx));
+        }
         for binding in &self.bindings {
             let field = &binding.field;
             let id = SharedString::from(format!("run-field-{}", field.key));
@@ -347,19 +457,78 @@ impl RunPanel {
     }
 }
 
+impl RunPanel {
+    fn render_selection(&self, cx: &mut Context<Self>) -> AnyElement {
+        let disabled = self.disabled || self.running();
+        let mut list = div().flex().flex_col().gap_2().child(
+            div()
+                .flex()
+                .items_center()
+                .justify_between()
+                .child(format!("{} suites selected", self.selection.len()))
+                .child(
+                    Checkbox::new("select-all-suites")
+                        .label("Select all")
+                        .checked(
+                            !self.selection.is_empty()
+                                && self.selection.len()
+                                    == self
+                                        .suites
+                                        .iter()
+                                        .filter(|suite| suite.error.is_none())
+                                        .count(),
+                        )
+                        .disabled(disabled || self.suites.is_empty())
+                        .on_change(
+                            cx.listener(|this, checked, _, cx| this.select_all(*checked, cx)),
+                        ),
+                ),
+        );
+        for suite in &self.suites {
+            let name = suite.name.clone();
+            list = list.child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .py_1()
+                    .child(
+                        Checkbox::new(SharedString::from(format!("suite-check-{name}")))
+                            .label(format!(
+                                "{}  ({} scenarios)",
+                                suite.name,
+                                suite.scenarios.len()
+                            ))
+                            .checked(self.selection.contains(&name))
+                            .disabled(disabled || suite.error.is_some())
+                            .on_change(cx.listener(move |this, checked, _, cx| {
+                                this.toggle_suite(&name, *checked, cx)
+                            })),
+                    )
+                    .children(suite.error.as_ref().map(|error| {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(error.clone())
+                    })),
+            );
+        }
+        if let Some(error) = &self.catalog_error {
+            list = list.child(div().text_color(cx.theme().danger).child(error.clone()));
+        }
+        list.into_any_element()
+    }
+}
+
 impl Render for RunPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.running();
         let focus = self.focus.clone();
-        let scope = serde_json::from_value::<RunOptions>(self.options.clone())
-            .map(|options| {
-                if options.suites.is_empty() {
-                    "All suites".into()
-                } else {
-                    options.suites.join(", ")
-                }
-            })
-            .unwrap_or_else(|_| "Invalid options".into());
+        let scope = if self.command.supports_suites() {
+            format!("{} suites selected", self.selection.len())
+        } else {
+            "Workspace command".into()
+        };
         let content = if self.tab == 0 {
             self.render_options(cx)
         } else {
@@ -408,12 +577,7 @@ impl Render for RunPanel {
                             .primary()
                             .icon(gpui_kit::assets::IconName::Play)
                             .label("Run")
-                            .disabled(
-                                running
-                                    || self.disabled
-                                    || self.root.is_none()
-                                    || !self.errors.is_empty(),
-                            )
+                            .disabled(!self.can_start())
                             .on_click(cx.listener(|this, _, _, cx| this.request_start(cx))),
                     )
                     .child(

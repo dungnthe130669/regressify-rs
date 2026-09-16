@@ -1,6 +1,7 @@
 //! Workspace-scoped persistence. Editor drafts never write directly to disk.
 
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -16,6 +17,30 @@ use crate::helpers::{is_windows_reserved_path_component, write_file_atomically};
 #[derive(Clone, Debug)]
 pub struct Workspace {
     pub root: PathBuf,
+}
+
+/// One desktop window per user. Worker processes never acquire this lease.
+pub struct DesktopInstance {
+    _lock: fs::File,
+}
+
+impl DesktopInstance {
+    pub fn acquire(path: &Path) -> Result<Self> {
+        fs::create_dir_all(
+            path.parent()
+                .ok_or_else(|| anyhow!("Invalid instance lock path"))?,
+        )?;
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        lock.try_lock().map_err(|_| {
+            anyhow!("Regressify Desktop is already open. Switch workspaces in the existing window.")
+        })?;
+        Ok(Self { _lock: lock })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -40,6 +65,97 @@ impl Entry {
 pub struct OpenDocument {
     pub entry: Entry,
     pub document: Document,
+}
+
+#[derive(Clone, Debug)]
+pub struct SuiteSummary {
+    pub entry: Entry,
+    pub name: String,
+    pub output_id: String,
+    pub scenarios: Vec<ScenarioSummary>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ScenarioSummary {
+    pub id: String,
+    pub label: String,
+    pub url: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SuiteSelection {
+    names: BTreeSet<String>,
+}
+
+impl SuiteSelection {
+    pub fn contains(&self, name: &str) -> bool {
+        self.names.contains(name)
+    }
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.names.clear();
+    }
+    pub fn toggle(&mut self, suite: &SuiteSummary, selected: bool) -> Result<()> {
+        ensure!(
+            suite.error.is_none(),
+            "Suite '{}' has configuration errors",
+            suite.name
+        );
+        if selected {
+            self.names.insert(suite.name.clone());
+        } else {
+            self.names.remove(&suite.name);
+        }
+        Ok(())
+    }
+    pub fn select_all(&mut self, suites: &[SuiteSummary]) {
+        self.names = suites
+            .iter()
+            .filter(|suite| suite.error.is_none())
+            .map(|suite| suite.name.clone())
+            .collect();
+    }
+    pub fn reconcile(&mut self, suites: &[SuiteSummary]) {
+        self.names.retain(|name| {
+            suites
+                .iter()
+                .any(|suite| &suite.name == name && suite.error.is_none())
+        });
+    }
+    pub fn selected<'suite>(
+        &self,
+        suites: &'suite [SuiteSummary],
+    ) -> Result<Vec<&'suite SuiteSummary>> {
+        ensure!(!self.is_empty(), "Select at least one test suite");
+        let selected: Vec<_> = suites
+            .iter()
+            .filter(|suite| self.contains(&suite.name) && suite.error.is_none())
+            .collect();
+        ensure!(
+            selected.len() == self.len(),
+            "Selected suites changed; refresh the workspace before running"
+        );
+        Ok(selected)
+    }
+    pub fn filters(&self, suites: &[SuiteSummary], output_ids: bool) -> Result<Vec<String>> {
+        Ok(self
+            .selected(suites)?
+            .into_iter()
+            .map(|suite| {
+                glob::Pattern::escape(if output_ids {
+                    &suite.output_id
+                } else {
+                    &suite.name
+                })
+            })
+            .collect())
+    }
 }
 
 impl Workspace {
@@ -140,6 +256,71 @@ impl Workspace {
         let source = read_document(&self.resolve(&entry.path)?)?;
         let document = Document::new(entry.kind, Format::for_path(&entry.path), source)?;
         Ok(OpenDocument { entry, document })
+    }
+
+    pub fn suite_catalog(&self) -> Result<Vec<SuiteSummary>> {
+        let directory = self.resolve(Path::new("visual_tests"))?;
+        if !directory.exists() {
+            return Ok(Vec::new());
+        }
+        crate::test::discover_test_suites(&directory)?
+            .into_iter()
+            .map(|input| {
+                let entry = Entry {
+                    path: input.path.strip_prefix(&self.root)?.into(),
+                    kind: DocumentKind::Suite,
+                };
+                let parsed = (|| -> Result<crate::types::TestSuite> {
+                    ensure!(input.name != "all", "The suite name 'all' is reserved");
+                    let document = self.open_document(entry.clone())?.document;
+                    document.validate()?;
+                    validate_typed_source(&document)?;
+                    let suite: crate::types::TestSuite = serde_json::from_value(document.value()?)?;
+                    ensure!(!suite.scenarios.is_empty(), "Suite contains no scenarios");
+                    Ok(suite)
+                })();
+                let output_id = parsed
+                    .as_ref()
+                    .ok()
+                    .and_then(|suite| suite.id.clone())
+                    .unwrap_or_else(|| input.name.clone());
+                let scenarios = parsed
+                    .as_ref()
+                    .map(|suite| {
+                        suite
+                            .scenarios
+                            .iter()
+                            .map(|scenario| {
+                                let id = scenario.id.clone().unwrap_or_else(|| {
+                                    scenario
+                                        .label
+                                        .as_deref()
+                                        .map(crate::helpers::slugify)
+                                        .unwrap_or_else(|| {
+                                            crate::snapshot::get_asset_version(
+                                                scenario.url.as_bytes(),
+                                                20,
+                                            )
+                                        })
+                                });
+                                ScenarioSummary {
+                                    label: scenario.label.clone().unwrap_or_else(|| id.clone()),
+                                    id,
+                                    url: scenario.url.clone(),
+                                }
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                Ok(SuiteSummary {
+                    entry,
+                    name: input.name,
+                    output_id,
+                    scenarios,
+                    error: parsed.err().map(|error| format!("{error:#}")),
+                })
+            })
+            .collect()
     }
 
     /// A filename filter must resolve to the selected file, not a shadowing format.
@@ -635,5 +816,66 @@ mod tests {
         assert!(suite_path("ALL").is_err());
         assert!(suite_path("All.TESTS.JSON").is_err());
         assert!(suite_path("all.tests.yaml").is_err());
+    }
+
+    #[test]
+    fn multiple_suite_selection_uses_exact_names_and_output_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        workspace.create_suite("shop").unwrap();
+        let mut account = workspace.create_suite("account").unwrap();
+        account
+            .document
+            .apply(Edit::Set {
+                parent: String::new(),
+                key: "id".into(),
+                value: Some(json!("account-output")),
+            })
+            .unwrap();
+        workspace.save(&mut account).unwrap();
+        let suites = workspace.suite_catalog().unwrap();
+        let mut selected = SuiteSelection::default();
+        assert!(selected.filters(&suites, false).is_err());
+        selected.select_all(&suites);
+        assert_eq!(selected.len(), 2);
+        assert_eq!(
+            selected.filters(&suites, false).unwrap(),
+            vec!["account", "shop"]
+        );
+        assert_eq!(
+            selected.filters(&suites, true).unwrap(),
+            vec!["account-output", "shop"]
+        );
+        selected.toggle(&suites[0], false).unwrap();
+        assert_eq!(selected.filters(&suites, false).unwrap(), vec!["shop"]);
+        selected.reconcile(&[]);
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn invalid_suites_are_visible_but_not_silently_selected() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let bad = workspace.create_suite("bad").unwrap();
+        workspace.create_suite("good").unwrap();
+        fs::write(workspace.resolve(&bad.entry.path).unwrap(), "scenarios: [").unwrap();
+        let suites = workspace.suite_catalog().unwrap();
+        assert_eq!(suites.len(), 2);
+        assert!(suites[0].error.is_some());
+        let mut selected = SuiteSelection::default();
+        selected.select_all(&suites);
+        assert_eq!(selected.len(), 1);
+        assert!(selected.toggle(&suites[0], true).is_err());
+        assert_eq!(selected.filters(&suites, false).unwrap(), vec!["good"]);
+    }
+
+    #[test]
+    fn only_one_desktop_instance_holds_the_workspace_window_lease() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("desktop.lock");
+        let instance = DesktopInstance::acquire(&path).unwrap();
+        assert!(DesktopInstance::acquire(&path).is_err());
+        drop(instance);
+        assert!(DesktopInstance::acquire(&path).is_ok());
     }
 }

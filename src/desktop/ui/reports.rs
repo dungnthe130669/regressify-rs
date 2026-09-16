@@ -45,6 +45,23 @@ pub(super) struct ResultsPanel {
 }
 
 impl ResultsPanel {
+    pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.generation += 1;
+        self.root = None;
+        self.catalog = Catalog::default();
+        self.report = 0;
+        self.capture = None;
+        self.filter = 0;
+        self.page = 0;
+        self.previews.clear();
+        self.loading = false;
+        self.image_loading = false;
+        self.status = "No reports loaded".into();
+        self.search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        cx.notify();
+    }
+
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter captures"));
         let subscription = cx.subscribe(&search, |this: &mut Self, _, _: &InputEvent, cx| {

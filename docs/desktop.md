@@ -45,6 +45,12 @@ Discard, or Cancel. A failed save retains the prompt and draft. Recent workspace
 and appearance are stored outside the project in the
 operating system's per-user Regressify Desktop configuration directory.
 
+Only one desktop window and one workspace are active at a time. Close workspace
+unloads documents, run options, suite selections, logs, and report previews.
+Switching replaces the workspace rather than adding another root. Active runs
+must finish or be cancelled before switching. A per-user instance lock prevents
+a second GUI process; bundled worker processes do not take that lock.
+
 Choose Initialize workspace in Runs to invoke the existing non-destructive
 `init` command, which only creates missing starter files.
 
@@ -106,13 +112,17 @@ or arbitrary executables.
 ## Running Commands
 
 Runs offers test, reference capture, compare, approve, snapshot, optimize,
-install, and init with applicable options. An empty suite filter means all
-suites. Run suite verifies the selected file, sets its scope, and opens Runs;
+install, and init with applicable options. Suite checkboxes in the navigator and
+Runs support multiple selections and Select all. No selection means Run is
+disabled, never an implicit all-suite run. Invalid suites remain visible for
+repair and are excluded from Select all. Run suite verifies the selected file,
+sets its scope, and opens Runs;
 Run starts execution after draft and artifact confirmations. Reference capture,
 approve, and optimize require confirmation.
 
 The CLI has no single-scenario run flag. Selecting a scenario for editing does
-not restrict execution to it. Manual suite filters retain CLI glob behavior.
+not restrict execution to it. Suite selections use exact escaped names;
+compare and approve resolve each selected suite's explicit output ID.
 For duplicate names, `.tests.yaml` takes precedence over `.tests.yml`, then
 `.tests.json`. Run suite rejects a shadowed file and names the competing path.
 Same-priority duplicates and reserved `all` selected-file runs are rejected.
