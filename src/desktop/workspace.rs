@@ -394,7 +394,6 @@ fn validate_typed_source(document: &Document) -> Result<()> {
 #[serde(default, rename_all = "camelCase")]
 pub struct Preferences {
     pub recent_workspaces: Vec<PathBuf>,
-    pub cli_path: Option<PathBuf>,
     pub dark_mode: bool,
 }
 

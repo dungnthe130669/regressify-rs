@@ -9,6 +9,11 @@ name = "regressify-desktop"
 path = "src/bin/desktop.rs"
 required-features = ["gui"]
 
+[[test]]
+name = "desktop_worker"
+path = "tests/desktop_worker.rs"
+required-features = ["gui"]
+
 [features]
 default = ["local"]
 local = []

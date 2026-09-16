@@ -15,8 +15,9 @@ cargo run --features gui --bin regressify-desktop -- /path/to/test-workspace
 ```
 
 Omit the workspace argument to use the native folder picker. The default build
-remains CLI-only. For distribution, build with `--release --features gui --bins`
-and keep the `regressify` CLI beside `regressify-desktop`.
+remains CLI-only. The desktop is self-contained: build it with
+`--release --features gui --bin regressify-desktop`. No separate CLI executable
+is required; the app runs the shared Rust engine in its own isolated workers.
 
 See [the desktop guide](docs/desktop.md) for workflows, shortcuts, safety limits,
 and test commands, and [the delivery plan](docs/desktop-plan.md) for feature scope

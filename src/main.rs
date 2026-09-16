@@ -1,18 +1,9 @@
-use std::{env::set_current_dir, path::PathBuf, process::exit};
+use std::process::exit;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
-use reqwest::Proxy;
-
-use regressify::{
-    cli::{Cli, Command},
-    common, compare,
-    github::is_github,
-    helpers::{IOExtensions, OnceLockBoolExtensions, OnceLockExtensions},
-    init, optimizer, snapshot, test,
-    vso::is_azure_devops,
-};
+use regressify::{application, cli::Cli};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -21,7 +12,7 @@ async fn main() -> Result<()> {
     let pause_if_error = cli.pause_if_error;
     let mut exit_code = 1;
 
-    match exec_commands(cli).await {
+    match application::execute(cli).await {
         Ok(_) => {
             exit_code = 0;
 
@@ -43,95 +34,4 @@ async fn main() -> Result<()> {
     }
 
     exit(exit_code);
-}
-
-async fn exec_commands(cli: Cli) -> Result<()> {
-    set_root(&cli)?;
-    set_global_vars(&cli)?;
-
-    match cli.command {
-        Command::Init => init::init(),
-
-        Command::Install => {
-            let exe = test::fetcher()
-                .await
-                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?;
-            eprintln!("Browser executable: {}", exe.display());
-            Ok(())
-        }
-
-        Command::Version => {
-            println!(
-                "{} ({})",
-                env!("CARGO_PKG_VERSION"),
-                env!("BINARY_GIT_HASH")
-            );
-            Ok(())
-        }
-
-        Command::Snapshot(args) => snapshot::snapshot(args),
-
-        Command::Optimize(args) => optimizer::optimize(args),
-
-        Command::Compare(args) => compare::compare(args),
-
-        Command::Approve(args) => compare::approve(args),
-
-        Command::Test(args) => test::exec_test_suites(args).await,
-
-        Command::Ref(args) => test::exec_ref(args).await,
-    }
-}
-
-fn set_global_vars(cli: &Cli) -> Result<()> {
-    let work_dir = common::ROOT_DIR.get_required()?;
-    let regressify_dir = if let Some(regressify_dir) = &cli.regressify_dir {
-        work_dir.join(regressify_dir)
-    } else {
-        let directory_name = if let Some(ref site_env) = cli.site_env {
-            format!(".regressify__{}", site_env)
-        } else {
-            ".regressify".to_string()
-        };
-        work_dir.join(directory_name)
-    };
-
-    common::REGRESSIFY_DIR.set_value(regressify_dir)?;
-    if let Some(run_id) = &cli.run_id {
-        common::RUN_ID.set_value(run_id.clone())?;
-    }
-    common::DEBUG.set_value(cli.debug)?;
-    common::REQUIRED_LOGIN.set_value(cli.required_login)?;
-
-    common::ASYNC_CAPTURE_LIMIT.set_value(cli.async_capture_limit as usize)?;
-    common::ASYNC_CAPTURE_RAMP_MS.set_value(cli.async_capture_ramp_ms)?;
-
-    if let Some(ref proxy) = cli.proxy {
-        let proxy = Proxy::all(proxy)?;
-        common::PROXY.set_value(proxy)?;
-    }
-
-    if cli.no_print {
-        common::NO_PRINT.set_bool(true)?;
-    }
-
-    if cli.verbose {
-        common::VERBOSE.set_bool(true)?;
-    }
-
-    if is_github() || is_azure_devops() {
-        // Force color output
-        colored::control::set_override(true);
-    }
-
-    Ok(())
-}
-
-fn set_root(cli: &Cli) -> Result<()> {
-    let work_dir: PathBuf = cli.root.normalize()?;
-
-    set_current_dir(&work_dir).map_err(|e| anyhow!("Failed to set current directory: {}", e))?;
-    common::ROOT_DIR.set_value(work_dir)?;
-
-    Ok(())
 }

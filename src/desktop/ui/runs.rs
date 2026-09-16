@@ -3,13 +3,12 @@
 use std::time::Duration;
 
 use super::*;
-use crate::desktop::runner::{self, RunCommand, RunManager, RunOptions, RunOutcome, RunRequest};
+use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, RunRequest};
 
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
     Requested,
     Finished,
-    Executable(PathBuf),
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -19,7 +18,6 @@ struct ChooseCommand {
 
 pub(super) struct RunPanel {
     root: Option<PathBuf>,
-    executable: PathBuf,
     command: RunCommand,
     options: Value,
     bindings: Vec<Binding>,
@@ -38,16 +36,9 @@ pub(super) struct RunPanel {
 impl EventEmitter<RunEvent> for RunPanel {}
 
 impl RunPanel {
-    pub(super) fn new(
-        executable: Option<PathBuf>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut panel = Self {
             root: None,
-            executable: executable
-                .or_else(|| runner::default_executable().ok())
-                .unwrap_or_default(),
             command: RunCommand::Test,
             options: serde_json::to_value(RunOptions::default()).unwrap_or(Value::Null),
             bindings: Vec::new(),
@@ -215,7 +206,6 @@ impl RunPanel {
         }
         let request = (|| -> Result<_> {
             Ok(RunRequest {
-                executable: self.executable.clone(),
                 root: self
                     .root
                     .clone()
@@ -284,26 +274,6 @@ impl RunPanel {
             Err(error) => self.status = format!("{error:#}"),
         }
         cx.notify();
-    }
-
-    fn pick_executable(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.running() {
-            return;
-        }
-        cx.spawn_in(window, async move |view, cx| {
-            if let Some(file) = rfd::AsyncFileDialog::new()
-                .set_title("Select the regressify CLI executable")
-                .pick_file()
-                .await
-            {
-                let _ = view.update_in(cx, |this, _, cx| {
-                    this.executable = file.path().to_path_buf();
-                    cx.emit(RunEvent::Executable(this.executable.clone()));
-                    cx.notify();
-                });
-            }
-        })
-        .detach();
     }
 
     fn render_options(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -486,33 +456,6 @@ impl Render for RunPanel {
                         ),
                 )
             })
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_4()
-                    .py_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .truncate()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(self.executable.display().to_string()),
-                    )
-                    .child(
-                        Button::new("select-cli")
-                            .ghost()
-                            .small()
-                            .icon(IconName::FolderOpen)
-                            .tooltip("Select CLI executable")
-                            .disabled(running)
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.pick_executable(window, cx)),
-                            ),
-                    ),
-            )
             .child(
                 TabBar::new("run-tabs")
                     .underline()

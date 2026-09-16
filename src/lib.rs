@@ -1,5 +1,6 @@
 //! Shared configuration, automation, and reporting used by the CLI and desktop.
 
+pub mod application;
 pub mod cli;
 pub mod common;
 pub mod compare;

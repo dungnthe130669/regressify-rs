@@ -134,16 +134,7 @@ impl Workbench {
             .unwrap_or_else(|| "Ready".into());
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
-        let runs = cx.new(|cx| {
-            runs::RunPanel::new(
-                preferences
-                    .as_ref()
-                    .ok()
-                    .and_then(|preferences| preferences.cli_path.clone()),
-                window,
-                cx,
-            )
-        });
+        let runs = cx.new(|cx| runs::RunPanel::new(window, cx));
         let run_subscription =
             cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
                 runs::RunEvent::Requested => this.guard(files::Pending::Run, window, cx),
@@ -153,15 +144,6 @@ impl Workbench {
                         this.status = format!("{error:#}");
                     }
                     this.refresh_results(window, cx);
-                    cx.notify();
-                }
-                runs::RunEvent::Executable(path) => {
-                    this.preferences.cli_path = Some(path.clone());
-                    if let Err(error) =
-                        Preferences::path().and_then(|path| this.preferences.save(&path))
-                    {
-                        this.status = format!("{error:#}");
-                    }
                     cx.notify();
                 }
             });

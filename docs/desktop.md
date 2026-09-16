@@ -21,9 +21,11 @@ Omit the workspace argument to use the native folder picker. The default
 `cargo build` and `cargo run -- test` remain CLI-only. Feature `desktop` builds
 headless models; `gui` adds native widgets; `gui-tests` adds UI instrumentation.
 
-For distribution, use `cargo build --release --features gui --bins`. Keep
-`regressify` beside `regressify-desktop` (with `.exe` on Windows), or select a
-matching CLI through Runs. Signed installers and auto-update are not included.
+For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
+The desktop executable contains the engine; no separate `regressify` binary or
+executable picker is needed. It launches itself in a private headless worker mode
+to isolate run settings and browser processes. Signed installers and auto-update
+are not included.
 
 ## Workspace and Files
 
@@ -40,7 +42,7 @@ confirmed but cannot be undone through document history.
 
 Opening another document/workspace or closing with a draft prompts Save,
 Discard, or Cancel. A failed save retains the prompt and draft. Recent workspaces,
-the trusted CLI path, and appearance are stored outside the project in the
+and appearance are stored outside the project in the
 operating system's per-user Regressify Desktop configuration directory.
 
 Choose Initialize workspace in Runs to invoke the existing non-destructive
@@ -115,8 +117,9 @@ For duplicate names, `.tests.yaml` takes precedence over `.tests.yml`, then
 `.tests.json`. Run suite rejects a shadowed file and names the competing path.
 Same-priority duplicates and reserved `all` selected-file runs are rejected.
 
-Each command starts a fresh CLI process with an argument array validated by
-clap, never a shell command. Process-wide state cannot leak between runs.
+Each command starts a fresh copy of the desktop executable as a headless engine
+worker. Validated settings travel over stdin as structured JSON, never through
+a shell or an external CLI executable. Process-wide state cannot leak between runs.
 Captures generate unique run IDs unless supplied. One command runs per desktop
 session; workspace switching is blocked during execution.
 

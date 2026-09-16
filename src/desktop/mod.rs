@@ -5,6 +5,7 @@ pub mod results;
 pub mod runner;
 pub mod schema;
 pub mod session;
+pub mod worker;
 pub mod workspace;
 
 #[cfg(feature = "gui")]

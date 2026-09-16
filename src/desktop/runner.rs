@@ -1,9 +1,9 @@
-//! Isolated CLI execution with bounded output and process-tree cancellation.
+//! Bundled engine execution with bounded output and process-tree cancellation.
 
 use std::{
     collections::VecDeque,
     ffi::OsString,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -26,7 +26,8 @@ const LOG_QUEUE_CAPACITY: usize = 256;
 const MAX_LOG_CHUNK: usize = 16 * 1024;
 const MAX_LOG_BYTES: usize = 2 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RunCommand {
     Test,
     Reference,
@@ -169,15 +170,21 @@ impl RunOptions {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunRequest {
-    pub executable: PathBuf,
     pub root: PathBuf,
     pub command: RunCommand,
     pub options: RunOptions,
 }
 
 impl RunRequest {
+    pub fn cli(&self) -> Result<Cli> {
+        Ok(Cli::try_parse_from(
+            std::iter::once(OsString::from("regressify")).chain(self.arguments()?),
+        )?)
+    }
+
     pub fn arguments(&self) -> Result<Vec<OsString>> {
         let mut arguments = vec![
             OsString::from("--root"),
@@ -269,15 +276,12 @@ impl RunRequest {
 
     fn process(&self) -> Result<Command> {
         ensure!(self.root.is_dir(), "Workspace directory is unavailable");
-        ensure!(
-            self.executable.is_file(),
-            "CLI executable not found. Build both binaries or select the regressify executable."
-        );
-        let mut command = Command::new(&self.executable);
+        self.arguments()?;
+        let mut command = Command::new(std::env::current_exe()?);
         command
-            .args(self.arguments()?)
+            .arg(super::worker::WORKER_FLAG)
             .current_dir(&self.root)
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
@@ -289,18 +293,6 @@ impl RunRequest {
         }
         Ok(command)
     }
-}
-
-pub fn default_executable() -> Result<PathBuf> {
-    let executable = std::env::current_exe()?;
-    Ok(executable
-        .parent()
-        .ok_or_else(|| anyhow!("Missing executable directory"))?
-        .join(if cfg!(windows) {
-            "regressify.exe"
-        } else {
-            "regressify"
-        }))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -325,7 +317,7 @@ struct RunHandle {
 }
 
 impl RunHandle {
-    fn spawn(mut command: Command) -> Result<Self> {
+    fn spawn(mut command: Command, payload: Option<Vec<u8>>) -> Result<Self> {
         let (sender, logs) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let (cancel, cancellation) = mpsc::sync_channel(1);
         let omitted = Arc::new(AtomicUsize::new(0));
@@ -336,7 +328,7 @@ impl RunHandle {
                 let result = (|| -> Result<RunOutcome> {
                     let mut child = command
                         .group_spawn()
-                        .context("Cannot launch the CLI process group")?;
+                        .context("Cannot launch the bundled engine worker")?;
                     let stdout = child.inner().stdout.take();
                     let stderr = child.inner().stderr.take();
                     let mut readers = Vec::new();
@@ -346,13 +338,30 @@ impl RunHandle {
                     if let Some(stderr) = stderr {
                         readers.push(read_stream(stderr, true, sender, lost));
                     }
+                    if let Some(payload) = payload {
+                        let sent = child
+                            .inner()
+                            .stdin
+                            .take()
+                            .ok_or_else(|| anyhow!("Worker input is unavailable"))
+                            .and_then(|mut input| {
+                                input
+                                    .write_all(&payload)
+                                    .context("Cannot send run settings to worker")
+                            });
+                        if let Err(error) = sent {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return Err(error);
+                        }
+                    }
                     let outcome = loop {
                         if let Some(status) = child.try_wait()? {
                             break if status.success() {
                                 RunOutcome::Completed
                             } else {
                                 RunOutcome::Failed(format!(
-                                    "CLI exited with {}",
+                                    "Engine worker exited with {}",
                                     status
                                         .code()
                                         .map(|code| code.to_string())
@@ -364,7 +373,7 @@ impl RunHandle {
                             Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {
                                 child
                                     .kill()
-                                    .context("Cannot terminate the CLI process group")?;
+                                    .context("Cannot terminate the engine process group")?;
                                 child.wait()?;
                                 break RunOutcome::Cancelled;
                             }
@@ -452,7 +461,12 @@ impl RunManager {
             request.options.run_id = format!("desktop-{}", uuid::Uuid::new_v4().simple());
         }
         let command = request.process()?;
-        self.active = Some(RunHandle::spawn(command)?);
+        let payload = serde_json::to_vec(&request)?;
+        ensure!(
+            payload.len() <= super::worker::MAX_REQUEST_BYTES,
+            "Run request exceeds 1 MiB"
+        );
+        self.active = Some(RunHandle::spawn(command, Some(payload))?);
         self.logs.clear();
         self.log_bytes = 0;
         self.omitted_chunks = 0;
@@ -510,7 +524,6 @@ mod tests {
 
     fn request(command: RunCommand) -> RunRequest {
         RunRequest {
-            executable: PathBuf::from("regressify"),
             root: PathBuf::from("C:/QA projects/Shop & checkout"),
             command,
             options: RunOptions::default(),
@@ -595,7 +608,7 @@ mod tests {
     #[test]
     fn subprocess_reads_both_streams_and_distinguishes_failure() {
         for (mode, success) in [("complete", true), ("fail", false)] {
-            let mut handle = RunHandle::spawn(fixture(mode)).unwrap();
+            let mut handle = RunHandle::spawn(fixture(mode), None).unwrap();
             let outcome = handle.worker.take().unwrap().join().unwrap();
             assert_eq!(outcome == RunOutcome::Completed, success);
             let logs = handle.logs.try_iter().collect::<Vec<_>>();
@@ -612,7 +625,7 @@ mod tests {
 
     #[test]
     fn cancellation_stops_a_running_process_group() {
-        let mut handle = RunHandle::spawn(fixture("wait")).unwrap();
+        let mut handle = RunHandle::spawn(fixture("wait"), None).unwrap();
         handle.logs.recv_timeout(Duration::from_secs(10)).unwrap();
         handle.cancel();
         assert_eq!(
