@@ -107,9 +107,13 @@ pub struct Workbench {
     diagnostic: Option<String>,
     source_issue_line: Option<u32>,
     source_wrap: bool,
+    source_line_numbers: bool,
     source_font_size: f32,
     preferences: Preferences,
     preferences_path: Option<PathBuf>,
+    preferences_saving: bool,
+    preferences_pending: bool,
+    close_after_preferences: bool,
     modal: Entity<files::ModalState>,
     runs: Entity<runs::RunPanel>,
     results: Entity<reports::ResultsPanel>,
@@ -175,6 +179,11 @@ impl Workbench {
             .err()
             .map(|error| format!("{error:#}"))
             .unwrap_or_else(|| "Ready".into());
+        let preferences = preferences.unwrap_or_default();
+        source.update(cx, |state, cx| {
+            state.set_soft_wrap(preferences.source_wrap, window, cx);
+            state.set_line_number(preferences.source_line_numbers, window, cx);
+        });
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let runs = cx.new(|cx| runs::RunPanel::new(window, cx));
@@ -227,10 +236,14 @@ impl Workbench {
             status,
             diagnostic: None,
             source_issue_line: None,
-            source_wrap: true,
-            source_font_size: 14.,
-            preferences: preferences.unwrap_or_default(),
+            source_wrap: preferences.source_wrap,
+            source_line_numbers: preferences.source_line_numbers,
+            source_font_size: f32::from(preferences.source_font_size),
+            preferences,
             preferences_path: Preferences::path().ok(),
+            preferences_saving: false,
+            preferences_pending: false,
+            close_after_preferences: false,
             modal: cx.new(|_| files::ModalState::default()),
             runs,
             results,
@@ -314,14 +327,7 @@ impl Workbench {
                     let root = workspace.root.clone();
                     this.runs
                         .update(cx, |panel, cx| panel.set_workspace(root, window, cx));
-                    if let Err(error) = this
-                        .preferences_path
-                        .as_deref()
-                        .ok_or_else(|| anyhow!("Cannot determine the preferences path"))
-                        .and_then(|path| this.preferences.save(path))
-                    {
-                        this.status = format!("Preferences: {error:#}");
-                    }
+                    this.save_preferences(window, cx);
                 }
                 this.sync_editor(window, cx);
                 this.status = "Workspace opened".into();
@@ -1793,18 +1799,55 @@ impl Workbench {
     }
 
     fn save_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences_pending = true;
+        if self.preferences_saving {
+            return;
+        }
+        self.preferences_pending = false;
+        self.preferences_saving = true;
         let preferences = self.preferences.clone();
         let path = self.preferences_path.clone();
-        self.task(
-            "Saving preferences...",
-            move || {
-                preferences
-                    .save(&path.ok_or_else(|| anyhow!("Cannot determine the preferences path"))?)
-            },
-            |this, (), _, _| this.status = "Preferences saved".into(),
-            window,
-            cx,
-        );
+        let status = self.status.clone();
+        let task = cx.background_executor().spawn(async move {
+            preferences.save(&path.ok_or_else(|| anyhow!("Cannot determine the preferences path"))?)
+        });
+        // Serialize writes and take a fresh snapshot after any changes made during a save.
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                this.preferences_saving = false;
+                let saved = result.is_ok();
+                if let Err(error) = result {
+                    this.status = format!("Cannot save preferences: {error:#}");
+                }
+                if this.preferences_pending {
+                    this.save_preferences(window, cx);
+                } else {
+                    if saved && this.status == status {
+                        this.status = "Preferences saved".into();
+                    }
+                    if this.close_after_preferences {
+                        this.close_after_preferences = false;
+                        if saved && !this.busy && !this.unsaved() && !this.runs.read(cx).running() {
+                            cx.quit();
+                        }
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn finish_close(&mut self, cx: &mut Context<Self>) {
+        if self.preferences_saving {
+            self.close_after_preferences = true;
+            self.status = "Saving preferences...".into();
+            cx.notify();
+        } else {
+            cx.quit();
+        }
     }
 
     fn toggle_navigator(
@@ -2075,8 +2118,8 @@ pub fn launch(root: Option<PathBuf>) {
                                     this.guard(files::Pending::Close, window, cx);
                                     false
                                 } else {
-                                    cx.quit();
-                                    true
+                                    this.finish_close(cx);
+                                    false
                                 }
                             })
                             .unwrap_or(true)

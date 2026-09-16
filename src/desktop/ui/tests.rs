@@ -8,6 +8,121 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn preference_write_failures_do_not_lock_the_editor_and_can_be_retried(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let invalid_path = directory.path().join("settings-directory");
+    std::fs::create_dir(&invalid_path).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.preferences_path = Some(invalid_path);
+            this.save_preferences(window, cx);
+            assert!(!this.busy);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).preferences_saving
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).status.starts_with("Cannot save preferences:"));
+        assert!(!view.read(cx).busy);
+        assert!(!view.read(cx).session.dirty());
+        view.update(cx, |this, cx| {
+            this.preferences_path = Some(directory.path().join("recovered-settings.json"));
+            this.save_preferences(window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).preferences_saving
+    })
+    .await;
+    assert!(directory.path().join("recovered-settings.json").is_file());
+    cx.update(|cx| assert_eq!(view.read(cx).status, "Preferences saved"));
+}
+
+#[gpui_kit::test]
+async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::workspace::{Preferences, ThemePreference};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(1_usize, cx);
+        window.click("source-larger", cx);
+        assert!(!view.read(cx).busy);
+        window.click("source-larger", cx);
+        window.click("source-larger", cx);
+        window.click("source-wrap", cx);
+        window.click("source-line-numbers", cx);
+        view.update(cx, |this, cx| {
+            this.change_theme(
+                &super::design::ChooseTheme {
+                    preference: ThemePreference::Dark,
+                },
+                window,
+                cx,
+            )
+        });
+        assert!(!view.read(cx).busy);
+        assert_eq!(window.find("source-text-size").label(), Some("17 px"));
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).preferences_saving
+    })
+    .await;
+    let preferences =
+        Preferences::load(&directory.path().join("desktop-preferences.json")).unwrap();
+    assert_eq!(preferences.source_font_size, 17);
+    assert!(!preferences.source_wrap);
+    assert!(!preferences.source_line_numbers);
+    assert_eq!(preferences.theme_preference(), ThemePreference::Dark);
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(!view.read(cx).session.dirty());
+        window.click("source-reset-size", cx);
+        assert_eq!(window.find("source-text-size").label(), Some("14 px"));
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).preferences_saving
+    })
+    .await;
+    assert_eq!(
+        Preferences::load(&directory.path().join("desktop-preferences.json"))
+            .unwrap()
+            .source_font_size,
+        14
+    );
+}
+
+#[gpui_kit::test]
 async fn theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore_system_changes(
     cx: &mut TestAppContext,
 ) {
@@ -43,7 +158,7 @@ async fn theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore
         })
         .unwrap();
         cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
-            !view.read(cx).busy
+            !view.read(cx).preferences_saving
         })
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
@@ -1313,6 +1428,7 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
         view.update(cx, |this, cx| {
             this.preferences = crate::desktop::workspace::Preferences::default();
             this.preferences_path = Some(root.join("desktop-preferences.json"));
+            this.apply_editor_display(window, cx);
             this.session.connect(root).unwrap();
             this.runs.update(cx, |panel, cx| {
                 panel.set_workspace(root.to_path_buf(), window, cx)
@@ -1360,7 +1476,7 @@ async fn layout_and_view_shortcuts_preserve_the_open_draft(cx: &mut TestAppConte
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        !view.read(cx).busy && window.try_find("workspace-navigation").is_none()
+        !view.read(cx).preferences_saving && window.try_find("workspace-navigation").is_none()
     })
     .await;
     let preferences = directory.path().join("desktop-preferences.json");
@@ -1393,7 +1509,7 @@ async fn layout_and_view_shortcuts_preserve_the_open_draft(cx: &mut TestAppConte
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
-        !view.read(cx).busy && window.try_find("workspace-navigation").is_some()
+        !view.read(cx).preferences_saving && window.try_find("workspace-navigation").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {

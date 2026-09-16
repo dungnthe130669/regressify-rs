@@ -253,7 +253,7 @@ impl Workbench {
                     self.load_document(entry, window, cx);
                 }
             }
-            Pending::Close => cx.quit(),
+            Pending::Close => self.finish_close(cx),
             Pending::Run => self.start_selected_run(window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
         }

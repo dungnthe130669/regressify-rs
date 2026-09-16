@@ -85,6 +85,23 @@ fn position(text: &str, offset: usize) -> Position {
 }
 
 impl Workbench {
+    pub(super) fn apply_editor_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.source_wrap = self.preferences.source_wrap;
+        self.source_line_numbers = self.preferences.source_line_numbers;
+        self.source_font_size = f32::from(self.preferences.source_font_size.clamp(10, 24));
+        self.source.update(cx, |state, cx| {
+            state.set_soft_wrap(self.source_wrap, window, cx);
+            state.set_line_number(self.source_line_numbers, window, cx);
+        });
+        cx.notify();
+    }
+
+    fn change_source_size(&mut self, size: u8, window: &mut Window, cx: &mut Context<Self>) {
+        self.preferences.source_font_size = size.clamp(10, 24);
+        self.apply_editor_display(window, cx);
+        self.save_preferences(window, cx);
+    }
+
     fn route_completion<Command: Action + Clone>(
         &mut self,
         action: &Command,
@@ -321,11 +338,19 @@ impl Workbench {
                             .label("Wrap")
                             .checked(self.source_wrap)
                             .on_change(cx.listener(|this, checked, window, cx| {
-                                this.source_wrap = *checked;
-                                this.source.update(cx, |state, cx| {
-                                    state.set_soft_wrap(*checked, window, cx)
-                                });
-                                cx.notify();
+                                this.preferences.source_wrap = *checked;
+                                this.apply_editor_display(window, cx);
+                                this.save_preferences(window, cx);
+                            })),
+                    )
+                    .child(
+                        Checkbox::new("source-line-numbers")
+                            .label("Line numbers")
+                            .checked(self.source_line_numbers)
+                            .on_change(cx.listener(|this, checked, window, cx| {
+                                this.preferences.source_line_numbers = *checked;
+                                this.apply_editor_display(window, cx);
+                                this.save_preferences(window, cx);
                             })),
                     )
                     .child(div().flex_1())
@@ -337,9 +362,12 @@ impl Workbench {
                             .accessibility_label("Smaller source text")
                             .tooltip("Smaller source text")
                             .disabled(self.source_font_size <= 10.)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.source_font_size = (this.source_font_size - 1.).max(10.);
-                                cx.notify();
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.change_source_size(
+                                    (this.source_font_size as u8).saturating_sub(1),
+                                    window,
+                                    cx,
+                                );
                             })),
                     )
                     .child(
@@ -361,9 +389,24 @@ impl Workbench {
                             .accessibility_label("Larger source text")
                             .tooltip("Larger source text")
                             .disabled(self.source_font_size >= 24.)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.source_font_size = (this.source_font_size + 1.).min(24.);
-                                cx.notify();
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.change_source_size(
+                                    this.source_font_size as u8 + 1,
+                                    window,
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        Button::new("source-reset-size")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::RotateCcw)
+                            .tooltip("Reset text size")
+                            .accessibility_label("Reset text size")
+                            .disabled(self.source_font_size == 14.)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.change_source_size(14, window, cx)
                             })),
                     ),
             )

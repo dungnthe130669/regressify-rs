@@ -641,6 +641,9 @@ pub struct Preferences {
     pub navigator_hidden: bool,
     #[serde(default)]
     pub theme: Option<ThemePreference>,
+    pub source_wrap: bool,
+    pub source_line_numbers: bool,
+    pub source_font_size: u8,
 }
 
 impl Default for Preferences {
@@ -650,6 +653,9 @@ impl Default for Preferences {
             dark_mode: false,
             navigator_hidden: false,
             theme: Some(ThemePreference::System),
+            source_wrap: true,
+            source_line_numbers: true,
+            source_font_size: 14,
         }
     }
 }
@@ -676,7 +682,12 @@ impl Preferences {
 
     pub fn load(path: &Path) -> Result<Self> {
         match fs::read_to_string(path) {
-            Ok(source) => serde_json::from_str(&source).context("Invalid desktop preferences"),
+            Ok(source) => {
+                let mut preferences: Self =
+                    serde_json::from_str(&source).context("Invalid desktop preferences")?;
+                preferences.source_font_size = preferences.source_font_size.clamp(10, 24);
+                Ok(preferences)
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(error) => Err(error.into()),
         }
@@ -703,6 +714,32 @@ mod tests {
     use super::super::document::Edit;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn editor_display_preferences_default_safely_and_clamp_saved_font_sizes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("appearance.json");
+        for (text, expected) in [
+            (r#"{}"#, 14),
+            (r#"{"sourceFontSize":1}"#, 10),
+            (r#"{"sourceFontSize":240}"#, 24),
+        ] {
+            fs::write(&path, text).unwrap();
+            let preferences = Preferences::load(&path).unwrap();
+            assert_eq!(preferences.source_font_size, expected);
+            assert!(preferences.source_wrap);
+            assert!(preferences.source_line_numbers);
+        }
+        fs::write(
+            &path,
+            r#"{"sourceFontSize":18,"sourceWrap":false,"sourceLineNumbers":false}"#,
+        )
+        .unwrap();
+        let preferences = Preferences::load(&path).unwrap();
+        assert_eq!(preferences.source_font_size, 18);
+        assert!(!preferences.source_wrap);
+        assert!(!preferences.source_line_numbers);
+    }
 
     #[test]
     fn theme_preferences_preserve_legacy_choices_and_follow_system_only_when_selected() {
