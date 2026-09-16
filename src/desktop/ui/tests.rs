@@ -8,6 +8,111 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    for (key, draft) in [
+        ("delay", "invalid delay"),
+        ("misMatchThreshold", "invalid threshold"),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.field_search
+                    .update(cx, |state, cx| state.set_value(key, window, cx))
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+            window
+                .try_find(format!("field-{key}"))
+                .is_some_and(|field| field.visible())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(format!("field-{key}"), cx);
+            window.input(draft, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+            view.read(cx).field_errors.contains_key(key)
+        })
+        .await;
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("overrides-only", cx);
+        window.click("problem-delay", cx);
+        assert!(!view.read(cx).overrides_only);
+        assert_eq!(window.find("field-delay").value(), Some("invalid delay"));
+        let binding = view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "delay")
+            .unwrap();
+        let super::Control::Input(input) = &binding.control else {
+            panic!("Expected numeric input");
+        };
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        window.click("reset-delay", cx);
+        assert!(!view.read(cx).field_errors.contains_key("delay"));
+        assert!(view.read(cx).field_errors.contains_key("misMatchThreshold"));
+        window.click("problem-misMatchThreshold", cx);
+        assert_eq!(
+            window.find("field-misMatchThreshold").value(),
+            Some("invalid threshold")
+        );
+        window.click("reset-misMatchThreshold", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(view.read(cx).field_errors.is_empty());
+        assert_eq!(window.find("field-misMatchThreshold").value(), Some(""));
+        let value = view.read(cx).session.value().unwrap();
+        assert!(value["scenarios"][0].get("delay").is_none());
+        assert!(value["scenarios"][0].get("misMatchThreshold").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn navigation_and_duplication_flush_pending_field_notifications(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("https://example.com/pending-navigation", cx);
+        window.click("breadcrumb-document", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Root);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["url"],
+            "https://example.com/pending-navigation"
+        );
+        view.update(cx, |this, cx| {
+            this.select(Selection::Scenario(0), window, cx)
+        });
+        window.render_frame(cx);
+        window.click("field-label", cx);
+        window.press("ctrl-a", cx);
+        window.input("Pending scenario label", cx);
+        window.click("duplicate-item", cx);
+        let value = view.read(cx).session.value().unwrap();
+        assert_eq!(value["scenarios"].as_array().unwrap().len(), 2);
+        assert_eq!(value["scenarios"][0]["label"], "Pending scenario label");
+        assert_eq!(
+            value["scenarios"][1]["url"],
+            "https://example.com/pending-navigation"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn structural_actions_do_not_discard_an_invalid_field_draft(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

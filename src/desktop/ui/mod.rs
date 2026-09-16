@@ -580,9 +580,8 @@ impl Workbench {
         if self.busy {
             return;
         }
-        if !self.field_errors.is_empty() {
-            self.status =
-                "Correct invalid fields or undo before changing the document structure".into();
+        if let Err(error) = self.flush_drafts(window, cx) {
+            self.status = format!("{error:#}");
             cx.notify();
             return;
         }
@@ -773,6 +772,15 @@ impl Workbench {
         if self.busy {
             return;
         }
+        let current = self
+            .value
+            .pointer(&self.session.selection.path())
+            .and_then(|value| value.get(&field.key))
+            .unwrap_or(&Value::Null);
+        // Programmatic resets emit change events too; an empty inherited control is not an override.
+        if !self.field_errors.contains_key(&field.key) && field.display(current) == text {
+            return;
+        }
         match field
             .parse(text)
             .and_then(|value| self.session.set_field(&field.key, Some(value)))
@@ -796,8 +804,50 @@ impl Workbench {
         cx.notify();
     }
 
+    fn reset_field(&mut self, field: &Field, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || field.required {
+            return;
+        }
+        if let Err(error) = self.session.set_field(&field.key, None) {
+            self.field_errors
+                .insert(field.key.clone(), format!("{error:#}"));
+            cx.notify();
+            return;
+        }
+        self.field_errors.remove(&field.key);
+        self.refresh_value();
+        self.refresh_effective(window, cx);
+        if let Some(binding) = self
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == field.key)
+        {
+            match &binding.control {
+                Control::Input(input) => {
+                    input.update(cx, |state, cx| state.set_value("", window, cx))
+                }
+                Control::Textarea(input) => {
+                    input.update(cx, |state, cx| state.set_value("", window, cx))
+                }
+                _ => {}
+            }
+        }
+        if let Some(open) = &self.session.open {
+            let source = open.document.source().to_string();
+            self.source
+                .update(cx, |state, cx| state.set_value(source, window, cx));
+        }
+        self.status = "Override removed".into();
+        cx.notify();
+    }
+
     fn select(&mut self, selection: Selection, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy || !self.field_errors.is_empty() {
+        if self.busy {
+            return;
+        }
+        if let Err(error) = self.flush_drafts(window, cx) {
+            self.status = format!("{error:#}");
+            cx.notify();
             return;
         }
         match self.session.select(selection) {
@@ -1469,6 +1519,17 @@ impl Workbench {
         self.field_search
             .update(cx, |state, cx| state.set_value(key.to_string(), window, cx));
         self.collapsed_fields.clear();
+        if let Some(binding) = self
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == key)
+        {
+            match &binding.control {
+                Control::Input(input) => window.focus(&input.read(cx).focus_handle(cx), cx),
+                Control::Textarea(input) => window.focus(&input.read(cx).focus_handle(cx), cx),
+                _ => {}
+            }
+        }
         cx.notify();
     }
 
@@ -1597,6 +1658,7 @@ impl Workbench {
                 .min_w_0()
                 .when(wide, |row| row.col_span(2));
             let key = field.key.clone();
+            let reset = field.clone();
             row = row.child(
                 div()
                     .flex()
@@ -1643,16 +1705,7 @@ impl Workbench {
                                             || (!explicit && !self.field_errors.contains_key(&key)),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
-                                        if this.field_errors.len() == 1
-                                            && this.field_errors.contains_key(&key)
-                                        {
-                                            this.field_errors.remove(&key);
-                                        }
-                                        this.edit(
-                                            |session| session.set_field(&key, None),
-                                            window,
-                                            cx,
-                                        )
+                                        this.reset_field(&reset, window, cx)
                                     })),
                             ),
                     ),
@@ -1932,6 +1985,7 @@ impl Workbench {
                             .test_support()
                             .text_xl()
                             .font_weight(FontWeight::SEMIBOLD)
+                            .truncate()
                             .child(self.selection_title()),
                     ),
             )
@@ -2028,7 +2082,15 @@ impl Workbench {
                                 .small()
                                 .text_color(cx.theme().danger),
                         )
-                        .child(format!("{} field issue(s)", self.field_errors.len()))
+                        .child(format!(
+                            "{} field {}",
+                            self.field_errors.len(),
+                            if self.field_errors.len() == 1 {
+                                "issue"
+                            } else {
+                                "issues"
+                            }
+                        ))
                         .children(self.field_errors.keys().map(|key| {
                             let key = key.clone();
                             Button::new(SharedString::from(format!("problem-{key}")))

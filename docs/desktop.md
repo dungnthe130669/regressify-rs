@@ -125,9 +125,9 @@ a diagnostic rather than a guessed value.
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
 - JSON edits are pretty-printed. Save As format conversion preserves data, not YAML comments or formatting.
-- Invalid drafts cannot save. Invalid field text blocks structural commands until corrected, reset, or undone.
+- Invalid drafts cannot save. Invalid field text blocks structural commands until corrected, reset, or undone. Problem links reveal and focus invalid controls; resetting one field preserves other drafts and errors.
 - Saves detect external conflicts and use same-directory atomic replacement. Save As never replaces existing files. Paths reject workspace and symlink escapes.
-- Immediate saves read retained native input. Completion acknowledges only the source written; newer edits stay dirty. This is conflict detection, not an OS-wide lock.
+- Immediate saves, breadcrumbs, and structural commands read retained native input, including text whose change event has not run. Save completion acknowledges only the source written; newer edits stay dirty. This is conflict detection, not an OS-wide lock.
 - Documents are limited to 4 MiB. Undo retains at most 100 exact-source snapshots with a 16 MiB budget.
 
 Valid plain YAML strings such as `.item[aria-label='10 midpoints']` retain their
