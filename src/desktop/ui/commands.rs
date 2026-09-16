@@ -57,32 +57,41 @@ impl ListDelegate for CommandList {
         let command = self.commands.get(*self.filtered.get(index.row)?)?;
         Some(
             ListItem::new(SharedString::from(format!("command:{}", command.title)))
+                .role(Role::ListBoxOption)
                 .aria_label(command.title)
                 .h(px(42.))
                 .disabled(!command.enabled)
                 .child(
-                    Icon::new(command.icon)
-                        .small()
-                        .text_color(if command.enabled {
-                            cx.theme().foreground
-                        } else {
-                            cx.theme().muted_foreground
-                        }),
-                )
-                .child(
                     div()
-                        .flex_1()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .w_full()
                         .min_w_0()
-                        .px_2()
-                        .text_sm()
-                        .truncate()
-                        .child(command.title),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(command.group),
+                        .child(
+                            Icon::new(command.icon)
+                                .small()
+                                .text_color(if command.enabled {
+                                    cx.theme().foreground
+                                } else {
+                                    cx.theme().muted_foreground
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .truncate()
+                                .child(command.title),
+                        )
+                        .child(
+                            div()
+                                .flex_shrink_0()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(command.group),
+                        ),
                 ),
         )
     }

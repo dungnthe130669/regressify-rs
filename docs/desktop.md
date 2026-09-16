@@ -30,6 +30,33 @@ executable picker is needed. It launches itself in a private headless worker mod
 to isolate run settings and browser processes. Signed installers and auto-update
 are not included.
 
+## Appearance and Commands
+
+The header appearance menu offers System, Light, and Dark. System follows the
+operating system and responds to appearance changes while the app is open;
+explicit Light or Dark overrides those changes. New installations default to
+System. Existing `darkMode` preferences retain their previous light/dark choice.
+The File-menu toggle remains available and switches from the currently displayed
+theme. Native window decorations may still follow the OS on some platforms.
+
+Both palettes use consistent menus, tabs, lists, input outlines, and status
+colors, with visible keyboard-focus rings. Theme changes preserve open drafts,
+selection, run state, and comparison images. Automated checks cover 4.5:1
+contrast for the principal text/status color pairs, not full accessibility
+certification.
+
+Source wrapping, line numbers, and text size are saved across restarts. Text size
+is bounded to 10-24 pixels; the reset control returns it to 14. These changes do
+not edit the document. Preference writes are serialized and coalesced without
+blocking editing; normal close waits for the final write. A settings-write error
+is reported without locking the editor or discarding a draft.
+
+Open Commands from the header or Ctrl+Shift+P (Cmd+Shift+P on macOS). Search by
+command name or category, use arrow keys to select, Enter to execute, and Escape
+to cancel. File, edit, view, navigation, and theme actions reuse the normal
+workbench commands and their save/confirmation guards. Unavailable actions remain
+disabled rather than bypassing the current workspace or document conditions.
+
 ## Release Pipeline
 
 The [Release workflow](../.github/workflows/tuyen-release.yml) has a `build`
@@ -379,7 +406,14 @@ for generated capture IDs, persisted scenario-label metadata, forward-slash
 workspace paths, and live suite totals. Pointer input uses physical screen
 coordinates to avoid DPI virtualization errors.
 
-Windows native validation covers 1600x1000 and 1080x720 with 19 window captures.
+The native theme checks switch Light/Dark/System, exercise the command palette,
+capture source and result views in both palettes, and restart the app to verify
+saved appearance and editor display settings. They back up and restore the
+original preferences file, including recent workspaces. With `-KeepOpen`, the
+remaining fixture window retains its test appearance until closed; the original
+file is restored when the script returns.
+
+Windows native validation covers 1600x1000 and 1080x720 with 28 window captures.
 Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
 validation there. Signed installers, cloud accounts, collaborative editing,

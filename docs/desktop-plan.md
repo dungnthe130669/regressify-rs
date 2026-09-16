@@ -145,6 +145,32 @@ after programmatic view changes; its overlay handle is private, so the ineffecti
 window-refresh probe was removed and no dependency internals were modified.
 Native macOS/Linux and full accessibility/IME validation remain follow-ups.
 
+## Appearance and Efficiency
+
+- [x] Expose System/Light/Dark in the header, migrate legacy preferences, and
+  follow OS appearance changes only when System is selected.
+- [x] Unify component palettes and restore keyboard-focus rings; test principal
+  text/status color pairs at a minimum 4.5:1 contrast in both themes.
+- [x] Persist source wrapping, line numbers, and bounded text size, with a reset
+  control that does not alter source or undo history.
+- [x] Serialize/coalesce preference writes independently from document busy
+  state, report write failures, support retries, and flush settings on close.
+- [x] Add a searchable native command palette with keyboard activation,
+  contextual disabled states, and existing draft/confirmation guards.
+- [x] Verify native dark/light menus, source, results, command rows, and restart
+  persistence while restoring the original user preference file after testing.
+
+Verification: 390 library/UI tests (including 45 production UI tests), two
+standalone-worker tests, 62 headless desktop tests, and 281 default CLI tests
+pass. Formatting and strict library Clippy pass. The Windows smoke workflow
+passed 28 nonblank captures at 1600x1000 and 1080x720, three local Chromium
+scenarios, appearance/display restoration after restart, and fixture-only draft
+cleanup. Dark command-menu, compact source, and result captures were inspected.
+Original user preferences were restored. System-change behavior is covered by
+the preference model and simulated native appearance events; no OS-wide theme
+settings were changed. Native macOS/Linux and full screen-reader/IME validation
+remain outstanding, along with the previously documented GPUI tooltip issue.
+
 ## Delivery Checklist
 
 ### 1. Foundation

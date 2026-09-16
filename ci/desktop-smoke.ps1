@@ -18,6 +18,7 @@ $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'
 $executable = Join-Path $repository 'target/debug/regressify-desktop.exe'
 
 if (-not $IsWindows) { throw 'This smoke test requires Windows.' }
+if (Get-Process regressify-desktop -ErrorAction SilentlyContinue) { throw 'Close the existing desktop window before running native smoke checks.' }
 if (-not $SkipBuild) {
     Push-Location $repository
     try {
@@ -73,10 +74,15 @@ public static class RegressifySmokeFocus {
 }
 
 function Focus-Fixture {
-    if (-not (New-Object -ComObject WScript.Shell).AppActivate([int]$process.Id) -or
-        [RegressifySmokeFocus]::GetForegroundWindow() -ne $script:window) {
-        throw 'Cannot focus the native fixture. Keep Windows unlocked and the interactive desktop available.'
-    }
+    $activation = New-Object -ComObject WScript.Shell
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        if ($process.HasExited) { throw 'The native fixture exited before input could be delivered.' }
+        $activation.AppActivate([int]$process.Id) | Out-Null
+        if ([RegressifySmokeFocus]::GetForegroundWindow() -eq $script:window) { return }
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } while ($deadline.Elapsed.TotalSeconds -lt 2)
+    throw 'Cannot focus the native fixture. Keep Windows unlocked and the interactive desktop available.'
 }
 
 if (-not ('RegressifySmokePointer' -as [type])) {
@@ -196,8 +202,50 @@ Write-JsonFixture (Join-Path $output 'bitmaps_test/smoke-run/report.json') ([ord
 
 $stderr = Join-Path $artifacts 'native-stderr.log'
 $stdout = Join-Path $artifacts 'native-stdout.log'
-$process = Start-Process -FilePath $executable -ArgumentList ('"' + $workspace + '"') -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru
+$settingsPath = Join-Path ([Environment]::GetFolderPath('ApplicationData')) 'Regressify/Regressify Desktop/config/settings.json'
+$settingsExisted = Test-Path -LiteralPath $settingsPath
+$settingsBackup = Join-Path $workspace 'original-desktop-settings.json'
+if ($settingsExisted) { Copy-Item -LiteralPath $settingsPath -Destination $settingsBackup }
+$process = $null
 $script:window = [IntPtr]::Zero
+
+function Start-Fixture {
+    $script:process = Start-Process -FilePath $executable -ArgumentList ('"' + $workspace + '"') -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru
+    if (-not $process.WaitForInputIdle(15000)) { throw 'Desktop did not initialize.' }
+    $initialization = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $process.Refresh()
+        $script:window = $process.MainWindowHandle
+        if ($script:window -ne [IntPtr]::Zero -or $process.HasExited) { break }
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } while ($initialization.Elapsed.TotalSeconds -lt 15)
+    if ($script:window -eq [IntPtr]::Zero) { throw "Desktop has no native window. $(Get-Content $stderr -Raw)" }
+    $script:screen = [System.Windows.Forms.Screen]::FromHandle($script:window).WorkingArea
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+    Wait-Control 'Workspace opened' | Out-Null
+}
+
+function Wait-Settings([scriptblock]$Match) {
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $settings = Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json
+        if (& $Match $settings) { return }
+        if ($process.HasExited) { throw 'Desktop exited before preferences were saved.' }
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } while ($deadline.Elapsed.TotalSeconds -lt 10)
+    throw 'Desktop preferences were not persisted.'
+}
+
+function Select-Theme([string]$Theme) {
+    $current = @('Light', 'Dark', 'System') | Where-Object { $null -ne (Find-Control ('Appearance: ' + $_)) } | Select-Object -First 1
+    if ([string]::IsNullOrEmpty($current)) { throw 'Appearance control is missing.' }
+    if ($current -ne $Theme) {
+        Invoke-Control ('Appearance: ' + $current) -Pointer
+        Invoke-Control $Theme
+    }
+    Wait-Control ('Appearance: ' + $Theme) | Out-Null
+    Wait-Settings { param($settings) $settings.theme -eq $Theme.ToLowerInvariant() }
+}
 
 function Find-Control([string]$Name) {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
@@ -299,21 +347,24 @@ function Capture-Window([string]$Name) {
 
 $cleanupSnapshot = $null
 try {
-    if (-not $process.WaitForInputIdle(15000)) { throw 'Desktop did not initialize.' }
-    $initialization = [System.Diagnostics.Stopwatch]::StartNew()
-    do {
-        $process.Refresh()
-        $script:window = $process.MainWindowHandle
-        if ($script:window -ne [IntPtr]::Zero -or $process.HasExited) { break }
-        [RegressifySmokeNative]::DwmFlush() | Out-Null
-    } while ($initialization.Elapsed.TotalSeconds -lt 15)
-    if ($script:window -eq [IntPtr]::Zero) { throw "Desktop has no native window. $(Get-Content $stderr -Raw)" }
-    [RegressifySmokeNative]::SetForegroundWindow($script:window) | Out-Null
-    $screen = [System.Windows.Forms.Screen]::FromHandle($script:window).WorkingArea
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
-    Wait-Control 'Workspace opened' | Out-Null
+    Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
+    Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
     Capture-Window 'overview'
+    Invoke-Control 'Appearance: Light' -Pointer
+    Wait-Control 'Dark' | Out-Null
+    Capture-Window 'theme-menu'
+    Invoke-Control 'Dark'
+    Wait-Control 'Appearance: Dark' | Out-Null
+    Wait-Settings { param($settings) $settings.theme -eq 'dark' }
+    Capture-Window 'overview-dark'
+    Send-FixtureKeys '^+p'
+    Send-FixtureText 'light theme'
+    Wait-Control 'Light theme' | Out-Null
+    Capture-Window 'command-palette-dark'
+    Send-FixtureKeys '{ENTER}'
+    Wait-Control 'Appearance: Light' | Out-Null
+    Wait-Settings { param($settings) $settings.theme -eq 'light' }
     Invoke-Control 'account.tests.json'
     Wait-Control 'Profile' | Out-Null
     if ($null -ne (Find-Control 'Checkout')) { throw 'Scenarios from an unselected suite leaked into the navigator.' }
@@ -363,8 +414,14 @@ try {
     if ($savedSuite.scenarios[0].viewportNames -notcontains 'phone') { throw 'Guided viewport choice was not saved.' }
     Invoke-Control 'Larger source text'
     Invoke-Control 'Wrap'
+    Invoke-Control 'Line numbers'
+    Wait-Settings { param($settings) $settings.sourceFontSize -eq 15 -and $settings.sourceWrap -eq $false -and $settings.sourceLineNumbers -eq $false }
     Capture-Window 'source'
+    Select-Theme 'Dark'
+    Capture-Window 'source-dark'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'source-dark-compact'
+    Select-Theme 'Light'
     Capture-Window 'source-compact'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
@@ -373,9 +430,15 @@ try {
     Wait-Control 'Desktop / Full page' | Out-Null
     Wait-Control 'Edit suite' | Out-Null
     Capture-Window 'results'
+    Select-Theme 'Dark'
+    Capture-Window 'results-dark'
+    Select-Theme 'Light'
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 640 x 420' | Out-Null
     Capture-Window 'side-by-side'
+    Select-Theme 'Dark'
+    Capture-Window 'side-by-side-dark'
+    Select-Theme 'Light'
     Invoke-Control 'Expand comparison'
     Invoke-Control 'Hide navigator'
     Wait-Control 'Preferences saved' | Out-Null
@@ -408,6 +471,10 @@ try {
         Wait-Control 'Passed: 3' | Out-Null
         Wait-Control '2 passed' | Out-Null
         Capture-Window 'live-completed'
+        Select-Theme 'Dark'
+        Capture-Window 'live-completed-dark'
+        Select-Theme 'System'
+        Select-Theme 'Light'
         $capturedReports = Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter report.json |
             Where-Object { $_.Directory.Name.StartsWith('desktop-') }
         $capturedPairs = @($capturedReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
@@ -424,6 +491,17 @@ try {
     Wait-Control 'Completed' | Out-Null
     Capture-Window 'run-completed'
     if (-not (Test-Path (Join-Path $workspace 'common/_override.css'))) { throw 'GUI init command did not create starter files.' }
+    Select-Theme 'Dark'
+    $process.CloseMainWindow() | Out-Null
+    if (-not $process.WaitForExit(10000)) { throw 'The clean fixture did not close after saving appearance.' }
+    Start-Fixture
+    Wait-Control 'Appearance: Dark' | Out-Null
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Invoke-Control 'Source'
+    Wait-Control '15 px' | Out-Null
+    Wait-Settings { param($settings) $settings.theme -eq 'dark' -and $settings.sourceFontSize -eq 15 -and $settings.sourceWrap -eq $false -and $settings.sourceLineNumbers -eq $false }
+    Capture-Window 'appearance-restored'
     if (-not $KeepOpen) {
         $cleanupPath = Join-Path $workspace 'visual_tests/smoke.tests.json'
         $cleanupSnapshot = (Get-FileHash $cleanupPath -Algorithm SHA256).Hash
@@ -435,7 +513,8 @@ try {
         Wait-SourceText 'smoke-cleanup-probe'
     }
 } finally {
-    if (-not $KeepOpen -and -not $process.HasExited) {
+    try {
+    if (-not $KeepOpen -and $null -ne $process -and -not $process.HasExited) {
         $process.CloseMainWindow() | Out-Null
         $closing = [System.Diagnostics.Stopwatch]::StartNew()
         $discarded = $false
@@ -472,6 +551,15 @@ try {
             }
             Write-Output 'Dirty fixture closed without changing its saved source.'
         }
+    }
+    } finally {
+        if ($settingsExisted) {
+            Copy-Item -LiteralPath $settingsBackup -Destination $settingsPath -Force
+            if ((Get-FileHash -LiteralPath $settingsBackup).Hash -ne (Get-FileHash -LiteralPath $settingsPath).Hash) { throw 'Original desktop settings were not restored.' }
+        } elseif (Test-Path -LiteralPath $settingsPath) {
+            Remove-Item -LiteralPath $settingsPath
+        }
+        Write-Output 'Original desktop preferences restored.'
     }
 }
 Write-Output "Native smoke test passed. Fixture: $workspace"
