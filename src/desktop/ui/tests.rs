@@ -294,6 +294,131 @@ async fn guided_choices_keep_inherited_viewports_and_draft_dependencies_consiste
 }
 
 #[gpui_kit::test]
+fn scenario_sequence_supports_reordering_duplication_and_direct_editing(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(
+                |session| {
+                    session.set_field(
+                        "actions",
+                        Some(serde_json::json!([{"click": "#continue"}, {"wait": 500}])),
+                    )
+                },
+                window,
+                cx,
+            );
+            this.field_search
+                .update(cx, |state, cx| state.set_value("actions", window, cx));
+        });
+        window.render_frame(cx);
+        assert_eq!(window.find("sequence-count").label(), Some("2 actions"));
+        window.click(("sequence-down", 0_usize), cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["wait"],
+            500
+        );
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["click"],
+            "#continue"
+        );
+        window.click(("sequence-up", 0_usize), cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["click"],
+            "#continue"
+        );
+        window.click(("sequence-copy", 0_usize), cx);
+        assert_eq!(window.find("sequence-count").label(), Some("3 actions"));
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        window.click(("sequence-step", 1_usize), cx);
+        assert_eq!(
+            view.read(cx).session.selection,
+            Selection::Action {
+                scenario: 0,
+                index: 1
+            }
+        );
+        assert_eq!(window.find("field-click").value(), Some("#continue"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn sequence_removal_is_confirmed_and_pending_invalid_fields_block_reordering(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(
+                |session| {
+                    session.set_field(
+                        "actions",
+                        Some(serde_json::json!([{"click": "#continue"}, {"wait": 500}])),
+                    )
+                },
+                window,
+                cx,
+            );
+            this.field_search
+                .update(cx, |state, cx| state.set_value("actions", window, cx));
+            let binding = this
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "delay")
+                .unwrap();
+            if let super::Control::Input(input) = &binding.control {
+                input.update(cx, |state, cx| state.set_value("invalid draft", window, cx));
+            }
+        });
+        window.render_frame(cx);
+        window.click(("sequence-down", 0_usize), cx);
+        assert!(view.read(cx).field_errors.contains_key("delay"));
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["click"],
+            "#continue"
+        );
+        view.update(cx, |this, cx| {
+            let field = this
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "delay")
+                .unwrap()
+                .field
+                .clone();
+            this.reset_field(&field, window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("sequence-remove", 0_usize), cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("remove-confirm", cx)
+    })
+    .unwrap();
+    cx.update(|cx| {
+        let value = view.read(cx).session.value().unwrap();
+        assert_eq!(
+            value["scenarios"][0]["actions"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+    });
+}
+
+#[gpui_kit::test]
 async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
     cx: &mut TestAppContext,
 ) {

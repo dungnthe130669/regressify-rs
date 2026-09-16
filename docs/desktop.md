@@ -111,6 +111,13 @@ use IDs from the current unsaved suite and exclude the current scenario and
 ambiguous duplicate IDs. Missing or invalid explicit viewport files display a
 recoverable warning beside the field.
 
+Scenario fields include an action sequence with step icons and target summaries.
+Open a step directly, move it earlier/later, duplicate it, or remove it with
+confirmation. Reorder and duplicate keep the scenario selected and participate
+in document undo. The Add action menu groups navigation, interactions, page
+utilities, and capture/state actions. Search settings for `actions` to isolate
+the sequence. Input values are not included in the sequence summaries.
+
 The workspace opens to an overview with suite/scenario totals, selection counts,
 configuration issues, and per-suite status. Edit opens the selected suite; Overview
 returns to the workspace without discarding an open draft. The header identifies

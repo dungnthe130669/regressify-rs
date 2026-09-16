@@ -33,6 +33,7 @@ mod files;
 mod overview;
 mod reports;
 mod runs;
+mod sequence;
 mod source;
 
 #[cfg(all(test, feature = "gui-tests"))]
@@ -1631,6 +1632,13 @@ impl Workbench {
             if current_group != Some(group.0) {
                 if current_group.is_some() {
                     form = form.child(section);
+                    if current_group == Some(0)
+                        && query.is_empty()
+                        && !self.overrides_only
+                        && let Selection::Scenario(scenario) = self.session.selection
+                    {
+                        form = form.child(self.render_sequence(scenario, cx));
+                    }
                 }
                 let collapsed = self.collapsed_fields.contains(&group.0) && query.is_empty();
                 form = form.child(
@@ -1875,6 +1883,12 @@ impl Workbench {
         }
         if current_group.is_some() {
             form = form.child(section);
+        }
+        if query == "actions"
+            && let Selection::Scenario(scenario) = self.session.selection
+        {
+            form = form.child(self.render_sequence(scenario, cx));
+            matching += 1;
         }
         if matching == 0 {
             form = form.child(div().text_color(cx.theme().muted_foreground).child(
