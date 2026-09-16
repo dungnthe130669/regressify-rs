@@ -112,10 +112,78 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        let cursor = view.read(cx).source.read(cx).cursor();
+        window.press("down", cx);
+        window.press("up", cx);
+        assert_eq!(view.read(cx).source.read(cx).cursor(), cursor);
         window.press("escape", cx);
         assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(1_usize, cx);
+        let original = view.read(cx).source.read(cx).value();
+        window.click("source-wrap", cx);
+        assert!(!view.read(cx).source_wrap);
+        window.click("source-larger", cx);
+        assert_eq!(window.find("source-text-size").label(), Some("15 px"));
+        window.click("source-smaller", cx);
+        window.click("source-find", cx);
+        assert!(view.read(cx).source.read(cx).search_session().open);
+        view.read(cx)
+            .source
+            .clone()
+            .update(cx, |state, cx| state.close_search(cx));
+        window.render_frame(cx);
+        window.click("source-replace", cx);
+        assert!(view.read(cx).source.read(cx).search_session().replace_mode);
+        assert_eq!(view.read(cx).source.read(cx).value(), original);
+        assert!(!view.read(cx).session.dirty());
+        view.read(cx).source.clone().update(cx, |state, cx| {
+            state.close_search(cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input("scenarios:\n  - url: /\n    actions: [}", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("source-issue").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("source-issue", cx);
+        assert_eq!(view.read(cx).source.read(cx).cursor_position().line, 2);
+        assert_eq!(
+            view.read(cx).source.read(cx).diagnostics().unwrap().len(),
+            1
+        );
+        window.press("ctrl-a", cx);
+        window.input("scenarios: []", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).diagnostic.is_none()
+    })
+    .await;
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .diagnostics()
+                .unwrap()
+                .is_empty()
+        )
+    });
 }
 
 #[gpui_kit::test]

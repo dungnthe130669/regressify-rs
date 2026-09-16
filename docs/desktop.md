@@ -159,6 +159,12 @@ network service or language-server installation is required. Arbitrary data
 files, free-text values, JavaScript, and live-page CSS selectors are not completed.
 JSON files and the Effective view use JSON highlighting; YAML files use YAML.
 
+The source toolbar provides Find, Replace, and Suggest, plus word wrapping and
+text sizes from 10 to 24 pixels. These presentation changes preserve source and
+undo history. The status strip shows the language and cursor position. Syntax
+errors underline their source line; the issue button unfolds and focuses that
+line. Schema errors without a source location remain in the diagnostic panel.
+
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
 - JSON edits are pretty-printed. Save As format conversion preserves data, not YAML comments or formatting.

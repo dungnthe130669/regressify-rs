@@ -102,6 +102,9 @@ pub struct Workbench {
     busy: bool,
     status: String,
     diagnostic: Option<String>,
+    source_issue_line: Option<u32>,
+    source_wrap: bool,
+    source_font_size: f32,
     preferences: Preferences,
     preferences_path: Option<PathBuf>,
     modal: Entity<files::ModalState>,
@@ -121,6 +124,7 @@ impl Workbench {
         let source = cx.new(|cx| {
             EditorState::new(window, cx)
                 .language("yaml")
+                .replaceable(true)
                 .line_number(true)
         });
         let resolved = cx.new(|cx| {
@@ -140,6 +144,7 @@ impl Workbench {
                         Ok(()) => {
                             this.field_errors.clear();
                             this.refresh_value();
+                            this.update_source_diagnostics(cx);
                         }
                         Err(error) => this.status = format!("{error:#}"),
                     }
@@ -148,6 +153,7 @@ impl Workbench {
             }
         });
         let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        let source_observer = cx.observe(&source, |_, _, cx| cx.notify());
         let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a setting"));
         let field_search_subscription =
             cx.subscribe(&field_search, |_, _, _: &InputEvent, cx| cx.notify());
@@ -185,6 +191,7 @@ impl Workbench {
                 search_subscription,
                 run_subscription,
                 field_search_subscription,
+                source_observer,
             ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
@@ -197,6 +204,9 @@ impl Workbench {
             busy: false,
             status,
             diagnostic: None,
+            source_issue_line: None,
+            source_wrap: true,
+            source_font_size: 14.,
             preferences: preferences.unwrap_or_default(),
             preferences_path: Preferences::path().ok(),
             modal: cx.new(|_| files::ModalState::default()),
@@ -657,12 +667,13 @@ impl Workbench {
 
     fn refresh_value(&mut self) {
         self.value = self.session.value().unwrap_or(Value::Null);
-        self.diagnostic = self
+        let error = self
             .session
             .open
             .as_ref()
-            .and_then(|open| open.document.validate().err())
-            .map(|error| format!("{error:#}"));
+            .and_then(|open| open.document.validate().err());
+        self.source_issue_line = error.as_ref().and_then(source::error_line);
+        self.diagnostic = error.map(|error| format!("{error:#}"));
     }
 
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -685,6 +696,7 @@ impl Workbench {
     fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.configure_source(cx);
         self.refresh_value();
+        self.update_source_diagnostics(cx);
         self.bindings.clear();
         self.field_subscriptions.clear();
         self.field_errors.clear();
@@ -1890,19 +1902,7 @@ impl Workbench {
             })
             .unwrap_or_else(|| "Workspace".into());
         let content = match self.tab {
-            1 => div()
-                .id("source-editor")
-                .key_context("RegressifySource")
-                .capture_action(cx.listener(Self::accept_completion))
-                .on_action(cx.listener(Self::request_completion))
-                .size_full()
-                .child(
-                    CodeEditor::new(&self.source)
-                        .aria_label("Configuration source")
-                        .size_full()
-                        .disabled(self.busy || self.session.open.is_none()),
-                )
-                .into_any_element(),
+            1 => self.render_source(cx),
             2 => div()
                 .id("effective-editor")
                 .size_full()
