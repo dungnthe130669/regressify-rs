@@ -1105,6 +1105,13 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         window.within("image-modes").click(3_usize, cx);
         assert!(window.find(("image-details", 0_usize)).visible());
         assert!(window.find(("image-details", 1_usize)).visible());
+        window.click("expand-comparison", cx);
+        assert!(window.try_find("capture-list").is_none());
+        assert!(window.find(("image-details", 0_usize)).visible());
+        assert!(window.find(("image-details", 1_usize)).visible());
+        assert_eq!(window.find("capture-heading").label(), Some("Home"));
+        window.click("expand-comparison", cx);
+        assert!(window.find("capture-list").visible());
         window.within("result-filter").click(1_usize, cx);
         assert!(window.try_find(("capture", 0_usize)).is_none());
         assert_eq!(

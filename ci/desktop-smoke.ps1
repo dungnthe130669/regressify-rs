@@ -217,7 +217,18 @@ try {
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 640 x 420' | Out-Null
     Capture-Window 'side-by-side'
+    Invoke-Control 'Expand comparison'
+    Invoke-Control 'Hide navigator'
+    Wait-Control 'Preferences saved' | Out-Null
+    Capture-Window 'comparison-focus'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'comparison-compact'
+    Invoke-Control 'Actual size (100%)'
+    Capture-Window 'comparison-actual-size'
+    Invoke-Control 'Fit width'
+    Invoke-Control 'Show navigator'
+    Wait-Control 'Preferences saved' | Out-Null
+    Invoke-Control 'Restore capture list'
     Invoke-Control 'Editor'
     Invoke-Control 'Fields'
     Wait-Control 'Checkout' | Out-Null

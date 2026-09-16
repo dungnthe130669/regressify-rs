@@ -32,6 +32,7 @@ pub(super) struct ResultsPanel {
     filter: usize,
     page: usize,
     image_mode: usize,
+    captures_hidden: bool,
     zoom: f32,
     fit: bool,
     search: Entity<InputState>,
@@ -53,6 +54,7 @@ impl ResultsPanel {
         self.capture = None;
         self.filter = 0;
         self.page = 0;
+        self.captures_hidden = false;
         self.previews.clear();
         self.loading = false;
         self.image_loading = false;
@@ -78,6 +80,7 @@ impl ResultsPanel {
             filter: 0,
             page: 0,
             image_mode: 1,
+            captures_hidden: false,
             zoom: 1.0,
             fit: true,
             search,
@@ -371,6 +374,7 @@ impl ResultsPanel {
         let pages = filtered.len().div_ceil(PAGE_SIZE).max(1);
         let mut list = div()
             .id("capture-list")
+            .test_support()
             .flex()
             .flex_col()
             .gap_1()
@@ -662,6 +666,8 @@ impl ResultsPanel {
             })
             .unwrap_or_default();
         div()
+            .id("comparison-view")
+            .test_support()
             .flex()
             .flex_col()
             .size_full()
@@ -785,6 +791,7 @@ impl ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::ZoomOut)
                             .tooltip("Zoom out")
+                            .accessibility_label("Zoom out")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.fit = false;
@@ -807,6 +814,7 @@ impl ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::ZoomIn)
                             .tooltip("Zoom in")
+                            .accessibility_label("Zoom in")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.fit = false;
@@ -819,6 +827,7 @@ impl ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::Scan)
                             .tooltip("Actual size (100%)")
+                            .accessibility_label("Actual size (100%)")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.fit = false;
@@ -867,8 +876,20 @@ impl Render for ResultsPanel {
             })
             .unwrap_or_default();
         let focus = self.focus.clone();
-        let captures = self.render_captures(cx);
         let comparison = self.render_comparison(cx);
+        let layout = if self.captures_hidden {
+            comparison
+        } else {
+            h_resizable("result-layout")
+                .child(
+                    resizable_panel()
+                        .size(px(270.))
+                        .size_range(px(200.)..px(440.))
+                        .child(self.render_captures(cx)),
+                )
+                .child(resizable_panel().child(comparison))
+                .into_any_element()
+        };
         div()
             .id("results-panel")
             .track_focus(&self.focus)
@@ -897,6 +918,30 @@ impl Render for ResultsPanel {
                     .py_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(
+                        Button::new("expand-comparison")
+                            .ghost()
+                            .icon(if self.captures_hidden {
+                                gpui_kit::assets::IconName::Minimize2
+                            } else {
+                                gpui_kit::assets::IconName::Maximize2
+                            })
+                            .accessibility_label(if self.captures_hidden {
+                                "Restore capture list"
+                            } else {
+                                "Expand comparison"
+                            })
+                            .tooltip(if self.captures_hidden {
+                                "Restore capture list"
+                            } else {
+                                "Expand comparison"
+                            })
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.captures_hidden = !this.captures_hidden;
+                                window.focus(&this.focus, cx);
+                                cx.notify();
+                            })),
+                    )
                     .child(
                         Button::new("report-picker")
                             .label(report_name)
@@ -957,18 +1002,7 @@ impl Render for ResultsPanel {
                             .child(counts),
                     ),
             )
-            .child(
-                div().flex_1().min_h_0().child(
-                    h_resizable("result-layout")
-                        .child(
-                            resizable_panel()
-                                .size(px(270.))
-                                .size_range(px(200.)..px(440.))
-                                .child(captures),
-                        )
-                        .child(resizable_panel().child(comparison)),
-                ),
-            )
+            .child(div().flex_1().min_h_0().child(layout))
             .children(self.catalog.warnings.first().map(|warning| {
                 div()
                     .px_4()

@@ -200,6 +200,8 @@ All/Failed/Passed and search labels or errors. The preview follows the filtered
 selection and clears when nothing matches. Capture lists use 50-item pages.
 Previous/next controls traverse matching captures; double arrows jump directly
 to failures. Navigation automatically reveals the selected capture's page.
+Expand comparison hides the capture list without resetting selection, filters,
+images, or zoom. Combine it with the navigator toggle for a full-width preview.
 
 Pass, mismatch, engine/capture error, and unknown status are distinct. Unknown
 statuses never count as passes. Malformed reports warn without hiding valid
