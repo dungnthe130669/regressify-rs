@@ -62,6 +62,64 @@ function Write-JsonFixture([string]$Path, $Value) {
     [System.IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 20), [System.Text.UTF8Encoding]::new($false))
 }
 
+if (-not ('RegressifySmokeFocus' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeFocus {
+    [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+}
+'@
+}
+
+function Focus-Fixture {
+    if (-not (New-Object -ComObject WScript.Shell).AppActivate([int]$process.Id) -or
+        [RegressifySmokeFocus]::GetForegroundWindow() -ne $script:window) {
+        throw 'Cannot focus the native fixture. Keep Windows unlocked and the interactive desktop available.'
+    }
+}
+
+if (-not ('RegressifySmokeText' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeText {
+    [StructLayout(LayoutKind.Sequential)]
+    struct MouseInput { public int dx, dy; public uint data, flags, time; public UIntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct KeyInput { public ushort key, scan; public uint flags, time; public UIntPtr extra; }
+    [StructLayout(LayoutKind.Explicit)]
+    struct InputData { [FieldOffset(0)] public MouseInput mouse; [FieldOffset(0)] public KeyInput keyboard; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct Input { public uint type; public InputData data; }
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint SendInput(uint count, Input[] inputs, int size);
+    public static void Type(string text) {
+        var inputs = new Input[text.Length * 2];
+        for (var index = 0; index < text.Length; index++) {
+            inputs[index * 2] = new Input { type = 1, data = new InputData { keyboard = new KeyInput { scan = text[index], flags = 4 } } };
+            inputs[index * 2 + 1] = new Input { type = 1, data = new InputData { keyboard = new KeyInput { scan = text[index], flags = 6 } } };
+        }
+        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+}
+'@
+}
+
+function Send-FixtureText([string]$Text) {
+    Focus-Fixture
+    [RegressifySmokeText]::Type($Text)
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
+function Send-FixtureKeys([string]$Keys) {
+    Focus-Fixture
+    [System.Windows.Forms.SendKeys]::SendWait($Keys)
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
 function Write-TestImage([string]$Path, [System.Drawing.Color]$Color) {
     [System.IO.Directory]::CreateDirectory((Split-Path -Parent $Path)) | Out-Null
     $bitmap = [System.Drawing.Bitmap]::new(640, 420)
@@ -94,7 +152,11 @@ Write-JsonFixture (Join-Path $workspace 'visual_tests/smoke.tests.json') ([order
 Write-JsonFixture (Join-Path $workspace 'visual_tests/account.tests.json') ([ordered]@{
     scenarios = @([ordered]@{ label = 'Profile'; url = 'https://example.com/profile'; actions = @() })
 })
-[System.IO.File]::WriteAllText((Join-Path $workspace 'regressify.yaml'), "bypassCsp: true`npostInteractionWait: 1000`n")
+Write-JsonFixture (Join-Path $workspace 'common/_viewports.yaml') @(
+    @{ label = 'phone'; width = 390; height = 844 },
+    @{ label = 'desktop'; width = 1280; height = 720 }
+)
+[System.IO.File]::WriteAllText((Join-Path $workspace 'regressify.yaml'), "bypassCsp: true`npostInteractionWait: 1000`nviewportNames: [desktop]`n")
 if ($Capture) {
     $page = Join-Path $workspace 'fixture.html'
     [System.IO.File]::WriteAllText($page, '<!doctype html><html><head><title>QA fixture</title></head><body style="font:24px sans-serif;padding:48px;background:#f0f4f3"><h1>Checkout</h1><button id="continue">Continue</button><p>Order total: $42.00</p></body></html>')
@@ -135,31 +197,65 @@ function Find-Control([string]$Name) {
 
 function Wait-Control([string]$Name) {
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    $stable = [System.Diagnostics.Stopwatch]::StartNew()
+    $previousBounds = $null
     do {
         $element = Find-Control $Name
-        if ($null -ne $element -and -not $element.Current.IsOffscreen) { return $element }
+        if ($null -ne $element -and -not $element.Current.IsOffscreen) {
+            $bounds = $element.Current.BoundingRectangle
+            if ($bounds -ne $previousBounds) {
+                $previousBounds = $bounds
+                $stable.Restart()
+            } elseif ($stable.ElapsedMilliseconds -ge 150) { return $element }
+        } else {
+            $previousBounds = $null
+            $stable.Restart()
+        }
         if ($process.HasExited) { throw "Desktop exited with code $($process.ExitCode)." }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
     } while ($deadline.Elapsed.TotalSeconds -lt 60)
+    Capture-Window 'missing-control'
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+    $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem } |
+        ForEach-Object { Write-Output ('Available menu item: ' + $_.Current.Name) }
     throw "Native control '$Name' was not found."
 }
 
-function Invoke-Control([string]$Name) {
+function Invoke-Control([string]$Name, [switch]$Pointer) {
     $element = Wait-Control $Name
     $pattern = $null
-    if ($element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
+    if (-not $Pointer -and $element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
     } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
     } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
     } else {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, 0, 0, 0, 0, 0x0043) | Out-Null
+        Focus-Fixture
         $bounds = $element.Current.BoundingRectangle
         [RegressifySmokeNative]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) | Out-Null
         [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
         [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
     }
     [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
+function Wait-SourceText([string]$Text) {
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        $element = Wait-Control 'Configuration source'
+        $pattern = $null
+        if ($element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+            $value = ([System.Windows.Automation.ValuePattern]$pattern).Current.Value
+        } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+            $value = ([System.Windows.Automation.TextPattern]$pattern).DocumentRange.GetText(-1)
+        } else { throw 'Source editor does not expose accessible text.' }
+        if ($value.Contains($Text)) { return }
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } while ($deadline.Elapsed.TotalSeconds -lt 10)
+    throw "Source editor did not contain '$Text'."
 }
 
 function Capture-Window([string]$Name) {
@@ -189,6 +285,7 @@ function Capture-Window([string]$Name) {
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
+$cleanupSnapshot = $null
 try {
     if (-not $process.WaitForInputIdle(15000)) { throw 'Desktop did not initialize.' }
     $initialization = [System.Diagnostics.Stopwatch]::StartNew()
@@ -208,9 +305,49 @@ try {
     Invoke-Control 'Checkout'
     Wait-Control 'Document loaded' | Out-Null
     Capture-Window 'editor'
+    Invoke-Control 'Add action' -Pointer
+    Wait-Control 'goto' | Out-Null
+    Capture-Window 'action-menu'
+    Send-FixtureKeys '{ESC}'
+    Send-FixtureKeys '^+f'
+    Send-FixtureText 'viewportNames'
+    Invoke-Control 'Choose viewports' -Pointer
+    Wait-Control 'phone (390 x 844)' | Out-Null
+    Capture-Window 'viewport-choices'
+    Invoke-Control 'phone (390 x 844)'
+    Invoke-Control 'Choose viewports' -Pointer
+    Invoke-Control 'desktop (1280 x 720)'
+    Send-FixtureKeys '^+f'
+    Send-FixtureKeys '^a'
+    Send-FixtureText 'needs'
+    Invoke-Control 'Choose dependencies' -Pointer
+    Wait-Control 'Signed-in account (signed-in-account)' | Out-Null
+    Capture-Window 'dependency-choices'
+    Send-FixtureKeys '{ESC}'
+    Send-FixtureKeys '^+f'
+    Send-FixtureKeys '^a{BACKSPACE}'
     Invoke-Control 'Source'
     Wait-Control 'Configuration source' | Out-Null
+    Invoke-Control 'Configuration source' -Pointer
+    Send-FixtureKeys '^{HOME}{RIGHT}{ENTER}'
+    Send-FixtureText '"deb'
+    Wait-Control '1 suggestion' | Out-Null
+    Capture-Window 'source-completion'
+    Send-FixtureKeys '{ENTER}'
+    Wait-SourceText '"debug":'
+    Send-FixtureText 'false'
+    Wait-SourceText '"debug": false'
+    Send-FixtureKeys '{ESC},^s'
+    Wait-Control 'Saved' | Out-Null
+    $savedSuite = Get-Content (Join-Path $workspace 'visual_tests/smoke.tests.json') -Raw | ConvertFrom-Json
+    if ($savedSuite.debug -ne $false) { throw 'Native completion did not save the expected property.' }
+    if ($savedSuite.scenarios[0].viewportNames -notcontains 'phone') { throw 'Guided viewport choice was not saved.' }
+    Invoke-Control 'Larger source text'
+    Invoke-Control 'Wrap'
     Capture-Window 'source'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'source-compact'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
     Wait-Control 'Current 640 x 420' | Out-Null
     Capture-Window 'results'
@@ -254,11 +391,55 @@ try {
     Invoke-Control 'Run'
     Wait-Control 'Completed' | Out-Null
     Capture-Window 'run-completed'
-    if (-not (Test-Path (Join-Path $workspace 'common'))) { throw 'GUI init command did not create starter files.' }
-    Write-Output "Native smoke test passed. Fixture: $workspace"
+    if (-not (Test-Path (Join-Path $workspace 'common/_override.css'))) { throw 'GUI init command did not create starter files.' }
+    if (-not $KeepOpen) {
+        $cleanupPath = Join-Path $workspace 'visual_tests/smoke.tests.json'
+        $cleanupSnapshot = (Get-FileHash $cleanupPath -Algorithm SHA256).Hash
+        Invoke-Control 'Editor'
+        Invoke-Control 'Source'
+        Invoke-Control 'Configuration source' -Pointer
+        Send-FixtureKeys '^{END}'
+        Send-FixtureText 'smoke-cleanup-probe'
+        Wait-SourceText 'smoke-cleanup-probe'
+    }
 } finally {
     if (-not $KeepOpen -and -not $process.HasExited) {
         $process.CloseMainWindow() | Out-Null
-        if (-not $process.WaitForExit(10000)) { $process.Kill($true) }
+        $closing = [System.Diagnostics.Stopwatch]::StartNew()
+        $discarded = $false
+        do {
+            if ($process.HasExited) { break }
+            try {
+                if (-not $discarded) {
+                    $discard = Find-Control 'Discard'
+                    if ($null -ne $discard -and $discard.Current.IsEnabled) {
+                        $invoke = $null
+                        if ($discard.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
+                            ([System.Windows.Automation.InvokePattern]$invoke).Invoke()
+                            $discarded = $true
+                            Write-Output 'Discarded unsaved smoke-test draft.'
+                        }
+                    }
+                }
+            } catch {
+                if ($process.WaitForExit(500)) { break }
+                throw
+            }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        } while ($closing.Elapsed.TotalSeconds -lt 10)
+        if (-not $process.HasExited) {
+            Write-Warning 'The synthetic test process did not close normally; terminating it.'
+            $process.Kill($true)
+            $process.WaitForExit()
+            if ($null -ne $cleanupSnapshot) { throw 'Native draft cleanup did not close the fixture normally.' }
+        }
+        if ($null -ne $cleanupSnapshot) {
+            if (-not $discarded) { throw 'The unsaved fixture draft was not discarded through its confirmation dialog.' }
+            if ((Get-FileHash $cleanupPath -Algorithm SHA256).Hash -ne $cleanupSnapshot) {
+                throw 'Cleanup unexpectedly changed the saved fixture source.'
+            }
+            Write-Output 'Dirty fixture closed without changing its saved source.'
+        }
     }
 }
+Write-Output "Native smoke test passed. Fixture: $workspace"

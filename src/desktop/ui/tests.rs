@@ -71,6 +71,10 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(
+            window.find("source-completion-status").label(),
+            Some("1 suggestion")
+        );
         window.press("enter", cx);
     })
     .unwrap();

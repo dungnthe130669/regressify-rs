@@ -101,10 +101,16 @@ impl CompletionCatalog {
         }
         // A temporary scalar makes the cursor discoverable even before a key has its colon.
         for property in [true, false] {
-            let token = format!(
+            let mut token = format!(
                 "\"{marker}\"{}",
                 if property && !colon { ": null" } else { "" }
             );
+            if format == Format::Json
+                && !colon
+                && source[replacement.end..].trim_start().starts_with('"')
+            {
+                token.push(',');
+            }
             let mut probe = source.to_string();
             probe.replace_range(replacement.clone(), &token);
             let Some(mut tree) = parser.parse(&probe, None) else {
@@ -411,6 +417,15 @@ mod tests {
 
     #[test]
     fn unfinished_json_and_yaml_flow_objects_keep_their_scope() {
+        assert!(
+            suggestions("{\n  \"deb|\"\n  \"scenarios\": []\n}", Format::Json)
+                .iter()
+                .any(|item| item.label == "debug")
+        );
+        assert_eq!(
+            suggestions("{\n  \"debug\": fal|\n  \"scenarios\": []\n}", Format::Json)[0].text,
+            "false"
+        );
         for source in [
             "{\"scenarios\":[{\"url\":\"/\", \"del|",
             "{\"scenarios\":[{\"url\":\"/\", |}]}",

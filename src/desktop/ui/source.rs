@@ -237,6 +237,18 @@ impl Workbench {
         let cursor = self.source.read(cx).cursor_position();
         let location = format!("Ln {}, Col {}", cursor.line + 1, cursor.character + 1);
         let language = self.source.read(cx).language_name().to_uppercase();
+        let menu = self.source.read(cx).completion_menu_state();
+        let suggestions = menu.open.then(|| {
+            format!(
+                "{} {}",
+                menu.items.len(),
+                if menu.items.len() == 1 {
+                    "suggestion"
+                } else {
+                    "suggestions"
+                }
+            )
+        });
         div()
             .id("source-editor")
             .key_context("RegressifySource")
@@ -394,6 +406,16 @@ impl Workbench {
                             .child(location),
                     )
                     .child(div().flex_1())
+                    .when_some(suggestions, |bar, suggestions| {
+                        bar.child(
+                            div()
+                                .id("source-completion-status")
+                                .role(Role::Status)
+                                .aria_label(suggestions.clone())
+                                .test_support()
+                                .child(suggestions),
+                        )
+                    })
                     .when(self.diagnostic.is_some(), |bar| {
                         bar.child(
                             Button::new("source-issue")

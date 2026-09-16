@@ -293,6 +293,7 @@ toolbar Undo/Redo always use complete document history.
 | Ctrl+R | Reload with draft guard |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
 | Ctrl+F in Source or Log | Find |
+| Ctrl+Space in Source (all platforms) | Show schema suggestions |
 | F2 | Rename suite |
 | F5 | Refresh files |
 
@@ -332,12 +333,20 @@ no browser scenarios or downloads. `-SkipBuild` uses the existing debug
 binaries; `-KeepOpen` leaves the fixture open for inspection.
 
 The native workflow also exercises navigator visibility, expanded comparison,
-compact side-by-side previews, and actual-size reset. Close any existing desktop
-window before starting the smoke check; the single-instance guard still applies.
+compact side-by-side previews, actual-size reset, action menus, checked viewport
+and dependency choices, and real source-completion acceptance and saving. Input
+steps verify foreground focus and stable control bounds; literal fixture text
+uses Unicode input packets without changing the user's keyboard settings.
+Close any existing desktop window before starting the smoke check; the
+single-instance guard still applies.
 
-Windows native validation covers 1600x1000 and 1080x720 with 13 window captures.
-Full IME composition,
-screen-reader usability, and native macOS/Linux behavior still require testing
+Unless `-KeepOpen` is set, cleanup automatically discards unsaved changes in the
+smoke runner's own synthetic fixture. The test deliberately closes a dirty draft
+and verifies normal exit and an unchanged saved file. Normal application windows
+continue to show Save/Discard/Cancel for unsaved work.
+
+Windows native validation covers 1600x1000 and 1080x720 with 18 window captures.
+Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
 validation there. Signed installers, cloud accounts, collaborative editing,
 browser recording, and non-Chromium execution are outside this implementation.

@@ -89,6 +89,36 @@ were inspected; startup stderr was empty. Native macOS/Linux, full IME, and
 screen-reader end-to-end validation remain platform follow-ups. Remote CI was
 not executed during this pass.
 
+## Authoring Improvements
+
+- [x] Add local schema-aware YAML/JSON completion using GPUI's native menu and
+  background syntax parsing, including unfinished properties and containers.
+- [x] Scope property suggestions to workspace, suite, scenario, action, or
+  viewport; exclude duplicate sibling keys and support boolean/browser values.
+- [x] Support Ctrl+Space, arrow selection, Enter acceptance, and Escape dismissal
+  without inserting extra newlines or moving the caret behind the menu.
+- [x] Add source Find/Replace/Suggest controls, wrap and text-size settings,
+  correct language highlighting, cursor status, syntax underlines, and error jumps.
+- [x] Offer checked viewport/dependency choices alongside free-form lists,
+  preserving inherited values, custom entries, and draft-derived scenario IDs.
+- [x] Show scenario action sequences with targets and icons; reuse document
+  guards/history for reorder, duplicate, direct editing, and confirmed removal.
+- [x] Extend native coverage to authoring menus and completion acceptance/save;
+  verify focus and stable bounds before input without changing keyboard settings.
+- [x] Handle the test app's unsaved-changes popup by discarding only its synthetic
+  draft, verifying normal shutdown and unchanged saved source.
+
+Authoring gates: 373 library/UI tests (including 36 production UI tests), two
+standalone-worker integration tests, 56 headless desktop model tests, and 281
+default CLI tests pass. Formatting and strict library Clippy pass. Windows native
+smoke verified 18 nonblank screenshots at 1600x1000 and 1080x720, accepted and
+saved a JSON completion, selected custom viewport choices, and passed three local
+Chromium scenarios across two suites. Dirty-fixture cleanup exited normally
+without changing the saved file. Native startup stderr was empty. Completion,
+source, action-menu, and compact-editor captures were inspected. Full IME,
+screen-reader, and native macOS/Linux validation remain outstanding; remote CI
+was not run by the assistant during this pass.
+
 ## Delivery Checklist
 
 ### 1. Foundation
