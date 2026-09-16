@@ -8,6 +8,158 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn command_palette_preserves_the_unsaved_guard_when_opening_another_dialog(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        window.click("open-commands", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| window.input("new suite", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:New suite").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("guard-cancel").visible());
+        assert!(view.read(cx).session.dirty());
+        window.click("guard-cancel", cx);
+    })
+    .unwrap();
+    assert!(
+        !directory
+            .path()
+            .join("visual_tests/new-suite.tests.yaml")
+            .exists()
+    );
+}
+
+#[gpui_kit::test]
+async fn command_palette_filters_and_changes_theme_without_losing_the_draft(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::workspace::ThemePreference;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-shift-p"
+            } else {
+                "ctrl-shift-p"
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    let original = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("dark theme", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:Dark theme").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("command-list").visible());
+        assert!(window.try_find("command:Light theme").is_none());
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).preferences.theme_preference() == ThemePreference::Dark
+            && !view.read(cx).preferences_saving
+    })
+    .await;
+    cx.update(|cx| {
+        assert!(view.read(cx).session.dirty());
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn command_palette_keeps_disabled_actions_inert_and_handles_empty_search(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-commands", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("save document", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:Save document").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("enter", cx);
+        assert!(window.find("command-list").visible());
+        assert!(!view.read(cx).busy);
+        assert!(!view.read(cx).session.dirty());
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input("does not match a command", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("commands-empty").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
+        .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("command-list").is_none());
+        assert!(window.find("field-url").visible());
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn preference_write_failures_do_not_lock_the_editor_and_can_be_retried(
     cx: &mut TestAppContext,
 ) {

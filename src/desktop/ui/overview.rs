@@ -80,6 +80,17 @@ impl Workbench {
                         })),
                 )
             })
+            .child(
+                Button::new("open-commands")
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::Command)
+                    .accessibility_label("Commands")
+                    .tooltip("Commands")
+                    .disabled(self.busy)
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_commands(&OpenCommands, window, cx)
+                    })),
+            )
             .child(self.render_theme_picker())
             .child(self.file_menu())
             .child(

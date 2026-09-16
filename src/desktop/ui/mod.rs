@@ -28,6 +28,7 @@ use super::{
 };
 
 mod choices;
+mod commands;
 mod design;
 mod files;
 mod navigation;
@@ -55,7 +56,8 @@ actions!(
         FocusNavigator,
         FocusSettings,
         ToggleNavigator,
-        CompleteSource
+        CompleteSource,
+        OpenCommands
     ]
 );
 
@@ -1947,6 +1949,7 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(Self::open_commands))
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
@@ -2145,6 +2148,11 @@ fn bind_keys(cx: &mut App) {
         "ctrl"
     };
     cx.bind_keys([
+        KeyBinding::new(
+            &format!("{modifier}-shift-p"),
+            OpenCommands,
+            Some("Regressify"),
+        ),
         KeyBinding::new("ctrl-space", CompleteSource, Some("RegressifySource")),
         KeyBinding::new(&format!("{modifier}-p"), FocusNavigator, Some("Regressify")),
         KeyBinding::new(
