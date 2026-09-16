@@ -952,7 +952,9 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
     let pair = serde_json::json!({"label": "Home", "reference": "../bitmaps_reference/home.png", "test": "../bitmaps_test/run-1/home.png", "diffImage": "../bitmaps_test/run-1/home_diff.png"});
     let report = serde_json::json!({"id": "shop", "tests": [
         {"status": "pass", "pair": pair},
-        {"status": "fail", "pair": {"label": "Checkout", "engineErrorMsg": "Missing selector #pay"}}
+        {"status": "fail", "pair": {"label": "Checkout", "engineErrorMsg": "Missing selector #pay"}},
+        {"status": "pass", "pair": {"label": "Billing"}},
+        {"status": "fail", "pair": {"label": "Receipt", "engineErrorMsg": "Unexpected receipt"}}
     ]});
     std::fs::write(
         run.join("report.json"),
@@ -976,16 +978,109 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         );
         window.click("zoom-in", cx);
         assert_eq!(window.find("zoom-value").label(), Some("125%"));
+        window.click("actual-size", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("100%"));
         window.within("image-modes").click(3_usize, cx);
         assert!(window.find(("image-details", 0_usize)).visible());
         assert!(window.find(("image-details", 1_usize)).visible());
         window.within("result-filter").click(1_usize, cx);
         assert!(window.try_find(("capture", 0_usize)).is_none());
-        window.click(("capture", 1_usize), cx);
+        assert_eq!(
+            window
+                .try_find("capture-error")
+                .and_then(|error| error.label().map(str::to_string)),
+            Some("Missing selector #pay".into()),
+            "Filtering must not leave a passing capture in the preview"
+        );
         assert_eq!(
             window.find("capture-error").label(),
             Some("Missing selector #pay")
         );
+        assert_eq!(window.find("capture-position").label(), Some("1 of 2"));
+        window.click("previous-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Checkout"));
+        window.click("next-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
+        assert_eq!(window.find("capture-position").label(), Some("2 of 2"));
+        window.click("next-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
+        window.within("result-filter").click(0_usize, cx);
+        window.click("previous-failed-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Checkout"));
+        window.click("next-failed-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
+        window.click("capture-search", cx);
+        window.input("no matching capture", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("capture-empty").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("capture-position").label(), Some("0 of 0"));
+        assert!(window.try_find("capture-error").is_none());
+        assert!(window.try_find(("image-details", 1_usize)).is_none());
+        window.click("next-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Comparison"));
+        window.click("capture-search", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Home"))
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn result_navigation_keeps_the_selected_capture_page_visible(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let run = directory.path().join(".regressify/shop/bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    let captures = (0..52)
+        .map(|index| {
+            serde_json::json!({
+                "status": if index == 0 || index == 51 { "fail" } else { "pass" },
+                "pair": { "label": format!("Capture {index}") }
+            })
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&serde_json::json!({"id": "shop", "tests": captures})).unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Capture 0"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("next-failed-capture", cx);
+        assert_eq!(window.find("capture-position").label(), Some("52 of 52"));
+        assert!(window.try_find(("capture", 51_usize)).is_some());
+        assert!(window.try_find(("capture", 0_usize)).is_none());
+        window.click("previous-capture", cx);
+        window.click("previous-capture", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 49"));
+        assert!(window.try_find(("capture", 49_usize)).is_some());
+        assert!(window.try_find(("capture", 51_usize)).is_none());
+        window.click("next-failed-capture", cx);
+        window.within("result-filter").click(1_usize, cx);
+        assert_eq!(window.find("capture-position").label(), Some("2 of 2"));
+        assert!(window.try_find(("capture", 0_usize)).is_some());
+        assert!(window.try_find(("capture", 51_usize)).is_some());
     })
     .unwrap();
 }

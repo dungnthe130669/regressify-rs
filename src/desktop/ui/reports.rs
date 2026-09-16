@@ -64,10 +64,12 @@ impl ResultsPanel {
 
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter captures"));
-        let subscription = cx.subscribe(&search, |this: &mut Self, _, _: &InputEvent, cx| {
-            this.page = 0;
-            cx.notify();
-        });
+        let subscription =
+            cx.subscribe_in(&search, window, |this: &mut Self, _, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.reconcile_capture(window, cx);
+                }
+            });
         Self {
             root: None,
             catalog: Catalog::default(),
@@ -138,7 +140,12 @@ impl ResultsPanel {
                                 .and_then(|(_, index)| *index)
                                 .filter(|index| *index < report.report.tests.len())
                                 .unwrap_or(0);
-                            this.select_capture(capture, window, cx);
+                            let filtered = this.filtered(cx);
+                            if filtered.contains(&capture) {
+                                this.select_capture(capture, window, cx);
+                            } else {
+                                this.reconcile_capture(window, cx);
+                            }
                         }
                     }
                     Err(error) => {
@@ -157,6 +164,33 @@ impl ResultsPanel {
         self.catalog.reports.get(self.report)
     }
 
+    /// Keep selection and pagination inside the current filter without reloading unchanged images.
+    fn reconcile_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loading {
+            return;
+        }
+        let filtered = self.filtered(cx);
+        let selection = self
+            .capture
+            .filter(|capture| filtered.contains(capture))
+            .or_else(|| filtered.first().copied());
+        self.page = selection
+            .and_then(|capture| filtered.iter().position(|index| *index == capture))
+            .unwrap_or(0)
+            / PAGE_SIZE;
+        if selection != self.capture {
+            if let Some(capture) = selection {
+                self.select_capture(capture, window, cx);
+            } else {
+                self.generation += 1;
+                self.capture = None;
+                self.previews.clear();
+                self.image_loading = false;
+            }
+        }
+        cx.notify();
+    }
+
     fn select_capture(&mut self, capture: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading {
             return;
@@ -172,6 +206,12 @@ impl ResultsPanel {
         let Some(root) = self.root.clone() else {
             return;
         };
+        self.page = self
+            .filtered(cx)
+            .iter()
+            .position(|index| *index == capture)
+            .unwrap_or(0)
+            / PAGE_SIZE;
         self.capture = Some(capture);
         self.previews.clear();
         self.image_loading = true;
@@ -216,7 +256,7 @@ impl ResultsPanel {
     }
 
     fn filtered(&self, cx: &App) -> Vec<usize> {
-        let query = self.search.read(cx).value().to_lowercase();
+        let query = self.search.read(cx).value().trim().to_lowercase();
         self.selected_report()
             .map(|report| {
                 report
@@ -245,6 +285,33 @@ impl ResultsPanel {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    fn adjacent_capture(&self, forward: bool, failed_only: bool, cx: &App) -> Option<usize> {
+        if self.loading {
+            return None;
+        }
+        let report = self.selected_report()?;
+        let mut candidates = self.filtered(cx).into_iter().filter(|index| {
+            !failed_only || report.report.tests[*index].outcome() != Outcome::Passed
+        });
+        if forward {
+            candidates.find(|index| self.capture.is_none_or(|current| *index > current))
+        } else {
+            candidates.rfind(|index| self.capture.is_none_or(|current| *index < current))
+        }
+    }
+
+    fn move_capture(
+        &mut self,
+        forward: bool,
+        failed_only: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(capture) = self.adjacent_capture(forward, failed_only, cx) {
+            self.select_capture(capture, window, cx);
+        }
     }
 
     fn open_external(
@@ -309,15 +376,20 @@ impl ResultsPanel {
             .gap_1()
             .p_3()
             .size_full()
-            .child(Input::new(&self.search).id("capture-search").small())
+            .child(
+                Input::new(&self.search)
+                    .id("capture-search")
+                    .prefix(IconName::Search)
+                    .cleanable(true)
+                    .small(),
+            )
             .child(
                 TabBar::new("result-filter")
                     .segmented()
                     .selected_index(self.filter)
-                    .on_click(cx.listener(|this, index, _, cx| {
+                    .on_click(cx.listener(|this, index, window, cx| {
                         this.filter = *index;
-                        this.page = 0;
-                        cx.notify();
+                        this.reconcile_capture(window, cx);
                     }))
                     .child(Tab::new().label("All"))
                     .child(Tab::new().label("Failed"))
@@ -331,6 +403,19 @@ impl ResultsPanel {
             .min_h_0()
             .overflow_y_scroll()
             .gap_1();
+        if filtered.is_empty() {
+            rows = rows.child(
+                div()
+                    .id("capture-empty")
+                    .role(Role::Status)
+                    .aria_label("No matching captures")
+                    .test_support()
+                    .py_6()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No matching captures"),
+            );
+        }
         if let Some(report) = self.selected_report() {
             for index in filtered
                 .into_iter()
@@ -348,9 +433,48 @@ impl ResultsPanel {
                     Button::new(("capture", index))
                         .ghost()
                         .w_full()
+                        .h(px(56.))
                         .justify_start()
                         .selected(self.capture == Some(index))
-                        .label(format!("{}  {}", outcome.label(), test.pair.label))
+                        .accessibility_label(format!("{} {}", outcome.label(), test.pair.label))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .w_full()
+                                .min_w_0()
+                                .child(
+                                    Icon::new(match outcome {
+                                        Outcome::Passed => gpui_kit::assets::IconName::CircleCheck,
+                                        Outcome::Mismatch => gpui_kit::assets::IconName::Split,
+                                        _ => gpui_kit::assets::IconName::CircleAlert,
+                                    })
+                                    .small()
+                                    .text_color(color),
+                                )
+                                .child(
+                                    div()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_1()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .text_left()
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .text_color(cx.theme().foreground)
+                                                .child(test.pair.label.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(color)
+                                                .child(outcome.label()),
+                                        ),
+                                ),
+                        )
                         .tooltip(
                             test.pair
                                 .engine_error_msg
@@ -508,6 +632,12 @@ impl ResultsPanel {
         let title = test
             .map(|test| test.pair.label.clone())
             .unwrap_or_else(|| "Comparison".into());
+        let filtered = self.filtered(cx);
+        let position = self
+            .capture
+            .and_then(|capture| filtered.iter().position(|index| *index == capture))
+            .map_or(0, |index| index + 1);
+        let position = format!("{position} of {}", filtered.len());
         let previews = if self.image_mode == 3 {
             div()
                 .flex()
@@ -540,8 +670,22 @@ impl ResultsPanel {
                 div()
                     .px_4()
                     .py_2()
+                    .flex()
+                    .items_center()
+                    .gap_3()
                     .font_weight(FontWeight::MEDIUM)
-                    .child(format!("{title}   {mismatch}")),
+                    .child(
+                        div()
+                            .id("capture-heading")
+                            .role(Role::Heading)
+                            .aria_label(title.clone())
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(div().text_xs().flex_shrink_0().child(mismatch)),
             )
             .child(
                 TabBar::new("image-modes")
@@ -560,13 +704,77 @@ impl ResultsPanel {
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .gap_2()
                     .px_3()
                     .py_2()
                     .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .child(
+                                Button::new("previous-failed-capture")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::ChevronsLeft)
+                                    .tooltip("Previous failed capture")
+                                    .disabled(self.adjacent_capture(false, true, cx).is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_capture(false, true, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("previous-capture")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ChevronLeft)
+                                    .tooltip("Previous capture")
+                                    .disabled(self.adjacent_capture(false, false, cx).is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_capture(false, false, window, cx)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("capture-position")
+                                    .role(Role::Status)
+                                    .aria_label(position.clone())
+                                    .test_support()
+                                    .w(px(76.))
+                                    .text_center()
+                                    .text_xs()
+                                    .child(position),
+                            )
+                            .child(
+                                Button::new("next-capture")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::ChevronRight)
+                                    .tooltip("Next capture")
+                                    .disabled(self.adjacent_capture(true, false, cx).is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_capture(true, false, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("next-failed-capture")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::ChevronsRight)
+                                    .tooltip("Next failed capture")
+                                    .disabled(self.adjacent_capture(true, true, cx).is_none())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.move_capture(true, true, window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(div().flex_1())
+                    .child(
                         Checkbox::new("fit-image")
                             .label("Fit width")
                             .checked(self.fit)
+                            .disabled(self.capture.is_none())
                             .on_change(cx.listener(|this, value, _, cx| {
                                 this.fit = *value;
                                 cx.notify();
@@ -577,6 +785,7 @@ impl ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::ZoomOut)
                             .tooltip("Zoom out")
+                            .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.fit = false;
                                 this.zoom = (this.zoom / 1.25).max(0.1);
@@ -598,9 +807,22 @@ impl ResultsPanel {
                             .ghost()
                             .icon(gpui_kit::assets::IconName::ZoomIn)
                             .tooltip("Zoom in")
+                            .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.fit = false;
                                 this.zoom = (this.zoom * 1.25).min(4.0);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("actual-size")
+                            .ghost()
+                            .icon(gpui_kit::assets::IconName::Scan)
+                            .tooltip("Actual size (100%)")
+                            .disabled(self.capture.is_none())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.fit = false;
+                                this.zoom = 1.0;
                                 cx.notify();
                             })),
                     ),
@@ -657,10 +879,12 @@ impl Render for ResultsPanel {
             .on_action(cx.listener(|this, action: &SelectReport, window, cx| {
                 if action.index < this.catalog.reports.len() {
                     this.report = action.index;
+                    this.generation += 1;
                     this.capture = None;
+                    this.previews.clear();
+                    this.image_loading = false;
                     this.page = 0;
-                    this.select_capture(0, window, cx);
-                    cx.notify();
+                    this.reconcile_capture(window, cx);
                 }
             }))
             .child(

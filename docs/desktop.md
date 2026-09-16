@@ -188,14 +188,17 @@ tabs; live running/finished counts remain visible in the workspace navigator.
 Results refreshes on opening and after commands finish using current output
 options. It loads each suite's `bitmaps_test/<run>/report.json`, newest first,
 retaining a selected report/capture on refresh when it still exists. Filter
-All/Failed/Passed and search labels or errors. Capture lists use 50-item pages.
+All/Failed/Passed and search labels or errors. The preview follows the filtered
+selection and clears when nothing matches. Capture lists use 50-item pages.
+Previous/next controls traverse matching captures; double arrows jump directly
+to failures. Navigation automatically reveals the selected capture's page.
 
 Pass, mismatch, engine/capture error, and unknown status are distinct. Unknown
 statuses never count as passes. Malformed reports warn without hiding valid
 reports. Discovery loads at most 1,000 reports, limited to 16 MiB each.
 
 Reference, Current, Diff, and Side by side display background-loaded PNGs.
-Fit width, zoom, and scrollbars support tall pages. Image dimensions are bounded
+Fit width, zoom, actual-size reset (100%), and scrollbars support tall pages. Image dimensions are bounded
 with the CLI's PNG helper before decoding. Missing images are recoverable errors.
 Paths resolve relative to `html_report` and must remain inside the output root.
 
