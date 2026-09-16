@@ -6,7 +6,7 @@ impl Workbench {
             .session
             .workspace
             .as_ref()
-            .map(|workspace| workspace.root.display().to_string())
+            .map(|workspace| display_path(&workspace.root))
             .unwrap_or_else(|| "No workspace open".into());
         let counts = self.runs.read(cx).progress().counts(None);
         div()
@@ -52,7 +52,16 @@ impl Workbench {
                             .text_color(cx.theme().muted_foreground)
                             .child("ACTIVE WORKSPACE"),
                     )
-                    .child(div().truncate().text_sm().child(root)),
+                    .child(
+                        div()
+                            .id("workspace-path")
+                            .role(Role::Status)
+                            .aria_label(root.clone())
+                            .test_support()
+                            .truncate()
+                            .text_sm()
+                            .child(root),
+                    ),
             )
             .when(self.runs.read(cx).running(), |header| {
                 header.child(

@@ -57,6 +57,11 @@ selections and stub Cargo to check arguments without compiling or publishing.
 
 ## Workspace and Files
 
+Displayed filesystem paths use forward slashes and omit Windows extended-length
+prefixes: `\\?\D:\project` appears as `D:/project`, while a network share remains
+`//server/share`. This is display formatting only; filesystem access, safety
+checks, and saved paths keep their original semantics.
+
 The navigator searches suite paths and scenario labels, IDs, and URLs across the
 workspace. Matching scenarios open directly in Fields, retaining the destination
 through a Save/Discard/Cancel prompt. Expand or collapse suite outlines without

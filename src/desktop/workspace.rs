@@ -14,6 +14,19 @@ use walkdir::WalkDir;
 use super::document::{Document, DocumentKind, Format, MAX_DOCUMENT_BYTES};
 use crate::helpers::{is_windows_reserved_path_component, write_file_atomically};
 
+/// Format paths for people without changing filesystem identity or resolving relative paths.
+pub fn display_path(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    if let Some(network) = text
+        .strip_prefix("//?/UNC/")
+        .or_else(|| text.strip_prefix("//?/unc/"))
+    {
+        format!("//{network}")
+    } else {
+        text.strip_prefix("//?/").unwrap_or(&text).to_string()
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Workspace {
     pub root: PathBuf,
@@ -51,7 +64,7 @@ pub struct Entry {
 
 impl Entry {
     pub fn label(&self) -> String {
-        self.path.to_string_lossy().replace('\\', "/")
+        display_path(&self.path)
     }
     pub fn suite_name(&self) -> Option<String> {
         let filename = self.path.file_name()?.to_str()?.to_ascii_lowercase();
@@ -179,7 +192,7 @@ impl Workspace {
     pub fn open(root: &Path) -> Result<Self> {
         let root = root
             .canonicalize()
-            .with_context(|| format!("Cannot open workspace '{}'", root.display()))?;
+            .with_context(|| format!("Cannot open workspace '{}'", display_path(root)))?;
         ensure!(root.is_dir(), "Workspace must be a directory");
         Ok(Self { root })
     }
@@ -195,7 +208,7 @@ impl Workspace {
             let Component::Normal(name) = component else {
                 return Err(anyhow!(
                     "Path must stay inside the workspace: '{}'",
-                    relative.display()
+                    display_path(relative)
                 ));
             };
             validate_component(
@@ -211,7 +224,7 @@ impl Workspace {
                     ensure!(
                         destination.starts_with(&self.root),
                         "Path escapes the workspace: '{}'",
-                        relative.display()
+                        display_path(relative)
                     );
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -287,7 +300,7 @@ impl Workspace {
         ensure!(
             resolved.is_file(),
             "Viewport file '{}' does not exist",
-            path.display()
+            display_path(path)
         );
         let document = self
             .open_document(Entry {
@@ -363,8 +376,8 @@ impl Workspace {
         ensure!(
             actual.path.canonicalize()? == self.resolve(&entry.path)?,
             "The CLI runs '{}', not the selected '{}'. Rename or remove the shadowing suite before running this file.",
-            actual.path.display(),
-            entry.path.display()
+            display_path(&actual.path),
+            display_path(&entry.path)
         );
         Ok(name)
     }
@@ -385,10 +398,10 @@ impl Workspace {
         ensure!(
             canonical.is_file() && canonical.starts_with(&base),
             "Select a file inside {}",
-            base.display()
+            display_path(&base)
         );
         let relative = canonical.strip_prefix(base)?;
-        Ok(relative.to_string_lossy().replace('\\', "/"))
+        Ok(display_path(relative))
     }
 
     pub fn check_unchanged(&self, open: &OpenDocument) -> Result<PathBuf> {
@@ -436,7 +449,7 @@ impl Workspace {
         ensure!(
             !path.exists(),
             "A file already exists at '{}'",
-            relative.display()
+            display_path(relative)
         );
         let parent = path
             .parent()
@@ -446,9 +459,13 @@ impl Workspace {
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         temporary.write_all(source.as_bytes())?;
         temporary.as_file().sync_all()?;
-        temporary
-            .persist_noclobber(&path)
-            .map_err(|error| anyhow!("Cannot create '{}': {}", relative.display(), error.error))?;
+        temporary.persist_noclobber(&path).map_err(|error| {
+            anyhow!(
+                "Cannot create '{}': {}",
+                display_path(relative),
+                error.error
+            )
+        })?;
         Ok(OpenDocument {
             entry: Entry {
                 path: relative.into(),
@@ -562,7 +579,8 @@ pub fn suite_path(name: &str) -> Result<PathBuf> {
 }
 
 fn read_document(path: &Path) -> Result<String> {
-    let file = fs::File::open(path).with_context(|| format!("Cannot read '{}'", path.display()))?;
+    let file =
+        fs::File::open(path).with_context(|| format!("Cannot read '{}'", display_path(path)))?;
     let mut source = String::new();
     file.take(MAX_DOCUMENT_BYTES as u64 + 1)
         .read_to_string(&mut source)?;
@@ -638,6 +656,30 @@ mod tests {
     use super::super::document::Edit;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn displayed_paths_remove_extended_prefixes_without_losing_network_roots() {
+        for (source, expected) in [
+            (r"\\?\D:\git\QA workspace", "D:/git/QA workspace"),
+            (r"D:\git\QA workspace", "D:/git/QA workspace"),
+            (
+                r"\\?\UNC\server\share\tests.yaml",
+                "//server/share/tests.yaml",
+            ),
+            (r"\\server\share\tests.yaml", "//server/share/tests.yaml"),
+            ("//?/D:/git/tests", "D:/git/tests"),
+            ("//?/UNC/server/share", "//server/share"),
+            (
+                r"visual_tests\checkout.tests.yaml",
+                "visual_tests/checkout.tests.yaml",
+            ),
+            ("/home/qa/tests", "/home/qa/tests"),
+        ] {
+            let path = PathBuf::from(source);
+            assert_eq!(display_path(&path), expected);
+            assert_eq!(path, PathBuf::from(source));
+        }
+    }
 
     #[test]
     fn viewport_choices_validate_files_and_respect_workspace_boundaries() {

@@ -206,9 +206,10 @@ impl Catalog {
         for (modified, path) in paths.into_iter().take(MAX_REPORTS) {
             match read_report(&root, &path, modified) {
                 Ok(report) => catalog.reports.push(report),
-                Err(error) => catalog
-                    .warnings
-                    .push(format!("{}: {error:#}", path.display())),
+                Err(error) => catalog.warnings.push(format!(
+                    "{}: {error:#}",
+                    super::workspace::display_path(&path)
+                )),
             }
         }
         Ok(catalog)

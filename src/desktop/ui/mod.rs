@@ -24,7 +24,7 @@ use super::{
     document::{ACTIONS, Document, DocumentKind},
     schema::{self, Field, FieldKind},
     session::{Selection, Session},
-    workspace::{Entry, OpenDocument, Preferences},
+    workspace::{Entry, OpenDocument, Preferences, display_path},
 };
 
 mod choices;

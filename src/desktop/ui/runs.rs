@@ -629,7 +629,7 @@ impl Render for RunPanel {
                                 "{} will modify {}",
                                 self.command.label(),
                                 self.output_root()
-                                    .map(|path| path.display().to_string())
+                                    .map(|path| display_path(&path))
                                     .unwrap_or_default()
                             )))
                         .child(Button::new("run-confirm-cancel").label("Cancel").on_click(

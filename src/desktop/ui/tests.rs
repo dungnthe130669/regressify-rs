@@ -8,6 +8,25 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let root = &view.read(cx).session.workspace.as_ref().unwrap().root;
+        assert_eq!(root, &directory.path().canonicalize().unwrap());
+        let expected = crate::desktop::workspace::display_path(root);
+        assert_eq!(
+            window.find("workspace-path").label(),
+            Some(expected.as_str())
+        );
+        assert!(!expected.contains('\\'));
+        assert!(!expected.starts_with("//?/"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn source_editor_registers_schema_completion(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
