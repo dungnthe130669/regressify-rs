@@ -1,16 +1,22 @@
 //! Run state is independent of document fields so log updates cannot disturb drafts.
 
-use std::time::Duration;
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 use super::*;
 use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, RunRequest};
 use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
+
+mod activity;
 
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
     Requested,
     Finished,
     SelectionChanged,
+    ProgressChanged,
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -25,7 +31,7 @@ pub(super) struct RunPanel {
     bindings: Vec<Binding>,
     errors: BTreeMap<String, String>,
     subscriptions: Vec<Subscription>,
-    manager: RunManager,
+    pub(super) manager: RunManager,
     log: Entity<EditorState>,
     focus: FocusHandle,
     status: String,
@@ -36,6 +42,9 @@ pub(super) struct RunPanel {
     suites: Vec<SuiteSummary>,
     selection: SuiteSelection,
     catalog_error: Option<String>,
+    collapsed: BTreeSet<String>,
+    failed_only: bool,
+    started: Option<Instant>,
 }
 
 impl EventEmitter<RunEvent> for RunPanel {}
@@ -60,6 +69,9 @@ impl RunPanel {
             suites: Vec::new(),
             selection: SuiteSelection::default(),
             catalog_error: None,
+            collapsed: BTreeSet::new(),
+            failed_only: false,
+            started: None,
         };
         panel.rebuild(window, cx);
         panel
@@ -67,6 +79,9 @@ impl RunPanel {
 
     pub(super) fn running(&self) -> bool {
         self.manager.running()
+    }
+    pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
+        &self.manager.progress
     }
     pub(super) fn cancel(&mut self, cx: &mut Context<Self>) {
         self.manager.cancel();
@@ -128,6 +143,9 @@ impl RunPanel {
         self.suites.clear();
         self.catalog_error = None;
         self.log_text.clear();
+        self.collapsed.clear();
+        self.failed_only = false;
+        self.started = None;
         self.log
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.status = "No command running".into();
@@ -216,6 +234,7 @@ impl RunPanel {
             return;
         }
         self.command = command;
+        self.tab = if command.supports_suites() { 0 } else { 2 };
         self.confirmation = false;
         self.rebuild(window, cx);
         cx.notify();
@@ -324,7 +343,9 @@ impl RunPanel {
         match request.and_then(|request| self.manager.start(request)) {
             Ok(()) => {
                 self.confirmation = false;
-                self.tab = 1;
+                self.tab = 0;
+                self.started = Some(Instant::now());
+                self.collapsed.clear();
                 self.status = format!("Running {}", self.command.label());
                 self.log_text.clear();
                 self.log
@@ -337,6 +358,7 @@ impl RunPanel {
                         let running = view
                             .update_in(cx, |this, window, cx| {
                                 let finished = this.manager.poll();
+                                cx.emit(RunEvent::ProgressChanged);
                                 let text = this
                                     .manager
                                     .logs
@@ -357,10 +379,7 @@ impl RunPanel {
                                 }
                                 if finished {
                                     this.status = match &this.manager.outcome {
-                                        Some(RunOutcome::Completed) => {
-                                            "Command completed; visual outcomes are in Results"
-                                                .into()
-                                        }
+                                        Some(RunOutcome::Completed) => "Completed".into(),
                                         Some(RunOutcome::Cancelled) => "Cancelled".into(),
                                         Some(RunOutcome::Failed(error)) => error.clone(),
                                         None => "Command ended without a result".into(),
@@ -386,9 +405,6 @@ impl RunPanel {
     fn render_options(&self, cx: &mut Context<Self>) -> AnyElement {
         let disabled = self.running() || self.disabled;
         let mut fields = div().flex().flex_col().gap_4().p_5().max_w(px(820.));
-        if self.command.supports_suites() {
-            fields = fields.child(self.render_selection(cx));
-        }
         for binding in &self.bindings {
             let field = &binding.field;
             let id = SharedString::from(format!("run-field-{}", field.key));
@@ -529,13 +545,20 @@ impl Render for RunPanel {
         } else {
             "Workspace command".into()
         };
-        let content = if self.tab == 0 {
-            self.render_options(cx)
-        } else {
-            CodeEditor::new(&self.log)
+        let content = match self.tab {
+            0 => self.render_activity(cx),
+            1 => div()
+                .id("run-suite-list")
+                .size_full()
+                .overflow_y_scroll()
+                .p_5()
+                .child(self.render_selection(cx))
+                .into_any_element(),
+            2 => self.render_options(cx),
+            _ => CodeEditor::new(&self.log)
                 .size_full()
                 .readonly(true)
-                .into_any_element()
+                .into_any_element(),
         };
         div()
             .id("run-panel")
@@ -628,6 +651,8 @@ impl Render for RunPanel {
                         this.tab = *index;
                         cx.notify();
                     }))
+                    .child(Tab::new().label("Activity"))
+                    .child(Tab::new().label("Suites"))
                     .child(Tab::new().label("Options"))
                     .child(Tab::new().label("Log")),
             )

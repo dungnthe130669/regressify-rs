@@ -28,7 +28,7 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
 
 - [x] Bundle the engine in the desktop executable; remove the CLI picker and
   external executable dependency. Verify standalone init and repeated runs.
-- [ ] Emit structured live suite/scenario/viewport progress, including queued,
+- [x] Emit structured live suite/scenario/viewport progress, including queued,
   running, capture, comparison, failure, and cancellation states.
 - [x] Provide checkbox-based multi-suite selection with select-all/clear and
   an explicit run scope; never silently run all suites for an empty selection.

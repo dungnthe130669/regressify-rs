@@ -1,0 +1,471 @@
+use super::*;
+use crate::progress::{Counts, Status};
+
+pub(crate) fn status_color(status: Status, cx: &App) -> Hsla {
+    match status {
+        Status::Running | Status::Comparing => cx.theme().primary,
+        Status::Passed | Status::Captured => cx.theme().success,
+        Status::Failed => cx.theme().danger,
+        Status::Cancelled => cx.theme().warning,
+        Status::Queued => cx.theme().muted_foreground,
+    }
+}
+
+impl RunPanel {
+    pub(super) fn render_activity(&self, cx: &mut Context<Self>) -> AnyElement {
+        let progress = &self.manager.progress;
+        let counts = progress.counts(None);
+        let has_run = self.manager.request.is_some() || !progress.scenarios.is_empty();
+        let phase = if has_run {
+            if progress.phase.is_empty() {
+                "Starting engine"
+            } else {
+                &progress.phase
+            }
+        } else {
+            "Ready"
+        };
+        let elapsed = if self.running() {
+            self.started
+                .map(|started| started.elapsed().as_millis() as u64)
+                .unwrap_or(0)
+        } else {
+            progress.elapsed_ms
+        };
+        let selected_scenarios: usize = self
+            .suites
+            .iter()
+            .filter(|suite| self.selection.contains(&suite.name))
+            .map(|suite| suite.scenarios.len())
+            .sum();
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_5()
+            .p_5()
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_xl()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child("Execution"),
+                            )
+                            .child(
+                                div()
+                                    .id("live-phase")
+                                    .role(Role::Status)
+                                    .aria_label(phase.to_string())
+                                    .test_support()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(phase.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(format!(
+                                "{:02}:{:02}",
+                                elapsed / 60_000,
+                                elapsed / 1000 % 60
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .border_y_1()
+                    .border_color(cx.theme().border)
+                    .py_4()
+                    .gap_5()
+                    .child(self.metric(
+                        "total",
+                        "Scenarios / viewports",
+                        if has_run {
+                            counts.total
+                        } else {
+                            selected_scenarios
+                        },
+                        cx.theme().foreground,
+                    ))
+                    .child(self.metric("active", "Running", counts.running, cx.theme().primary))
+                    .child(self.metric("passed", "Passed", counts.passed, cx.theme().success))
+                    .child(self.metric("failed", "Failed", counts.failed, cx.theme().danger)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("{} / {} finished", counts.complete(), counts.total))
+                            .child(format!(
+                                "{} queued  |  {} captured  |  {} cancelled",
+                                counts.queued, counts.captured, counts.cancelled
+                            )),
+                    )
+                    .child(
+                        div()
+                            .h(px(5.))
+                            .w_full()
+                            .bg(cx.theme().muted)
+                            .rounded_sm()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(counts.fraction()))
+                                    .bg(if counts.failed > 0 {
+                                        cx.theme().danger
+                                    } else {
+                                        cx.theme().primary
+                                    })
+                                    .rounded_sm(),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
+                        "Suite activity"
+                    } else {
+                        "Selected suites"
+                    }))
+                    .child(
+                        Checkbox::new("activity-failed-only")
+                            .label("Failures only")
+                            .checked(self.failed_only)
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.failed_only = *checked;
+                                cx.notify();
+                            })),
+                    ),
+            );
+        if let Some(error) = &progress.error {
+            content = content.child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .bg(cx.theme().danger.opacity(0.08))
+                    .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
+        }
+        if has_run {
+            for suite in progress.suites.values() {
+                let counts = progress.counts(Some(&suite.id));
+                if self.failed_only && counts.failed == 0 {
+                    continue;
+                }
+                let expanded = !self.collapsed.contains(&suite.id);
+                let state = suite_status(counts, suite.finished || progress.finished);
+                content = content.child(self.suite_header(
+                    &suite.id,
+                    &suite.name,
+                    counts,
+                    state,
+                    expanded,
+                    cx,
+                ));
+                if expanded {
+                    for scenario in progress
+                        .scenarios
+                        .values()
+                        .filter(|scenario| scenario.job.suite_id == suite.id)
+                    {
+                        if self.failed_only && scenario.status != Status::Failed {
+                            continue;
+                        }
+                        let duration = scenario.started_ms.map(|start| {
+                            scenario
+                                .finished_ms
+                                .unwrap_or(elapsed)
+                                .saturating_sub(start)
+                        });
+                        let status = scenario.status;
+                        content = content.child(
+                            div()
+                                .id(("live-row", scenario.job.id))
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .pb_3()
+                                .pl_4()
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(
+                                            div()
+                                                .size_2()
+                                                .rounded_full()
+                                                .bg(status_color(status, cx)),
+                                        )
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .child(scenario.job.label.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(100.))
+                                                .text_xs()
+                                                .text_color(cx.theme().muted_foreground)
+                                                .truncate()
+                                                .child(scenario.job.viewport.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .w(px(64.))
+                                                .text_right()
+                                                .font_family(cx.theme().mono_font_family.clone())
+                                                .text_xs()
+                                                .child(
+                                                    duration
+                                                        .map(|duration| {
+                                                            format!(
+                                                                "{:.1}s",
+                                                                duration as f64 / 1000.0
+                                                            )
+                                                        })
+                                                        .unwrap_or_else(|| "-".into()),
+                                                ),
+                                        )
+                                        .child(
+                                            div()
+                                                .id(("live-status", scenario.job.id))
+                                                .role(Role::Status)
+                                                .aria_label(status.label())
+                                                .test_support()
+                                                .w(px(90.))
+                                                .text_right()
+                                                .text_xs()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(status_color(status, cx))
+                                                .child(status.label()),
+                                        ),
+                                )
+                                .children(scenario.message.as_ref().map(|message| {
+                                    div()
+                                        .pl_5()
+                                        .text_xs()
+                                        .text_color(cx.theme().danger)
+                                        .child(message.clone())
+                                })),
+                        );
+                    }
+                }
+            }
+        } else {
+            for suite in self
+                .suites
+                .iter()
+                .filter(|suite| self.selection.contains(&suite.name))
+            {
+                content = content.child(self.suite_header(
+                    &suite.output_id,
+                    &suite.name,
+                    Counts {
+                        total: suite.scenarios.len(),
+                        queued: suite.scenarios.len(),
+                        ..Default::default()
+                    },
+                    Status::Queued,
+                    !self.collapsed.contains(&suite.output_id),
+                    cx,
+                ));
+                if !self.collapsed.contains(&suite.output_id) {
+                    for scenario in &suite.scenarios {
+                        content = content.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_3()
+                                .pl_5()
+                                .pb_2()
+                                .child(
+                                    Icon::new(gpui_kit::assets::IconName::Circle)
+                                        .small()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(scenario.label.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child("Ready"),
+                                ),
+                        );
+                    }
+                }
+            }
+            if self.selection.is_empty() {
+                content = content.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap_3()
+                        .py_10()
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::ListChecks)
+                                .size_8()
+                                .text_color(cx.theme().muted_foreground),
+                        )
+                        .child(
+                            div()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No suites selected"),
+                        )
+                        .child(
+                            Button::new("activity-select-suites")
+                                .label("Select suites")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tab = 1;
+                                    cx.notify();
+                                })),
+                        ),
+                );
+            }
+        }
+        div()
+            .id("activity-scroll")
+            .size_full()
+            .overflow_y_scroll()
+            .child(content)
+            .into_any_element()
+    }
+
+    fn metric(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        value: usize,
+        color: Hsla,
+    ) -> AnyElement {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .min_w(px(100.))
+            .flex_1()
+            .child(
+                div()
+                    .id(SharedString::from(format!("metric-{id}")))
+                    .role(Role::Status)
+                    .aria_label(format!("{label}: {value}"))
+                    .test_support()
+                    .text_2xl()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(color)
+                    .child(value.to_string()),
+            )
+            .child(div().text_xs().child(label))
+            .into_any_element()
+    }
+
+    fn suite_header(
+        &self,
+        id: &str,
+        name: &str,
+        counts: Counts,
+        status: Status,
+        expanded: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let id = id.to_string();
+        div()
+            .flex()
+            .items_center()
+            .gap_3()
+            .px_2()
+            .py_2()
+            .bg(cx.theme().muted.opacity(0.5))
+            .child(
+                Button::new(SharedString::from(format!("toggle-suite-{id}")))
+                    .ghost()
+                    .xsmall()
+                    .icon(if expanded {
+                        IconName::ChevronDown
+                    } else {
+                        IconName::ChevronRight
+                    })
+                    .tooltip("Expand or collapse suite")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.collapsed.remove(&id) {
+                            this.collapsed.insert(id.clone());
+                        }
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child(name.to_string()),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(format!("{} / {}", counts.complete(), counts.total)),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(status_color(status, cx))
+                    .child(status.label()),
+            )
+            .into_any_element()
+    }
+}
+
+fn suite_status(counts: Counts, finished: bool) -> Status {
+    if counts.running > 0 {
+        Status::Running
+    } else if counts.queued > 0 && !finished {
+        Status::Queued
+    } else if counts.failed > 0 {
+        Status::Failed
+    } else if counts.cancelled > 0 {
+        Status::Cancelled
+    } else if counts.passed > 0 || counts.total == 0 && finished {
+        Status::Passed
+    } else {
+        Status::Captured
+    }
+}

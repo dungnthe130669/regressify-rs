@@ -127,6 +127,7 @@ async fn multiple_suites_can_be_checked_and_empty_selection_cannot_run(cx: &mut 
             this.main_tab = 1;
         });
         window.render_frame(cx);
+        window.within("run-tabs").click(1_usize, cx);
         window.click("start-command", cx);
         assert!(!view.read(cx).runs.read(cx).running());
         window.click("suite-check-ui-test", cx);
@@ -177,6 +178,96 @@ async fn switching_workspaces_discards_old_selection_and_closing_unloads_everyth
         assert!(view.read(cx).session.workspace.is_none());
         assert!(view.read(cx).runs.read(cx).output_root().is_err());
         assert!(view.read(cx).source.read(cx).value().is_empty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAppContext) {
+    use crate::progress::{Event, Job, Record};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                for (id, suite) in [(1, "shop"), (2, "account")] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: Event::Queued {
+                            job: Job {
+                                id,
+                                suite_id: suite.into(),
+                                suite_name: suite.into(),
+                                scenario_id: format!("home-{id}"),
+                                label: format!("Home {id}"),
+                                viewport: "Desktop".into(),
+                                captures: vec![format!("capture-{id}")],
+                            },
+                        },
+                    });
+                }
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 100,
+                    event: Event::Started { id: 1 },
+                });
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("live-status", 1_usize)).label(),
+            Some("Running")
+        );
+        assert_eq!(
+            window.find(("live-status", 2_usize)).label(),
+            Some("Queued")
+        );
+        assert_eq!(window.find("metric-active").label(), Some("Running: 1"));
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                for event in [
+                    Event::Captured {
+                        id: 1,
+                        error: None,
+                        infrastructure: false,
+                    },
+                    Event::Compared {
+                        suite_id: "shop".into(),
+                        capture: "capture-1".into(),
+                        label: "Home 1".into(),
+                        passed: true,
+                        error: None,
+                    },
+                    Event::Captured {
+                        id: 2,
+                        error: Some("Missing #sign-in".into()),
+                        infrastructure: false,
+                    },
+                ] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 1500,
+                        event,
+                    });
+                }
+                cx.notify();
+            })
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("live-status", 1_usize)).label(),
+            Some("Passed")
+        );
+        assert_eq!(
+            window.find(("live-status", 2_usize)).label(),
+            Some("Failed")
+        );
+        window.click("activity-failed-only", cx);
+        assert!(window.try_find(("live-status", 1_usize)).is_none());
+        assert!(window.find(("live-status", 2_usize)).visible());
     })
     .unwrap();
 }
@@ -576,6 +667,7 @@ async fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mu
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(view.read(cx).main_tab, 1);
         assert!(window.find("start-command").visible());
+        window.within("run-tabs").click(2_usize, cx);
         assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
         view.update(cx, |this, cx| {
             this.runs.update(cx, |panel, cx| {

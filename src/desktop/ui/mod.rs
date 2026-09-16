@@ -147,7 +147,7 @@ impl Workbench {
                     this.refresh_results(window, cx);
                     cx.notify();
                 }
-                runs::RunEvent::SelectionChanged => cx.notify(),
+                runs::RunEvent::SelectionChanged | runs::RunEvent::ProgressChanged => cx.notify(),
             });
         Self {
             session: Session::default(),
@@ -892,6 +892,17 @@ impl Workbench {
                             })),
                     ),
             );
+        }
+        if self.runs.read(cx).running() {
+            let counts = self.runs.read(cx).progress().counts(None);
+            navigation =
+                navigation.child(div().text_xs().text_color(cx.theme().primary).py_1().child(
+                    format!(
+                        "{} running  |  {} finished",
+                        counts.running,
+                        counts.complete()
+                    ),
+                ));
         }
         if self.session.workspace.is_none() {
             for (index, path) in self.preferences.recent_workspaces.iter().enumerate() {

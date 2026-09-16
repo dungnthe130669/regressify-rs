@@ -151,6 +151,12 @@ jobs; a scenario is visually passed only after all of its screenshots pass.
 Cancellation resolves queued/running jobs explicitly. The worker writes events
 to a private temporary file so an overflowing log queue cannot drop status updates.
 
+Activity is the default run view. It shows overall progress, active/pass/fail
+counts, expandable suites, and each scenario/viewport's status, elapsed time,
+and failure details. Failures only narrows the activity list. Captured is distinct
+from Passed, which requires comparison. Suites, Options, and Log are separate
+tabs; live running/finished counts remain visible in the workspace navigator.
+
 ## Reviewing Results
 
 Results refreshes on opening and after commands finish using current output
