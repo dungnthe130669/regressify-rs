@@ -32,6 +32,7 @@ mod files;
 mod overview;
 mod reports;
 mod runs;
+mod source;
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests;
@@ -50,7 +51,8 @@ actions!(
         MoveItemDown,
         FocusNavigator,
         FocusSettings,
-        ToggleNavigator
+        ToggleNavigator,
+        CompleteSource
     ]
 );
 
@@ -123,7 +125,7 @@ impl Workbench {
         });
         let resolved = cx.new(|cx| {
             EditorState::new(window, cx)
-                .language("yaml")
+                .language("json")
                 .line_number(true)
         });
         let search =
@@ -681,6 +683,7 @@ impl Workbench {
     }
 
     fn rebuild_fields(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.configure_source(cx);
         self.refresh_value();
         self.bindings.clear();
         self.field_subscriptions.clear();
@@ -1889,6 +1892,9 @@ impl Workbench {
         let content = match self.tab {
             1 => div()
                 .id("source-editor")
+                .key_context("RegressifySource")
+                .capture_action(cx.listener(Self::accept_completion))
+                .on_action(cx.listener(Self::request_completion))
                 .size_full()
                 .child(
                     CodeEditor::new(&self.source)
@@ -2459,6 +2465,7 @@ fn bind_keys(cx: &mut App) {
         "ctrl"
     };
     cx.bind_keys([
+        KeyBinding::new("ctrl-space", CompleteSource, Some("RegressifySource")),
         KeyBinding::new(&format!("{modifier}-p"), FocusNavigator, Some("Regressify")),
         KeyBinding::new(
             &format!("{modifier}-b"),

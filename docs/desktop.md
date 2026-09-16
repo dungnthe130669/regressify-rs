@@ -147,6 +147,18 @@ a diagnostic rather than a guessed value.
 
 ### Source and Save Safety
 
+Source has local YAML/JSON schema completion. Suggestions appear while typing
+property names and supported boolean/browser values; Ctrl+Space opens the menu
+explicitly (also Ctrl+Space on macOS). Arrow keys choose an item, Enter accepts,
+and Escape dismisses. Keys are scoped to workspace, suite, scenario, action, or
+viewport context, and existing sibling keys are excluded. Accepting a suggestion
+replaces the partial token without reformatting surrounding source.
+
+Completions use the Rust field schema and an error-tolerant syntax tree; no
+network service or language-server installation is required. Arbitrary data
+files, free-text values, JavaScript, and live-page CSS selectors are not completed.
+JSON files and the Effective view use JSON highlighting; YAML files use YAML.
+
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
 - JSON edits are pretty-printed. Save As format conversion preserves data, not YAML comments or formatting.

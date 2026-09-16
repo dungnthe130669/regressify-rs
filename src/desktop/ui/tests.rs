@@ -8,6 +8,117 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+fn source_editor_registers_schema_completion(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .lsp()
+                .completion_provider
+                .is_some()
+        );
+        assert_eq!(
+            view.read(cx).source.read(cx).language_name().as_ref(),
+            "yaml"
+        );
+        assert_eq!(
+            view.read(cx).resolved.read(cx).language_name().as_ref(),
+            "json"
+        );
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("json-completion.tests.json")
+                .unwrap();
+            this.session.install_document(open).unwrap();
+            this.sync_editor(window, cx);
+            assert_eq!(this.source.read(cx).language_name().as_ref(), "json");
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(1_usize, cx);
+        view.read(cx).source.clone().update(cx, |state, cx| {
+            state.set_value("scenarios:\n  - url: /\n    ", window, cx);
+            state.set_selected_range(state.text().len()..state.text().len(), cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.input("del", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.iter().any(|item| item.label == "delay")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).source.read(cx).value().contains("delay:")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("250", cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "scenarios:\n  - url: /\n    delay: 250"
+        );
+        window.press("ctrl-s", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).busy && !view.read(cx).session.dirty()
+    })
+    .await;
+    let value: serde_json::Value = serde_yaml::from_str(
+        &std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(value["scenarios"][0]["delay"], 250);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.read(cx).source.clone().update(cx, |state, cx| {
+            state.set_value("scenarios: []\n", window, cx);
+            state.set_selected_range(state.text().len()..state.text().len(), cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-space", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        let menu = view.read(cx).source.read(cx).completion_menu_state();
+        menu.open && menu.items.iter().any(|item| item.label == "browser")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+        assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
     cx: &mut TestAppContext,
 ) {
