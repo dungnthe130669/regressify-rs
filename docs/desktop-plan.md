@@ -119,6 +119,32 @@ source, action-menu, and compact-editor captures were inspected. Full IME,
 screen-reader, and native macOS/Linux validation remain outstanding; remote CI
 was not run by the assistant during this pass.
 
+## Navigation and Review
+
+- [x] Replace the nested sidebar with separate resizable suite and scenario
+  panes, independent searches, aligned selection controls, and workspace files.
+- [x] Show scenarios only for the open suite, retain draft guards on navigation,
+  and display readable page locations and live suite status.
+- [x] Format displayed paths with forward slashes and remove Windows verbatim
+  prefixes while preserving network shares and canonical filesystem paths.
+- [x] Persist captured scenario labels in optional report metadata and resolve
+  legacy names from unambiguous workspace IDs without changing matching keys.
+- [x] Replace generated run UUIDs with report timestamps, retain raw IDs in
+  search/tooltips, and show capture context and mismatch thresholds separately.
+- [x] Add copyable capture details and guarded navigation to the owning suite.
+- [x] Extend Windows native checks to suite switching, readable generated-ID
+  reports, label metadata, normalized paths, and DPI-correct pointer input.
+
+Verification: 381 library/UI tests (including 39 production UI tests), two
+standalone-worker tests, 60 headless desktop model tests, and 281 default CLI
+tests pass. Formatting and strict library Clippy pass. Native Windows checks
+passed 19 nonblank captures at 1600x1000 and 1080x720, three local Chromium
+scenarios, and fixture-only draft cleanup without changing saved source. Compact
+sidebar and report screenshots were inspected. GPUI 0.6.1 can retain a tooltip
+after programmatic view changes; its overlay handle is private, so the ineffective
+window-refresh probe was removed and no dependency internals were modified.
+Native macOS/Linux and full accessibility/IME validation remain follow-ups.
+
 ## Delivery Checklist
 
 ### 1. Foundation

@@ -79,6 +79,16 @@ function Focus-Fixture {
     }
 }
 
+if (-not ('RegressifySmokePointer' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RegressifySmokePointer {
+    [DllImport("user32.dll")] public static extern bool SetPhysicalCursorPos(int x, int y);
+}
+'@
+}
+
 if (-not ('RegressifySmokeText' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
@@ -145,7 +155,7 @@ function Write-TestImage([string]$Path, [System.Drawing.Color]$Color) {
 Write-JsonFixture (Join-Path $workspace 'visual_tests/smoke.tests.json') ([ordered]@{
     misMatchThreshold = 0.1
     scenarios = @(
-        [ordered]@{ label = 'Checkout'; url = 'https://example.com/checkout'; actions = @(@{ click = '#continue' }, @{ wait = 1000 }) },
+        [ordered]@{ id = '8ac900fea19642cc0000'; label = 'Checkout'; url = 'https://example.com/checkout'; actions = @(@{ click = '#continue' }, @{ wait = 1000 }) },
         [ordered]@{ label = 'Signed-in account'; url = 'https://example.com/account'; actions = @() }
     )
 })
@@ -163,7 +173,7 @@ if ($Capture) {
     $url = [System.Uri]::new($page).AbsoluteUri
     Write-JsonFixture (Join-Path $workspace 'visual_tests/smoke.tests.json') ([ordered]@{
         scenarios = @(
-            [ordered]@{ label = 'Checkout'; url = $url; actions = @(@{ wait = 5000 }, @{ click = '#continue' }) },
+            [ordered]@{ id = '8ac900fea19642cc0000'; label = 'Checkout'; url = $url; actions = @(@{ wait = 5000 }, @{ click = '#continue' }) },
             [ordered]@{ label = 'Signed-in account'; url = $url; actions = @(@{ wait = 2000 }) }
         )
     })
@@ -179,7 +189,7 @@ Write-TestImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') (
 Write-JsonFixture (Join-Path $output 'bitmaps_test/smoke-run/report.json') ([ordered]@{
     id = 'smoke'
     tests = @(
-        @{ status = 'fail'; pair = @{ label = 'Checkout desktop'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; misMatchPercentage = '4.20' } } },
+        @{ status = 'fail'; pair = @{ label = '8ac900fea19642cc0000 desktop FINAL'; fileName = '8ac900fea19642cc0000_desktop__FINAL.png'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; misMatchPercentage = '4.20' } } },
         @{ status = 'fail'; pair = @{ label = 'Account desktop'; engineErrorMsg = 'Missing selector #account' } }
     )
 })
@@ -235,7 +245,9 @@ function Invoke-Control([string]$Name, [switch]$Pointer) {
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, 0, 0, 0, 0, 0x0043) | Out-Null
         Focus-Fixture
         $bounds = $element.Current.BoundingRectangle
-        [RegressifySmokeNative]::SetCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2)) | Out-Null
+        if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2))) {
+            throw "Cannot position the mouse over '$Name'."
+        }
         [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
         [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
     }
@@ -300,8 +312,15 @@ try {
     $screen = [System.Windows.Forms.Screen]::FromHandle($script:window).WorkingArea
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Wait-Control 'Workspace opened' | Out-Null
+    Wait-Control ($workspace.Replace('\', '/')) | Out-Null
     Capture-Window 'overview'
+    Invoke-Control 'account.tests.json'
+    Wait-Control 'Profile' | Out-Null
+    if ($null -ne (Find-Control 'Checkout')) { throw 'Scenarios from an unselected suite leaked into the navigator.' }
+    Capture-Window 'sidebar-account'
     Invoke-Control 'smoke.tests.json'
+    Wait-Control 'Checkout' | Out-Null
+    if ($null -ne (Find-Control 'Profile')) { throw 'The scenario pane did not switch with the selected suite.' }
     Invoke-Control 'Checkout'
     Wait-Control 'Document loaded' | Out-Null
     Capture-Window 'editor'
@@ -350,6 +369,9 @@ try {
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
     Wait-Control 'Current 640 x 420' | Out-Null
+    Wait-Control 'Mismatch Checkout' | Out-Null
+    Wait-Control 'Desktop / Full page' | Out-Null
+    Wait-Control 'Edit suite' | Out-Null
     Capture-Window 'results'
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 640 x 420' | Out-Null
@@ -384,7 +406,17 @@ try {
         Capture-Window 'live-capture'
         Wait-Control 'Completed' | Out-Null
         Wait-Control 'Passed: 3' | Out-Null
+        Wait-Control '2 passed' | Out-Null
         Capture-Window 'live-completed'
+        $capturedReports = Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter report.json |
+            Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+        $capturedPairs = @($capturedReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
+        if ($capturedPairs.Count -ne 3) { throw 'Expected three captured report entries.' }
+        foreach ($pair in $capturedPairs) {
+            if ([string]::IsNullOrWhiteSpace($pair.scenarioLabel) -or [string]::IsNullOrWhiteSpace($pair.scenarioId)) {
+                throw 'Capture reports are missing readable scenario metadata.'
+            }
+        }
         Invoke-Control 'Capture baseline'
     } else { Invoke-Control 'Test' }
     Invoke-Control 'Initialize workspace'

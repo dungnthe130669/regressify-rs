@@ -7,6 +7,10 @@ use crate::desktop::results::{Catalog, Outcome, ReportEntry};
 
 const PAGE_SIZE: usize = 50;
 
+pub(super) enum ResultEvent {
+    OpenSuite(Entry),
+}
+
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 struct SelectReport {
     index: usize,
@@ -45,6 +49,8 @@ pub(super) struct ResultsPanel {
     image_loading: bool,
     generation: u64,
 }
+
+impl EventEmitter<ResultEvent> for ResultsPanel {}
 
 impl ResultsPanel {
     pub(super) fn set_suites(&mut self, suites: Vec<crate::desktop::workspace::SuiteSummary>) {
@@ -140,9 +146,19 @@ impl ResultsPanel {
                         this.capture = None;
                         this.page = 0;
                         this.status = format!(
-                            "{} reports, {} warnings",
+                            "{} {}, {} {}",
                             this.catalog.reports.len(),
-                            this.catalog.warnings.len()
+                            if this.catalog.reports.len() == 1 {
+                                "report"
+                            } else {
+                                "reports"
+                            },
+                            this.catalog.warnings.len(),
+                            if this.catalog.warnings.len() == 1 {
+                                "warning"
+                            } else {
+                                "warnings"
+                            }
                         );
                         if let Some(report) = this.selected_report()
                             && !report.report.tests.is_empty()
@@ -683,6 +699,9 @@ impl ResultsPanel {
                 }
             })
             .unwrap_or_default();
+        let source = self
+            .selected_report()
+            .and_then(|report| report.source.clone());
         div()
             .id("comparison-view")
             .test_support()
@@ -709,8 +728,89 @@ impl ResultsPanel {
                             .truncate()
                             .child(title),
                     )
-                    .child(div().text_xs().flex_shrink_0().child(mismatch)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .items_end()
+                            .gap_1()
+                            .text_xs()
+                            .flex_shrink_0()
+                            .child(if mismatch.is_empty() {
+                                String::new()
+                            } else {
+                                format!("{mismatch} mismatch")
+                            })
+                            .children(test.and_then(|test| test.pair.mis_match_threshold).map(
+                                |threshold| {
+                                    let label = format!("Allowed: {threshold}%");
+                                    div()
+                                        .id("capture-threshold")
+                                        .role(Role::Status)
+                                        .aria_label(label.clone())
+                                        .test_support()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(label)
+                                },
+                            )),
+                    ),
             )
+            .when_some(test, |comparison, test| {
+                comparison.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .px_4()
+                        .pb_2()
+                        .child(
+                            div()
+                                .id("capture-context")
+                                .role(Role::Status)
+                                .aria_label(test.pair.display.detail.clone())
+                                .test_support()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(test.pair.display.detail.clone()),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("copy-capture-details")
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip("Copy capture details")
+                                .accessibility_label("Copy capture details")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if let Some(test) = this.selected_report().and_then(|report| {
+                                        this.capture
+                                            .and_then(|index| report.report.tests.get(index))
+                                    }) {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            test.copy_summary(),
+                                        ));
+                                        this.status = "Capture details copied".into();
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
+                            Button::new("edit-capture-suite")
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::assets::IconName::Pencil)
+                                .label("Edit suite")
+                                .tooltip("Open the suite that produced this capture")
+                                .disabled(source.is_none() || self.loading)
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    if let Some(entry) = &source {
+                                        cx.emit(ResultEvent::OpenSuite(entry.clone()));
+                                    }
+                                })),
+                        ),
+                )
+            })
             .child(
                 TabBar::new("image-modes")
                     .underline()
@@ -890,7 +990,10 @@ impl Render for ResultsPanel {
             .selected_report()
             .map(|report| report.counts())
             .map(|(passed, mismatch, errors)| {
-                format!("{passed} passed   {mismatch} mismatched   {errors} errors")
+                format!(
+                    "{passed} passed   {mismatch} mismatched   {errors} {}",
+                    if errors == 1 { "error" } else { "errors" }
+                )
             })
             .unwrap_or_default();
         let focus = self.focus.clone();

@@ -1753,7 +1753,7 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
         .join(".regressify/0123456789abcdef/bitmaps_test/desktop-0123456789abcdef0123456789abcdef");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "0123456789abcdef", "tests": [
-        {"status": "pass", "pair": {"label": "8ac900fea19642cc0000 phone FINAL", "fileName": "8ac900fea19642cc0000_phone__FINAL.png"}},
+        {"status": "pass", "pair": {"label": "8ac900fea19642cc0000 phone FINAL", "fileName": "8ac900fea19642cc0000_phone__FINAL.png", "misMatchThreshold": 0.1, "diff": {"rawMisMatchPercentage": 0.05}}},
         {"status": "fail", "pair": {"label": "8ac900fea19642cc0000 phone $receipt", "fileName": "8ac900fea19642cc0000_phone__$receipt.png", "scenarioId": "8ac900fea19642cc0000", "scenarioLabel": "Payment at capture time"}}
     ]})).unwrap()).unwrap();
     std::fs::write(directory.path().join("visual_tests/ui-test.tests.yaml"), "id: 0123456789abcdef\nscenarios:\n- id: 8ac900fea19642cc0000\n  label: Payment confirmation\n  url: https://example.com/receipt\n").unwrap();
@@ -1782,6 +1782,21 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
             window.find(("capture", 0_usize)).label(),
             Some("Passed Payment confirmation")
         );
+        assert_eq!(
+            window.find("capture-context").label(),
+            Some("Phone / Full page")
+        );
+        assert_eq!(
+            window.find("capture-threshold").label(),
+            Some("Allowed: 0.1%")
+        );
+        window.click("copy-capture-details", cx);
+        let summary = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(summary.contains("Scenario: Payment confirmation"));
+        assert!(summary.contains("Capture ID: 8ac900fea19642cc0000_phone__FINAL"));
+        assert!(summary.contains("Page: https://example.com/receipt"));
+        assert!(summary.contains("Allowed mismatch: 0.1%"));
+        assert!(summary.contains("Mismatch: 0.050%"));
         window.click("next-capture", cx);
         assert_eq!(
             window.find("capture-heading").label(),
@@ -1809,6 +1824,28 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
             .is_some_and(|position| position.label() == Some("1 of 1"))
     })
     .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("edit-capture-suite", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).main_tab == 0
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(view.read(cx).session.selection, Selection::Root);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("ui-test")
+        );
+    });
 }
 
 #[gpui_kit::test]

@@ -73,6 +73,9 @@ but displays matching suites only. Open a suite to see its scenarios below. The
 lower search filters only that suite, without changing the suite search or run
 selection. Selected narrows the upper list to checked suites. Ctrl+P (Cmd+P on
 macOS) focuses suite search. Navigation retains Save/Discard/Cancel protection.
+Suite rows also show queued/running/pass/fail totals. The refresh icon reloads
+suite discovery. Scenario rows shorten web addresses to host/path and local
+fixture URLs to workspace-relative paths; tooltips retain the full URL.
 
 The Workspace files section contains configuration and YAML/JSON under `common`.
 Opening a viewport file displays its definitions in the lower pane. Open
@@ -272,6 +275,12 @@ tooltips. Generated desktop run UUIDs are presented as report timestamps;
 timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
 unchanged, and the original run ID is available in the report-picker tooltip.
 
+The comparison heading shows capture context and the allowed mismatch threshold
+beside the measured difference. Copy capture details includes the human label,
+outcome, page, threshold, failure details, and raw capture ID. Edit suite opens
+the owning workspace file through the same guarded navigation used by the
+sidebar; it is unavailable when that association cannot be resolved safely.
+
 Results refreshes on opening and after commands finish using current output
 options. It loads each suite's `bitmaps_test/<run>/report.json`, newest first,
 retaining a selected report/capture on refresh when it still exists. Filter
@@ -365,8 +374,15 @@ smoke runner's own synthetic fixture. The test deliberately closes a dirty draft
 and verifies normal exit and an unchanged saved file. Normal application windows
 continue to show Save/Discard/Cancel for unsaved work.
 
-Windows native validation covers 1600x1000 and 1080x720 with 18 window captures.
+The native checks also verify selected-suite-only scenario lists, readable names
+for generated capture IDs, persisted scenario-label metadata, forward-slash
+workspace paths, and live suite totals. Pointer input uses physical screen
+coordinates to avoid DPI virtualization errors.
+
+Windows native validation covers 1600x1000 and 1080x720 with 19 window captures.
 Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
 validation there. Signed installers, cloud accounts, collaborative editing,
 browser recording, and non-Chromium execution are outside this implementation.
+GPUI 0.6.1 has a remaining managed-tooltip issue after some programmatic view
+changes; this does not affect document or result data.

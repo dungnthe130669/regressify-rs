@@ -19,6 +19,40 @@ fn empty_list(id: &'static str, text: &'static str, cx: &App) -> AnyElement {
         .into_any_element()
 }
 
+fn page_location(url: &str, root: Option<&std::path::Path>) -> String {
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return url.to_string();
+    };
+    if parsed.scheme() == "file"
+        && let Ok(path) = parsed.to_file_path()
+    {
+        let path = display_path(&path);
+        return root
+            .and_then(|root| {
+                path.strip_prefix(&format!("{}/", display_path(root).trim_end_matches('/')))
+                    .map(str::to_string)
+            })
+            .unwrap_or(path);
+    }
+    if matches!(parsed.scheme(), "http" | "https") {
+        let origin = parsed.origin().ascii_serialization();
+        let host = origin
+            .split_once("://")
+            .map_or(origin.as_str(), |(_, host)| host);
+        let mut location = format!("{host}{}", parsed.path());
+        if let Some(query) = parsed.query() {
+            location.push('?');
+            location.push_str(query);
+        }
+        if let Some(fragment) = parsed.fragment() {
+            location.push('#');
+            location.push_str(fragment);
+        }
+        return location;
+    }
+    url.to_string()
+}
+
 impl Workbench {
     pub(super) fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
         let mut navigation = div()
@@ -36,7 +70,8 @@ impl Workbench {
                         .w_full()
                         .justify_start()
                         .icon(gpui_kit::assets::IconName::LayoutDashboard)
-                        .label("Overview")
+                        .accessibility_label("Overview")
+                        .child(div().flex_1().text_left().child("Overview"))
                         .selected(self.overview && self.main_tab == 0)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.overview = true;
@@ -177,12 +212,26 @@ impl Workbench {
                 suite.map_or(0, |suite| suite.scenarios.len())
             };
             let error = suite.and_then(|suite| suite.error.clone());
-            let detail = if error.is_some() {
+            let mut detail = if error.is_some() {
                 "Configuration error".into()
             } else if !query.is_empty() && matches > 0 {
-                format!("{matches} matching scenarios")
+                format!(
+                    "{matches} matching {}",
+                    if matches == 1 {
+                        "scenario"
+                    } else {
+                        "scenarios"
+                    }
+                )
             } else {
-                format!("{scenario_count} scenarios")
+                format!(
+                    "{scenario_count} {}",
+                    if scenario_count == 1 {
+                        "scenario"
+                    } else {
+                        "scenarios"
+                    }
+                )
             };
             let name = suite
                 .map(|suite| suite.name.clone())
@@ -197,6 +246,23 @@ impl Workbench {
                 .to_string_lossy()
                 .into_owned();
             let counts = suite.map(|suite| runs.progress().counts(Some(&suite.output_id)));
+            if error.is_none()
+                && let Some(counts) = &counts
+            {
+                if counts.running > 0 {
+                    detail = format!(
+                        "{} running / {} finished",
+                        counts.running,
+                        counts.complete()
+                    );
+                } else if counts.failed > 0 {
+                    detail = format!("{} failed / {} finished", counts.failed, counts.complete());
+                } else if counts.passed > 0 {
+                    detail = format!("{} passed", counts.passed);
+                } else if counts.queued > 0 {
+                    detail = format!("{} queued", counts.queued);
+                }
+            }
             let status_color =
                 if error.is_some() || counts.as_ref().is_some_and(|counts| counts.failed > 0) {
                     cx.theme().danger
@@ -288,6 +354,10 @@ impl Workbench {
                                     )
                                     .child(
                                         div()
+                                            .id(("suite-activity", index))
+                                            .role(Role::Status)
+                                            .aria_label(detail.clone())
+                                            .test_support()
                                             .text_xs()
                                             .truncate()
                                             .text_color(status_color)
@@ -339,6 +409,24 @@ impl Workbench {
                             .child(count.to_string()),
                     )
                     .child(div().flex_1())
+                    .child(
+                        Button::new("navigator-refresh")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::RefreshCw)
+                            .tooltip("Refresh suites")
+                            .accessibility_label("Refresh suites")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.file_command(
+                                    &files::FileCommand {
+                                        operation: files::Operation::Refresh,
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
                     .child(
                         Button::new("navigator-new-suite")
                             .ghost()
@@ -458,7 +546,13 @@ impl Workbench {
             let detail = if viewport {
                 format!("{} x {}", item["width"], item["height"])
             } else {
-                url.to_string()
+                page_location(
+                    url,
+                    self.session
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| workspace.root.as_path()),
+                )
             };
             rows = rows.child(
                 Button::new(("scenario", index))
@@ -471,7 +565,8 @@ impl Workbench {
                     .selected(selected)
                     .accessibility_label(label.clone())
                     .tooltip(format!(
-                        "{label}\n{detail}\n{}",
+                        "{label}\n{}\n{}",
+                        if viewport { detail.as_str() } else { url },
                         item["id"].as_str().unwrap_or_default()
                     ))
                     .child(
@@ -632,7 +727,15 @@ impl Workbench {
                     } else {
                         IconName::ChevronRight
                     })
-                    .label(format!("Workspace files ({})", entries.len()))
+                    .accessibility_label(format!("Workspace files ({})", entries.len()))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_left()
+                            .truncate()
+                            .child(format!("Workspace files ({})", entries.len())),
+                    )
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.workspace_files_open = !this.workspace_files_open;
                         cx.notify();
@@ -680,5 +783,33 @@ impl Workbench {
             section = section.child(files);
         }
         section.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{display_path, page_location};
+
+    #[test]
+    fn scenario_locations_keep_useful_page_context_without_long_root_prefixes() {
+        assert_eq!(
+            page_location(
+                "https://example.com:8443/checkout?tab=payment#summary",
+                None
+            ),
+            "example.com:8443/checkout?tab=payment#summary"
+        );
+        assert_eq!(
+            page_location("{{BASE_URL}}/checkout", None),
+            "{{BASE_URL}}/checkout"
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("pages/invoice.html");
+        let url = reqwest::Url::from_file_path(&path).unwrap();
+        assert_eq!(
+            page_location(url.as_str(), Some(directory.path())),
+            "pages/invoice.html"
+        );
+        assert_eq!(page_location(url.as_str(), None), display_path(&path));
     }
 }

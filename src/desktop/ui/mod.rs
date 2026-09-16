@@ -189,6 +189,13 @@ impl Workbench {
                 }
                 runs::RunEvent::SelectionChanged | runs::RunEvent::ProgressChanged => cx.notify(),
             });
+        let results = cx.new(|cx| reports::ResultsPanel::new(window, cx));
+        let results_subscription =
+            cx.subscribe_in(&results, window, |this, _, event, window, cx| match event {
+                reports::ResultEvent::OpenSuite(entry) => {
+                    this.open_location(entry.clone(), Selection::Root, window, cx)
+                }
+            });
         Self {
             session: Session::default(),
             source,
@@ -202,6 +209,7 @@ impl Workbench {
                 field_search_subscription,
                 source_observer,
                 scenario_search_subscription,
+                results_subscription,
             ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
@@ -221,7 +229,7 @@ impl Workbench {
             preferences_path: Preferences::path().ok(),
             modal: cx.new(|_| files::ModalState::default()),
             runs,
-            results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
+            results,
             main_tab: 0,
             overview: true,
             scenario_search,

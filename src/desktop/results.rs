@@ -50,6 +50,34 @@ pub struct TestResult {
 }
 
 impl TestResult {
+    pub fn copy_summary(&self) -> String {
+        let mut lines = vec![
+            format!("Scenario: {}", self.pair.display.title),
+            format!("Status: {}", self.outcome().label()),
+        ];
+        if !self.pair.display.detail.is_empty() {
+            lines.push(format!("Capture: {}", self.pair.display.detail));
+        }
+        if let Some(url) = &self.pair.display.page_url {
+            lines.push(format!("Page: {url}"));
+        }
+        if let Some(diff) = &self.pair.diff {
+            if !diff.mis_match_percentage.is_empty() {
+                lines.push(format!("Mismatch: {}%", diff.mis_match_percentage));
+            } else if let Some(percentage) = diff.raw_mis_match_percentage {
+                lines.push(format!("Mismatch: {percentage:.3}%"));
+            }
+        }
+        if let Some(threshold) = self.pair.mis_match_threshold {
+            lines.push(format!("Allowed mismatch: {threshold}%"));
+        }
+        if let Some(error) = &self.pair.engine_error_msg {
+            lines.push(format!("Error: {error}"));
+        }
+        lines.push(format!("Capture ID: {}", self.pair.capture_key()));
+        lines.join("\n")
+    }
+
     pub fn outcome(&self) -> Outcome {
         if self
             .pair
@@ -88,6 +116,7 @@ pub struct Pair {
     #[serde(default)]
     pub selector: String,
     pub diff: Option<Difference>,
+    pub mis_match_threshold: Option<f64>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -95,6 +124,7 @@ pub struct CaptureDisplay {
     pub title: String,
     pub detail: String,
     pub scenario_index: Option<usize>,
+    pub page_url: Option<String>,
 }
 
 impl Pair {
@@ -235,6 +265,11 @@ impl Pair {
             title,
             detail,
             scenario_index: matched.map(|(index, _)| index),
+            page_url: self
+                .url
+                .clone()
+                .or_else(|| self.reference_url.clone())
+                .or_else(|| matched.map(|(_, scenario)| scenario.url.clone())),
         };
     }
 }
@@ -382,10 +417,15 @@ impl Catalog {
                 .collect::<Vec<_>>();
             let suite = (candidates.len() == 1).then(|| candidates[0]);
             report.suite_name = suite.map(|suite| suite.name.clone()).unwrap_or_else(|| {
-                if report.report.test_suite.is_empty() {
-                    report.report.id.clone()
+                let name = if report.report.test_suite.is_empty() {
+                    &report.report.id
                 } else {
-                    report.report.test_suite.clone()
+                    &report.report.test_suite
+                };
+                if generated_id(name) || uuid::Uuid::parse_str(name).is_ok() {
+                    "Unmatched suite".into()
+                } else {
+                    name.clone()
                 }
             });
             report.source = suite.map(|suite| suite.entry.clone());
@@ -578,6 +618,9 @@ mod tests {
         assert!(catalog.reports[0].source.is_some());
         catalog.resolve_names(&[suite(), suite()]);
         assert!(catalog.reports[0].source.is_none());
+        catalog.reports[0].report.id = "0123456789abcdef".into();
+        catalog.resolve_names(&[]);
+        assert_eq!(catalog.reports[0].suite_name, "Unmatched suite");
     }
 
     fn fixture(root: &Path, run: &str) -> PathBuf {
