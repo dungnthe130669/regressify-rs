@@ -4,6 +4,8 @@ on:
   push:
     paths:
       - 'src/**'
+      - 'tests/**'
+      - 'visual_tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -12,6 +14,8 @@ on:
   pull_request:
     paths:
       - 'src/**'
+      - 'tests/**'
+      - 'visual_tests/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
@@ -47,8 +51,8 @@ jobs:
         run: cargo test --locked --features gui-tests --all-targets -- --test-threads=1
       - name: Production library lint
         run: cargo clippy --locked --features gui --lib -- -D warnings
-      - name: Build desktop and CLI
-        run: cargo build --locked --features gui --bins
+      - name: Build standalone desktop
+        run: cargo build --locked --features gui --bin regressify-desktop
 
   models:
     name: Linux Headless Models

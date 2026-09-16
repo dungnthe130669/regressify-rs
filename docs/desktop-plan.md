@@ -3,7 +3,7 @@
 ## Goal
 
 Provide a local, Rust-native GPUI Kit application in which QA can maintain
-Regressify workspaces, configure suites and scenarios, execute the existing CLI,
+Regressify workspaces, configure suites and scenarios, execute the shared Rust engine,
 and review visual results without manually constructing commands. YAML and JSON
 remain the source of truth. The CLI remains usable without GUI dependencies.
 
@@ -14,15 +14,14 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
   validation. The CLI keeps its command and exit-code contracts.
 - Desktop document, workspace, execution, and result models are independent of
   GPUI so their behavior can be tested without opening a window.
-- Each command executes a fresh CLI child process. Process-wide `OnceLock` values
+- Each command executes an isolated worker from the desktop executable itself.
+  No separately installed CLI is required. Process-wide `OnceLock` values
   must never leak from one desktop run or workspace to another.
 - File access is scoped to the selected workspace. Writes detect external
   changes and use atomic replacement. Invalid edits never overwrite good files.
 - Structured editing preserves YAML comments where supported by the document
   parser. Unsupported document constructs must produce a clear diagnostic,
   never silently discard data. Source editing remains available.
-
-## Delivery Checklist
 
 ## Workbench Improvements
 
@@ -36,7 +35,7 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
   guard unsaved work, and prevent stale asynchronous results from crossing roots.
 - [x] Redesign navigation, forms, execution, and results for a polished QA
   workbench with clear hierarchy, compact controls, and useful empty states.
-- [ ] Update tests, documentation, CI, and native smoke coverage; commit each
+- [x] Update tests, documentation, CI, and native smoke coverage; commit each
   completed unit and distinguish local verification from platform follow-ups.
 
 Backend verification: the standalone desktop worker initializes a workspace
@@ -45,11 +44,21 @@ captures per scenario, partial records, cancellation, and saturated log queues.
 A real two-suite comparison integration test reports one pass and one mismatch
 while preserving the zero-exit visual-failure contract.
 
-Native redesign verification: nineteen production UI tests pass. The Windows
+Native redesign verification: twenty production UI tests pass. The Windows
 smoke test exercises the workspace overview, grouped editor, source/results,
 multi-suite checklist, and bundled-engine init at 1600x1000 and 1080x720. With
 `-Capture`, two local suites and three real Chromium scenarios transition from
 queued/running through capture and comparison to passed in the Activity view.
+
+Final improvement gates: 347 library/UI tests and two standalone-worker
+integration tests pass, including execution with no CLI binary beside the app.
+The default CLI gate passes 281 tests. Formatting and strict production-library
+Clippy pass. Ten native window captures passed nonblank pixel checks, with the
+overview, compact editor, live activity, and final scenario outcomes inspected.
+The native worker completed all three local Chromium scenarios successfully;
+startup stderr was empty. CI definitions are updated but were not run remotely.
+
+## Delivery Checklist
 
 ### 1. Foundation
 

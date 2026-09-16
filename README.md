@@ -6,11 +6,13 @@ Rust CLI for visual regression testing. It launches Chromium through the Chrome 
 
 An optional Rust-native GPUI Kit workbench lets QA edit workspace configuration,
 suites, scenarios, all 15 action types, and viewports. It includes guided and
-source editors, inheritance previews, safe saves with undo/redo, CLI execution
-with cancellation and logs, and reference/current/diff image review.
+source editors, inheritance previews, safe saves with undo/redo, a bundled engine,
+and reference/current/diff image review. One workspace is active at a time.
+Select multiple suites with checkboxes and track their scenarios live through
+queued, running, captured, comparing, passed, failed, and cancelled states.
 
 ```bash
-cargo build --features gui --bins
+cargo build --features gui --bin regressify-desktop
 cargo run --features gui --bin regressify-desktop -- /path/to/test-workspace
 ```
 

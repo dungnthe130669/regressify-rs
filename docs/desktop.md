@@ -2,7 +2,7 @@
 
 The optional GPUI Kit desktop app shares the CLI's Rust library and keeps
 YAML/JSON files as the source of truth. It provides configuration authoring,
-isolated CLI execution, and visual report review. See
+isolated bundled-engine execution, and visual report review. See
 [the implementation plan](desktop-plan.md) for scope and verification evidence.
 
 ## Build and Launch
@@ -12,7 +12,7 @@ tools and the Windows SDK. Other GPUI platform prerequisites are documented at
 <https://gpui-kit.com/docs/installation>.
 
 ```sh
-cargo build --features gui --bins
+cargo build --features gui --bin regressify-desktop
 cargo run --features gui --bin regressify-desktop
 cargo run --features gui --bin regressify-desktop -- /path/to/workspace
 ```
@@ -41,7 +41,7 @@ file. Reload discards a draft after confirmation. Suite-file deletion is
 confirmed but cannot be undone through document history.
 
 Opening another document/workspace or closing with a draft prompts Save,
-Discard, or Cancel. A failed save retains the prompt and draft. Recent workspaces,
+Discard, or Cancel. A failed save retains the prompt and draft. Recent workspaces
 and appearance are stored outside the project in the
 operating system's per-user Regressify Desktop configuration directory.
 
@@ -116,7 +116,7 @@ the lossless editor's flow-delimiter parsing, then restores them without changin
 comments, Unicode text, or surrounding line endings.
 
 Use trusted local workspaces. Configuration can reference scripts and browser
-actions executed by the CLI. The desktop is not a sandbox for untrusted projects
+actions executed by the engine. The desktop is not a sandbox for untrusted projects
 or arbitrary executables.
 
 ## Running Commands
@@ -215,7 +215,7 @@ cargo test --all-targets
 cargo test --features desktop --lib desktop::
 cargo test --features gui-tests --all-targets -- --test-threads=1
 cargo clippy --features gui --lib -- -D warnings
-cargo build --features gui --bins
+cargo build --features gui --bin regressify-desktop
 ```
 
 [Desktop Checks](../.github/workflows/desktop-checks.yml) defines Windows CLI,
@@ -237,7 +237,7 @@ HTML only and does not contact an external test website or download a browser.
 
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
-and runs the actual CLI init command from the GUI. It captures the target window
+and runs the bundled engine's init command from the GUI. It captures the target window
 directly, checks nonblank pixels, and leaves screenshots for review. By default it runs
 no browser scenarios or downloads. `-SkipBuild` uses the existing debug
 binaries; `-KeepOpen` leaves the fixture open for inspection.
