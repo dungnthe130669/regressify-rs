@@ -62,16 +62,22 @@ prefixes: `\\?\D:\project` appears as `D:/project`, while a network share remain
 `//server/share`. This is display formatting only; filesystem access, safety
 checks, and saved paths keep their original semantics.
 
-The navigator searches suite paths and scenario labels, IDs, and URLs across the
-workspace. Matching scenarios open directly in Fields, retaining the destination
-through a Save/Discard/Cancel prompt. Expand or collapse suite outlines without
-opening their files. Selected suites narrows the navigator to the run selection;
-clearing search restores the complete list. Ctrl+P (Cmd+P on macOS) focuses search.
+The navigator has separate, vertically resizable Test suites and Scenarios panes.
+Suite rows keep aligned checkboxes and remain highlighted while their scenario
+or action is edited. The lower pane lists only the open suite's scenarios, with
+labels and URLs; actions are edited in the scenario's action sequence rather
+than nested in the sidebar. Both panes scroll independently.
 
-The navigator lists workspace configuration, suites under `visual_tests`, and
-YAML/JSON under `common`. Select a suite, then a scenario to reveal its actions.
-Search filters labels. Open configuration file adds other workspace-relative
-data files, including custom viewport definitions.
+Suite search matches paths and scenario labels, IDs, or URLs across the workspace,
+but displays matching suites only. Open a suite to see its scenarios below. The
+lower search filters only that suite, without changing the suite search or run
+selection. Selected narrows the upper list to checked suites. Ctrl+P (Cmd+P on
+macOS) focuses suite search. Navigation retains Save/Discard/Cancel protection.
+
+The Workspace files section contains configuration and YAML/JSON under `common`.
+Opening a viewport file displays its definitions in the lower pane. Open
+configuration file adds other workspace-relative data files, including custom
+viewport definitions.
 
 File supports new/duplicate/rename/delete suite, Save As, reload, configuration
 and viewport-file creation, file browsing, refresh, and light/dark appearance.

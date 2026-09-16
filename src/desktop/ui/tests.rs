@@ -836,7 +836,9 @@ async fn run_preflight_rejects_a_selected_suite_changed_on_disk(cx: &mut TestApp
 }
 
 #[gpui_kit::test]
-async fn navigator_search_opens_a_scenario_in_another_suite(cx: &mut TestAppContext) {
+async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_suite(
+    cx: &mut TestAppContext,
+) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
@@ -844,7 +846,7 @@ async fn navigator_search_opens_a_scenario_in_another_suite(cx: &mut TestAppCont
             this.session.workspace.as_ref().unwrap().create_document(
                 Path::new("visual_tests/checkout.tests.yaml"),
                 crate::desktop::document::DocumentKind::Suite,
-                "scenarios:\n  - label: Payment confirmation\n    url: https://example.com/receipt\n",
+                "scenarios:\n  - label: Payment confirmation\n    url: https://example.com/receipt\n  - label: Address details\n    url: https://example.com/address\n",
             ).unwrap();
             this.session.refresh().unwrap();
             this.sync_suites(cx);
@@ -855,12 +857,46 @@ async fn navigator_search_opens_a_scenario_in_another_suite(cx: &mut TestAppCont
     }).unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
         window
-            .try_find("scenario:visual_tests/checkout.tests.yaml:0")
-            .is_some()
+            .try_find("suite-count")
+            .is_some_and(|count| count.label() == Some("1 suite"))
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        window.click("scenario:visual_tests/checkout.tests.yaml:0", cx);
+        assert!(window.find("suite-pane").visible());
+        assert!(window.find("scenario-pane").visible());
+        assert_eq!(window.find("scenario-suite").label(), Some("ui-test"));
+        assert_eq!(
+            window.find(("scenario", 0_usize)).label(),
+            Some("Scenario 1")
+        );
+        assert!(
+            window
+                .try_find("scenario:visual_tests/checkout.tests.yaml:0")
+                .is_none()
+        );
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.path == Path::new("visual_tests/checkout.tests.yaml"))
+            .unwrap();
+        window.click(("file", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("scenario-suite")
+            .is_some_and(|suite| suite.label() == Some("checkout"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("scenario-count").label(), Some("2 of 2"));
+        assert_eq!(
+            window.find(("scenario", 0_usize)).label(),
+            Some("Payment confirmation")
+        );
+        window.click(("scenario", 0_usize), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -876,6 +912,117 @@ async fn navigator_search_opens_a_scenario_in_another_suite(cx: &mut TestAppCont
             Path::new("visual_tests/checkout.tests.yaml")
         );
         assert!(!view.read(cx).session.dirty());
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("scenario-search", cx);
+        window.input("address", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("scenario-count")
+            .is_some_and(|count| count.label() == Some("1 of 2"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find(("scenario", 0_usize)).is_none());
+        assert_eq!(
+            window.find(("scenario", 1_usize)).label(),
+            Some("Address details")
+        );
+        window.click(("scenario", 1_usize), cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        assert_eq!(
+            window.find("field-url").value(),
+            Some("https://example.com/address")
+        );
+        assert_eq!(
+            window.find("navigator-search").value(),
+            Some("confirmation")
+        );
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn scenario_pane_switching_respects_drafts_and_workspace_files_remain_accessible(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::write(directory.path().join("regressify.yaml"), "{}\n").unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+        });
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("https://example.com/draft", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        view.read(cx).session.dirty()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("second"))
+            .unwrap();
+        window.click(("file", index), cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("scenario-suite").label(), Some("ui-test"));
+        window.click("guard-cancel", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("field-url").value(),
+            Some("https://example.com/draft")
+        );
+        window.click("workspace-files-toggle", cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.kind == crate::desktop::document::DocumentKind::Workspace)
+            .unwrap();
+        window.click(("file", index), cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-discard", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("scenario-empty")
+            .is_some_and(|empty| empty.label() == Some("Select a test suite"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.kind,
+            crate::desktop::document::DocumentKind::Workspace
+        )
     });
 }
 

@@ -30,6 +30,7 @@ use super::{
 mod choices;
 mod design;
 mod files;
+mod navigation;
 mod overview;
 mod reports;
 mod runs;
@@ -114,7 +115,8 @@ pub struct Workbench {
     results: Entity<reports::ResultsPanel>,
     main_tab: usize,
     overview: bool,
-    expanded_suites: BTreeSet<PathBuf>,
+    scenario_search: Entity<InputState>,
+    workspace_files_open: bool,
     selected_only: bool,
     field_search: Entity<InputState>,
     overrides_only: bool,
@@ -156,6 +158,10 @@ impl Workbench {
             }
         });
         let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        let scenario_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find a scenario"));
+        let scenario_search_subscription =
+            cx.subscribe(&scenario_search, |_, _, _: &InputEvent, cx| cx.notify());
         let source_observer = cx.observe(&source, |_, _, cx| cx.notify());
         let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a setting"));
         let field_search_subscription =
@@ -195,6 +201,7 @@ impl Workbench {
                 run_subscription,
                 field_search_subscription,
                 source_observer,
+                scenario_search_subscription,
             ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
@@ -217,7 +224,8 @@ impl Workbench {
             results: cx.new(|cx| reports::ResultsPanel::new(window, cx)),
             main_tab: 0,
             overview: true,
-            expanded_suites: BTreeSet::new(),
+            scenario_search,
+            workspace_files_open: false,
             selected_only: false,
             field_search,
             overrides_only: false,
@@ -282,7 +290,9 @@ impl Workbench {
                 this.overview = true;
                 this.tab = 0;
                 this.advanced = false;
-                this.expanded_suites.clear();
+                this.scenario_search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                this.workspace_files_open = false;
                 this.selected_only = false;
                 this.search
                     .update(cx, |state, cx| state.set_value("", window, cx));
@@ -366,7 +376,9 @@ impl Workbench {
             move || workspace.open_document(entry),
             move |this, open, window, cx| {
                 this.reset_field_view(window, cx);
-                this.expanded_suites.insert(open.entry.path.clone());
+                this.scenario_search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                this.workspace_files_open = open.entry.kind != DocumentKind::Suite;
                 this.session.open = Some(open);
                 this.overview = false;
                 this.main_tab = 0;
@@ -873,9 +885,6 @@ impl Workbench {
         match self.session.select(selection) {
             Ok(()) => {
                 self.reset_field_view(window, cx);
-                if let Some(open) = &self.session.open {
-                    self.expanded_suites.insert(open.entry.path.clone());
-                }
                 self.tab = 0;
                 self.overview = false;
                 self.main_tab = 0;
@@ -1000,416 +1009,6 @@ impl Workbench {
                     })),
             )
             .into_any_element()
-    }
-
-    fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
-        let query = self.search.read(cx).value().trim().to_lowercase();
-        let mut navigation = div()
-            .id("navigator")
-            .flex()
-            .flex_col()
-            .size_full()
-            .min_w_0()
-            .gap_1()
-            .p_3()
-            .bg(cx.theme().muted.opacity(0.55))
-            .child(
-                Button::new("workspace-overview")
-                    .ghost()
-                    .icon(gpui_kit::assets::IconName::LayoutDashboard)
-                    .label("Overview")
-                    .selected(self.overview && self.main_tab == 0)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.overview = true;
-                        this.main_tab = 0;
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Input::new(&self.search)
-                    .id("navigator-search")
-                    .prefix(IconName::Search)
-                    .cleanable(true)
-                    .small(),
-            )
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .py_2()
-                    .child(
-                        self.session
-                            .workspace
-                            .as_ref()
-                            .and_then(|workspace| workspace.root.file_name())
-                            .map(|name| name.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "RECENT WORKSPACES".into()),
-                    ),
-            );
-        if self.session.workspace.is_some() {
-            navigation = navigation.child(
-                TabBar::new("navigator-filter")
-                    .segmented()
-                    .small()
-                    .selected_index(usize::from(self.selected_only))
-                    .on_click(cx.listener(|this, index, _, cx| {
-                        this.selected_only = *index == 1;
-                        cx.notify();
-                    }))
-                    .child(Tab::new().label("All files"))
-                    .child(Tab::new().label("Selected suites")),
-            );
-            navigation = navigation.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .py_2()
-                    .child(format!("{} selected", self.runs.read(cx).selected_count()))
-                    .child(
-                        Checkbox::new("sidebar-select-all")
-                            .label("All")
-                            .checked(
-                                self.runs.read(cx).selected_count() > 0
-                                    && self.runs.read(cx).selected_count()
-                                        == self
-                                            .session
-                                            .suites
-                                            .iter()
-                                            .filter(|suite| suite.error.is_none())
-                                            .count(),
-                            )
-                            .disabled(self.busy || self.runs.read(cx).running())
-                            .on_change(cx.listener(|this, checked, _, cx| {
-                                this.runs
-                                    .update(cx, |panel, cx| panel.select_all(*checked, cx))
-                            })),
-                    ),
-            );
-        }
-        if self.runs.read(cx).running() {
-            let counts = self.runs.read(cx).progress().counts(None);
-            navigation =
-                navigation.child(div().text_xs().text_color(cx.theme().primary).py_1().child(
-                    format!(
-                        "{} running  |  {} finished",
-                        counts.running,
-                        counts.complete()
-                    ),
-                ));
-        }
-        if self.session.workspace.is_none() {
-            for (index, path) in self.preferences.recent_workspaces.iter().enumerate() {
-                let path = path.clone();
-                navigation = navigation.child(
-                    Button::new(("recent", index))
-                        .ghost()
-                        .label(
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.load_workspace(path.clone(), window, cx)
-                        })),
-                );
-            }
-        }
-        let mut files = div()
-            .id("workspace-files")
-            .flex()
-            .flex_col()
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .gap_1();
-        let mut visible_files = 0;
-        for (index, entry) in self.session.entries.iter().enumerate() {
-            let current = self
-                .session
-                .open
-                .as_ref()
-                .is_some_and(|open| open.entry.path == entry.path);
-            let entry = entry.clone();
-            let suite = self
-                .session
-                .suites
-                .iter()
-                .find(|suite| suite.entry.path == entry.path);
-            if self.selected_only
-                && !suite.is_some_and(|suite| self.runs.read(cx).selected(&suite.name))
-            {
-                continue;
-            }
-            let file_match = entry.label().to_lowercase().contains(&query);
-            let scenario_match = suite.is_some_and(|suite| {
-                suite.scenarios.iter().any(|scenario| {
-                    [&scenario.label, &scenario.id, &scenario.url]
-                        .iter()
-                        .any(|value| value.to_lowercase().contains(&query))
-                })
-            });
-            let draft_match = current
-                && self
-                    .value
-                    .get("scenarios")
-                    .and_then(Value::as_array)
-                    .is_some_and(|scenarios| {
-                        scenarios.iter().any(|scenario| {
-                            ["label", "id", "url"].iter().any(|key| {
-                                scenario[*key]
-                                    .as_str()
-                                    .is_some_and(|text| text.to_lowercase().contains(&query))
-                            })
-                        })
-                    });
-            if !query.is_empty() && !file_match && !scenario_match && !draft_match {
-                continue;
-            }
-            visible_files += 1;
-            let expanded = self.expanded_suites.contains(&entry.path) || !query.is_empty();
-            let mut row = div().flex().items_center().gap_1();
-            if let Some(suite) = suite {
-                let path = entry.path.clone();
-                row = row.child(
-                    Button::new(("expand-suite", index))
-                        .ghost()
-                        .xsmall()
-                        .icon(if expanded {
-                            IconName::ChevronDown
-                        } else {
-                            IconName::ChevronRight
-                        })
-                        .tooltip(if expanded {
-                            "Collapse scenarios"
-                        } else {
-                            "Expand scenarios"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if !this.expanded_suites.remove(&path) {
-                                this.expanded_suites.insert(path.clone());
-                            }
-                            cx.notify();
-                        })),
-                );
-                let name = suite.name.clone();
-                row = row.child(
-                    Checkbox::new(("sidebar-suite", index))
-                        .label("")
-                        .checked(self.runs.read(cx).selected(&name))
-                        .disabled(
-                            self.busy || self.runs.read(cx).running() || suite.error.is_some(),
-                        )
-                        .on_change(cx.listener(move |this, checked, _, cx| {
-                            this.runs
-                                .update(cx, |panel, cx| panel.toggle_suite(&name, *checked, cx))
-                        })),
-                );
-            }
-            let live_status = suite.and_then(|suite| {
-                let counts = self.runs.read(cx).progress().counts(Some(&suite.output_id));
-                if counts.running > 0 {
-                    Some(("Running", cx.theme().primary))
-                } else if counts.failed > 0 {
-                    Some(("Failed", cx.theme().danger))
-                } else if counts.passed > 0 {
-                    Some(("Passed", cx.theme().success))
-                } else if counts.queued > 0 {
-                    Some(("Queued", cx.theme().muted_foreground))
-                } else {
-                    None
-                }
-            });
-            files = files.child(
-                row.child(
-                    Button::new(("file", index))
-                        .ghost()
-                        .selected(current && self.session.selection == Selection::Root)
-                        .child(
-                            div().flex_1().min_w_0().text_left().truncate().child(
-                                entry
-                                    .path
-                                    .file_name()
-                                    .unwrap_or_default()
-                                    .to_string_lossy()
-                                    .into_owned(),
-                            ),
-                        )
-                        .accessibility_label(
-                            entry
-                                .path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .into_owned(),
-                        )
-                        .tooltip(entry.label())
-                        .flex_1()
-                        .min_w_0()
-                        .justify_start()
-                        .disabled(self.busy)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            if this
-                                .session
-                                .open
-                                .as_ref()
-                                .is_some_and(|open| open.entry.path == entry.path)
-                            {
-                                this.select(Selection::Root, window, cx);
-                            } else {
-                                this.load_document(entry.clone(), window, cx);
-                            }
-                        })),
-                )
-                .children(
-                    live_status
-                        .map(|(status, color)| div().text_xs().text_color(color).child(status)),
-                ),
-            );
-            if current && expanded {
-                let items = self.value["scenarios"]
-                    .as_array()
-                    .or_else(|| self.value.as_array());
-                if let Some(items) = items {
-                    for (scenario, value) in items.iter().enumerate() {
-                        let label = value["label"]
-                            .as_str()
-                            .or_else(|| value["id"].as_str())
-                            .unwrap_or("Untitled")
-                            .to_string();
-                        let is_viewport = self.value.is_array();
-                        let selection = if is_viewport {
-                            Selection::Viewport(scenario)
-                        } else {
-                            Selection::Scenario(scenario)
-                        };
-                        if query.is_empty()
-                            || file_match
-                            || label.to_lowercase().contains(&query)
-                            || ["id", "url"].iter().any(|key| {
-                                value[*key]
-                                    .as_str()
-                                    .is_some_and(|text| text.to_lowercase().contains(&query))
-                            })
-                        {
-                            files = files.child(
-                                Button::new(("scenario", scenario))
-                                    .ghost()
-                                    .small()
-                                    .accessibility_label(label.clone())
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_left()
-                                            .truncate()
-                                            .child(label),
-                                    )
-                                    .selected(self.session.selection == selection)
-                                    .w_full()
-                                    .justify_start()
-                                    .pl_5()
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.select(selection, window, cx)
-                                    })),
-                            );
-                            if self.session.selection.scenario() == Some(scenario)
-                                && let Some(actions) = value["actions"].as_array()
-                            {
-                                for (index, action) in actions.iter().enumerate() {
-                                    let name = ACTIONS
-                                        .iter()
-                                        .find(|name| action.get(**name).is_some())
-                                        .copied()
-                                        .unwrap_or("unknown");
-                                    let selection = Selection::Action { scenario, index };
-                                    files = files.child(
-                                        Button::new(("action", index))
-                                            .ghost()
-                                            .small()
-                                            .accessibility_label(format!("{}. {name}", index + 1))
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .text_left()
-                                                    .truncate()
-                                                    .child(format!("{}. {name}", index + 1)),
-                                            )
-                                            .w_full()
-                                            .justify_start()
-                                            .pl_8()
-                                            .selected(self.session.selection == selection)
-                                            .disabled(self.busy)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.select(selection, window, cx)
-                                            })),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if expanded && let Some(suite) = suite {
-                for (scenario, details) in suite.scenarios.iter().enumerate() {
-                    if !file_match
-                        && ![&details.label, &details.id, &details.url]
-                            .iter()
-                            .any(|text| text.to_lowercase().contains(&query))
-                    {
-                        continue;
-                    }
-                    let entry = suite.entry.clone();
-                    files = files.child(
-                        Button::new(SharedString::from(format!(
-                            "scenario:{}:{scenario}",
-                            entry.label()
-                        )))
-                        .ghost()
-                        .small()
-                        .accessibility_label(details.label.clone())
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_left()
-                                .truncate()
-                                .child(details.label.clone()),
-                        )
-                        .tooltip(format!("{}\n{}", details.label, details.url))
-                        .w_full()
-                        .pl_5()
-                        .disabled(self.busy)
-                        .on_click(cx.listener(
-                            move |this, _, window, cx| {
-                                this.open_location(
-                                    entry.clone(),
-                                    Selection::Scenario(scenario),
-                                    window,
-                                    cx,
-                                )
-                            },
-                        )),
-                    );
-                }
-            }
-        }
-        if visible_files == 0 && self.session.workspace.is_some() {
-            files = files.child(
-                div()
-                    .id("navigator-empty")
-                    .role(Role::Status)
-                    .aria_label("No matches")
-                    .test_support()
-                    .py_6()
-                    .text_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No matches"),
-            );
-        }
-        navigation.child(files).into_any_element()
     }
 
     fn refresh_effective(&mut self, window: &mut Window, cx: &mut Context<Self>) {
