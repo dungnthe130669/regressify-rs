@@ -2,6 +2,15 @@ name: Release
 on:
   workflow_dispatch:
     inputs:
+      build:
+        type: choice
+        description: Application to build
+        required: true
+        default: both
+        options:
+          - cli
+          - desktop
+          - both
       linuxGnuX86_64:
         type: boolean
         description: Build for Linux GNU x86_64
@@ -24,12 +33,12 @@ on:
         default: false
       linuxMuslX86_64:
         type: boolean
-        description: ⚠️ Build for Linux Musl x86_64
+        description: ⚠️ Build CLI for Linux Musl x86_64 (CLI only)
         required: true
         default: false
       linuxMuslAarch64:
         type: boolean
-        description: ⚠️ Build for Linux Musl aarch64
+        description: ⚠️ Build CLI for Linux Musl aarch64 (CLI only)
         required: true
         default: false
 
@@ -41,12 +50,11 @@ jobs:
   release:
     needs: set-matrix
     timeout-minutes: ${{ matrix.timeout }}
-    name: Release
+    name: Release ${{ matrix.application }} (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
-      matrix:
-        target: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
-        include: ${{ fromJson(needs.set-matrix.outputs.include) }}
+      fail-fast: false
+      matrix: ${{ fromJson(needs.set-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -62,7 +70,17 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ matrix.application }}-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install Linux desktop dependencies
+        if: ${{ matrix.application == 'desktop' && startsWith(matrix.os, 'ubuntu') }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang cmake pkg-config \
+            libasound2-dev libclang-dev libfontconfig1-dev libfreetype6-dev \
+            libglib2.0-dev libssl-dev libvulkan-dev libwayland-dev libzstd-dev \
+            libx11-dev libx11-xcb-dev libxcb1-dev libxkbcommon-dev libxkbcommon-x11-dev
+        shell: bash
 
       - name: Install Rust
         run: ci/install-rust.sh
@@ -78,8 +96,9 @@ jobs:
       - name: Build artifacts
         run: ci/make-release.sh
         env:
-          FILE_NAME: regressify
-          PACKAGE_NAME: regressify-cli
+          FILE_NAME: ${{ matrix.binary }}
+          PACKAGE_NAME: ${{ matrix.package }}
+          CARGO_FEATURES: ${{ matrix.features }}
           OS: ${{ matrix.os }}
           TARGET: ${{ matrix.target }}
           REPO: ${{ secrets.TUYEN_GITHUB_ACTION_DEV_TOOLS_REPO }}
@@ -92,82 +111,63 @@ jobs:
     name: Set Matrix
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
-      include: ${{ steps.matrix.outputs.include }}
     steps:
-      - id: matrix
+      - uses: actions/checkout@v6
+        with:
+          ref: release
+
+      - name: Test release selection and build arguments
         run: |
-          add_to_matrix() {
-            local os=$1
-            local target=$2
-            local timeout=$3
+          python -m pip install PyYAML==6.0.3
+          python ci/test-release.py
 
-            MATRIX=$(echo $MATRIX | jq \
-              --arg target "$target" \
-              '. += [$target]'
-            )
+      - id: matrix
+        shell: python
+        env:
+          BUILD: ${{ inputs.build }}
+          MACOS_X86_64: ${{ inputs.macosX86_64 }}
+          MACOS_AARCH64: ${{ inputs.macosAarch64 }}
+          WINDOWS_X86_64: ${{ inputs.windowsX86_64 }}
+          LINUX_MUSL_X86_64: ${{ inputs.linuxMuslX86_64 }}
+          LINUX_MUSL_AARCH64: ${{ inputs.linuxMuslAarch64 }}
+          LINUX_GNU_X86_64: ${{ inputs.linuxGnuX86_64 }}
+        run: |
+          import json
+          import os
 
-            INCLUDE=$(echo $INCLUDE | jq \
-              --arg target "$target" \
-              --arg os "$os" \
-              --argjson timeout $timeout \
-              '. += [{
-                "target": $target,
-                "os": $os,
-                "timeout": $timeout
-              }]'
-            )
-          }
-
-          MATRIX=$(jq -n '[]')
-          INCLUDE=$(jq -n '[]')
-
-          if [ "${{ github.event.inputs.macosX86_64 }}" = "true" ]; then
-            add_to_matrix \
-              "macos-latest" \
-              "x86_64-apple-darwin" \
-              15
-          fi
-
-          if [ "${{ github.event.inputs.macosAarch64 }}" = "true" ]; then
-            add_to_matrix \
-              "macos-latest" \
-              "aarch64-apple-darwin" \
-              15
-          fi
-
-          if [ "${{ github.event.inputs.windowsX86_64 }}" = "true" ]; then
-            add_to_matrix \
-              "windows-latest" \
-              "x86_64-pc-windows-msvc" \
-              20
-          fi
-
-          if [ "${{ github.event.inputs.linuxMuslX86_64 }}" = "true" ]; then
-            add_to_matrix \
-              "ubuntu-22.04" \
-              "x86_64-unknown-linux-musl" \
-              10
-          fi
-
-          if [ "${{ github.event.inputs.linuxMuslAarch64 }}" = "true" ]; then
-            add_to_matrix \
-              "ubuntu-22.04" \
-              "aarch64-unknown-linux-musl" \
-              10
-          fi
-
-          if [ "${{ github.event.inputs.linuxGnuX86_64 }}" = "true" ] || [ "$(echo $MATRIX | jq '. | length')" -eq 0 ]; then
-            add_to_matrix \
-              "ubuntu-22.04" \
-              "x86_64-unknown-linux-gnu" \
-              10
-          fi
-
-          echo "Matrix:"
-          echo "$MATRIX"
-
-          echo "Include:"
-          echo "$INCLUDE"
-
-          echo "matrix=$(echo $MATRIX | jq -c)" >> "$GITHUB_OUTPUT"
-          echo "include=$(echo $INCLUDE | jq -c)" >> "$GITHUB_OUTPUT"
+          build = os.environ.get("BUILD") or "both"
+          if build not in ("cli", "desktop", "both"):
+              raise SystemExit("Build must be cli, desktop, or both")
+          applications = ("cli", "desktop") if build == "both" else (build,)
+          platforms = [
+              ("MACOS_X86_64", "macos-15-intel", "x86_64-apple-darwin", 15),
+              ("MACOS_AARCH64", "macos-15", "aarch64-apple-darwin", 15),
+              ("WINDOWS_X86_64", "windows-latest", "x86_64-pc-windows-msvc", 20),
+              ("LINUX_MUSL_X86_64", "ubuntu-22.04", "x86_64-unknown-linux-musl", 10),
+              ("LINUX_MUSL_AARCH64", "ubuntu-22.04", "aarch64-unknown-linux-musl", 10),
+              ("LINUX_GNU_X86_64", "ubuntu-22.04", "x86_64-unknown-linux-gnu", 10),
+          ]
+          selected = [platform for platform in platforms if os.environ.get(platform[0]) == "true"]
+          selected = selected or [platforms[-1]]
+          include = []
+          for _, runner, target, timeout in selected:
+              for application in applications:
+                  desktop = application == "desktop"
+                  if desktop and target.endswith("-musl"):
+                      print(f"::notice::Skipping desktop for {target}; Musl releases are CLI-only.")
+                      continue
+                  include.append({
+                      "application": application,
+                      "os": "ubuntu-24.04" if desktop and runner.startswith("ubuntu") else runner,
+                      "target": target,
+                      "timeout": 90 if desktop else timeout,
+                      "binary": "regressify-desktop" if desktop else "regressify",
+                      "package": "regressify-desktop" if desktop else "regressify-cli",
+                      "features": "gui" if desktop else "",
+                  })
+          if not include:
+              raise SystemExit("Desktop releases require a Linux GNU, macOS, or Windows target; Musl is CLI-only.")
+          matrix = {"include": include}
+          print(json.dumps(matrix, indent=2))
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")

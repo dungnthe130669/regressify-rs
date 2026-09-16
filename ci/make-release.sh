@@ -76,12 +76,16 @@ echo "Embedding git hash: $BINARY_GIT_HASH"
 
 if [ -z "$SKIP_BUILD" ]
 then
-  if [ -z "$NO_DEFAULT_FEATURES" ]
+  build_args=(--locked --bin "$FILE_NAME" --release --target "$TARGET")
+  if [ -n "$NO_DEFAULT_FEATURES" ]
   then
-    cargo build --locked --bin $FILE_NAME --release --target $TARGET
-  else
-    cargo build --locked --bin $FILE_NAME --release --target $TARGET --no-default-features
+    build_args+=(--no-default-features)
   fi
+  if [ -n "$CARGO_FEATURES" ]
+  then
+    build_args+=(--features "$CARGO_FEATURES")
+  fi
+  cargo build "${build_args[@]}"
 fi
 
 cd target/$TARGET/release

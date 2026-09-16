@@ -30,6 +30,31 @@ executable picker is needed. It launches itself in a private headless worker mod
 to isolate run settings and browser processes. Signed installers and auto-update
 are not included.
 
+## Release Pipeline
+
+The [Release workflow](../.github/workflows/tuyen-release.yml) has a `build`
+choice: `cli`, `desktop`, or `both` (default). The existing platform switches
+select targets; selecting none falls back to Linux GNU x86_64.
+
+Every application/target pair is an independent parallel job. CLI and desktop
+jobs have separate caches and artifact names, and one failed job does not cancel
+the others. Desktop builds enable `gui`, which includes the bundled local engine;
+CLI feature flags remain unchanged. Desktop jobs have a 90-minute timeout.
+
+Desktop targets are Linux GNU x86_64 (Ubuntu 24.04 build host), macOS x86_64 and
+ARM64 (native macOS 15 runners), and Windows x86_64. Musl targets remain CLI-only;
+selecting only Musl with `desktop` fails early with an actionable error. With
+`both`, Musl jobs build the CLI and desktop jobs run for selected supported targets.
+
+Packages are `regressify-cli-<target>` or `regressify-desktop-<target>` in both
+ZIP and 7z formats, with SHA-256 sidecars. The existing release-branch checkout,
+destination repository, and `linux`/`macos`/`windows` release tags are retained.
+
+Release tests run before generating the matrix. To run them locally, install
+`PyYAML==6.0.3` for Python and run `python ci/test-release.py`. Bash is also required;
+set `BASH_PATH` to Git Bash on Windows. The tests execute all 192 application/target
+selections and stub Cargo to check arguments without compiling or publishing.
+
 ## Workspace and Files
 
 The navigator searches suite paths and scenario labels, IDs, and URLs across the
