@@ -39,6 +39,34 @@ pub struct Field {
 }
 
 impl Field {
+    pub fn stepped_value(&self, value: &Value, increase: bool) -> Result<Value> {
+        ensure!(
+            matches!(self.kind, FieldKind::Number { .. }),
+            "{} is not numeric",
+            self.label
+        );
+        let number = value.as_f64().unwrap_or(0.0);
+        let (step, minimum, maximum) = match self.key.as_str() {
+            "misMatchThreshold" => (0.1, 0.0, 100.0),
+            "asyncCaptureLimit" | "asyncCompareLimit" | "width" | "height" => {
+                (1.0, 1.0, u32::MAX as f64)
+            }
+            key if key.ends_with("Timeout") || matches!(key, "delay" | "postInteractionWait") => {
+                (100.0, 0.0, u32::MAX as f64)
+            }
+            _ => (1.0, 0.0, u32::MAX as f64),
+        };
+        let next = ((number + if increase { step } else { -step }) * 1000.0).round() / 1000.0;
+        let next = next.clamp(minimum, maximum);
+        Ok(
+            if matches!(self.kind, FieldKind::Number { integer: true }) {
+                json!(next as u64)
+            } else {
+                json!(next)
+            },
+        )
+    }
+
     pub fn parse(&self, text: &str) -> Result<Value> {
         Ok(match &self.kind {
             FieldKind::Text => json!(text),
@@ -322,6 +350,35 @@ pub fn origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numeric_steps_respect_field_ranges_and_types() {
+        let fields = fields(&Scope::Suite).unwrap();
+        let workers = fields
+            .iter()
+            .find(|field| field.key == "asyncCaptureLimit")
+            .unwrap();
+        assert_eq!(workers.stepped_value(&json!(5), true).unwrap(), json!(6));
+        assert_eq!(workers.stepped_value(&json!(1), false).unwrap(), json!(1));
+        let threshold = fields
+            .iter()
+            .find(|field| field.key == "misMatchThreshold")
+            .unwrap();
+        assert_eq!(
+            threshold.stepped_value(&json!(0.1), true).unwrap(),
+            json!(0.2)
+        );
+        assert_eq!(
+            threshold.stepped_value(&json!(100), true).unwrap(),
+            json!(100.0)
+        );
+        assert_eq!(
+            threshold.stepped_value(&json!(0), false).unwrap(),
+            json!(0.0)
+        );
+        let text = fields.iter().find(|field| field.key == "id").unwrap();
+        assert!(text.stepped_value(&json!("id"), true).is_err());
+    }
     use crate::desktop::document::{ACTIONS, action_template};
 
     #[test]

@@ -436,6 +436,91 @@ async fn navigator_reports_empty_results_and_has_a_keyboard_entry(cx: &mut TestA
     .await;
 }
 
+#[gpui_kit::test]
+async fn setting_search_reveals_advanced_fields_without_changing_the_draft(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
+        window.render_frame(cx);
+        assert!(window.try_find("field-debug").is_none());
+        window.click("field-search", cx);
+        window.input("debug", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("field-debug").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(!view.read(cx).session.dirty());
+        window.click("field-debug", cx);
+        assert_eq!(view.read(cx).session.value().unwrap()["debug"], true);
+        window.click("overrides-only", cx);
+        assert!(window.find("field-debug").visible());
+        window.click("reset-debug", cx);
+        assert!(
+            view.read(cx)
+                .session
+                .value()
+                .unwrap()
+                .get("debug")
+                .is_none()
+        );
+        assert!(window.try_find("field-debug").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
+        window.render_frame(cx);
+        window.click("field-search", cx);
+        window.input("asyncCaptureLimit", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("field-url").is_none()
+            && window.try_find("increase-asyncCaptureLimit").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("increase-asyncCaptureLimit", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["asyncCaptureLimit"],
+            6
+        );
+        assert_eq!(window.find("field-asyncCaptureLimit").value(), Some("6"));
+        window.click("field-search", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        view.update(cx, |this, cx| {
+            this.collapsed_fields.insert(3);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("field-asyncCaptureLimit").is_none());
+        window.click("expand-fields", cx);
+        assert!(window.try_find("field-asyncCaptureLimit").is_some());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["asyncCaptureLimit"],
+            6
+        );
+    })
+    .unwrap();
+}
+
 async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));

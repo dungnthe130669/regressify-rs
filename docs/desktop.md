@@ -62,6 +62,13 @@ Choose Initialize workspace in Runs to invoke the existing non-destructive
 
 ## Editing
 
+Find a setting searches names, keys, descriptions, and groups, including advanced
+settings. Overrides only narrows the form to explicit values. Groups can be
+collapsed independently or expanded together without changing the draft. Numeric
+steppers start from the effective inherited value; mismatch percentages remain
+within 0-100 and concurrency counts remain positive. File pickers sit beside
+their input. Field-issue links reveal the affected control even under filters.
+
 The workspace opens to an overview with suite/scenario totals, selection counts,
 configuration issues, and per-suite status. Edit opens the selected suite; Overview
 returns to the workspace without discarding an open draft. The header identifies

@@ -101,6 +101,9 @@ pub struct Workbench {
     overview: bool,
     expanded_suites: BTreeSet<PathBuf>,
     selected_only: bool,
+    field_search: Entity<InputState>,
+    overrides_only: bool,
+    collapsed_fields: BTreeSet<usize>,
 }
 
 impl Workbench {
@@ -135,6 +138,9 @@ impl Workbench {
             }
         });
         let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
+        let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a setting"));
+        let field_search_subscription =
+            cx.subscribe(&field_search, |_, _, _: &InputEvent, cx| cx.notify());
         let preferences = Preferences::path().and_then(|path| Preferences::load(&path));
         let status = preferences
             .as_ref()
@@ -164,7 +170,12 @@ impl Workbench {
             resolved,
             search,
             bindings: Vec::new(),
-            _subscriptions: vec![source_subscription, search_subscription, run_subscription],
+            _subscriptions: vec![
+                source_subscription,
+                search_subscription,
+                run_subscription,
+                field_search_subscription,
+            ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
             focus,
@@ -184,6 +195,9 @@ impl Workbench {
             overview: true,
             expanded_suites: BTreeSet::new(),
             selected_only: false,
+            field_search,
+            overrides_only: false,
+            collapsed_fields: BTreeSet::new(),
         }
     }
 
@@ -323,6 +337,7 @@ impl Workbench {
             "Loading document...",
             move || workspace.open_document(entry),
             move |this, open, window, cx| {
+                this.reset_field_view(window, cx);
                 this.expanded_suites.insert(open.entry.path.clone());
                 this.session.open = Some(open);
                 this.overview = false;
@@ -775,6 +790,7 @@ impl Workbench {
         }
         match self.session.select(selection) {
             Ok(()) => {
+                self.reset_field_view(window, cx);
                 if let Some(open) = &self.session.open {
                     self.expanded_suites.insert(open.entry.path.clone());
                 }
@@ -1377,6 +1393,73 @@ impl Workbench {
         format!("{origin}: {text}")
     }
 
+    fn reset_field_view(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.field_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.overrides_only = false;
+        self.collapsed_fields.clear();
+    }
+
+    fn adjust_field(
+        &mut self,
+        field: &Field,
+        increase: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy {
+            return;
+        }
+        let result = (|| -> Result<Value> {
+            let binding = self
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == field.key)
+                .ok_or_else(|| anyhow!("Field is unavailable"))?;
+            let current = if let Control::Input(input) = &binding.control {
+                let text = input.read(cx).value();
+                if text.is_empty() {
+                    self.effective[&schema::effective_key(&field.key)].clone()
+                } else {
+                    field.parse(&text)?
+                }
+            } else {
+                return Err(anyhow!("Field is not numeric"));
+            };
+            field.stepped_value(&current, increase)
+        })();
+        match result {
+            Ok(value) => {
+                let text = field.display(&value);
+                self.change_field(field, &text, window, cx);
+                if !self.field_errors.contains_key(&field.key)
+                    && let Some(binding) = self
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.field.key == field.key)
+                    && let Control::Input(input) = &binding.control
+                {
+                    input.update(cx, |state, cx| state.set_value(text, window, cx));
+                }
+            }
+            Err(error) => {
+                self.field_errors
+                    .insert(field.key.clone(), format!("{error:#}"));
+                cx.notify();
+            }
+        }
+    }
+
+    fn reveal_problem(&mut self, key: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.tab = 0;
+        self.overview = false;
+        self.overrides_only = false;
+        self.field_search
+            .update(cx, |state, cx| state.set_value(key.to_string(), window, cx));
+        self.collapsed_fields.clear();
+        cx.notify();
+    }
+
     fn render_fields(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self
             .value
@@ -1390,6 +1473,7 @@ impl Workbench {
             .p_6()
             .w_full();
         let action = matches!(self.session.selection, Selection::Action { .. });
+        let query = self.field_search.read(cx).value().trim().to_lowercase();
         let mut bindings: Vec<_> = self.bindings.iter().enumerate().collect();
         bindings.sort_by_key(|(index, binding)| {
             (
@@ -1403,9 +1487,38 @@ impl Workbench {
         });
         let mut current_group = None;
         let mut section = div().grid().grid_cols(2).gap_4();
+        let mut matching = 0;
         for (_, binding) in bindings {
             let field = &binding.field;
-            if !self.advanced
+            let explicit = selected
+                .get(&field.key)
+                .is_some_and(|value| !value.is_null());
+            let error = self.field_errors.contains_key(&field.key);
+            let group = if action {
+                (0, "Action properties")
+            } else {
+                design::group(&field.key)
+            };
+            if !query.is_empty()
+                && ![
+                    field.key.as_str(),
+                    field.label.as_str(),
+                    field.description.as_str(),
+                    group.1,
+                ]
+                .iter()
+                .any(|text| text.to_lowercase().contains(&query))
+            {
+                continue;
+            }
+            if self.overrides_only && !explicit && !error {
+                continue;
+            }
+            if query.is_empty()
+                && !self.overrides_only
+                && !explicit
+                && !error
+                && !self.advanced
                 && !field.required
                 && self.session.selection == Selection::Root
                 && ![
@@ -1421,15 +1534,12 @@ impl Workbench {
             {
                 continue;
             }
-            let group = if action {
-                (0, "Action properties")
-            } else {
-                design::group(&field.key)
-            };
+            matching += 1;
             if current_group != Some(group.0) {
                 if current_group.is_some() {
                     form = form.child(section);
                 }
+                let collapsed = self.collapsed_fields.contains(&group.0) && query.is_empty();
                 form = form.child(
                     div()
                         .flex()
@@ -1437,15 +1547,29 @@ impl Workbench {
                         .gap_3()
                         .pt_1()
                         .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(group.1),
+                            Button::new(("field-group", group.0))
+                                .ghost()
+                                .small()
+                                .icon(if collapsed {
+                                    IconName::ChevronRight
+                                } else {
+                                    IconName::ChevronDown
+                                })
+                                .label(group.1)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.collapsed_fields.remove(&group.0) {
+                                        this.collapsed_fields.insert(group.0);
+                                    }
+                                    cx.notify();
+                                })),
                         )
                         .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
                 );
                 section = div().grid().grid_cols(2).gap_4();
                 current_group = Some(group.0);
+            }
+            if self.collapsed_fields.contains(&group.0) && query.is_empty() && !error {
+                continue;
             }
             let value = selected.get(&field.key).unwrap_or(&Value::Null);
             let explicit = !value.is_null();
@@ -1465,6 +1589,7 @@ impl Workbench {
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .justify_between()
                     .gap_2()
                     .child(
@@ -1525,6 +1650,58 @@ impl Workbench {
                     .id(field_id)
                     .small()
                     .disabled(self.busy)
+                    .when(matches!(field.kind, FieldKind::Number { .. }), |input| {
+                        let decrease = field.clone();
+                        let increase = field.clone();
+                        input.suffix(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_1()
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "decrease-{}",
+                                        field.key
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Minus)
+                                    .tooltip(format!("Decrease {}", field.label))
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.adjust_field(&decrease, false, window, cx)
+                                    })),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!(
+                                        "increase-{}",
+                                        field.key
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Plus)
+                                    .tooltip(format!("Increase {}", field.label))
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.adjust_field(&increase, true, window, cx)
+                                    })),
+                                ),
+                        )
+                    })
+                    .when(field.key.ends_with("Path"), |input| {
+                        let key = field.key.clone();
+                        input.suffix(
+                            Button::new(SharedString::from(format!("browse-{key}")))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::FolderOpen)
+                                .tooltip("Choose a workspace file")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.choose_field_file(key.clone(), window, cx)
+                                })),
+                        )
+                    })
                     .into_any_element(),
                 Control::Textarea(state) => div()
                     .id(field_id)
@@ -1584,7 +1761,7 @@ impl Workbench {
                 }
             };
             row = row.child(control);
-            if field.key.ends_with("Path") || field.key == "file" {
+            if field.key == "file" {
                 let key = field.key.clone();
                 row = row.child(
                     Button::new(SharedString::from(format!("browse-{key}")))
@@ -1611,10 +1788,10 @@ impl Workbench {
         if current_group.is_some() {
             form = form.child(section);
         }
-        if self.bindings.is_empty() {
+        if matching == 0 {
             form = form.child(div().text_color(cx.theme().muted_foreground).child(
                 if self.session.open.is_some() {
-                    "No fields selected"
+                    "No matching settings"
                 } else {
                     "No document open"
                 },
@@ -1677,10 +1854,26 @@ impl Workbench {
                 div()
                     .px_4()
                     .py_4()
-                    .text_lg()
-                    .font_weight(FontWeight::MEDIUM)
-                    .truncate()
-                    .child(title),
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .id("editor-heading")
+                            .role(Role::Heading)
+                            .aria_label(self.selection_title())
+                            .test_support()
+                            .text_xl()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(self.selection_title()),
+                    ),
             )
             .child(
                 div()
@@ -1718,6 +1911,77 @@ impl Workbench {
                             })),
                     ),
             )
+            .when(self.tab == 0, |editor| {
+                editor.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_3()
+                        .px_5()
+                        .py_3()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            Input::new(&self.field_search)
+                                .id("field-search")
+                                .prefix(IconName::Search)
+                                .cleanable(true)
+                                .small()
+                                .w(px(250.)),
+                        )
+                        .child(
+                            Checkbox::new("overrides-only")
+                                .label("Overrides only")
+                                .checked(self.overrides_only)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    this.overrides_only = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().flex_1())
+                        .child(
+                            Button::new("expand-fields")
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::assets::IconName::ChevronsUpDown)
+                                .tooltip("Expand all settings")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.collapsed_fields.clear();
+                                    cx.notify();
+                                })),
+                        ),
+                )
+            })
+            .when(!self.field_errors.is_empty(), |editor| {
+                editor.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .px_5()
+                        .py_2()
+                        .bg(cx.theme().danger.opacity(0.07))
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::CircleAlert)
+                                .small()
+                                .text_color(cx.theme().danger),
+                        )
+                        .child(format!("{} field issue(s)", self.field_errors.len()))
+                        .children(self.field_errors.keys().map(|key| {
+                            let key = key.clone();
+                            Button::new(SharedString::from(format!("problem-{key}")))
+                                .ghost()
+                                .small()
+                                .label(key.clone())
+                                .text_color(cx.theme().danger)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.reveal_problem(&key, window, cx)
+                                }))
+                        })),
+                )
+            })
             .child(div().flex_1().min_h_0().child(content))
             .children(self.diagnostic.as_ref().map(|diagnostic| {
                 div()
@@ -1734,6 +1998,35 @@ impl Workbench {
                     .child(diagnostic.clone())
             }))
             .into_any_element()
+    }
+
+    fn selection_title(&self) -> String {
+        match self.session.selection {
+            Selection::Root => self
+                .session
+                .open
+                .as_ref()
+                .and_then(|open| open.entry.suite_name())
+                .unwrap_or_else(|| "Workspace settings".into()),
+            Selection::Scenario(index) => self.value["scenarios"][index]["label"]
+                .as_str()
+                .or_else(|| self.value["scenarios"][index]["id"].as_str())
+                .unwrap_or("Scenario")
+                .into(),
+            Selection::Action { scenario, index } => {
+                let action = &self.value["scenarios"][scenario]["actions"][index];
+                let kind = ACTIONS
+                    .iter()
+                    .find(|kind| action.get(**kind).is_some())
+                    .copied()
+                    .unwrap_or("Action");
+                format!("{}. {}", index + 1, kind)
+            }
+            Selection::Viewport(index) => self.value[index]["label"]
+                .as_str()
+                .unwrap_or("Viewport")
+                .into(),
+        }
     }
 }
 
