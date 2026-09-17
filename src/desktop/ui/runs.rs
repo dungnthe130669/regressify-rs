@@ -20,7 +20,7 @@ pub(super) enum RunEvent {
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
-struct ChooseCommand {
+struct RequestCommand {
     index: usize,
 }
 
@@ -210,12 +210,49 @@ impl RunPanel {
     }
 
     fn can_start(&self) -> bool {
+        self.can_request(self.command)
+    }
+
+    fn can_request(&self, command: RunCommand) -> bool {
         !self.running()
             && !self.disabled
             && self.errors.is_empty()
             && self.root.is_some()
-            && (!self.command.supports_suites()
+            && (!command.supports_suites()
                 || (!self.selection.is_empty() && self.catalog_error.is_none()))
+    }
+
+    fn flush_options(&mut self, cx: &App) -> Result<()> {
+        let mut options = self.options.clone();
+        for binding in &self.bindings {
+            let text = match &binding.control {
+                Control::Input(input) => input.read(cx).value().to_string(),
+                Control::Textarea(input) => input.read(cx).value().to_string(),
+                _ => continue,
+            };
+            if text == binding.field.display(&options[&binding.field.key])
+                && !self.errors.contains_key(&binding.field.key)
+            {
+                continue;
+            }
+            match binding.field.parse(&text) {
+                Ok(value) => {
+                    options[&binding.field.key] = value;
+                    self.errors.remove(&binding.field.key);
+                }
+                Err(error) => {
+                    self.errors
+                        .insert(binding.field.key.clone(), format!("{error:#}"));
+                }
+            }
+        }
+        anyhow::ensure!(
+            self.errors.is_empty(),
+            "Correct run options before continuing"
+        );
+        serde_json::from_value::<RunOptions>(options.clone())?;
+        self.options = options;
+        Ok(())
     }
 
     pub(super) fn output_root(&self) -> Result<PathBuf> {
@@ -233,7 +270,13 @@ impl RunPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.running() {
+        if self.running() || self.disabled {
+            return;
+        }
+        if let Err(error) = self.flush_options(cx) {
+            self.status = format!("{error:#}");
+            self.tab = 2;
+            cx.notify();
             return;
         }
         self.command = command;
@@ -311,6 +354,12 @@ impl RunPanel {
     }
 
     fn request_start(&mut self, cx: &mut Context<Self>) {
+        if let Err(error) = self.flush_options(cx) {
+            self.status = format!("{error:#}");
+            self.tab = 2;
+            cx.notify();
+            return;
+        }
         if !self.can_start() {
             return;
         }
@@ -322,7 +371,30 @@ impl RunPanel {
         cx.emit(RunEvent::Requested);
     }
 
+    pub(super) fn request_command(
+        &mut self,
+        command: RunCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled {
+            return;
+        }
+        self.choose(command, window, cx);
+        if self.command != command || !self.errors.is_empty() {
+            return;
+        }
+        self.tab = 0;
+        self.confirmation = false;
+        self.request_start(cx);
+    }
+
     pub(super) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(error) = self.flush_options(cx) {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
         if !self.can_start() {
             return;
         }
@@ -570,9 +642,9 @@ impl Render for RunPanel {
             .flex_col()
             .size_full()
             .min_w_0()
-            .on_action(cx.listener(|this, action: &ChooseCommand, window, cx| {
+            .on_action(cx.listener(|this, action: &RequestCommand, window, cx| {
                 if let Some(command) = RunCommand::ALL.get(action.index) {
-                    this.choose(*command, window, cx);
+                    this.request_command(*command, window, cx);
                 }
             }))
             .child(
@@ -585,30 +657,69 @@ impl Render for RunPanel {
                     .py_3()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .children(
+                        [
+                            (
+                                "run-test",
+                                RunCommand::Test,
+                                gpui_kit::assets::IconName::Play,
+                            ),
+                            (
+                                "run-reference",
+                                RunCommand::Reference,
+                                gpui_kit::assets::IconName::Camera,
+                            ),
+                            (
+                                "run-approve",
+                                RunCommand::Approve,
+                                gpui_kit::assets::IconName::Check,
+                            ),
+                            (
+                                "run-compare",
+                                RunCommand::Compare,
+                                gpui_kit::assets::IconName::Images,
+                            ),
+                        ]
+                        .into_iter()
+                        .map(|(id, command, icon)| {
+                            Button::new(id)
+                                .small()
+                                .icon(icon)
+                                .label(command.action_label())
+                                .when(command == RunCommand::Test, |button| button.primary())
+                                .disabled(!self.can_request(command))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.request_command(command, window, cx)
+                                }))
+                        }),
+                    )
                     .child(
-                        Button::new("choose-command")
-                            .label(self.command.label())
-                            .disabled(running || self.disabled)
+                        Button::new("more-run-actions")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Ellipsis)
+                            .accessibility_label("More actions")
+                            .tooltip("More actions")
+                            .disabled(running || self.disabled || self.root.is_none())
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu.action_context(focus.clone());
-                                for (index, command) in RunCommand::ALL.iter().enumerate() {
-                                    menu = menu
-                                        .menu(command.label(), Box::new(ChooseCommand { index }));
+                                for (index, command) in RunCommand::ALL
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, command)| !command.supports_suites())
+                                {
+                                    menu = menu.menu(
+                                        command.action_label(),
+                                        Box::new(RequestCommand { index }),
+                                    );
                                 }
                                 menu
                             }),
                     )
                     .child(
-                        Button::new("start-command")
-                            .primary()
-                            .icon(gpui_kit::assets::IconName::Play)
-                            .label("Run")
-                            .disabled(!self.can_start())
-                            .on_click(cx.listener(|this, _, _, cx| this.request_start(cx))),
-                    )
-                    .child(
                         Button::new("cancel-command")
                             .icon(gpui_kit::assets::IconName::Square)
+                            .label("Stop")
                             .tooltip("Cancel running command")
                             .disabled(!running)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
@@ -625,13 +736,35 @@ impl Render for RunPanel {
                         .px_4()
                         .py_3()
                         .bg(cx.theme().warning.opacity(0.12))
-                        .child(div().flex_1().child(format!(
-                                "{} will modify {}",
-                                self.command.label(),
-                                self.output_root()
-                                    .map(|path| display_path(&path))
-                                    .unwrap_or_default()
-                            )))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(self.command.confirmation_message()),
+                                )
+                                .child(div().text_sm().child(if self.command.supports_suites() {
+                                    format!("{} selected suites", self.selection.len())
+                                } else {
+                                    "Workspace images".into()
+                                }))
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .truncate()
+                                        .child(
+                                            self.output_root()
+                                                .map(|path| display_path(&path))
+                                                .unwrap_or_default(),
+                                        ),
+                                ),
+                        )
                         .child(Button::new("run-confirm-cancel").label("Cancel").on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.confirmation = false;
@@ -641,7 +774,7 @@ impl Render for RunPanel {
                         .child(
                             Button::new("run-confirm")
                                 .danger()
-                                .label("Confirm")
+                                .label(self.command.action_label())
                                 .on_click(cx.listener(|this, _, _, cx| this.request_start(cx))),
                         ),
                 )

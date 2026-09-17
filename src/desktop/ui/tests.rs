@@ -1023,7 +1023,7 @@ async fn multiple_suites_can_be_checked_and_empty_selection_cannot_run(cx: &mut 
         });
         window.render_frame(cx);
         window.within("run-tabs").click(1_usize, cx);
-        window.click("start-command", cx);
+        window.click("run-test", cx);
         assert!(!view.read(cx).runs.read(cx).running());
         window.click("suite-check-ui-test", cx);
         window.click("suite-check-second", cx);
@@ -1031,7 +1031,7 @@ async fn multiple_suites_can_be_checked_and_empty_selection_cannot_run(cx: &mut 
         assert_eq!(window.find("suite-check-ui-test").checked(), Some(true));
         window.click("select-all-suites", cx);
         assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
-        window.click("start-command", cx);
+        window.click("run-test", cx);
         assert!(!view.read(cx).runs.read(cx).running());
     })
     .unwrap();
@@ -2042,6 +2042,72 @@ async fn item_removal_requires_confirmation_and_is_undoable(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+fn direct_commands_flush_pending_run_options_and_preserve_invalid_input(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+        });
+        window.render_frame(cx);
+        window.within("run-tabs").click(2_usize, cx);
+        window.click("run-field-asyncCaptureLimit", cx);
+        window.press("ctrl-a", cx);
+        window.input("12", cx);
+        window.click("run-reference", cx);
+        assert_eq!(window.find("run-confirm").label(), Some("Run Reference"));
+        window.click("run-confirm-cancel", cx);
+        window.within("run-tabs").click(2_usize, cx);
+        assert_eq!(
+            window.find("run-field-asyncCaptureLimit").value(),
+            Some("12")
+        );
+        window.click("run-field-asyncCaptureLimit", cx);
+        window.press("ctrl-a", cx);
+        window.input("invalid count", cx);
+        window.click("run-approve", cx);
+        assert!(window.try_find("run-confirm").is_none());
+        assert_eq!(
+            window.find("run-field-asyncCaptureLimit").value(),
+            Some("invalid count")
+        );
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn direct_run_commands_do_not_require_a_mode_selection(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+        });
+        window.render_frame(cx);
+        assert!(
+            window.try_find("run-reference").is_some(),
+            "Reference must be a direct action"
+        );
+        assert!(window.try_find("choose-command").is_none());
+        assert!(window.try_find("start-command").is_none());
+        assert_eq!(window.find("run-test").label(), Some("Run Test"));
+        assert_eq!(window.find("run-approve").label(), Some("Approve Results"));
+        assert_eq!(window.find("run-compare").label(), Some("Compare Results"));
+        window.click("run-reference", cx);
+        assert_eq!(window.find("run-confirm").label(), Some("Run Reference"));
+        assert!(!view.read(cx).runs.read(cx).running());
+        window.click("run-confirm-cancel", cx);
+        window.click("run-approve", cx);
+        assert_eq!(window.find("run-confirm").label(), Some("Approve Results"));
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -2054,7 +2120,7 @@ fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppConte
             });
         });
         window.render_frame(cx);
-        window.click("start-command", cx);
+        window.click("run-approve", cx);
         assert!(window.find("run-confirm").visible());
         assert!(!view.read(cx).runs.read(cx).running());
         window.click("run-confirm-cancel", cx);
@@ -2081,7 +2147,7 @@ async fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mu
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(view.read(cx).main_tab, 1);
-        assert!(window.find("start-command").visible());
+        assert!(window.find("run-test").visible());
         window.within("run-tabs").click(2_usize, cx);
         assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
         view.update(cx, |this, cx| {

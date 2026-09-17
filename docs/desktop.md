@@ -242,14 +242,18 @@ or arbitrary executables.
 
 ## Running Commands
 
-Runs offers test, reference capture, compare, approve, snapshot, optimize,
-install, and init with applicable options. Suite checkboxes in the navigator and
-Runs support multiple selections and Select all. No selection means Run is
-disabled, never an implicit all-suite run. Invalid suites remain visible for
+Runs provides direct Run Test, Run Reference, Approve Results, and Compare
+Results buttons. There is no command-mode selector followed by a generic Run.
+More actions provides Build Report, Optimize Images, Install Chromium, and
+Initialize Workspace. Suite checkboxes in the navigator and Runs support multiple
+selections and Select all. No selection disables suite commands, never an
+implicit all-suite run. Invalid suites remain visible for
 repair and are excluded from Select all. Run suite verifies the selected file,
 sets its scope, and opens Runs;
-Run starts execution after draft and artifact confirmations. Reference capture,
-approve, and optimize require confirmation.
+direct commands start execution after any draft and artifact confirmations.
+Reference capture, approve, and optimize require action-named confirmations
+describing the baseline or image changes. Pending option text is read before
+command changes and execution; invalid option drafts are retained for correction.
 
 The CLI has no single-scenario run flag. Selecting a scenario for editing does
 not restrict execution to it. Suite selections use exact escaped names;

@@ -81,6 +81,29 @@ impl RunCommand {
     pub fn needs_confirmation(self) -> bool {
         matches!(self, Self::Reference | Self::Approve | Self::Optimize)
     }
+    pub fn action_label(self) -> &'static str {
+        match self {
+            Self::Test => "Run Test",
+            Self::Reference => "Run Reference",
+            Self::Compare => "Compare Results",
+            Self::Approve => "Approve Results",
+            Self::Snapshot => "Build Report",
+            Self::Optimize => "Optimize Images",
+            Self::Install => "Install Chromium",
+            Self::Init => "Initialize Workspace",
+            Self::Version => "Show Version",
+        }
+    }
+
+    pub fn confirmation_message(self) -> &'static str {
+        match self {
+            Self::Reference => "Replace reference images with new captures?",
+            Self::Approve => "Replace reference images with the selected test results?",
+            Self::Optimize => "Optimize the saved image files in place?",
+            _ => "",
+        }
+    }
+
     pub fn captures(self) -> bool {
         matches!(self, Self::Test | Self::Reference)
     }
