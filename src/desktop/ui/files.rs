@@ -101,6 +101,9 @@ impl Workbench {
     }
 
     pub(super) fn sync_modal(&self, cx: &mut Context<Self>) {
+        let disabled = self.busy || self.runs.read(cx).running();
+        self.results
+            .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
         self.runs
             .update(cx, |panel, cx| panel.set_disabled(self.busy, cx));
         self.modal.update(cx, |state, cx| {

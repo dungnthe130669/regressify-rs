@@ -12,6 +12,39 @@ pub(crate) fn status_color(status: Status, cx: &App) -> Hsla {
 }
 
 impl RunPanel {
+    fn outcome_heading(&self) -> String {
+        let counts = self.manager.progress.counts(None);
+        match &self.manager.outcome {
+            Some(RunOutcome::Cancelled) => "Run stopped".into(),
+            Some(RunOutcome::Failed(_)) => "Command failed".into(),
+            Some(RunOutcome::Completed) if counts.failed > 0 => {
+                format!("{} failed, {} passed", counts.failed, counts.passed)
+            }
+            Some(RunOutcome::Completed) if counts.captured > 0 => {
+                format!("{} captured, not compared", counts.captured)
+            }
+            Some(RunOutcome::Completed) if counts.passed > 0 => format!("{} passed", counts.passed),
+            Some(RunOutcome::Completed) => {
+                match self.manager.request.as_ref().map(|request| request.command) {
+                    Some(RunCommand::Approve) => "Reference images updated".into(),
+                    Some(RunCommand::Init) => "Workspace initialized".into(),
+                    Some(RunCommand::Install) => "Chromium is ready".into(),
+                    Some(RunCommand::Snapshot) => "Report created".into(),
+                    Some(RunCommand::Optimize) => "Image optimization completed".into(),
+                    _ => "Command completed".into(),
+                }
+            }
+            None if self.running() => self
+                .manager
+                .request
+                .as_ref()
+                .map(|request| format!("{} in progress", request.command.action_label()))
+                .unwrap_or_else(|| "Run in progress".into()),
+            None if self.selection.is_empty() => "Select suites to run".into(),
+            None => "Ready to run".into(),
+        }
+    }
+
     pub(super) fn render_activity(&self, cx: &mut Context<Self>) -> AnyElement {
         let progress = &self.manager.progress;
         let counts = progress.counts(None);
@@ -38,130 +71,212 @@ impl RunPanel {
             .filter(|suite| self.selection.contains(&suite.name))
             .map(|suite| suite.scenarios.len())
             .sum();
-        let mut content = div()
-            .flex()
-            .flex_col()
-            .gap_5()
-            .p_5()
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .child(
-                                div()
-                                    .text_xl()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Execution"),
+        let mut content =
+            div()
+                .flex()
+                .flex_col()
+                .gap_5()
+                .p_5()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .id("run-outcome-heading")
+                                        .role(Role::Status)
+                                        .aria_label(self.outcome_heading())
+                                        .test_support()
+                                        .text_xl()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(match &self.manager.outcome {
+                                            Some(RunOutcome::Failed(_)) => cx.theme().danger,
+                                            Some(_) if counts.failed > 0 => cx.theme().danger,
+                                            _ => cx.theme().foreground,
+                                        })
+                                        .child(self.outcome_heading()),
+                                )
+                                .child(
+                                    div()
+                                        .id("live-phase")
+                                        .role(Role::Status)
+                                        .aria_label(phase.to_string())
+                                        .test_support()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(phase.to_string()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(format!(
+                                    "{:02}:{:02}",
+                                    elapsed / 60_000,
+                                    elapsed / 1000 % 60
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .when(!has_run, |row| {
+                            row.child(
+                                Button::new("activity-select-suites")
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::ListChecks)
+                                    .label("Select suites")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tab = 1;
+                                        cx.notify();
+                                    })),
                             )
-                            .child(
-                                div()
-                                    .id("live-phase")
-                                    .role(Role::Status)
-                                    .aria_label(phase.to_string())
-                                    .test_support()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(phase.to_string()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .child(format!(
-                                "{:02}:{:02}",
-                                elapsed / 60_000,
-                                elapsed / 1000 % 60
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .border_y_1()
-                    .border_color(cx.theme().border)
-                    .py_4()
-                    .gap_5()
-                    .child(self.metric(
-                        "total",
-                        "Scenarios / viewports",
-                        if has_run {
-                            counts.total
+                        })
+                        .when(
+                            self.manager.outcome.is_some()
+                                && self
+                                    .manager
+                                    .request
+                                    .as_ref()
+                                    .is_some_and(|request| request.command.supports_suites()),
+                            |row| {
+                                row.child(
+                                    Button::new("activity-view-results")
+                                        .primary()
+                                        .small()
+                                        .icon(gpui_kit::assets::IconName::Images)
+                                        .label("View Results")
+                                        .on_click(
+                                            cx.listener(|this, _, _, cx| this.review_results(cx)),
+                                        ),
+                                )
+                            },
+                        )
+                        .when(has_run, |row| {
+                            row.child(
+                                Button::new("activity-view-log")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Terminal)
+                                    .label("View Log")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tab = 3;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .when(
+                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                                && (counts.captured > 0
+                                    || self.manager.request.as_ref().is_some_and(|request| {
+                                        request.command == RunCommand::Approve
+                                    })),
+                            |row| {
+                                row.child(
+                                    Button::new("activity-compare-run")
+                                        .small()
+                                        .icon(gpui_kit::assets::IconName::Images)
+                                        .label("Compare This Run")
+                                        .disabled(self.disabled)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.compare_completed_run(cx)
+                                        })),
+                                )
+                            },
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .border_y_1()
+                        .border_color(cx.theme().border)
+                        .py_4()
+                        .gap_5()
+                        .child(self.metric(
+                            "total",
+                            "Scenarios / viewports",
+                            if has_run {
+                                counts.total
+                            } else {
+                                selected_scenarios
+                            },
+                            cx.theme().foreground,
+                        ))
+                        .child(self.metric("active", "Running", counts.running, cx.theme().primary))
+                        .child(self.metric("passed", "Passed", counts.passed, cx.theme().success))
+                        .child(self.metric("failed", "Failed", counts.failed, cx.theme().danger)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!("{} / {} finished", counts.complete(), counts.total))
+                                .child(format!(
+                                    "{} queued  |  {} captured  |  {} cancelled",
+                                    counts.queued, counts.captured, counts.cancelled
+                                )),
+                        )
+                        .child(
+                            div()
+                                .h(px(5.))
+                                .w_full()
+                                .bg(cx.theme().muted)
+                                .rounded_sm()
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(counts.fraction()))
+                                        .bg(if counts.failed > 0 {
+                                            cx.theme().danger
+                                        } else {
+                                            cx.theme().primary
+                                        })
+                                        .rounded_sm(),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
+                            "Suite activity"
                         } else {
-                            selected_scenarios
-                        },
-                        cx.theme().foreground,
-                    ))
-                    .child(self.metric("active", "Running", counts.running, cx.theme().primary))
-                    .child(self.metric("passed", "Passed", counts.passed, cx.theme().success))
-                    .child(self.metric("failed", "Failed", counts.failed, cx.theme().danger)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("{} / {} finished", counts.complete(), counts.total))
-                            .child(format!(
-                                "{} queued  |  {} captured  |  {} cancelled",
-                                counts.queued, counts.captured, counts.cancelled
-                            )),
-                    )
-                    .child(
-                        div()
-                            .h(px(5.))
-                            .w_full()
-                            .bg(cx.theme().muted)
-                            .rounded_sm()
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(counts.fraction()))
-                                    .bg(if counts.failed > 0 {
-                                        cx.theme().danger
-                                    } else {
-                                        cx.theme().primary
-                                    })
-                                    .rounded_sm(),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
-                        "Suite activity"
-                    } else {
-                        "Selected suites"
-                    }))
-                    .child(
-                        Checkbox::new("activity-failed-only")
-                            .label("Failures only")
-                            .checked(self.failed_only)
-                            .on_change(cx.listener(|this, checked, _, cx| {
-                                this.failed_only = *checked;
-                                cx.notify();
-                            })),
-                    ),
-            );
+                            "Selected suites"
+                        }))
+                        .child(
+                            Checkbox::new("activity-failed-only")
+                                .label("Failures only")
+                                .checked(self.failed_only)
+                                .disabled(!has_run)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    this.failed_only = *checked;
+                                    cx.notify();
+                                })),
+                        ),
+                );
         if let Some(error) = &progress.error {
             content = content.child(
                 div()

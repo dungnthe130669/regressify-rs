@@ -9,6 +9,15 @@ const PAGE_SIZE: usize = 50;
 
 pub(super) enum ResultEvent {
     OpenSuite(Entry),
+    ApproveRun(ReportApproval),
+}
+
+#[derive(Clone)]
+pub(super) struct ReportApproval {
+    pub entry: Entry,
+    pub output: PathBuf,
+    pub suite_id: String,
+    pub run_id: String,
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -48,11 +57,34 @@ pub(super) struct ResultsPanel {
     loading: bool,
     image_loading: bool,
     generation: u64,
+    preferred_run: Option<String>,
+    disabled: bool,
 }
 
 impl EventEmitter<ResultEvent> for ResultsPanel {}
 
 impl ResultsPanel {
+    pub(super) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
+        if self.disabled != disabled {
+            self.disabled = disabled;
+            cx.notify();
+        }
+    }
+
+    pub(super) fn show_run(
+        &mut self,
+        root: PathBuf,
+        run_id: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preferred_run = (!run_id.is_empty()).then_some(run_id);
+        self.filter = 0;
+        self.search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.refresh(root, window, cx);
+    }
+
     pub(super) fn set_suites(&mut self, suites: Vec<crate::desktop::workspace::SuiteSummary>) {
         self.suites = suites;
     }
@@ -60,6 +92,7 @@ impl ResultsPanel {
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
         self.root = None;
+        self.preferred_run = None;
         self.catalog = Catalog::default();
         self.suites.clear();
         self.report = 0;
@@ -104,10 +137,13 @@ impl ResultsPanel {
             loading: false,
             image_loading: false,
             generation: 0,
+            preferred_run: None,
+            disabled: false,
         }
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let preferred_run = self.preferred_run.take();
         let previous = self
             .selected_report()
             .map(|report| (report.path.clone(), self.capture));
@@ -119,9 +155,13 @@ impl ResultsPanel {
         self.previews.clear();
         self.status = "Loading reports...".into();
         let suites = self.suites.clone();
+        let requested_run = preferred_run.clone();
         let task = cx.background_executor().spawn(async move {
             let mut catalog = Catalog::load(&root)?;
             catalog.resolve_names(&suites);
+            if let Some(run) = requested_run {
+                catalog.reports.retain(|report| report.run_id == run);
+            }
             Ok::<_, anyhow::Error>(catalog)
         });
         cx.spawn_in(window, async move |view, cx| {
@@ -134,13 +174,21 @@ impl ResultsPanel {
                 match result {
                     Ok(catalog) => {
                         this.catalog = catalog;
-                        this.report = previous
+                        this.report = preferred_run
                             .as_ref()
-                            .and_then(|(path, _)| {
+                            .and_then(|run_id| {
                                 this.catalog
                                     .reports
                                     .iter()
-                                    .position(|report| &report.path == path)
+                                    .position(|report| &report.run_id == run_id)
+                            })
+                            .or_else(|| {
+                                previous.as_ref().and_then(|(path, _)| {
+                                    this.catalog
+                                        .reports
+                                        .iter()
+                                        .position(|report| &report.path == path)
+                                })
                             })
                             .unwrap_or(0);
                         this.capture = None;
@@ -997,6 +1045,22 @@ impl Render for ResultsPanel {
             })
             .unwrap_or_default();
         let focus = self.focus.clone();
+        let approval = self
+            .selected_report()
+            .filter(|report| {
+                report.report.tests.iter().any(|test| {
+                    test.pair.test.is_some()
+                        && matches!(test.outcome(), Outcome::Passed | Outcome::Mismatch)
+                })
+            })
+            .and_then(|report| {
+                Some(ReportApproval {
+                    entry: report.source.clone()?,
+                    output: self.root.clone()?,
+                    suite_id: report.report.id.clone(),
+                    run_id: report.run_id.clone(),
+                })
+            });
         let comparison = self.render_comparison(cx);
         let layout = if self.captures_hidden {
             comparison
@@ -1099,6 +1163,21 @@ impl Render for ResultsPanel {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(root) = this.root.clone() {
                                     this.refresh(root, window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("approve-report")
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Check)
+                            .label("Approve This Run")
+                            .tooltip(
+                                "Use successful captures from this report run as reference images",
+                            )
+                            .disabled(self.disabled || self.loading || approval.is_none())
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                if let Some(approval) = &approval {
+                                    cx.emit(ResultEvent::ApproveRun(approval.clone()));
                                 }
                             })),
                     )

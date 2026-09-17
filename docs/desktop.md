@@ -296,6 +296,12 @@ CLI/script logs can still contain project-provided data.
 missing references, and mismatches are report outcomes. Configuration,
 infrastructure, and artifact-write errors are command failures.
 
+Activity headlines distinguish failed/passed captures, captures not compared,
+stopped runs, and command failures. View Results opens the executed output folder
+and exact run, never an older report when the requested run is missing. Compare
+This Run compares the exact captures after skipped comparison or after approval.
+Select suites and View Log provide direct routes from ready and completed states.
+
 The engine emits versioned progress events independently of console logs. Each
 scenario/viewport job reports queued, running, capture completion, comparison,
 and failure states. Screenshot keys connect visual comparisons to their original
@@ -310,6 +316,12 @@ from Passed, which requires comparison. Suites, Options, and Log are separate
 tabs; live running/finished counts remain visible in the workspace navigator.
 
 ## Reviewing Results
+
+Approve This Run promotes successful captures from the report being viewed,
+including historical runs, after an action-named confirmation. Its output folder,
+run ID, and suite output identity are pinned; if the suite output has changed,
+approval stops for review. Failed capture placeholders are still skipped by the
+engine. This is a run-wide approval, not approval of only the visible filter.
 
 Capture rows use scenario labels, with viewport and saved-step/target details on
 the secondary line. Newly captured labels are preserved in report metadata;

@@ -18,12 +18,14 @@ pub(super) enum RunEvent {
     Finished,
     SelectionChanged,
     ProgressChanged,
+    ReviewResults { root: PathBuf, run_id: String },
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct RunIntent {
     pub request: RunRequest,
     pub suite_names: Vec<String>,
+    pub expected_output_ids: Option<Vec<String>>,
 }
 
 impl RunIntent {
@@ -42,6 +44,16 @@ impl RunIntent {
                 suites,
                 matches!(request.command, RunCommand::Compare | RunCommand::Approve),
             )?;
+            if let Some(expected) = &self.expected_output_ids {
+                anyhow::ensure!(
+                    request.options.suites
+                        == expected
+                            .iter()
+                            .map(|id| glob::Pattern::escape(id))
+                            .collect::<Vec<_>>(),
+                    "The report's suite output changed; refresh results before approving"
+                );
+            }
         }
         request.arguments()?;
         Ok(request)
@@ -77,6 +89,7 @@ pub(super) struct RunPanel {
     collapsed: BTreeSet<String>,
     failed_only: bool,
     started: Option<Instant>,
+    executed_suites: Vec<(String, String)>,
 }
 
 impl EventEmitter<RunEvent> for RunPanel {}
@@ -111,6 +124,7 @@ impl RunPanel {
             collapsed: BTreeSet::new(),
             failed_only: false,
             started: None,
+            executed_suites: Vec::new(),
         };
         panel.rebuild(window, cx);
         panel
@@ -121,6 +135,44 @@ impl RunPanel {
     }
     pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
         &self.manager.progress
+    }
+    fn review_results(&self, cx: &mut Context<Self>) {
+        if let Some(request) = &self.manager.request {
+            cx.emit(RunEvent::ReviewResults {
+                root: request.options.output_directory(&request.root),
+                run_id: request.options.run_id.clone(),
+            });
+        }
+    }
+    fn compare_completed_run(&mut self, cx: &mut Context<Self>) {
+        if self.running() || self.disabled {
+            return;
+        }
+        let Some(mut request) = self.manager.request.clone() else {
+            return;
+        };
+        request.command = RunCommand::Compare;
+        let intent = RunIntent {
+            request,
+            suite_names: self
+                .executed_suites
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+            expected_output_ids: Some(
+                self.executed_suites
+                    .iter()
+                    .map(|(_, id)| id.clone())
+                    .collect(),
+            ),
+        };
+        match intent.resolve(&self.suites) {
+            Ok(_) => cx.emit(RunEvent::Requested(Box::new(intent))),
+            Err(error) => {
+                self.status = format!("{error:#}");
+                cx.notify();
+            }
+        }
     }
     pub(super) fn cancel(&mut self, cx: &mut Context<Self>) {
         self.manager.cancel();
@@ -192,6 +244,7 @@ impl RunPanel {
         self.collapsed.clear();
         self.failed_only = false;
         self.started = None;
+        self.executed_suites.clear();
         self.log
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.status = "No command running".into();
@@ -223,6 +276,63 @@ impl RunPanel {
     }
     pub(super) fn selected_count(&self) -> usize {
         self.selection.len()
+    }
+    pub(super) fn approve_report(
+        &mut self,
+        report: &super::reports::ReportApproval,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled {
+            return;
+        }
+        let result = (|| -> Result<RunIntent> {
+            let name = report
+                .entry
+                .suite_name()
+                .ok_or_else(|| anyhow!("The report's suite is unavailable"))?;
+            let intent = RunIntent {
+                request: RunRequest {
+                    root: self
+                        .root
+                        .clone()
+                        .ok_or_else(|| anyhow!("Open a workspace first"))?,
+                    command: RunCommand::Approve,
+                    options: RunOptions {
+                        regressify_dir: display_path(&report.output),
+                        run_id: report.run_id.clone(),
+                        ..Default::default()
+                    },
+                },
+                suite_names: vec![name],
+                expected_output_ids: Some(vec![report.suite_id.clone()]),
+            };
+            intent.resolve(&self.suites)?;
+            Ok(intent)
+        })();
+        match result {
+            Ok(intent) => {
+                let mut selection = SuiteSelection::default();
+                for suite in self
+                    .suites
+                    .iter()
+                    .filter(|suite| intent.suite_names.contains(&suite.name))
+                {
+                    if let Err(error) = selection.toggle(suite, true) {
+                        self.status = format!("{error:#}");
+                        cx.notify();
+                        return;
+                    }
+                }
+                self.selection = selection;
+                cx.emit(RunEvent::SelectionChanged);
+                self.command = RunCommand::Approve;
+                self.pending_request = Some(intent);
+                self.confirmation = true;
+                self.tab = 0;
+            }
+            Err(error) => self.status = format!("{error:#}"),
+        }
+        cx.notify();
     }
     pub(super) fn selected_names(&self) -> Vec<String> {
         self.suites
@@ -449,6 +559,7 @@ impl RunPanel {
                 options: serde_json::from_value(values)?,
             },
             suite_names: self.selected_names(),
+            expected_output_ids: None,
         };
         intent.resolve(&self.suites)?;
         Ok(intent)
@@ -487,6 +598,20 @@ impl RunPanel {
             return;
         }
         self.command = request.command;
+        self.executed_suites = self
+            .suites
+            .iter()
+            .filter(|suite| {
+                request.options.suites.contains(&glob::Pattern::escape(
+                    if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
+                        &suite.output_id
+                    } else {
+                        &suite.name
+                    },
+                ))
+            })
+            .map(|suite| (suite.name.clone(), suite.output_id.clone()))
+            .collect();
         match self.manager.start(request) {
             Ok(()) => {
                 self.confirmation = false;
@@ -744,69 +869,99 @@ impl Render for RunPanel {
                             .child(scope),
                     ),
             )
-            .when(self.confirmation, |panel| {
-                panel.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_3()
-                        .px_4()
-                        .py_3()
-                        .bg(cx.theme().warning.opacity(0.12))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .child(self.command.confirmation_message()),
-                                )
-                                .child(div().text_sm().child(if self.command.supports_suites() {
-                                    format!("Suites: {}", self.selected_names().join(", "))
-                                } else {
-                                    "Workspace images".into()
-                                }))
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .truncate()
-                                        .child(
-                                            self.output_root()
-                                                .map(|path| display_path(&path))
-                                                .unwrap_or_default(),
-                                        ),
-                                ),
-                        )
-                        .child(Button::new("run-confirm-cancel").label("Cancel").on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.confirmation = false;
-                                cx.notify();
-                            }),
-                        ))
-                        .child(
-                            Button::new("run-confirm")
-                                .danger()
-                                .label(self.command.action_label())
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if this.confirmation
-                                        && !this.disabled
-                                        && !this.running()
-                                        && let Some(intent) = this.pending_request.take()
-                                    {
-                                        this.confirmation = false;
-                                        cx.emit(RunEvent::Requested(Box::new(intent)));
-                                        cx.notify();
-                                    }
-                                })),
-                        ),
-                )
-            })
+            .when_some(
+                self.pending_request.as_ref().filter(|_| self.confirmation),
+                |panel, intent| {
+                    panel.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .flex_wrap()
+                            .gap_3()
+                            .px_4()
+                            .py_3()
+                            .bg(cx.theme().warning.opacity(0.12))
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .child(intent.request.command.confirmation_message()),
+                                    )
+                                    .child(div().text_sm().child(
+                                        if intent.request.command.supports_suites() {
+                                            format!("Suites: {}", intent.suite_names.join(", "))
+                                        } else {
+                                            "Workspace images".into()
+                                        },
+                                    ))
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .truncate()
+                                            .child(display_path(
+                                                &intent
+                                                    .request
+                                                    .options
+                                                    .output_directory(&intent.request.root),
+                                            )),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("run-confirm-target")
+                                    .role(Role::Status)
+                                    .aria_label(format!(
+                                        "Run: {}",
+                                        if intent.request.options.run_id.is_empty() {
+                                            "Latest results"
+                                        } else {
+                                            &intent.request.options.run_id
+                                        }
+                                    ))
+                                    .test_support()
+                                    .text_xs()
+                                    .child(if intent.request.options.run_id.is_empty() {
+                                        if intent.request.command.captures() {
+                                            "New capture".to_string()
+                                        } else {
+                                            "Latest results".to_string()
+                                        }
+                                    } else {
+                                        format!("Run: {}", intent.request.options.run_id)
+                                    }),
+                            )
+                            .child(Button::new("run-confirm-cancel").label("Cancel").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.confirmation = false;
+                                    cx.notify();
+                                }),
+                            ))
+                            .child(
+                                Button::new("run-confirm")
+                                    .danger()
+                                    .label(self.command.action_label())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if this.confirmation
+                                            && !this.disabled
+                                            && !this.running()
+                                            && let Some(intent) = this.pending_request.take()
+                                        {
+                                            this.confirmation = false;
+                                            cx.emit(RunEvent::Requested(Box::new(intent)));
+                                            cx.notify();
+                                        }
+                                    })),
+                            ),
+                    )
+                },
+            )
             .child(
                 TabBar::new("run-tabs")
                     .underline()

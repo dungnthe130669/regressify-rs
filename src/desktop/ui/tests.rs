@@ -1148,6 +1148,7 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
                         event,
                     });
                 }
+                panel.manager.outcome = Some(crate::desktop::runner::RunOutcome::Completed);
                 cx.notify();
             })
         });
@@ -1160,9 +1161,147 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
             window.find(("live-status", 2_usize)).label(),
             Some("Failed")
         );
+        assert_eq!(
+            window.find("run-outcome-heading").label(),
+            Some("1 failed, 1 passed")
+        );
         window.click("activity-failed-only", cx);
         assert!(window.try_find(("live-status", 1_usize)).is_none());
         assert!(window.find(("live-status", 2_usize)).visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let run = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/reviewed-run");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [
+        {"status": "fail", "pair": {"label": "Checkout", "test": "../bitmaps_test/reviewed-run/checkout.png"}}
+    ]})).unwrap()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Checkout"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("approve-report", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("run-confirm").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("run-confirm-target").label(),
+            Some("Run: reviewed-run")
+        );
+        assert_eq!(window.find("run-confirm").label(), Some("Approve Results"));
+        assert_eq!(window.find("run-scope").label(), Some("Suites: ui-test"));
+        assert!(!view.read(cx).runs.read(cx).running());
+        let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+        std::fs::write(
+            &path,
+            format!(
+                "id: changed-output\n{}",
+                std::fs::read_to_string(&path).unwrap()
+            ),
+        )
+        .unwrap();
+        window.click("run-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("status").is_some_and(|status| {
+            status
+                .label()
+                .is_some_and(|label| label.contains("report's suite output changed"))
+        })
+    })
+    .await;
+    cx.update(|cx| assert!(!view.read(cx).runs.read(cx).running()));
+}
+
+#[gpui_kit::test]
+async fn view_results_opens_the_executed_output_and_run_instead_of_current_settings(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    for (run, label) in [
+        ("old-run", "Executed capture"),
+        ("newer-run", "Different capture"),
+    ] {
+        let path = directory
+            .path()
+            .join(".custom-output/ui-test/bitmaps_test")
+            .join(run);
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [{"status": "pass", "pair": {"label": label}}]})).unwrap()).unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions {
+                        regressify_dir: ".custom-output".into(),
+                        run_id: "old-run".into(),
+                        ..Default::default()
+                    },
+                });
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        window.click("activity-view-results", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Executed capture"))
+    })
+    .await;
+    cx.update(|cx| assert_eq!(view.read(cx).main_tab, 2));
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.results.update(cx, |panel, cx| {
+                panel.show_run(
+                    directory.path().join(".custom-output"),
+                    "not-compared-yet".into(),
+                    window,
+                    cx,
+                )
+            })
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("results-status")
+            .is_some_and(|status| status.label() == Some("0 reports, 0 warnings"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(window.find("capture-heading").label(), Some("Comparison"))
     })
     .unwrap();
 }

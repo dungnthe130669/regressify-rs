@@ -206,13 +206,36 @@ impl Workbench {
                     this.refresh_results(window, cx);
                     cx.notify();
                 }
-                runs::RunEvent::SelectionChanged | runs::RunEvent::ProgressChanged => cx.notify(),
+                runs::RunEvent::SelectionChanged | runs::RunEvent::ProgressChanged => {
+                    let disabled = this.busy || this.runs.read(cx).running();
+                    this.results
+                        .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
+                    cx.notify();
+                }
+                runs::RunEvent::ReviewResults { root, run_id } => {
+                    this.main_tab = 2;
+                    let suites = this.session.suites.clone();
+                    this.results.update(cx, |panel, cx| {
+                        panel.set_suites(suites);
+                        panel.show_run(root.clone(), run_id.clone(), window, cx);
+                    });
+                    cx.notify();
+                }
             });
         let results = cx.new(|cx| reports::ResultsPanel::new(window, cx));
         let results_subscription =
             cx.subscribe_in(&results, window, |this, _, event, window, cx| match event {
                 reports::ResultEvent::OpenSuite(entry) => {
                     this.open_location(entry.clone(), Selection::Root, window, cx)
+                }
+                reports::ResultEvent::ApproveRun(report) => {
+                    if this.busy || this.runs.read(cx).running() {
+                        return;
+                    }
+                    this.main_tab = 1;
+                    this.runs
+                        .update(cx, |panel, cx| panel.approve_report(report, cx));
+                    cx.notify();
                 }
             });
         Self {
