@@ -233,14 +233,35 @@ impl Workbench {
                 div()
                     .flex()
                     .items_center()
+                    .flex_wrap()
+                    .gap_2()
                     .justify_between()
                     .child(div().font_weight(FontWeight::SEMIBOLD).child("Test suites"))
+                    .child(div().flex_1())
+                    .child(
+                        Button::new("overview-run-reference")
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Camera)
+                            .label("Run Reference")
+                            .disabled(
+                                self.busy
+                                    || self.runs.read(cx).selected_count() == 0
+                                    || self.runs.read(cx).running(),
+                            )
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.request_selected_command(
+                                    crate::desktop::runner::RunCommand::Reference,
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    )
                     .child(
                         Button::new("overview-run-selected")
                             .primary()
                             .icon(gpui_kit::assets::IconName::Play)
                             .label(format!(
-                                "Run selected ({})",
+                                "Run Test ({})",
                                 self.runs.read(cx).selected_count()
                             ))
                             .disabled(
@@ -249,15 +270,11 @@ impl Workbench {
                                     || self.runs.read(cx).running(),
                             )
                             .on_click(cx.listener(|this, _, window, cx| {
-                                this.main_tab = 1;
-                                this.runs.update(cx, |panel, cx| {
-                                    panel.choose(
-                                        crate::desktop::runner::RunCommand::Test,
-                                        window,
-                                        cx,
-                                    )
-                                });
-                                this.guard(files::Pending::Run, window, cx);
+                                this.request_selected_command(
+                                    crate::desktop::runner::RunCommand::Test,
+                                    window,
+                                    cx,
+                                );
                             })),
                     ),
             )

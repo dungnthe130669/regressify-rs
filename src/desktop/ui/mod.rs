@@ -77,6 +77,11 @@ struct SelectView {
     index: usize,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+struct RunSuiteCommand {
+    index: usize,
+}
+
 enum Control {
     Input(Entity<InputState>),
     Textarea(Entity<TextareaState>),
@@ -191,7 +196,7 @@ impl Workbench {
         let runs = cx.new(|cx| runs::RunPanel::new(window, cx));
         let run_subscription =
             cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
-                runs::RunEvent::Requested => this.guard(files::Pending::Run, window, cx),
+                runs::RunEvent::Requested => this.guard_run(window, cx),
                 runs::RunEvent::Finished => {
                     this.status = "Command finished".into();
                     if let Err(error) = this.session.refresh() {
@@ -494,8 +499,41 @@ impl Workbench {
         cx.notify();
     }
 
-    fn select_run_suite(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.runs.read(cx).running() {
+    fn guard_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.session.open.is_some()
+            && let Err(error) = self.flush_drafts(window, cx)
+        {
+            self.status = format!("{error:#}");
+            self.main_tab = 0;
+            self.overview = false;
+            cx.notify();
+            return;
+        }
+        self.guard(files::Pending::Run, window, cx);
+    }
+
+    fn request_selected_command(
+        &mut self,
+        command: super::runner::RunCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        self.main_tab = 1;
+        self.runs
+            .update(cx, |panel, cx| panel.request_command(command, window, cx));
+        cx.notify();
+    }
+
+    fn run_open_suite(
+        &mut self,
+        command: super::runner::RunCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() || !command.supports_suites() {
             return;
         }
         let Some((workspace, entry)) = self
@@ -509,11 +547,17 @@ impl Workbench {
         self.task(
             "Checking selected suite...",
             move || workspace.runnable_suite(&entry),
-            |this, suite, window, cx| {
-                this.status = format!("Run scope: {suite}");
-                this.runs
+            move |this, suite, window, cx| {
+                let result = this
+                    .runs
                     .update(cx, |panel, cx| panel.set_suites(vec![suite], window, cx));
+                if let Err(error) = result {
+                    this.status = format!("{error:#}");
+                    cx.notify();
+                    return;
+                }
                 this.main_tab = 1;
+                this.request_selected_command(command, window, cx);
                 cx.notify();
             },
             window,
@@ -1949,6 +1993,11 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(|this, action: &RunSuiteCommand, window, cx| {
+                if let Some(command) = super::runner::RunCommand::ALL.get(action.index) {
+                    this.run_open_suite(*command, window, cx);
+                }
+            }))
             .on_action(cx.listener(Self::open_commands))
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::toggle_list_choice))
@@ -2023,24 +2072,68 @@ impl Render for Workbench {
                             .child(Tab::new().label("Results")),
                     )
                     .child(div().flex_1())
-                    .child(
-                        Button::new("run-suite")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::Play)
-                            .label("Run suite")
-                            .disabled(
-                                self.busy
-                                    || self
-                                        .session
-                                        .open
-                                        .as_ref()
-                                        .and_then(|open| open.entry.suite_name())
-                                        .is_none(),
+                    .when(
+                        self.main_tab == 0
+                            && !self.overview
+                            && self
+                                .session
+                                .open
+                                .as_ref()
+                                .is_some_and(|open| open.entry.kind == DocumentKind::Suite),
+                        |bar| {
+                            let focus = self.focus.clone();
+                            bar.child(
+                                Button::new("suite-run-reference")
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Camera)
+                                    .label("Run Reference")
+                                    .tooltip("Capture reference images for the open suite")
+                                    .disabled(self.busy || self.runs.read(cx).running())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.run_open_suite(
+                                            super::runner::RunCommand::Reference,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.select_run_suite(window, cx);
-                            })),
+                            .child(
+                                Button::new("suite-run-test")
+                                    .primary()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Play)
+                                    .label("Run Test")
+                                    .tooltip("Run all scenarios in the open suite")
+                                    .disabled(self.busy || self.runs.read(cx).running())
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.run_open_suite(
+                                            super::runner::RunCommand::Test,
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
+                            .child(
+                                Button::new("suite-run-more")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Ellipsis)
+                                    .accessibility_label("More suite actions")
+                                    .tooltip("More suite actions")
+                                    .disabled(self.busy || self.runs.read(cx).running())
+                                    .dropdown_menu(move |menu, _, _| {
+                                        menu.action_context(focus.clone())
+                                            .menu(
+                                                "Approve Results",
+                                                Box::new(RunSuiteCommand { index: 3 }),
+                                            )
+                                            .menu(
+                                                "Compare Results",
+                                                Box::new(RunSuiteCommand { index: 2 }),
+                                            )
+                                    }),
+                            )
+                        },
                     ),
             )
             .child(div().flex_1().min_h_0().child(layout))

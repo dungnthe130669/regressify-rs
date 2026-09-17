@@ -162,6 +162,27 @@ impl Workbench {
         let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
         let mut commands = vec![
             Command {
+                title: "Run Test for open suite",
+                group: "Run",
+                icon: Icon::Play,
+                action: Box::new(RunSuiteCommand { index: 0 }),
+                enabled: suite && !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Run Reference for open suite",
+                group: "Run",
+                icon: Icon::Camera,
+                action: Box::new(RunSuiteCommand { index: 1 }),
+                enabled: suite && !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Approve Results for open suite",
+                group: "Run",
+                icon: Icon::Check,
+                action: Box::new(RunSuiteCommand { index: 3 }),
+                enabled: suite && !self.runs.read(cx).running(),
+            },
+            Command {
                 title: "Save document",
                 group: "File",
                 icon: Icon::Save,

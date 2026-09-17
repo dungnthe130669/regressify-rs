@@ -989,7 +989,7 @@ async fn run_suite_refuses_a_file_shadowed_by_another_format(cx: &mut TestAppCon
             this.sync_editor(window, cx);
         });
         window.render_frame(cx);
-        window.click("run-suite", cx);
+        window.click("suite-run-reference", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
@@ -2042,6 +2042,44 @@ async fn item_removal_requires_confirmation_and_is_undoable(cx: &mut TestAppCont
 }
 
 #[gpui_kit::test]
+async fn editor_run_test_preserves_pending_drafts_and_cancel_never_starts_a_worker(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let saved =
+        std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("https://example.com/unsaved-run", cx);
+        window.click("suite-run-test", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("guard-cancel").is_some()
+    })
+    .await;
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["url"],
+            "https://example.com/unsaved-run"
+        );
+        window.click("guard-cancel", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| assert!(!view.read(cx).runs.read(cx).running()));
+    assert_eq!(
+        std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap(),
+        saved
+    );
+}
+
+#[gpui_kit::test]
 fn direct_commands_flush_pending_run_options_and_preserve_invalid_input(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -2131,23 +2169,24 @@ fn baseline_commands_require_confirmation_before_execution(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
-async fn run_options_change_with_command_and_suite_shortcut_keeps_editor(cx: &mut TestAppContext) {
+async fn suite_commands_request_execution_directly_and_keep_editor_state(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("run-suite", cx);
+        window.click("suite-run-reference", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
-        window
-            .try_find("status")
-            .is_some_and(|status| status.label() == Some("Run scope: ui-test"))
+        window.try_find("run-confirm").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(view.read(cx).main_tab, 1);
         assert!(window.find("run-test").visible());
+        assert_eq!(window.find("run-scope").label(), Some("Suites: ui-test"));
+        assert_eq!(window.find("run-confirm").label(), Some("Run Reference"));
+        window.click("run-confirm-cancel", cx);
         window.within("run-tabs").click(2_usize, cx);
         assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
         view.update(cx, |this, cx| {

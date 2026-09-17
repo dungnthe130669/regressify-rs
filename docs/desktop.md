@@ -248,9 +248,10 @@ More actions provides Build Report, Optimize Images, Install Chromium, and
 Initialize Workspace. Suite checkboxes in the navigator and Runs support multiple
 selections and Select all. No selection disables suite commands, never an
 implicit all-suite run. Invalid suites remain visible for
-repair and are excluded from Select all. Run suite verifies the selected file,
-sets its scope, and opens Runs;
-direct commands start execution after any draft and artifact confirmations.
+repair and are excluded from Select all. Editor Run Test and Run Reference act
+on the open suite immediately, with Approve/Compare in More suite actions.
+Overview actions operate on checked suites. Command search also exposes direct
+open-suite actions. All routes start execution after any draft and artifact confirmations.
 Reference capture, approve, and optimize require action-named confirmations
 describing the baseline or image changes. Pending option text is read before
 command changes and execution; invalid option drafts are retained for correction.
@@ -262,7 +263,7 @@ The selected suite catalog is refreshed immediately before execution. A removed
 or newly invalid selection stops the run for review, while updated output IDs
 are resolved from disk. Workspace-only commands do not require valid suites.
 For duplicate names, `.tests.yaml` takes precedence over `.tests.yml`, then
-`.tests.json`. Run suite rejects a shadowed file and names the competing path.
+`.tests.json`. Open-suite actions reject a shadowed file and name the competing path.
 Same-priority duplicates and reserved `all` selected-file runs are rejected.
 
 Each command starts a fresh copy of the desktop executable as a headless engine

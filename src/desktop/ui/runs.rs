@@ -112,26 +112,31 @@ impl RunPanel {
     pub(super) fn set_suites(
         &mut self,
         suites: Vec<String>,
-        window: &mut Window,
+        _: &mut Window,
         cx: &mut Context<Self>,
-    ) {
-        if self.running() {
-            return;
-        }
-        self.selection.clear();
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.running() && !self.disabled,
+            "Another operation is already running"
+        );
+        self.flush_options(cx)?;
+        let mut selection = SuiteSelection::default();
         for suite in self
             .suites
             .iter()
             .filter(|suite| suites.contains(&suite.name))
         {
-            if let Err(error) = self.selection.toggle(suite, true) {
-                self.status = format!("{error:#}");
-            }
+            selection.toggle(suite, true)?;
         }
+        anyhow::ensure!(
+            selection.len() == suites.len(),
+            "Selected suite is no longer available"
+        );
+        self.selection = selection;
         self.confirmation = false;
-        self.rebuild(window, cx);
         cx.emit(RunEvent::SelectionChanged);
         cx.notify();
+        Ok(())
     }
 
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -180,6 +185,13 @@ impl RunPanel {
     }
     pub(super) fn selected_count(&self) -> usize {
         self.selection.len()
+    }
+    pub(super) fn selected_names(&self) -> Vec<String> {
+        self.suites
+            .iter()
+            .filter(|suite| self.selection.contains(&suite.name))
+            .map(|suite| suite.name.clone())
+            .collect()
     }
     pub(super) fn toggle_suite(&mut self, name: &str, checked: bool, cx: &mut Context<Self>) {
         if self.running() || self.disabled {
@@ -616,7 +628,12 @@ impl Render for RunPanel {
         let running = self.running();
         let focus = self.focus.clone();
         let scope = if self.command.supports_suites() {
-            format!("{} suites selected", self.selection.len())
+            let names = self.selected_names();
+            if names.is_empty() {
+                "No suites selected".into()
+            } else {
+                format!("Suites: {}", names.join(", "))
+            }
         } else {
             "Workspace command".into()
         };
@@ -724,7 +741,17 @@ impl Render for RunPanel {
                             .disabled(!running)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                     )
-                    .child(div().flex_1().min_w_0().truncate().child(scope)),
+                    .child(
+                        div()
+                            .id("run-scope")
+                            .role(Role::Status)
+                            .aria_label(scope.clone())
+                            .test_support()
+                            .w_full()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(scope),
+                    ),
             )
             .when(self.confirmation, |panel| {
                 panel.child(
