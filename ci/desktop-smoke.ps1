@@ -247,18 +247,23 @@ function Select-Theme([string]$Theme) {
     Wait-Settings { param($settings) $settings.theme -eq $Theme.ToLowerInvariant() }
 }
 
-function Find-Control([string]$Name) {
+function Find-Control([string]$Name, [string]$Within = '') {
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+    if ($Within) {
+        $container = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $Within)
+        $root = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $container)
+        if ($null -eq $root) { return $null }
+    }
     $condition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, $Name)
     $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
-function Wait-Control([string]$Name) {
+function Wait-Control([string]$Name, [string]$Within = '') {
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
     $stable = [System.Diagnostics.Stopwatch]::StartNew()
     $previousBounds = $null
     do {
-        $element = Find-Control $Name
+        $element = Find-Control $Name $Within
         if ($null -ne $element -and -not $element.Current.IsOffscreen) {
             $bounds = $element.Current.BoundingRectangle
             if ($bounds -ne $previousBounds) {
@@ -280,8 +285,8 @@ function Wait-Control([string]$Name) {
     throw "Native control '$Name' was not found."
 }
 
-function Invoke-Control([string]$Name, [switch]$Pointer) {
-    $element = Wait-Control $Name
+function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
+    $element = Wait-Control $Name $Within
     $pattern = $null
     if (-not $Pointer -and $element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
@@ -456,20 +461,56 @@ try {
     Wait-Control 'Checkout' | Out-Null
     Capture-Window 'editor-compact'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+    Invoke-Control 'Results'
+    Wait-Control 'Approve This Run' | Out-Null
+    $reviewedImage = Join-Path $output 'bitmaps_test/smoke-run/checkout.png'
+    Write-TestImage (Join-Path $output 'bitmaps_test/zz-newer-run/checkout.png') ([System.Drawing.Color]::OrangeRed)
+    Invoke-Control 'Approve This Run'
+    Wait-Control 'Run: smoke-run' | Out-Null
+    Capture-Window 'approve-reviewed-run'
+    Invoke-Control 'Approve Results' -Within 'Run confirmation'
+    Wait-Control 'Reference images updated' | Out-Null
+    if ((Get-FileHash (Join-Path $output 'bitmaps_reference/checkout.png')).Hash -ne (Get-FileHash $reviewedImage).Hash) {
+        throw 'Report approval used the newer directory instead of the viewed run.'
+    }
+    Invoke-Control 'Compare This Run'
+    Wait-Control '1 passed' | Out-Null
+    Capture-Window 'reviewed-run-compared'
     Invoke-Control 'Runs'
     Invoke-Control 'Suites'
     Invoke-Control 'Select all'
     Capture-Window 'suite-selection'
+    Invoke-Control 'Run settings'
+    Wait-Control 'Run Test' | Out-Null
+    Capture-Window 'run-settings'
+    Select-Theme 'Dark'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'run-settings-dark-compact'
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     if ($Capture) {
-        Invoke-Control 'Test'
-        Invoke-Control 'Capture baseline'
-        Invoke-Control 'Run'
-        Invoke-Control 'Confirm'
+        Invoke-Control 'Run Reference'
+        Wait-Control 'Run confirmation' | Out-Null
+        Capture-Window 'direct-reference-confirmation'
+        Invoke-Control 'Run Reference' -Within 'Run confirmation'
         Wait-Control 'Capturing scenarios' | Out-Null
         Capture-Window 'live-capture'
         Wait-Control 'Completed' | Out-Null
         Wait-Control 'Passed: 3' | Out-Null
         Wait-Control '2 passed' | Out-Null
+        $referenceReports = Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter report.json |
+            Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+        $referencePairs = @($referenceReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
+        if ($referencePairs.Count -ne 3) { throw 'Expected three reference capture report entries.' }
+        Invoke-Control 'Run Test'
+        Wait-Control 'Capturing scenarios' | Out-Null
+        Invoke-Control 'Stop'
+        Wait-Control 'Run stopped' | Out-Null
+        Capture-Window 'run-stopped'
+        Invoke-Control 'Run Test'
+        Wait-Control 'Capturing scenarios' | Out-Null
+        Wait-Control 'Completed' | Out-Null
+        Wait-Control 'Passed: 3' | Out-Null
         Capture-Window 'live-completed'
         Select-Theme 'Dark'
         Capture-Window 'live-completed-dark'
@@ -478,17 +519,20 @@ try {
         $capturedReports = Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter report.json |
             Where-Object { $_.Directory.Name.StartsWith('desktop-') }
         $capturedPairs = @($capturedReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
-        if ($capturedPairs.Count -ne 3) { throw 'Expected three captured report entries.' }
+        if ($capturedPairs.Count -ne 3) { throw 'Expected three current test report entries.' }
         foreach ($pair in $capturedPairs) {
             if ([string]::IsNullOrWhiteSpace($pair.scenarioLabel) -or [string]::IsNullOrWhiteSpace($pair.scenarioId)) {
                 throw 'Capture reports are missing readable scenario metadata.'
             }
         }
-        Invoke-Control 'Capture baseline'
-    } else { Invoke-Control 'Test' }
-    Invoke-Control 'Initialize workspace'
-    Invoke-Control 'Run'
-    Wait-Control 'Completed' | Out-Null
+        Invoke-Control 'View Results'
+        Wait-Control 'Approve This Run' | Out-Null
+        Capture-Window 'completed-run-results'
+        Invoke-Control 'Runs'
+    }
+    Invoke-Control 'More actions' -Pointer
+    Invoke-Control 'Initialize Workspace'
+    Wait-Control 'Workspace initialized' | Out-Null
     Capture-Window 'run-completed'
     if (-not (Test-Path (Join-Path $workspace 'common/_override.css'))) { throw 'GUI init command did not create starter files.' }
     Select-Theme 'Dark'

@@ -549,6 +549,42 @@ impl RunPanel {
                 }
             }
         }
+        let mut options: RunOptions = serde_json::from_value(values)?;
+        let suite_names = self.selected_names();
+        let mut expected_output_ids = None;
+        if matches!(self.command, RunCommand::Approve | RunCommand::Compare)
+            && options.run_id.is_empty()
+            && let Some(previous) = &self.manager.request
+            && previous.command.supports_suites()
+            && !previous.options.run_id.is_empty()
+            && self.root.as_ref().is_some_and(|root| {
+                options.output_directory(root) == previous.options.output_directory(&previous.root)
+            })
+            && self
+                .suites
+                .iter()
+                .filter(|suite| suite_names.contains(&suite.name))
+                .all(|suite| {
+                    previous.options.suites.contains(&glob::Pattern::escape(
+                        if matches!(previous.command, RunCommand::Approve | RunCommand::Compare) {
+                            &suite.output_id
+                        } else {
+                            &suite.name
+                        },
+                    ))
+                })
+        {
+            options.run_id = previous.options.run_id.clone();
+            let ids = self
+                .executed_suites
+                .iter()
+                .filter(|(name, _)| suite_names.contains(name))
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>();
+            if ids.len() == suite_names.len() {
+                expected_output_ids = Some(ids);
+            }
+        }
         let intent = RunIntent {
             request: RunRequest {
                 root: self
@@ -556,10 +592,10 @@ impl RunPanel {
                     .clone()
                     .ok_or_else(|| anyhow!("Open a workspace first"))?,
                 command: self.command,
-                options: serde_json::from_value(values)?,
+                options,
             },
-            suite_names: self.selected_names(),
-            expected_output_ids: None,
+            suite_names,
+            expected_output_ids,
         };
         intent.resolve(&self.suites)?;
         Ok(intent)

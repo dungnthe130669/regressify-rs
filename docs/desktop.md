@@ -290,7 +290,12 @@ a shell or an external CLI executable. Process-wide state cannot leak between ru
 Captures generate unique run IDs unless supplied. One command runs per desktop
 session; workspace switching is blocked during execution.
 
-Cancel terminates the process group, including children. Closing during a run
+With no explicit Run name, Approve Results and Compare Results reuse the last
+executed run when its output folder and suite scope match the current selection.
+An explicit Run name takes precedence. Subsequent Run Test and Run Reference
+actions still create fresh captures rather than reusing that previous run ID.
+
+Stop terminates the process group, including children. Closing during a run
 requests cancellation; close again after it stops to handle unsaved work.
 The live log is searchable, read-only, and capped at 2 MiB. Its bounded queue may
 omit chunks under heavy output; the omission count is displayed. Completion is
@@ -302,10 +307,13 @@ missing references, and mismatches are report outcomes. Configuration,
 infrastructure, and artifact-write errors are command failures.
 
 Activity headlines distinguish failed/passed captures, captures not compared,
-stopped runs, and command failures. View Results opens the executed output folder
-and exact run, never an older report when the requested run is missing. Compare
-This Run compares the exact captures after skipped comparison or after approval.
-Select suites and View Log provide direct routes from ready and completed states.
+stopped runs, and command failures. The Running or Last run label identifies the
+executed command even while another command awaits confirmation. Stopped runs
+use amber status indicators and offer View Log, not a link to uncompleted results.
+After completion, View Results opens the executed output folder and exact run,
+never an older report when the requested run is missing. Compare This Run
+compares the exact captures after skipped comparison or after approval. Select
+suites and View Log provide direct routes from ready and completed states.
 
 The engine emits versioned progress events independently of console logs. Each
 scenario/viewport job reports queued, running, capture completion, comparison,
@@ -317,7 +325,7 @@ to a private temporary file so an overflowing log queue cannot drop status updat
 Activity is the default run view. It shows overall progress, active/pass/fail
 counts, expandable suites, and each scenario/viewport's status, elapsed time,
 and failure details. Failures only narrows the activity list. Captured is distinct
-from Passed, which requires comparison. Suites, Options, and Log are separate
+from Passed, which requires comparison. Suites, Run settings, and Log are separate
 tabs; live running/finished counts remain visible in the workspace navigator.
 
 ## Reviewing Results
@@ -412,9 +420,11 @@ In PowerShell 7 on an interactive Windows desktop:
 ./ci/desktop-smoke.ps1
 ```
 
-Add `-Capture` to run three local fixture scenarios across two suites with an
-installed Chromium browser and assert their live pass counts. This uses local
-HTML only and does not contact an external test website or download a browser.
+Add `-Capture` to run direct reference capture, stop a test, rerun the test, and
+open the completed results for three local fixture scenarios across two suites.
+An installed Chromium browser is required; the script asserts live pass counts
+and capture metadata. This uses local HTML only and does not contact an external
+test website or download a browser.
 
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
@@ -425,9 +435,12 @@ binaries; `-KeepOpen` leaves the fixture open for inspection.
 
 The native workflow also exercises navigator visibility, expanded comparison,
 compact side-by-side previews, actual-size reset, action menus, checked viewport
-and dependency choices, and real source-completion acceptance and saving. Input
-steps verify foreground focus and stable control bounds; literal fixture text
-uses Unicode input packets without changing the user's keyboard settings.
+and dependency choices, and real source-completion acceptance and saving. It
+approves a viewed historical run despite a newer capture directory, checks the
+promoted image's checksum, compares that exact run, and opens Run settings in
+both themes. Input steps verify foreground focus and stable control bounds;
+literal fixture text uses Unicode input packets without changing the user's
+keyboard settings.
 Close any existing desktop window before starting the smoke check; the
 single-instance guard still applies.
 
@@ -448,7 +461,19 @@ original preferences file, including recent workspaces. With `-KeepOpen`, the
 remaining fixture window retains its test appearance until closed; the original
 file is restored when the script returns.
 
-Windows native validation covers 1600x1000 and 1080x720 with 28 window captures.
+The latest automated gates pass 400 library/UI tests, two worker integration
+tests, 62 headless desktop tests, and 281 default CLI tests, plus formatting and
+strict library Clippy. The standalone Windows desktop builds successfully.
+
+Windows native checks cover 1600x1000 and 1080x720. The preceding appearance pass
+completed 28 window captures. The expanded direct-command flow exercised
+historical approval, exact comparison, reference capture, Stop, and test rerun
+before an outdated report-count assertion stopped it. The assertion now checks
+each completed run before later runs clean up its reports. Repeat attempts were
+blocked by Windows refusing verified foreground input; the expanded workflow's
+final results handoff, initialization, and restart still need an uninterrupted
+native rerun. User preferences were restored after each attempt.
+
 Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
 validation there. Signed installers, cloud accounts, collaborative editing,

@@ -89,6 +89,25 @@ impl RunPanel {
                                 .flex()
                                 .flex_col()
                                 .gap_1()
+                                .children(self.manager.request.as_ref().map(|request| {
+                                    let label = format!(
+                                        "{}: {}",
+                                        if self.running() {
+                                            "Running"
+                                        } else {
+                                            "Last run"
+                                        },
+                                        request.command.action_label()
+                                    );
+                                    div()
+                                        .id("run-command-context")
+                                        .role(Role::Status)
+                                        .aria_label(label.clone())
+                                        .test_support()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(label)
+                                }))
                                 .child(
                                     div()
                                         .id("run-outcome-heading")
@@ -99,6 +118,7 @@ impl RunPanel {
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(match &self.manager.outcome {
                                             Some(RunOutcome::Failed(_)) => cx.theme().danger,
+                                            Some(RunOutcome::Cancelled) => cx.theme().warning,
                                             Some(_) if counts.failed > 0 => cx.theme().danger,
                                             _ => cx.theme().foreground,
                                         })
@@ -144,7 +164,7 @@ impl RunPanel {
                             )
                         })
                         .when(
-                            self.manager.outcome.is_some()
+                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
                                 && self
                                     .manager
                                     .request
@@ -248,6 +268,10 @@ impl RunPanel {
                                         .w(relative(counts.fraction()))
                                         .bg(if counts.failed > 0 {
                                             cx.theme().danger
+                                        } else if counts.cancelled > 0 {
+                                            cx.theme().warning
+                                        } else if counts.captured > 0 && counts.passed == 0 {
+                                            cx.theme().info
                                         } else {
                                             cx.theme().primary
                                         })
@@ -390,7 +414,7 @@ impl RunPanel {
                                     div()
                                         .pl_5()
                                         .text_xs()
-                                        .text_color(cx.theme().danger)
+                                        .text_color(status_color(status, cx))
                                         .child(message.clone())
                                 })),
                         );

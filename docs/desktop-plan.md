@@ -171,6 +171,49 @@ the preference model and simulated native appearance events; no OS-wide theme
 settings were changed. Native macOS/Linux and full screen-reader/IME validation
 remain outstanding, along with the previously documented GPUI tooltip issue.
 
+## Direct Command Workflow Review
+
+- [x] Replace command modes and generic Run with Run Test, Run Reference,
+  Approve Results, and Compare Results; keep secondary commands in More actions.
+- [x] Run the open suite directly from Editor and command search, and checked
+  suites directly from Overview. Empty selection never means every suite.
+- [x] Keep Run settings available before any command, searchable by group, and
+  retain invalid drafts without blocking unrelated commands.
+- [x] Freeze command, options, and exact suite names through confirmation and
+  Save and continue / Run saved version; revalidate those names against disk.
+- [x] Distinguish visual results, capture-only completion, infrastructure
+  failure, and cancellation. Label the executed command independently of the
+  next request and provide direct results, comparison, and log actions.
+- [x] Pin View Results and report approval to the executed or reviewed run.
+  Reject changed suite output identities instead of approving different images.
+- [x] Default followup approve/compare to the last matching run while keeping
+  subsequent test/reference captures fresh.
+- [x] Flush pending field/source text before switching editor views; preserve
+  invalid source for repair. Share contextual file-action availability between
+  File and command search.
+- [x] Extend native acceptance with reviewed-run checksum validation, exact
+  comparison, direct reference capture, Stop/rerun, and compact themed settings.
+- [ ] Complete the expanded native workflow through final results, workspace
+  initialization, and restart on an available interactive Windows desktop.
+
+Verification: all 400 library/UI tests and two standalone-worker tests pass,
+including regressions for direct commands, immutable run intent, independent
+settings, exact report targeting, authoring transitions, and stopped-run state.
+The 281 default CLI tests and 62 headless desktop tests also pass. Formatting,
+strict library Clippy, and the standalone Windows build pass.
+
+Native execution reached historical approval despite a newer capture directory,
+checksum equality with the reviewed image, exact-run comparison, three reference
+captures, cancellation, and three passing rerun scenarios. The first extended
+attempt stopped on an incorrect assumption that previous reports were retained.
+The corrected check validates reference and test reports at their respective
+completion points; repeat attempts stopped safely because Windows refused
+foreground input. No input was sent to an unverified window, and original user
+preferences were restored. Reviewed light/dark and compact screenshots informed
+the final prior-run labels and cancellation colors; those final adjustments have
+automated coverage but still need the complete native rerun. Prior appearance
+and restart validation remains recorded above, not claimed as a fresh full pass.
+
 ## Delivery Checklist
 
 ### 1. Foundation

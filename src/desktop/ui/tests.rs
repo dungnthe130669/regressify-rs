@@ -1153,6 +1153,7 @@ async fn switching_workspaces_discards_old_selection_and_closing_unloads_everyth
 
 #[gpui_kit::test]
 fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAppContext) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     use crate::progress::{Event, Job, Record};
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -1160,6 +1161,11 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
         view.update(cx, |this, cx| {
             this.main_tab = 1;
             this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions::default(),
+                });
                 for (id, suite) in [(1, "shop"), (2, "account")] {
                     panel.manager.progress.apply(Record {
                         version: 1,
@@ -1222,7 +1228,8 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
                         event,
                     });
                 }
-                panel.manager.outcome = Some(crate::desktop::runner::RunOutcome::Completed);
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                panel.choose(RunCommand::Reference, window, cx);
                 cx.notify();
             })
         });
@@ -1239,9 +1246,27 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
             window.find("run-outcome-heading").label(),
             Some("1 failed, 1 passed")
         );
+        assert_eq!(
+            window.find("run-command-context").label(),
+            Some("Last run: Run Test")
+        );
+        assert!(window.find("activity-view-results").visible());
         window.click("activity-failed-only", cx);
         assert!(window.try_find(("live-status", 1_usize)).is_none());
         assert!(window.find(("live-status", 2_usize)).visible());
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.outcome = Some(RunOutcome::Cancelled);
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("run-outcome-heading").label(),
+            Some("Run stopped")
+        );
+        assert!(window.try_find("activity-view-results").is_none());
+        assert!(window.find("activity-view-log").visible());
     })
     .unwrap();
 }
@@ -1376,6 +1401,52 @@ async fn view_results_opens_the_executed_output_and_run_instead_of_current_setti
     .await;
     cx.update_window(handle.into(), |_, window, _| {
         assert_eq!(window.find("capture-heading").label(), Some("Comparison"))
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn followup_approve_and_compare_use_the_last_matching_run_but_capture_stays_fresh(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.select_all(true, cx);
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions {
+                        run_id: "executed-run".into(),
+                        suites: vec!["ui-test".into()],
+                        ..Default::default()
+                    },
+                });
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                for command in [RunCommand::Approve, RunCommand::Compare] {
+                    panel.choose(command, window, cx);
+                    assert_eq!(
+                        panel.prepare_intent(cx).unwrap().request.options.run_id,
+                        "executed-run"
+                    );
+                }
+                for command in [RunCommand::Test, RunCommand::Reference] {
+                    panel.choose(command, window, cx);
+                    assert!(
+                        panel
+                            .prepare_intent(cx)
+                            .unwrap()
+                            .request
+                            .options
+                            .run_id
+                            .is_empty()
+                    );
+                }
+            })
+        });
     })
     .unwrap();
 }
