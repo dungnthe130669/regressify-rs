@@ -2119,6 +2119,100 @@ async fn editor_run_test_preserves_pending_drafts_and_cancel_never_starts_a_work
 }
 
 #[gpui_kit::test]
+async fn run_settings_are_available_before_execution_and_validate_only_relevant_commands(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::runner::RunCommand;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+        });
+        window.render_frame(cx);
+        window.within("run-tabs").click(2_usize, cx);
+        assert!(window.try_find("run-field-heading").is_some());
+        assert!(window.try_find("run-field-speed").is_some());
+        window.click("run-settings-search", cx);
+        window.input("optimization", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("run-field-siteEnv").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("run-field-speed", cx);
+        window.press("ctrl-a", cx);
+        window.input("invalid speed", cx);
+        window.click("run-reference", cx);
+        assert_eq!(window.find("run-confirm").label(), Some("Run Reference"));
+        window.click("run-confirm-cancel", cx);
+        window.within("run-tabs").click(2_usize, cx);
+        assert_eq!(
+            window.find("run-field-speed").value(),
+            Some("invalid speed")
+        );
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.choose(RunCommand::Optimize, window, cx);
+                assert!(
+                    panel.prepare_intent(cx).is_ok(),
+                    "Rejected command leaves the previous valid command selected"
+                );
+            });
+        });
+        window.click("run-settings-search", cx);
+        window.press("ctrl-a", cx);
+        window.input("browser download", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("browser-download-control").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for (index, expected) in [(1, Some(true)), (2, Some(false)), (0, None)] {
+            window.within("run-field-fetchBrowser").click(index, cx);
+            let intent = view
+                .update(cx, |this, cx| {
+                    this.runs.update(cx, |panel, cx| panel.prepare_intent(cx))
+                })
+                .unwrap();
+            assert_eq!(intent.request.options.fetch_browser, expected);
+        }
+        window.click("run-settings-search", cx);
+        window.press("ctrl-a", cx);
+        window.input("compare after test", cx);
+        assert_eq!(
+            window.find("run-settings-search").value(),
+            Some("compare after test")
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("run-field-skipCompare").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("run-field-skipCompare").checked(), Some(true));
+        window.click("run-field-skipCompare", cx);
+        let intent = view
+            .update(cx, |this, cx| {
+                this.runs.update(cx, |panel, cx| {
+                    panel.choose(RunCommand::Test, window, cx);
+                    panel.prepare_intent(cx)
+                })
+            })
+            .unwrap();
+        assert!(intent.request.options.skip_compare);
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn direct_commands_flush_pending_run_options_and_preserve_invalid_input(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -2143,7 +2237,7 @@ fn direct_commands_flush_pending_run_options_and_preserve_invalid_input(cx: &mut
         window.click("run-field-asyncCaptureLimit", cx);
         window.press("ctrl-a", cx);
         window.input("invalid count", cx);
-        window.click("run-approve", cx);
+        window.click("run-reference", cx);
         assert!(window.try_find("run-confirm").is_none());
         assert_eq!(
             window.find("run-field-asyncCaptureLimit").value(),
@@ -2234,7 +2328,7 @@ async fn suite_commands_request_execution_directly_and_keep_editor_state(cx: &mu
             })
         });
         window.render_frame(cx);
-        assert!(window.try_find("run-field-asyncCaptureLimit").is_none());
+        assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
         assert!(window.try_find("run-field-heading").is_some());
         window.within("workbench-tabs").click(0_usize, cx);
         assert!(window.find("field-url").visible());

@@ -516,7 +516,12 @@ impl Workbench {
         cx.notify();
     }
 
-    fn guard_run(&mut self, intent: runs::RunIntent, window: &mut Window, cx: &mut Context<Self>) {
+    fn guard_run(
+        &mut self,
+        intent: Box<runs::RunIntent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy || self.runs.read(cx).running() {
             return;
         }

@@ -10,10 +10,11 @@ use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, Run
 use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
 
 mod activity;
+mod settings;
 
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
-    Requested(RunIntent),
+    Requested(Box<RunIntent>),
     Finished,
     SelectionChanged,
     ProgressChanged,
@@ -59,6 +60,8 @@ pub(super) struct RunPanel {
     bindings: Vec<Binding>,
     errors: BTreeMap<String, String>,
     subscriptions: Vec<Subscription>,
+    settings_search: Entity<InputState>,
+    _settings_subscription: Subscription,
     pub(super) manager: RunManager,
     log: Entity<EditorState>,
     focus: FocusHandle,
@@ -80,6 +83,10 @@ impl EventEmitter<RunEvent> for RunPanel {}
 
 impl RunPanel {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let settings_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Find a run setting"));
+        let settings_subscription =
+            cx.subscribe(&settings_search, |_, _, _: &InputEvent, cx| cx.notify());
         let mut panel = Self {
             root: None,
             command: RunCommand::Test,
@@ -87,6 +94,8 @@ impl RunPanel {
             bindings: Vec::new(),
             errors: BTreeMap::new(),
             subscriptions: Vec::new(),
+            settings_search,
+            _settings_subscription: settings_subscription,
             manager: RunManager::default(),
             log: cx.new(|cx| EditorState::new(window, cx).line_number(false)),
             focus: cx.focus_handle(),
@@ -146,7 +155,6 @@ impl RunPanel {
             !self.running() && !self.disabled,
             "Another operation is already running"
         );
-        self.flush_options(cx)?;
         let mut selection = SuiteSelection::default();
         for suite in self
             .suites
@@ -175,6 +183,8 @@ impl RunPanel {
         self.options = serde_json::to_value(RunOptions::default()).unwrap_or(Value::Null);
         self.manager = RunManager::default();
         self.command = RunCommand::Test;
+        self.settings_search
+            .update(cx, |state, cx| state.set_value("", window, cx));
         self.selection.clear();
         self.suites.clear();
         self.catalog_error = None;
@@ -256,13 +266,16 @@ impl RunPanel {
     fn can_request(&self, command: RunCommand) -> bool {
         !self.running()
             && !self.disabled
-            && self.errors.is_empty()
+            && !self
+                .errors
+                .keys()
+                .any(|key| RunOptions::applies(key, command))
             && self.root.is_some()
             && (!command.supports_suites()
                 || (!self.selection.is_empty() && self.catalog_error.is_none()))
     }
 
-    fn flush_options(&mut self, cx: &App) -> Result<()> {
+    fn flush_options(&mut self, command: RunCommand, cx: &App) -> Result<()> {
         let mut options = self.options.clone();
         for binding in &self.bindings {
             let text = match &binding.control {
@@ -275,7 +288,12 @@ impl RunPanel {
             {
                 continue;
             }
-            match binding.field.parse(&text) {
+            match binding.field.parse(&text).and_then(|value| {
+                let mut candidate = options.clone();
+                candidate[&binding.field.key] = value.clone();
+                serde_json::from_value::<RunOptions>(candidate)?;
+                Ok(value)
+            }) {
                 Ok(value) => {
                     options[&binding.field.key] = value;
                     self.errors.remove(&binding.field.key);
@@ -286,12 +304,14 @@ impl RunPanel {
                 }
             }
         }
+        self.options = options;
         anyhow::ensure!(
-            self.errors.is_empty(),
+            !self
+                .errors
+                .keys()
+                .any(|key| RunOptions::applies(key, command)),
             "Correct run options before continuing"
         );
-        serde_json::from_value::<RunOptions>(options.clone())?;
-        self.options = options;
         Ok(())
     }
 
@@ -304,16 +324,11 @@ impl RunPanel {
         ))
     }
 
-    pub(super) fn choose(
-        &mut self,
-        command: RunCommand,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    pub(super) fn choose(&mut self, command: RunCommand, _: &mut Window, cx: &mut Context<Self>) {
         if self.running() || self.disabled {
             return;
         }
-        if let Err(error) = self.flush_options(cx) {
+        if let Err(error) = self.flush_options(command, cx) {
             self.status = format!("{error:#}");
             self.tab = 2;
             cx.notify();
@@ -322,7 +337,6 @@ impl RunPanel {
         self.command = command;
         self.tab = if command.supports_suites() { 0 } else { 2 };
         self.confirmation = false;
-        self.rebuild(window, cx);
         cx.notify();
     }
 
@@ -333,10 +347,7 @@ impl RunPanel {
         let Ok(fields) = schema::fields(&schema::Scope::Run) else {
             return;
         };
-        for field in fields
-            .into_iter()
-            .filter(|field| field.key != "suites" && RunOptions::applies(&field.key, self.command))
-        {
+        for field in fields.into_iter().filter(|field| field.key != "suites") {
             let text = field.display(&self.options[&field.key]);
             let control = match &field.kind {
                 FieldKind::Boolean => Control::Boolean,
@@ -380,7 +391,12 @@ impl RunPanel {
         if self.running() || self.disabled {
             return;
         }
-        match field.parse(text) {
+        match field.parse(text).and_then(|value| {
+            let mut candidate = self.options.clone();
+            candidate[&field.key] = value.clone();
+            serde_json::from_value::<RunOptions>(candidate)?;
+            Ok(value)
+        }) {
             Ok(value) => {
                 self.options[&field.key] = value;
                 self.errors.remove(&field.key);
@@ -399,7 +415,7 @@ impl RunPanel {
                 self.pending_request = Some(intent);
                 self.confirmation = true;
             }
-            Ok(intent) => cx.emit(RunEvent::Requested(intent)),
+            Ok(intent) => cx.emit(RunEvent::Requested(Box::new(intent))),
             Err(error) => {
                 self.status = format!("{error:#}");
                 self.tab = 2;
@@ -409,11 +425,20 @@ impl RunPanel {
     }
 
     pub(super) fn prepare_intent(&mut self, cx: &App) -> Result<RunIntent> {
-        self.flush_options(cx)?;
+        self.flush_options(self.command, cx)?;
         anyhow::ensure!(
             self.can_start(),
             "Select valid suites and correct run settings before continuing"
         );
+        let mut values = self.options.clone();
+        let defaults = serde_json::to_value(RunOptions::default())?;
+        if let Some(values) = values.as_object_mut() {
+            for (key, value) in values {
+                if !RunOptions::applies(key, self.command) {
+                    *value = defaults[key].clone();
+                }
+            }
+        }
         let intent = RunIntent {
             request: RunRequest {
                 root: self
@@ -421,7 +446,7 @@ impl RunPanel {
                     .clone()
                     .ok_or_else(|| anyhow!("Open a workspace first"))?,
                 command: self.command,
-                options: serde_json::from_value(self.options.clone())?,
+                options: serde_json::from_value(values)?,
             },
             suite_names: self.selected_names(),
         };
@@ -439,7 +464,12 @@ impl RunPanel {
             return;
         }
         self.choose(command, window, cx);
-        if self.command != command || !self.errors.is_empty() {
+        if self.command != command
+            || self
+                .errors
+                .keys()
+                .any(|key| RunOptions::applies(key, command))
+        {
             return;
         }
         self.tab = 0;
@@ -518,76 +548,6 @@ impl RunPanel {
             Err(error) => self.status = format!("{error:#}"),
         }
         cx.notify();
-    }
-
-    fn render_options(&self, cx: &mut Context<Self>) -> AnyElement {
-        let disabled = self.running() || self.disabled;
-        let mut fields = div().flex().flex_col().gap_4().p_5().max_w(px(820.));
-        for binding in &self.bindings {
-            let field = &binding.field;
-            let id = SharedString::from(format!("run-field-{}", field.key));
-            let control = match &binding.control {
-                Control::Input(input) => Input::new(input)
-                    .id(id)
-                    .disabled(disabled)
-                    .into_any_element(),
-                Control::Textarea(input) => div()
-                    .id(id)
-                    .child(Textarea::new(input).disabled(disabled).h(px(72.)))
-                    .into_any_element(),
-                _ => {
-                    let descriptor = field.clone();
-                    Checkbox::new(id)
-                        .label(field.label.clone())
-                        .checked(self.options[&field.key].as_bool().unwrap_or(false))
-                        .disabled(disabled)
-                        .on_change(cx.listener(move |this, checked, _, cx| {
-                            this.change(&descriptor, if *checked { "true" } else { "false" }, cx)
-                        }))
-                        .into_any_element()
-                }
-            };
-            let key = field.key.clone();
-            fields = fields.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .child(field.label.clone())
-                            .when(key == "fetchBrowser", |row| {
-                                row.child(
-                                    Button::new("fetch-auto")
-                                        .ghost()
-                                        .xsmall()
-                                        .label("Auto")
-                                        .disabled(disabled)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.options["fetchBrowser"] = Value::Null;
-                                            cx.notify();
-                                        })),
-                                )
-                            }),
-                    )
-                    .child(control)
-                    .children(self.errors.get(&key).map(|error| {
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(error.clone())
-                    })),
-            );
-        }
-        div()
-            .id("run-options-scroll")
-            .size_full()
-            .overflow_y_scroll()
-            .child(fields)
-            .into_any_element()
     }
 }
 
@@ -840,7 +800,7 @@ impl Render for RunPanel {
                                         && let Some(intent) = this.pending_request.take()
                                     {
                                         this.confirmation = false;
-                                        cx.emit(RunEvent::Requested(intent));
+                                        cx.emit(RunEvent::Requested(Box::new(intent)));
                                         cx.notify();
                                     }
                                 })),
@@ -857,7 +817,7 @@ impl Render for RunPanel {
                     }))
                     .child(Tab::new().label("Activity"))
                     .child(Tab::new().label("Suites"))
-                    .child(Tab::new().label("Options"))
+                    .child(Tab::new().label("Run settings"))
                     .child(Tab::new().label("Log")),
             )
             .child(div().flex_1().min_h_0().child(content))

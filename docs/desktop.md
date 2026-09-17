@@ -256,6 +256,13 @@ Reference capture, approve, and optimize require action-named confirmations
 describing the baseline or image changes. Pending option text is read before
 command changes and execution; invalid option drafts are retained for correction.
 
+Run settings is independent of the last command. Search the Environment & output,
+Capture, Comparison, Report, Image optimization, and Diagnostics & network groups
+before running any action. Browser download has Auto/Always/Never choices;
+Compare after test controls whether a test capture is immediately compared.
+Invalid settings block only commands that use them. Other drafts stay visible
+and retained, and unrelated options are omitted from the execution request.
+
 Each request freezes its command, options, and logical suite selection. The
 run-specific draft prompt offers Save and continue or Run saved version, plus
 Cancel. Saving cannot silently switch the requested command. Preflight resolves
