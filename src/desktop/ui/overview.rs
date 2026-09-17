@@ -92,7 +92,7 @@ impl Workbench {
                     })),
             )
             .child(self.render_theme_picker())
-            .child(self.file_menu())
+            .child(self.file_menu(cx))
             .child(
                 Button::new("open-workspace")
                     .ghost()

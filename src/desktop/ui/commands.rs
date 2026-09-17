@@ -265,14 +265,7 @@ impl Workbench {
             if command.operation == Operation::Theme {
                 continue;
             }
-            let enabled = match command.operation {
-                Operation::Duplicate | Operation::Rename => suite,
-                Operation::Delete => suite && !self.unsaved(),
-                Operation::SaveAs => open.is_some() && editable,
-                Operation::Reload => open.is_some(),
-                Operation::CloseWorkspace => workspace && !self.runs.read(cx).running(),
-                _ => workspace,
-            };
+            let enabled = self.file_operation_enabled(command.operation, cx);
             commands.push(Command {
                 title,
                 group: "File",

@@ -204,6 +204,11 @@ a diagnostic rather than a guessed value.
 
 ### Source and Save Safety
 
+Switching Fields, Source, and Effective reads pending input before changing the
+view. Invalid source stays in Source when Fields cannot represent it, with its
+diagnostic retained. File-menu actions use the same availability rules as command
+search, including disabling suite deletion for unsaved documents.
+
 Source has local YAML/JSON schema completion. Suggestions appear while typing
 property names and supported boolean/browser values; Ctrl+Space opens the menu
 explicitly (also Ctrl+Space on macOS). Arrow keys choose an item, Enter accepts,

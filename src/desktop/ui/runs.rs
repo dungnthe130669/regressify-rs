@@ -874,6 +874,10 @@ impl Render for RunPanel {
                 |panel, intent| {
                     panel.child(
                         div()
+                            .id("run-confirmation")
+                            .role(Role::Group)
+                            .aria_label("Run confirmation")
+                            .test_support()
                             .flex()
                             .items_center()
                             .flex_wrap()

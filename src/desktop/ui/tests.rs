@@ -8,6 +8,80 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("field-url", cx);
+        window.press("ctrl-a", cx);
+        window.input("https://example.com/latest-draft", cx);
+        window.within("editor-tabs").click(1_usize, cx);
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .value()
+                .contains("https://example.com/latest-draft")
+        );
+        let source = view.read(cx).source.clone();
+        window.focus(&source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input("scenarios:\n- url: https://example.com/from-source", cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        view.update(cx, |this, cx| {
+            this.select(Selection::Scenario(0), window, cx)
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("field-url").value(),
+            Some("https://example.com/from-source")
+        );
+        window.within("editor-tabs").click(1_usize, cx);
+        window.focus(&source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input("scenarios: [}", cx);
+        let draft = view.read(cx).source.read(cx).value();
+        window.within("editor-tabs").click(0_usize, cx);
+        assert_eq!(view.read(cx).tab, 1);
+        assert_eq!(view.read(cx).source.read(cx).value(), draft);
+        assert!(view.read(cx).diagnostic.is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn file_action_availability_matches_document_and_workspace_state(cx: &mut TestAppContext) {
+    use super::files::Operation;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).file_operation_enabled(Operation::Delete, cx));
+        view.update(cx, |this, cx| {
+            this.edit(
+                crate::desktop::session::Session::duplicate_selected,
+                window,
+                cx,
+            )
+        });
+        assert!(!view.read(cx).file_operation_enabled(Operation::Delete, cx));
+        assert!(view.read(cx).file_operation_enabled(Operation::SaveAs, cx));
+        view.update(cx, |this, cx| {
+            this.session.discard().unwrap();
+            this.close_workspace(window, cx);
+        });
+        assert!(!view.read(cx).file_operation_enabled(Operation::New, cx));
+        assert!(!view.read(cx).file_operation_enabled(Operation::Reload, cx));
+        assert!(view.read(cx).file_operation_enabled(Operation::Theme, cx));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn command_palette_preserves_the_unsaved_guard_when_opening_another_dialog(
     cx: &mut TestAppContext,
 ) {

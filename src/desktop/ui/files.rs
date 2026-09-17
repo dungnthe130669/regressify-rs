@@ -114,15 +114,40 @@ impl Workbench {
         });
     }
 
-    pub(super) fn file_menu(&self) -> impl IntoElement {
+    pub(super) fn file_operation_enabled(&self, operation: Operation, cx: &App) -> bool {
+        let open = self.session.open.as_ref();
+        let workspace = self.session.workspace.is_some();
+        let suite = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
+        !self.busy
+            && match operation {
+                Operation::Duplicate | Operation::Rename => suite,
+                Operation::Delete => suite && !self.unsaved(),
+                Operation::SaveAs => {
+                    open.is_some() && self.diagnostic.is_none() && self.field_errors.is_empty()
+                }
+                Operation::Reload => open.is_some(),
+                Operation::CloseWorkspace => workspace && !self.runs.read(cx).running(),
+                Operation::Theme => true,
+                _ => workspace,
+            }
+    }
+
+    pub(super) fn file_menu(&self, cx: &App) -> impl IntoElement {
         let focus = self.focus.clone();
+        let entries = menu_entries()
+            .into_iter()
+            .map(|(label, action)| {
+                let enabled = self.file_operation_enabled(action.operation, cx);
+                (label, action, enabled)
+            })
+            .collect::<Vec<_>>();
         Button::new("file-menu")
             .label("File")
             .disabled(self.busy)
             .dropdown_menu(move |menu, _, _| {
                 let mut menu = menu.action_context(focus.clone());
-                for (label, action) in menu_entries() {
-                    menu = menu.menu(label, Box::new(action));
+                for (label, action, enabled) in &entries {
+                    menu = menu.menu_with_disabled(*label, Box::new(action.clone()), !enabled);
                 }
                 menu
             })

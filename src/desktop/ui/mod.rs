@@ -1620,6 +1620,32 @@ impl Workbench {
             .into_any_element()
     }
 
+    fn select_editor_tab(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.busy || self.session.open.is_none() || index > 2 {
+            return false;
+        }
+        if let Err(error) = self.flush_drafts(window, cx) {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return false;
+        }
+        if index == 0 && self.tab == 1 && self.diagnostic.is_some() {
+            self.status = "Correct the source errors before switching to Fields".into();
+            cx.notify();
+            return false;
+        }
+        self.tab = index;
+        self.session.reconcile_selection();
+        self.rebuild_fields(window, cx);
+        cx.notify();
+        true
+    }
+
     fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
         if self.overview || self.session.open.is_none() {
             return self.render_overview(cx);
@@ -1744,13 +1770,7 @@ impl Workbench {
                             .underline()
                             .selected_index(self.tab)
                             .on_click(cx.listener(|this, index, window, cx| {
-                                if !this.field_errors.is_empty() {
-                                    return;
-                                }
-                                this.tab = *index;
-                                this.session.reconcile_selection();
-                                this.rebuild_fields(window, cx);
-                                cx.notify();
+                                this.select_editor_tab(*index, window, cx);
                             }))
                             .child(Tab::new().label("Fields"))
                             .child(Tab::new().label("Source"))
@@ -2033,10 +2053,9 @@ impl Render for Workbench {
                 }
                 this.select_view(0, window, cx);
                 this.overview = false;
-                if this.tab != 0 && this.field_errors.is_empty() {
-                    this.rebuild_fields(window, cx);
+                if this.tab != 0 && !this.select_editor_tab(0, window, cx) {
+                    return;
                 }
-                this.tab = 0;
                 window.focus(&this.field_search.read(cx).focus_handle(cx), cx);
                 cx.notify();
             }))
