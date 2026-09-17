@@ -1168,22 +1168,61 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+fn run_intents_freeze_command_options_and_scope_but_resolve_fresh_output_ids(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::runner::RunCommand;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.select_all(true, cx);
+                panel.choose(RunCommand::Approve, window, cx);
+            });
+            let intent = this
+                .runs
+                .update(cx, |panel, cx| panel.prepare_intent(cx))
+                .unwrap();
+            this.runs.update(cx, |panel, cx| {
+                panel.choose(RunCommand::Reference, window, cx);
+                panel.select_all(false, cx);
+            });
+            let mut fresh = this.session.suites.clone();
+            fresh[0].output_id = "new-output-id".into();
+            let request = intent.resolve(&fresh).unwrap();
+            assert_eq!(request.command, RunCommand::Approve);
+            assert_eq!(request.options.suites, vec!["new-output-id"]);
+            assert_eq!(intent.suite_names, vec!["ui-test"]);
+            fresh[0].name = "unrelated-suite".into();
+            assert!(intent.resolve(&fresh).is_err());
+            assert!(!this.runs.read(cx).running());
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn run_preflight_rejects_a_selected_suite_changed_on_disk(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+            let intent = this
+                .runs
+                .update(cx, |panel, cx| panel.prepare_intent(cx))
+                .unwrap();
             std::fs::write(
                 directory.path().join("visual_tests/ui-test.tests.yaml"),
                 "scenarios: [",
             )
             .unwrap();
-            this.start_selected_run(window, cx);
+            this.start_selected_run(intent, window, cx);
         });
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| window.try_find("status").is_some_and(|status| status.label() == Some("Selected suites changed or contain errors; review the selection before running"))).await;
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| window.try_find("status").is_some_and(|status| status.label().is_some_and(|label| label.starts_with("Selected suites changed or contain errors; review the selection before running")))).await;
     cx.update(|cx| {
         assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
         assert!(!view.read(cx).runs.read(cx).running());
@@ -1583,7 +1622,7 @@ fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<W
             this.apply_editor_display(window, cx);
             this.session.connect(root).unwrap();
             this.runs.update(cx, |panel, cx| {
-                panel.set_workspace(root.to_path_buf(), window, cx)
+                panel.set_workspace(root.canonicalize().unwrap(), window, cx)
             });
             let open = this
                 .session

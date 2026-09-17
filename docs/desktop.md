@@ -256,6 +256,12 @@ Reference capture, approve, and optimize require action-named confirmations
 describing the baseline or image changes. Pending option text is read before
 command changes and execution; invalid option drafts are retained for correction.
 
+Each request freezes its command, options, and logical suite selection. The
+run-specific draft prompt offers Save and continue or Run saved version, plus
+Cancel. Saving cannot silently switch the requested command. Preflight resolves
+those exact suites again, including any newly saved output IDs; it never substitutes
+another same-sized selection or expands an empty selection to all suites.
+
 The CLI has no single-scenario run flag. Selecting a scenario for editing does
 not restrict execution to it. Suite selections use exact escaped names;
 compare and approve resolve each selected suite's explicit output ID.

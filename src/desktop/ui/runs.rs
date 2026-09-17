@@ -13,10 +13,38 @@ mod activity;
 
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
-    Requested,
+    Requested(RunIntent),
     Finished,
     SelectionChanged,
     ProgressChanged,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct RunIntent {
+    pub request: RunRequest,
+    pub suite_names: Vec<String>,
+}
+
+impl RunIntent {
+    pub(super) fn resolve(&self, suites: &[SuiteSummary]) -> Result<RunRequest> {
+        let mut request = self.request.clone();
+        if request.command.supports_suites() {
+            let mut selection = SuiteSelection::default();
+            for name in &self.suite_names {
+                let suite = suites
+                    .iter()
+                    .find(|suite| suite.name == *name)
+                    .ok_or_else(|| anyhow!("Selected suite '{name}' no longer exists"))?;
+                selection.toggle(suite, true)?;
+            }
+            request.options.suites = selection.filters(
+                suites,
+                matches!(request.command, RunCommand::Compare | RunCommand::Approve),
+            )?;
+        }
+        request.arguments()?;
+        Ok(request)
+    }
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -38,6 +66,7 @@ pub(super) struct RunPanel {
     tab: usize,
     disabled: bool,
     confirmation: bool,
+    pending_request: Option<RunIntent>,
     log_text: String,
     suites: Vec<SuiteSummary>,
     selection: SuiteSelection,
@@ -65,6 +94,7 @@ impl RunPanel {
             tab: 0,
             disabled: false,
             confirmation: false,
+            pending_request: None,
             log_text: String::new(),
             suites: Vec::new(),
             selection: SuiteSelection::default(),
@@ -82,9 +112,6 @@ impl RunPanel {
     }
     pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
         &self.manager.progress
-    }
-    pub(super) fn requires_suites(&self) -> bool {
-        self.command.supports_suites()
     }
     pub(super) fn cancel(&mut self, cx: &mut Context<Self>) {
         self.manager.cancel();
@@ -144,6 +171,7 @@ impl RunPanel {
             return;
         }
         self.root = None;
+        self.pending_request = None;
         self.options = serde_json::to_value(RunOptions::default()).unwrap_or(Value::Null);
         self.manager = RunManager::default();
         self.command = RunCommand::Test;
@@ -366,21 +394,39 @@ impl RunPanel {
     }
 
     fn request_start(&mut self, cx: &mut Context<Self>) {
-        if let Err(error) = self.flush_options(cx) {
-            self.status = format!("{error:#}");
-            self.tab = 2;
-            cx.notify();
-            return;
+        match self.prepare_intent(cx) {
+            Ok(intent) if self.command.needs_confirmation() => {
+                self.pending_request = Some(intent);
+                self.confirmation = true;
+            }
+            Ok(intent) => cx.emit(RunEvent::Requested(intent)),
+            Err(error) => {
+                self.status = format!("{error:#}");
+                self.tab = 2;
+            }
         }
-        if !self.can_start() {
-            return;
-        }
-        if self.command.needs_confirmation() && !self.confirmation {
-            self.confirmation = true;
-            cx.notify();
-            return;
-        }
-        cx.emit(RunEvent::Requested);
+        cx.notify();
+    }
+
+    pub(super) fn prepare_intent(&mut self, cx: &App) -> Result<RunIntent> {
+        self.flush_options(cx)?;
+        anyhow::ensure!(
+            self.can_start(),
+            "Select valid suites and correct run settings before continuing"
+        );
+        let intent = RunIntent {
+            request: RunRequest {
+                root: self
+                    .root
+                    .clone()
+                    .ok_or_else(|| anyhow!("Open a workspace first"))?,
+                command: self.command,
+                options: serde_json::from_value(self.options.clone())?,
+            },
+            suite_names: self.selected_names(),
+        };
+        intent.resolve(&self.suites)?;
+        Ok(intent)
     }
 
     pub(super) fn request_command(
@@ -401,35 +447,20 @@ impl RunPanel {
         self.request_start(cx);
     }
 
-    pub(super) fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(error) = self.flush_options(cx) {
-            self.status = format!("{error:#}");
-            cx.notify();
+    pub(super) fn start(
+        &mut self,
+        request: RunRequest,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled || self.root.as_ref() != Some(&request.root) {
             return;
         }
-        if !self.can_start() {
-            return;
-        }
-        let request = (|| -> Result<_> {
-            let mut options: RunOptions = serde_json::from_value(self.options.clone())?;
-            if self.command.supports_suites() {
-                options.suites = self.selection.filters(
-                    &self.suites,
-                    matches!(self.command, RunCommand::Compare | RunCommand::Approve),
-                )?;
-            }
-            Ok(RunRequest {
-                root: self
-                    .root
-                    .clone()
-                    .ok_or_else(|| anyhow!("Open a workspace first"))?,
-                command: self.command,
-                options,
-            })
-        })();
-        match request.and_then(|request| self.manager.start(request)) {
+        self.command = request.command;
+        match self.manager.start(request) {
             Ok(()) => {
                 self.confirmation = false;
+                self.pending_request = None;
                 self.tab = 0;
                 self.started = Some(Instant::now());
                 self.collapsed.clear();
@@ -776,7 +807,7 @@ impl Render for RunPanel {
                                         .child(self.command.confirmation_message()),
                                 )
                                 .child(div().text_sm().child(if self.command.supports_suites() {
-                                    format!("{} selected suites", self.selection.len())
+                                    format!("Suites: {}", self.selected_names().join(", "))
                                 } else {
                                     "Workspace images".into()
                                 }))
@@ -802,7 +833,17 @@ impl Render for RunPanel {
                             Button::new("run-confirm")
                                 .danger()
                                 .label(self.command.action_label())
-                                .on_click(cx.listener(|this, _, _, cx| this.request_start(cx))),
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    if this.confirmation
+                                        && !this.disabled
+                                        && !this.running()
+                                        && let Some(intent) = this.pending_request.take()
+                                    {
+                                        this.confirmation = false;
+                                        cx.emit(RunEvent::Requested(intent));
+                                        cx.notify();
+                                    }
+                                })),
                         ),
                 )
             })

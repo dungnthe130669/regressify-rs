@@ -196,7 +196,7 @@ impl Workbench {
         let runs = cx.new(|cx| runs::RunPanel::new(window, cx));
         let run_subscription =
             cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
-                runs::RunEvent::Requested => this.guard_run(window, cx),
+                runs::RunEvent::Requested(intent) => this.guard_run(intent.clone(), window, cx),
                 runs::RunEvent::Finished => {
                     this.status = "Command finished".into();
                     if let Err(error) = this.session.refresh() {
@@ -452,27 +452,44 @@ impl Workbench {
             .update(cx, |panel, cx| panel.update_catalog(suites, error, cx));
     }
 
-    fn start_selected_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn start_selected_run(
+        &mut self,
+        intent: runs::RunIntent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy || self.runs.read(cx).running() {
-            return;
-        }
-        if !self.runs.read(cx).requires_suites() {
-            self.runs.update(cx, |panel, cx| panel.start(window, cx));
             return;
         }
         let Some(workspace) = self.session.workspace.clone() else {
             return;
         };
-        let selected_count = self.runs.read(cx).selected_count();
+        if workspace.root != intent.request.root {
+            return;
+        }
+        if !intent.request.command.supports_suites() {
+            match intent.resolve(&[]) {
+                Ok(request) => self
+                    .runs
+                    .update(cx, |panel, cx| panel.start(request, window, cx)),
+                Err(error) => {
+                    self.status = format!("{error:#}");
+                    cx.notify();
+                }
+            }
+            return;
+        }
         self.task("Validating selected suites...", move || workspace.suite_catalog(), move |this, suites, window, cx| {
             this.session.suites = suites;
             this.session.suite_error = None;
             this.sync_suites(cx);
-            if this.runs.read(cx).selected_count() != selected_count {
-                this.status = "Selected suites changed or contain errors; review the selection before running".into();
-                return;
+            match intent.resolve(&this.session.suites) {
+                Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, window, cx)),
+                Err(error) => {
+                    this.status = format!("Selected suites changed or contain errors; review the selection before running: {error:#}");
+                    cx.notify();
+                }
             }
-            this.runs.update(cx, |panel, cx| panel.start(window, cx));
         }, window, cx);
     }
 
@@ -499,7 +516,10 @@ impl Workbench {
         cx.notify();
     }
 
-    fn guard_run(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn guard_run(&mut self, intent: runs::RunIntent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
         if self.session.open.is_some()
             && let Err(error) = self.flush_drafts(window, cx)
         {
@@ -509,7 +529,7 @@ impl Workbench {
             cx.notify();
             return;
         }
-        self.guard(files::Pending::Run, window, cx);
+        self.guard(files::Pending::Run(intent), window, cx);
     }
 
     fn request_selected_command(

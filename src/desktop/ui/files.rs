@@ -28,7 +28,7 @@ pub(super) enum Pending {
     Name(Operation),
     Reload,
     Close,
-    Run,
+    Run(runs::RunIntent),
     CloseWorkspace,
 }
 
@@ -180,8 +180,13 @@ impl Workbench {
             let blocked = state.blocked;
             let save = pending.clone();
             let discard = pending.clone();
+            let run = matches!(pending, Pending::Run(_));
             dialog
-                .title("Unsaved changes")
+                .title(if run {
+                    "Save changes before running?"
+                } else {
+                    "Unsaved changes"
+                })
                 .close_button(false)
                 .keyboard(!busy)
                 .child(target.clone())
@@ -204,7 +209,7 @@ impl Workbench {
                         )
                         .child(
                             Button::new("guard-discard")
-                                .label("Discard")
+                                .label(if run { "Run saved version" } else { "Discard" })
                                 .disabled(busy)
                                 .on_click(window.listener_for(
                                     &view,
@@ -225,7 +230,7 @@ impl Workbench {
                         .child(
                             Button::new("guard-save")
                                 .primary()
-                                .label("Save")
+                                .label(if run { "Save and continue" } else { "Save" })
                                 .disabled(busy || blocked)
                                 .on_click(window.listener_for(
                                     &view,
@@ -254,7 +259,7 @@ impl Workbench {
                 }
             }
             Pending::Close => self.finish_close(cx),
-            Pending::Run => self.start_selected_run(window, cx),
+            Pending::Run(intent) => self.start_selected_run(intent, window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
         }
     }
