@@ -19,7 +19,7 @@ pub enum TestSuiteFormat {
     Json,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct TestSuite {
@@ -32,6 +32,8 @@ pub struct TestSuite {
     pub async_compare_limit: Option<usize>,
 
     pub browser: Option<Browser>,
+
+    pub basic_auth: Option<BasicAuthConfig>,
 
     pub bypass_csp: Option<bool>,
 
@@ -77,12 +79,14 @@ pub enum Browser {
     Webkit,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
     pub actions: Option<Vec<TestAction>>,
+
+    pub basic_auth: Option<BasicAuthConfig>,
 
     pub bypass_csp: Option<bool>,
 
@@ -147,6 +151,32 @@ pub enum Needs {
     String(String),
 
     StringArray(Vec<String>),
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub struct BasicAuth {
+    pub origin: String,
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub enum BasicAuthConfig {
+    Single(BasicAuth),
+    Multiple(Vec<BasicAuth>),
+}
+
+impl BasicAuthConfig {
+    pub fn entries(&self) -> &[BasicAuth] {
+        match self {
+            Self::Single(entry) => std::slice::from_ref(entry),
+            Self::Multiple(entries) => entries,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]

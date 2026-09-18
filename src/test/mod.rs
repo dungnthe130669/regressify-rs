@@ -1,11 +1,16 @@
 pub mod actionability;
+mod authentication;
 mod browsers;
 pub mod capture;
+mod cdp;
 mod page_stability;
 mod test_action;
 mod test_scenario;
 mod test_suite;
 mod test_suites;
+
+#[cfg(test)]
+mod browser_tests;
 
 pub use browsers::fetcher;
 pub use test_suites::exec_ref;

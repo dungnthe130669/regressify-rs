@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+pub mod basic_auth;
 pub mod replacements;
 pub mod viewports;
 
@@ -10,7 +11,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     common,
-    types::{Browser, Needs, Selectors, TestScenario, TestSuite, UrlReplacement},
+    types::{
+        BasicAuth, BasicAuthConfig, Browser, Needs, Selectors, TestScenario, TestSuite,
+        UrlReplacement,
+    },
 };
 
 pub const DEFAULT_DELAY_MS: f64 = 1000.0;
@@ -24,6 +28,7 @@ pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 #[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
+    pub basic_auth: Option<BasicAuthConfig>,
     pub async_capture_limit: Option<usize>,
     pub async_compare_limit: Option<usize>,
     pub browser: Option<Browser>,
@@ -64,6 +69,8 @@ pub struct WorkspaceConfig {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedConfig {
+    #[serde(skip_serializing)]
+    pub basic_auth: Vec<BasicAuth>,
     pub async_capture_limit: usize,
     pub async_compare_limit: usize,
     pub browser: Browser,
@@ -95,6 +102,7 @@ pub struct ResolvedConfig {
 impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
+            basic_auth: Vec::new(),
             async_capture_limit: DEFAULT_ASYNC_CAPTURE_LIMIT,
             async_compare_limit: DEFAULT_ASYNC_COMPARE_LIMIT,
             browser: Browser::Chromium,
@@ -276,6 +284,16 @@ pub fn resolve_config(
         .or(workspace.viewports_path.clone());
 
     ResolvedConfig {
+        basic_auth: [
+            &workspace.basic_auth,
+            &suite.basic_auth,
+            &scenario.basic_auth,
+        ]
+        .into_iter()
+        .flatten()
+        .flat_map(|config| config.entries().iter().cloned())
+        .collect(),
+
         async_capture_limit: resolve_async_capture_limit(workspace, suite),
 
         async_compare_limit: resolve_async_compare_limit(workspace, suite),
@@ -426,6 +444,7 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
             viewports_path: None,
+            ..Default::default()
         }
     }
 
@@ -453,7 +472,31 @@ mod tests {
             url: "https://example.com".to_string(),
             use_css_override: None,
             viewport_names: None,
+            ..Default::default()
         }
+    }
+
+    #[test]
+    fn basic_auth_cascades_by_origin_and_is_not_serialized() {
+        let workspace: WorkspaceConfig = serde_yaml::from_str(
+            "basicAuth:\n  origin: https://example.com\n  username: workspace\n  password: private\n",
+        ).unwrap();
+        let suite: TestSuite = serde_yaml::from_str(
+            "scenarios: []\nbasicAuth:\n  - origin: https://other.example\n    username: other\n    password: private\n",
+        ).unwrap();
+        let scenario: TestScenario = serde_yaml::from_str(
+            "url: https://example.com\nbasicAuth:\n  origin: https://example.com\n  username: scenario\n  password: private\n",
+        ).unwrap();
+        let resolved = resolve_config(&workspace, &suite, &scenario);
+        let entries = basic_auth::resolve(&resolved.basic_auth).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].username, "scenario");
+        assert_eq!(entries[1].username, "other");
+        assert!(
+            !serde_json::to_string(&resolved)
+                .unwrap()
+                .contains("private")
+        );
     }
 
     #[test]

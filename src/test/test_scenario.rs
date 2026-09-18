@@ -430,6 +430,9 @@ async fn run_scenario_capture_inner(
     // Create page with about:blank first, apply the viewport + CSP bypass, then
     // navigate so layout is computed at the intended size from the first paint.
     let page = browser.new_page("about:blank").await?;
+    let authentication =
+        super::authentication::Authentication::install(browser, &page, &resolved.basic_auth)
+            .await?;
     if resolved.bypass_csp {
         let cmd = chromiumoxide::cdp::browser_protocol::page::SetBypassCspParams::builder()
             .enabled(true)
@@ -622,6 +625,9 @@ async fn run_scenario_capture_inner(
     }
 
     for screenshot_type in screenshot_types {
+        if let Some(authentication) = &authentication {
+            authentication.check()?;
+        }
         crate::progress::scenario_log!(
             "{} Capturing {} screenshot...",
             log_prefix,

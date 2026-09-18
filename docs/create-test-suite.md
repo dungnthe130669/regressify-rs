@@ -61,6 +61,25 @@ data before Chromium launches.
 
 ## Properties
 
+### HTTP Basic Authentication
+
+`basicAuth` is supported in workspace, suite, and scenario configuration.
+Use an object for one origin or an array for several origins. More specific
+levels replace credentials for the same origin and inherit other origins.
+
+```yaml
+basicAuth:
+  - origin: https://staging.example.com
+    username: ${REGRESSION_USER}
+    password: ${REGRESSION_PASSWORD}
+```
+
+`${NAME}` and `$NAME` resolve from environment variables. Missing/empty variables,
+credentials, or invalid HTTP(S) origins are configuration errors. Credentials are
+sent only in response to a Basic challenge from a matching server origin, never
+to a proxy or an unrelated redirect origin. A failed credential challenge is not
+retried indefinitely. Do not commit literal passwords in suite files.
+
 ### Required properties
 
 {% spoiler() %}

@@ -825,6 +825,9 @@ fn validate_external_capture_files_in(
             let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
             let context = format!("test suite '{}' scenario '{}'", input.name, scenario_name);
 
+            config::basic_auth::resolve(&resolved.basic_auth)
+                .with_context(|| format!("Invalid basicAuth for {}", context))?;
+
             let cookie_path = match resolved.cookie_path.as_deref() {
                 Some(cookie_path) => Some(
                     config::resolve_workspace_file(root_dir, cookie_path, "cookiePath")
@@ -1459,6 +1462,7 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
             viewports_path: None,
+            ..Default::default()
         }
     }
 
@@ -1486,6 +1490,7 @@ mod tests {
             url: format!("https://example.com/{id}"),
             use_css_override: None,
             viewport_names: None,
+            ..Default::default()
         }
     }
 
