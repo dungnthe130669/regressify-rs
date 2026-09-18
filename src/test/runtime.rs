@@ -46,6 +46,11 @@ pub struct Element {
     pub node_id: NodeId,
 }
 
+pub(crate) struct NavigationWatch {
+    events: tokio::sync::broadcast::Receiver<super::cdp::Event>,
+    main_frame: String,
+}
+
 impl Runtime {
     pub async fn new(browser: &Browser, page: &Page) -> Result<Self> {
         let client = Client::connect(browser).await?;
@@ -274,6 +279,58 @@ fn check_evaluation(result: &Value) -> Result<()> {
 }
 
 impl Target {
+    pub(crate) async fn navigation_watch(&self) -> Result<NavigationWatch> {
+        Ok(NavigationWatch {
+            events: self.runtime.client.subscribe(),
+            main_frame: self.runtime.root().await?.frame,
+        })
+    }
+
+    pub(crate) async fn finish_navigation(
+        &self,
+        mut watch: NavigationWatch,
+        timeout: Duration,
+    ) -> Result<()> {
+        let mut deadline = tokio::time::Instant::now() + Duration::from_millis(75);
+        let mut started = false;
+        loop {
+            let event = match tokio::time::timeout_at(deadline, watch.events.recv()).await {
+                Ok(Ok(event)) => event,
+                Ok(Err(_)) => bail!("Navigation event stream closed or overflowed"),
+                Err(_) if started => {
+                    bail!("Timed out waiting for navigation triggered by the action")
+                }
+                Err(_) => return Ok(()),
+            };
+            let frame = event.params["frameId"]
+                .as_str()
+                .or_else(|| event.params["frame"]["id"].as_str());
+            if frame != Some(self.realm.frame.as_str()) && frame != Some(watch.main_frame.as_str())
+            {
+                continue;
+            }
+            match event.method.as_str() {
+                "Page.frameStartedLoading" | "Page.frameStartedNavigating" if !started => {
+                    started = true;
+                    deadline = tokio::time::Instant::now() + timeout;
+                }
+                "Page.navigatedWithinDocument" => return Ok(()),
+                "Page.frameNavigated" => {
+                    if frame == Some(watch.main_frame.as_str()) {
+                        return self
+                            .runtime
+                            .target(&None, timeout)
+                            .await?
+                            .wait_for_load(timeout)
+                            .await;
+                    }
+                    return self.wait_for_load(timeout).await;
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub async fn evaluate(&self, script: impl Into<Evaluation>) -> Result<Evaluated> {
         let expression = match script.into() {
             Evaluation::Expression(expression) => expression.expression,
@@ -454,12 +511,22 @@ impl Target {
     }
 
     pub async fn wait_for_ready(&self, timeout: Duration) -> Result<()> {
+        self.wait_for_document("document.readyState !== 'loading'", timeout)
+            .await
+    }
+
+    pub(crate) async fn wait_for_load(&self, timeout: Duration) -> Result<()> {
+        self.wait_for_document("document.readyState === 'complete'", timeout)
+            .await
+    }
+
+    async fn wait_for_document(&self, expression: &str, timeout: Duration) -> Result<()> {
         let started = std::time::Instant::now();
         loop {
-            match self.evaluate("document.readyState !== 'loading'").await {
+            match self.evaluate(expression).await {
                 Ok(result) if result.0 == true => return Ok(()),
                 _ if started.elapsed() >= timeout => {
-                    bail!("Timed out waiting for frame navigation to reach DOM content loaded")
+                    bail!("Timed out waiting for frame navigation readiness")
                 }
                 _ => tokio::time::sleep(Duration::from_millis(50)).await,
             }

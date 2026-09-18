@@ -6276,6 +6276,7 @@ dependencies = [
  "directories",
  "futures",
  "glob",
+ "globset",
  "gpui-kit",
  "lodepng",
  "lsp-types",

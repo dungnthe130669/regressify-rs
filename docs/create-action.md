@@ -69,7 +69,8 @@ Click an element.
 
 > Important:
 >
-> If the click leads to a navigation to another URL, ensure that the very next action is `wait` for that URL or an expected element before performing any other steps.
+> Click-triggered document navigation is awaited automatically. Use an explicit
+> URL or selector `wait` for delayed application transitions and SPA readiness.
 
 Example:
 
@@ -167,6 +168,10 @@ input
 
 Type text in an editable `<input>`, `<textarea>`, or contenteditable element.
 Read-only and non-editable targets fail instead of silently succeeding.
+Text is typed one character at a time with native keyboard events for mapped
+keys, including inside frames. Unicode characters without a keyboard mapping
+use Chromium text insertion. Browser edit constraints and `beforeinput`
+handlers are honored. A native input receives a final `change` event.
 
 Example:
 
@@ -259,10 +264,14 @@ press
 Press a key (or key combination) on an element.
 
 Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and `Meta`/`Cmd`/`Command`. A key combination may contain one non-modifier key, such as `Ctrl+A`, `Shift+Tab`, or `Meta+K`.
+`ControlOrMeta` selects Control on Windows/Linux and Meta on macOS. Standalone
+modifiers, literal `+` (or `Control++`), physical codes such as `KeyA`, and
+function keys are supported. Modifiers are pressed and released around the key.
 
 > Important:
 >
-> If the press leads to a navigation to another URL, ensure that the very next action is `wait` for that URL or an expected element before performing any other steps.
+> Key-triggered document navigation is awaited automatically. Use an explicit
+> wait for delayed application transitions or SPA readiness.
 
 Example:
 
@@ -404,6 +413,10 @@ wait
 :::::
 
 Wait for X milliseconds or wait for an element to exist and become visible.
+
+URL patterns also support brace alternatives, for example
+`**/{login,dashboard}?tab=*`. A `?` is a literal query delimiter, not a wildcard.
+Select actions retry missing or disabled options until `elementTimeout` expires.
 If there is navigation, add the URL pattern of the target page also.
 
 In `test` mode, URL replacements from the active replacement profile and suite/workspace `urlReplacements` are applied to `url` before matching. In `ref` mode, wait URLs are matched as written.

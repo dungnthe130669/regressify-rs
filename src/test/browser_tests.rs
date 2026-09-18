@@ -181,3 +181,91 @@ async fn basic_auth_is_origin_scoped_and_cancels_bad_credentials() -> Result<()>
     let _ = std::fs::remove_dir_all(directory);
     result
 }
+
+fn interaction_page(request: Request) {
+    let content = match request.url() {
+        "/done" => "<body>done<script src='/slow.js'></script></body>",
+        "/slow.js" => {
+            std::thread::sleep(Duration::from_millis(150));
+            "document.body.dataset.loaded = 'yes';"
+        }
+        _ => {
+            r#"<input id="typed" maxlength="3"><select id="choice"><option value="old">Old</option></select>
+            <a id="next" href="/done">Next</a><script>
+            const typed = document.querySelector('#typed');
+            const keys = [];
+            typed.addEventListener('keydown', event => { keys.push(event.key); typed.dataset.keys = JSON.stringify(keys); typed.dataset.trusted = String(event.isTrusted); });
+            setTimeout(() => document.querySelector('#choice').add(new Option('Ready', 'ready')), 600);
+            </script>"#
+        }
+    };
+    let mime = if request.url() == "/slow.js" {
+        "application/javascript"
+    } else {
+        "text/html"
+    };
+    let _ = request.respond(
+        Response::from_string(content)
+            .with_header(Header::from_bytes("Content-Type", mime).unwrap()),
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires a locally installed Chromium browser"]
+async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()> {
+    use super::{
+        runtime::Runtime,
+        storage_state::StorageState,
+        test_action::{ActionExecutionContext, exec_test_action},
+    };
+    use crate::{
+        config::ResolvedConfig,
+        types::{Frame, TestAction, TestScenario, TestSuite},
+    };
+    let inner = Site::new(interaction_page)?;
+    let outer = Site::new(interaction_page)?;
+    let (mut browser, handler, directory) =
+        launch_browser(&None, "interactions", LaunchOptions::default())
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = Runtime::new(&browser, &page).await?;
+        let storage = StorageState::install(&browser, &page, None, &outer.origin).await?;
+        page.goto(outer.origin.as_str()).await?;
+        page.evaluate(format!("(() => {{ const child = document.createElement('iframe'); child.src = {}; document.body.append(child); }})()", serde_json::to_string(&inner.origin.replace("127.0.0.1", "localhost"))?)).await?;
+        let suite = TestSuite::default();
+        let scenario = TestScenario { url: outer.origin.clone(), ..Default::default() };
+        let config = ResolvedConfig { element_timeout_ms: 4000, actionability_timeout_ms: 2000, ..Default::default() };
+        let context = || ActionExecutionContext { page: &page, runtime: &runtime, storage: &storage, test_suite: &suite, scenario: &scenario, config: &config, url_replacements: &[], viewport_label: None, log_prefix: "fixture" };
+        for frame in [None, Some(Frame::Single("iframe".into()))] {
+            for action in [
+                serde_json::json!({"select":"#choice", "value":"ready", "frame":frame}),
+                serde_json::json!({"input":"#typed", "value":"Ab+c", "append":true, "frame":frame}),
+            ] {
+                let action: TestAction = serde_json::from_value(action)?;
+                exec_test_action(context(), &action).await?;
+            }
+            let target = runtime.target(&frame, Duration::from_secs(4)).await?;
+            let values: serde_json::Value = target.evaluate("(() => { const input = document.querySelector('#typed'); return {value:input.value, keys:JSON.parse(input.dataset.keys), trusted:input.dataset.trusted, choice:document.querySelector('#choice').value}; })()").await?.into_value()?;
+            anyhow::ensure!(values["value"] == "Ab+", "maxlength was bypassed: {values}");
+            anyhow::ensure!(values["keys"] == serde_json::json!(["A", "b", "+", "c"]), "typing did not dispatch per-character key events: {values}");
+            anyhow::ensure!(values["trusted"] == "true" && values["choice"] == "ready", "trusted typing or delayed options failed");
+            for key in ["Shift", "ControlOrMeta+A", "Backspace", "+"] {
+                let action: TestAction = serde_json::from_value(serde_json::json!({"press":"#typed", "key":key, "frame":frame}))?;
+                exec_test_action(context(), &action).await?;
+            }
+            let value: String = target.evaluate("document.querySelector('#typed').value").await?.into_value()?;
+            anyhow::ensure!(value == "+", "keyboard shortcut or literal plus failed: {value}");
+        }
+        let action: TestAction = serde_json::from_value(serde_json::json!({"click":"#next"}))?;
+        exec_test_action(context(), &action).await?;
+        let loaded: String = page.evaluate("document.body.dataset.loaded").await?.into_value()?;
+        anyhow::ensure!(loaded == "yes", "click completed before the navigation loaded");
+        Ok(())
+    }.await;
+    browser.close().await?;
+    handler.await?;
+    let _ = std::fs::remove_dir_all(directory);
+    result
+}

@@ -3,6 +3,7 @@ mod authentication;
 mod browsers;
 pub mod capture;
 mod cdp;
+mod keyboard;
 mod page_stability;
 pub mod runtime;
 mod storage_state;
