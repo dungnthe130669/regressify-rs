@@ -81,8 +81,8 @@ impl RunPanel {
             div()
                 .flex()
                 .flex_col()
-                .gap_5()
-                .p_5()
+                .gap_3()
+                .p_3()
                 .w_full()
                 .child(
                     div()
@@ -120,7 +120,7 @@ impl RunPanel {
                                         .role(Role::Status)
                                         .aria_label(self.outcome_heading())
                                         .test_support()
-                                        .text_xl()
+                                        .text_base()
                                         .font_weight(FontWeight::SEMIBOLD)
                                         .text_color(match &self.manager.outcome {
                                             Some(RunOutcome::Failed(_)) => cx.theme().danger,
@@ -207,8 +207,8 @@ impl RunPanel {
                         .flex_wrap()
                         .border_y_1()
                         .border_color(cx.theme().border)
-                        .py_4()
-                        .gap_5()
+                        .py_2()
+                        .gap_4()
                         .child(self.metric(
                             "total",
                             if comparisons.total > 0 {
@@ -556,7 +556,7 @@ impl RunPanel {
                     .role(Role::Status)
                     .aria_label(format!("{label}: {value}"))
                     .test_support()
-                    .text_2xl()
+                    .text_lg()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(color)
                     .child(value.to_string()),

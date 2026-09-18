@@ -9,105 +9,146 @@ impl Workbench {
             .map(|workspace| display_path(&workspace.root))
             .unwrap_or_else(|| "No workspace open".into());
         let counts = self.runs.read(cx).progress().counts(None);
-        div()
-            .flex()
-            .items_center()
-            .gap_4()
-            .px_5()
-            .h(px(66.))
-            .flex_shrink_0()
-            .border_b_1()
-            .border_color(cx.theme().border)
+        let workspace_label = self
+            .session
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.root.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "No workspace".into());
+        TitleBar::new()
+            .h(px(38.))
+            .bg(cx.theme().title_bar)
+            .on_close_window(cx.listener(|this, _, window, cx| {
+                if this.runs.read(cx).running() {
+                    this.runs.update(cx, |panel, cx| panel.cancel(cx));
+                } else if !this.busy {
+                    this.guard(files::Pending::Close, window, cx);
+                }
+            }))
             .child(
                 div()
-                    .size(px(32.))
-                    .rounded_md()
-                    .bg(cx.theme().primary)
+                    .id("workspace-titlebar")
+                    .test_support()
                     .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        Icon::new(gpui_kit::assets::IconName::Layers)
-                            .size_5()
-                            .text_color(cx.theme().primary_foreground),
-                    ),
-            )
-            .child(
-                div()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_lg()
-                    .child("Regressify"),
-            )
-            .child(div().w(px(1.)).h_6().bg(cx.theme().border))
-            .child(
-                div()
                     .flex_1()
                     .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
+                    .h_full()
+                    .items_center()
+                    .gap_2()
+                    .pr_2()
                     .child(
                         div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child("ACTIVE WORKSPACE"),
+                            .size(px(22.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                Icon::new(gpui_kit::assets::IconName::Layers)
+                                    .size_4()
+                                    .text_color(cx.theme().primary),
+                            ),
                     )
                     .child(
                         div()
-                            .id("workspace-path")
-                            .role(Role::Status)
-                            .aria_label(root.clone())
-                            .test_support()
-                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
                             .text_sm()
-                            .child(root),
-                    ),
-            )
-            .when(self.runs.read(cx).running(), |header| {
-                header.child(
-                    Button::new("view-running")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::assets::IconName::Activity)
-                        .label(format!(
-                            "{} running / {} finished",
-                            counts.running,
-                            counts.complete()
-                        ))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.main_tab = 1;
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(
-                Button::new("open-commands")
-                    .ghost()
-                    .icon(gpui_kit::assets::IconName::Command)
-                    .accessibility_label("Commands")
-                    .tooltip("Commands")
-                    .disabled(self.busy)
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_commands(&OpenCommands, window, cx)
-                    })),
-            )
-            .child(self.render_update_button(cx))
-            .child(self.render_deploy_controls(cx))
-            .child(self.render_theme_picker())
-            .child(self.file_menu(cx))
-            .child(
-                Button::new("open-workspace")
-                    .ghost()
-                    .icon(IconName::FolderOpen)
-                    .label(if self.session.workspace.is_some() {
-                        "Switch workspace"
-                    } else {
-                        "Open workspace"
+                            .child("Regressify"),
+                    )
+                    .child(self.file_menu(cx))
+                    .child(
+                        Button::new("toggle-navigation")
+                            .ghost()
+                            .xsmall()
+                            .icon(if self.preferences.navigator_hidden {
+                                gpui_kit::assets::IconName::PanelLeftOpen
+                            } else {
+                                gpui_kit::assets::IconName::PanelLeftClose
+                            })
+                            .tooltip("Toggle navigator")
+                            .accessibility_label("Toggle navigator")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.toggle_navigator(&ToggleNavigator, window, cx)
+                            })),
+                    )
+                    .child(
+                        div().id("titlebar-navigation").test_support().child(
+                            TabBar::new("workbench-tabs")
+                                .underline()
+                                .small()
+                                .selected_index(self.main_tab)
+                                .on_click(cx.listener(|this, index, window, cx| {
+                                    this.select_view(*index, window, cx)
+                                }))
+                                .child(Tab::new().label("Editor"))
+                                .child(Tab::new().label("Runs"))
+                                .child(Tab::new().label("Results")),
+                        ),
+                    )
+                    .child(
+                        div().flex_1().min_w_0().child(
+                            div()
+                                .id("workspace-path")
+                                .role(Role::Status)
+                                .aria_label(root.clone())
+                                .test_support()
+                                .truncate()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(workspace_label),
+                        ),
+                    )
+                    .when(self.runs.read(cx).running(), |header| {
+                        header.child(
+                            Button::new("view-running")
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Activity)
+                                .label(format!("{} / {}", counts.running, counts.complete()))
+                                .tooltip("View running command")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.main_tab = 1;
+                                    cx.notify();
+                                })),
+                        )
                     })
-                    .disabled(self.busy || self.runs.read(cx).running())
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.choose_workspace(&OpenWorkspace, window, cx)
-                    })),
+                    .child(
+                        Button::new("open-commands")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Command)
+                            .accessibility_label("Commands")
+                            .tooltip("Commands")
+                            .disabled(self.busy)
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_commands(&OpenCommands, window, cx)
+                            })),
+                    )
+                    .child(self.render_update_button(cx))
+                    .child(self.render_deploy_controls(cx))
+                    .child(self.render_theme_picker())
+                    .child(
+                        Button::new("open-workspace")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::FolderOpen)
+                            .tooltip(if self.session.workspace.is_some() {
+                                "Switch workspace"
+                            } else {
+                                "Open workspace"
+                            })
+                            .accessibility_label(if self.session.workspace.is_some() {
+                                "Switch workspace"
+                            } else {
+                                "Open workspace"
+                            })
+                            .disabled(self.busy || self.runs.read(cx).running())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.choose_workspace(&OpenWorkspace, window, cx)
+                            })),
+                    ),
             )
             .into_any_element()
     }
@@ -164,8 +205,8 @@ impl Workbench {
         let mut page = div()
             .flex()
             .flex_col()
-            .gap_5()
-            .p_6()
+            .gap_3()
+            .p_3()
             .w_full()
             .child(
                 div()
@@ -186,7 +227,7 @@ impl Workbench {
                             )
                             .child(
                                 div()
-                                    .text_2xl()
+                                    .text_lg()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .child(name),
                             ),
@@ -206,10 +247,10 @@ impl Workbench {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap_6()
+                    .gap_4()
                     .border_y_1()
                     .border_color(cx.theme().border)
-                    .py_4()
+                    .py_2()
                     .child(self.overview_metric(
                         "Test suites",
                         self.session.suites.len(),
@@ -482,7 +523,7 @@ impl Workbench {
             .gap_1()
             .child(
                 div()
-                    .text_2xl()
+                    .text_lg()
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(color)
                     .child(count.to_string()),

@@ -39,6 +39,7 @@ impl Workbench {
         };
         Button::new("software-updates")
             .ghost()
+            .xsmall()
             .icon(if available {
                 gpui_kit::assets::IconName::Download
             } else {

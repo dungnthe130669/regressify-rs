@@ -39,8 +39,8 @@ impl RunPanel {
         let mut form = div()
             .flex()
             .flex_col()
-            .gap_5()
-            .p_5()
+            .gap_3()
+            .p_3()
             .w_full()
             .max_w(px(980.));
         let mut total = 0;
@@ -55,7 +55,7 @@ impl RunPanel {
         .into_iter()
         .enumerate()
         {
-            let mut fields = div().grid().grid_cols(2).gap_4();
+            let mut fields = div().grid().grid_cols(2).gap_3();
             let mut count = 0;
             for binding in self
                 .bindings

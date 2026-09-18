@@ -143,6 +143,8 @@ impl Workbench {
             })
             .collect::<Vec<_>>();
         Button::new("file-menu")
+            .ghost()
+            .xsmall()
             .label("File")
             .disabled(self.busy)
             .dropdown_menu(move |menu, _, _| {

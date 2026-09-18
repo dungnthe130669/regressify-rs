@@ -93,6 +93,12 @@ requires a configured target and is not performed by the test suite.
 
 ## Appearance and Commands
 
+Workspace navigation and global tools share a compact custom title bar with
+native window controls. Suite actions sit beside the editor tools; the navigator,
+settings forms, and activity metrics use compact spacing. The main source text
+size remains independently configurable. Headless layout tests cover 1080x720
+and 1600x1000 windows and check that controls do not overlap window buttons.
+
 The header appearance menu offers System, Light, and Dark. System follows the
 operating system and responds to appearance changes while the app is open;
 explicit Light or Dark overrides those changes. New installations default to

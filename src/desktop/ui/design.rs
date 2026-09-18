@@ -260,6 +260,7 @@ impl Workbench {
         let focus = self.focus.clone();
         Button::new("theme-picker")
             .ghost()
+            .xsmall()
             .icon(icon)
             .accessibility_label(format!("Appearance: {label}"))
             .tooltip(format!("Appearance: {label}"))

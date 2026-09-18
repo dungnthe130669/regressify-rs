@@ -1247,13 +1247,14 @@ impl Workbench {
             .flex_wrap()
             .gap_2()
             .px_4()
-            .py_2()
+            .py_1()
             .border_b_1()
             .border_color(cx.theme().border)
             .child(
                 Button::new("save")
+                    .small()
                     .icon(gpui_kit::assets::IconName::Save)
-                    .label("Save")
+                    .accessibility_label("Save document")
                     .tooltip("Save document")
                     .disabled(
                         self.busy
@@ -1268,6 +1269,7 @@ impl Workbench {
             .child(
                 Button::new("undo")
                     .ghost()
+                    .small()
                     .icon(IconName::Undo)
                     .tooltip("Undo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_undo()))
@@ -1278,6 +1280,7 @@ impl Workbench {
             .child(
                 Button::new("redo")
                     .ghost()
+                    .small()
                     .icon(IconName::Redo)
                     .tooltip("Redo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_redo()))
@@ -1287,6 +1290,7 @@ impl Workbench {
             )
             .child(
                 Button::new("add-item")
+                    .small()
                     .icon(IconName::Plus)
                     .label("Add")
                     .disabled(self.busy || open.is_none())
@@ -1311,6 +1315,7 @@ impl Workbench {
             .child(
                 Button::new("duplicate-item")
                     .ghost()
+                    .small()
                     .icon(IconName::Copy)
                     .tooltip("Duplicate selected item")
                     .accessibility_label("Duplicate selected item")
@@ -1322,6 +1327,7 @@ impl Workbench {
             .child(
                 Button::new("remove-item")
                     .ghost()
+                    .small()
                     .icon(gpui_kit::assets::IconName::Trash)
                     .tooltip("Remove selected item")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -1332,6 +1338,7 @@ impl Workbench {
             .child(
                 Button::new("move-up")
                     .ghost()
+                    .small()
                     .icon(IconName::ArrowUp)
                     .tooltip("Move selected item up")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -1342,6 +1349,7 @@ impl Workbench {
             .child(
                 Button::new("move-down")
                     .ghost()
+                    .small()
                     .icon(IconName::ArrowDown)
                     .tooltip("Move selected item down")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -1349,6 +1357,49 @@ impl Workbench {
                         this.edit(|session| session.move_selected(1), window, cx)
                     })),
             )
+            .child(div().flex_1())
+            .when(add_scenario, |bar| {
+                let focus = self.focus.clone();
+                bar.child(
+                    Button::new("suite-run-reference")
+                        .small()
+                        .icon(gpui_kit::assets::IconName::Camera)
+                        .label("Reference")
+                        .accessibility_label("Run Suite Reference")
+                        .tooltip("Capture reference images for the open suite")
+                        .disabled(self.busy || self.runs.read(cx).running())
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.run_open_suite(super::runner::RunCommand::Reference, window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("suite-run-test")
+                        .primary()
+                        .small()
+                        .icon(gpui_kit::assets::IconName::Play)
+                        .label("Test")
+                        .accessibility_label("Run Suite Test")
+                        .tooltip("Run all scenarios in the open suite")
+                        .disabled(!self.can_test_open_suite(cx))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.run_open_suite(super::runner::RunCommand::Test, window, cx)
+                        })),
+                )
+                .child(
+                    Button::new("suite-run-more")
+                        .ghost()
+                        .small()
+                        .icon(gpui_kit::assets::IconName::Ellipsis)
+                        .accessibility_label("More suite actions")
+                        .tooltip("More suite actions")
+                        .disabled(self.busy || self.runs.read(cx).running())
+                        .dropdown_menu(move |menu, _, _| {
+                            menu.action_context(focus.clone())
+                                .menu("Approve Results", Box::new(RunSuiteCommand { index: 3 }))
+                                .menu("Compare Results", Box::new(RunSuiteCommand { index: 2 }))
+                        }),
+                )
+            })
             .into_any_element()
     }
 
@@ -1503,8 +1554,8 @@ impl Workbench {
             .id("field-form")
             .flex()
             .flex_col()
-            .gap_5()
-            .p_6()
+            .gap_3()
+            .p_3()
             .w_full();
         let action = matches!(self.session.selection, Selection::Action { .. });
         let query = self.field_search.read(cx).value().trim().to_lowercase();
@@ -1520,7 +1571,7 @@ impl Workbench {
             )
         });
         let mut current_group = None;
-        let mut section = div().grid().grid_cols(2).gap_4();
+        let mut section = div().grid().grid_cols(2).gap_3();
         let mut matching = 0;
         for (_, binding) in bindings {
             let field = &binding.field;
@@ -1912,7 +1963,7 @@ impl Workbench {
             .child(
                 div()
                     .px_4()
-                    .py_4()
+                    .py_2()
                     .flex()
                     .flex_col()
                     .gap_2()
@@ -1977,7 +2028,7 @@ impl Workbench {
                             .role(Role::Heading)
                             .aria_label(self.selection_title())
                             .test_support()
-                            .text_xl()
+                            .text_base()
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(self.selection_title()),
@@ -2326,8 +2377,8 @@ impl Render for Workbench {
             h_resizable("workspace-layout")
                 .child(
                     resizable_panel()
-                        .size(px(280.))
-                        .size_range(px(220.)..px(440.))
+                        .size(px(256.))
+                        .size_range(px(200.)..px(440.))
                         .child(
                             div()
                                 .id("workspace-navigation")
@@ -2420,114 +2471,6 @@ impl Render for Workbench {
             }))
             .font_family(cx.theme().font_family.clone())
             .child(self.render_header(cx))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        Button::new("toggle-navigation")
-                            .ghost()
-                            .small()
-                            .icon(if self.preferences.navigator_hidden {
-                                gpui_kit::assets::IconName::PanelLeftOpen
-                            } else {
-                                gpui_kit::assets::IconName::PanelLeftClose
-                            })
-                            .tooltip(if self.preferences.navigator_hidden {
-                                "Show navigator"
-                            } else {
-                                "Hide navigator"
-                            })
-                            .accessibility_label(if self.preferences.navigator_hidden {
-                                "Show navigator"
-                            } else {
-                                "Hide navigator"
-                            })
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_navigator(&ToggleNavigator, window, cx)
-                            })),
-                    )
-                    .child(
-                        TabBar::new("workbench-tabs")
-                            .underline()
-                            .selected_index(self.main_tab)
-                            .on_click(cx.listener(|this, index, window, cx| {
-                                this.select_view(*index, window, cx);
-                            }))
-                            .child(Tab::new().label("Editor"))
-                            .child(Tab::new().label("Runs"))
-                            .child(Tab::new().label("Results")),
-                    )
-                    .child(div().flex_1())
-                    .when(
-                        self.main_tab == 0
-                            && !self.overview
-                            && self
-                                .session
-                                .open
-                                .as_ref()
-                                .is_some_and(|open| open.entry.kind == DocumentKind::Suite),
-                        |bar| {
-                            let focus = self.focus.clone();
-                            bar.child(
-                                Button::new("suite-run-reference")
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Camera)
-                                    .label("Run Suite Reference")
-                                    .tooltip("Capture reference images for the open suite")
-                                    .disabled(self.busy || self.runs.read(cx).running())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.run_open_suite(
-                                            super::runner::RunCommand::Reference,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new("suite-run-test")
-                                    .primary()
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Play)
-                                    .label("Run Suite Test")
-                                    .tooltip("Run all scenarios in the open suite; requires reference images")
-                                    .disabled(!self.can_test_open_suite(cx))
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.run_open_suite(
-                                            super::runner::RunCommand::Test,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
-                            )
-                            .child(
-                                Button::new("suite-run-more")
-                                    .ghost()
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Ellipsis)
-                                    .accessibility_label("More suite actions")
-                                    .tooltip("More suite actions")
-                                    .disabled(self.busy || self.runs.read(cx).running())
-                                    .dropdown_menu(move |menu, _, _| {
-                                        menu.action_context(focus.clone())
-                                            .menu(
-                                                "Approve Results",
-                                                Box::new(RunSuiteCommand { index: 3 }),
-                                            )
-                                            .menu(
-                                                "Compare Results",
-                                                Box::new(RunSuiteCommand { index: 2 }),
-                                            )
-                                    }),
-                            )
-                        },
-                    ),
-            )
             .child(div().flex_1().min_h_0().child(layout))
             .child(
                 div()
@@ -2539,7 +2482,9 @@ impl Render for Workbench {
                     .items_center()
                     .justify_between()
                     .px_4()
-                    .py_2()
+                    .h(px(24.))
+                    .text_xs()
+                    .flex_shrink_0()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(div().flex_1().truncate().child(self.status.clone()))
@@ -2581,9 +2526,9 @@ pub fn launch(instance: Option<DesktopInstance>) {
                         window_min_size: Some(size(px(1000.), px(640.))),
                         titlebar: Some(TitlebarOptions {
                             title: Some("Regressify Desktop".into()),
-                            ..Default::default()
+                            ..TitleBar::title_bar_options()
                         }),
-                        ..Default::default()
+                        ..TitleBar::window_options()
                     },
                     |window, cx| {
                         let view = cx.new(|cx| Workbench::new(window, cx));

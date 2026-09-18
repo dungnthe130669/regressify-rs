@@ -290,7 +290,7 @@ impl Workbench {
                     .flex()
                     .items_center()
                     .w_full()
-                    .h(px(52.))
+                    .h(px(44.))
                     .flex_shrink_0()
                     .min_w_0()
                     .border_l_2()

@@ -2658,11 +2658,19 @@ pub(super) fn editor(
     cx: &mut TestAppContext,
     root: &Path,
 ) -> (WindowHandle<Root>, Entity<Workbench>) {
+    editor_at_size(cx, root, size(px(1280.), px(820.)))
+}
+
+fn editor_at_size(
+    cx: &mut TestAppContext,
+    root: &Path,
+    dimensions: gpui_kit::Size<gpui_kit::Pixels>,
+) -> (WindowHandle<Root>, Entity<Workbench>) {
     cx.update(gpui_kit::init);
     cx.update(|cx| super::design::apply_theme(false, None, cx));
     cx.update(super::bind_keys);
     let mut created = None;
-    let handle = cx.open_window(size(px(1280.), px(820.)), |window, cx| {
+    let handle = cx.open_window(dimensions, |window, cx| {
         let view = cx.new(|cx| Workbench::new(window, cx));
         view.update(cx, |this, cx| {
             this.preferences = crate::desktop::workspace::Preferences::default();
@@ -2687,6 +2695,37 @@ pub(super) fn editor(
         Root::new(view, window, cx)
     });
     (handle, created.unwrap())
+}
+
+#[gpui_kit::test]
+fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let titlebar = window.find("workspace-titlebar").bounds();
+            assert!(titlebar.size.height <= px(38.));
+            let tabs = window.find("titlebar-navigation").bounds();
+            assert!(tabs.origin.y < px(38.));
+            let open = window.find("open-workspace").bounds();
+            assert!(
+                open.origin.x + open.size.width <= px(width - 95.),
+                "Titlebar overlaps window controls"
+            );
+            let navigation = window.find("workspace-navigation").bounds();
+            assert!(navigation.origin.y <= px(39.));
+            assert!(navigation.size.height >= px(height - 65.));
+            assert!(window.find("field-url").bounds().size.width >= px(190.));
+            assert!(window.find("suite-run-test").visible());
+            window.within("workbench-tabs").click(1_usize, cx);
+            assert_eq!(view.read(cx).main_tab, 1);
+            window.within("workbench-tabs").click(0_usize, cx);
+            assert_eq!(view.read(cx).main_tab, 0);
+            assert!(window.find("field-url").visible());
+        })
+        .unwrap();
+    }
 }
 
 #[gpui_kit::test]
