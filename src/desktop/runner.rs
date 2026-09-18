@@ -21,6 +21,7 @@ use command_group::CommandGroup;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
+use crate::cli::args::ScenarioFilter;
 use crate::progress::{EventReader, LiveProgress};
 
 const LOG_QUEUE_CAPACITY: usize = 256;
@@ -128,6 +129,7 @@ pub struct RunOptions {
     pub verbose: bool,
     pub required_login: bool,
     pub suites: Vec<String>,
+    pub scenarios: Vec<ScenarioFilter>,
     pub fetch_browser: Option<bool>,
     pub skip_compare: bool,
     pub mis_match_threshold: f64,
@@ -153,6 +155,7 @@ impl Default for RunOptions {
             verbose: false,
             required_login: false,
             suites: Vec::new(),
+            scenarios: Vec::new(),
             fetch_browser: None,
             skip_compare: false,
             mis_match_threshold: 0.1,
@@ -180,7 +183,7 @@ impl RunOptions {
 
     pub fn applies(key: &str, command: RunCommand) -> bool {
         match key {
-            "suites" => command.supports_suites(),
+            "suites" | "scenarios" => command.supports_suites(),
             "fetchBrowser" | "asyncCaptureLimit" | "asyncCaptureRampMs" | "debug"
             | "requiredLogin" => command.captures(),
             "skipCompare" => command == RunCommand::Test,
@@ -244,6 +247,9 @@ impl RunRequest {
         if self.command.supports_suites() {
             for suite in &options.suites {
                 arguments.extend(["--test-suite".into(), suite.into()]);
+            }
+            for scenario in &options.scenarios {
+                arguments.extend(["--scenario".into(), scenario.to_string().into()]);
             }
         }
         if self.command.captures()
@@ -737,6 +743,36 @@ mod tests {
             handle.worker.take().unwrap().join().unwrap(),
             RunOutcome::Cancelled
         );
+    }
+
+    #[test]
+    fn scenario_selection_reaches_each_supported_worker_command() {
+        for command in [
+            RunCommand::Test,
+            RunCommand::Reference,
+            RunCommand::Compare,
+            RunCommand::Approve,
+        ] {
+            let request = RunRequest {
+                root: PathBuf::from("."),
+                command,
+                options: RunOptions {
+                    suites: vec!["shop".into()],
+                    scenarios: vec!["shop:checkout".parse().unwrap()],
+                    ..Default::default()
+                },
+            };
+            request.cli().unwrap();
+            assert!(request.arguments().unwrap().windows(2).any(|pair| {
+                pair == [
+                    OsString::from("--scenario"),
+                    OsString::from("shop:checkout"),
+                ]
+            }));
+            let restored: RunRequest =
+                serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+            assert_eq!(restored.options.scenarios, request.options.scenarios);
+        }
     }
 
     #[test]

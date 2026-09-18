@@ -129,3 +129,97 @@ fn bundled_worker_reports_live_outcomes_for_multiple_suites() {
     assert_eq!(live.counts(Some("shop")).passed, 1);
     assert_eq!(live.counts(Some("account")).failed, 1);
 }
+
+#[test]
+fn bundled_worker_scopes_scenarios_and_preflights_all_approvals() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let reference = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    let current = lodepng::encode32(&[200_u8, 20, 30, 255], 1, 1).unwrap();
+    for suite in ["shop", "account"] {
+        let output = workspace.path().join(".regressify").join(suite);
+        let baseline = output.join("bitmaps_reference");
+        let run = output.join("bitmaps_test/run-1");
+        std::fs::create_dir_all(&baseline).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        let mut metadata = serde_json::Map::new();
+        for scenario in ["home", "home-extra"] {
+            let key = format!("{scenario}__FINAL");
+            std::fs::write(baseline.join(format!("{key}.png")), &reference).unwrap();
+            std::fs::write(run.join(format!("{key}.png")), &current).unwrap();
+            metadata.insert(
+                key,
+                serde_json::json!({
+                    "scenarioId": scenario, "scenarioLabel": scenario,
+                    "referenceUrl": "https://example.com", "url": "https://example.com"
+                }),
+            );
+        }
+        std::fs::write(
+            run.join(".report-urls.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "captures": metadata
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let mut request = RunRequest {
+        root: workspace.path().into(),
+        command: RunCommand::Approve,
+        options: RunOptions {
+            suites: vec!["shop".into(), "account".into()],
+            scenarios: vec![
+                "shop:home".parse().unwrap(),
+                "account:missing".parse().unwrap(),
+            ],
+            run_id: "run-1".into(),
+            ..Default::default()
+        },
+    };
+    let result = invoke(executable, &request);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("missing"));
+    let shop = workspace.path().join(".regressify/shop");
+    assert_eq!(
+        std::fs::read(shop.join("bitmaps_reference/home__FINAL.png")).unwrap(),
+        reference
+    );
+    request.options.scenarios.pop();
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        std::fs::read(shop.join("bitmaps_reference/home__FINAL.png")).unwrap(),
+        current
+    );
+    assert_eq!(
+        std::fs::read(shop.join("bitmaps_reference/home-extra__FINAL.png")).unwrap(),
+        reference
+    );
+    assert_eq!(
+        std::fs::read(
+            workspace
+                .path()
+                .join(".regressify/account/bitmaps_reference/home__FINAL.png")
+        )
+        .unwrap(),
+        reference
+    );
+    request.command = RunCommand::Compare;
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(shop.join("bitmaps_test/run-1/report.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(report["tests"].as_array().unwrap().len(), 1);
+    assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
+}

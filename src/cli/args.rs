@@ -2,6 +2,34 @@ use anyhow::Result;
 
 use crate::helpers::is_windows_reserved_path_component;
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub struct ScenarioFilter {
+    pub suite: String,
+    pub scenario: String,
+}
+
+impl std::str::FromStr for ScenarioFilter {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let (suite, scenario) = value
+            .rsplit_once(':')
+            .filter(|(suite, scenario)| !suite.trim().is_empty() && !scenario.trim().is_empty())
+            .ok_or_else(|| "Scenario selection must be '<suite>:<scenario-id>'".to_string())?;
+        Ok(Self {
+            suite: suite.to_string(),
+            scenario: scenario.to_string(),
+        })
+    }
+}
+
+impl std::fmt::Display for ScenarioFilter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}:{}", self.suite, self.scenario)
+    }
+}
+
 #[derive(clap::Args)]
 pub struct OptimizeArgs {
     /// Compression speed (1 = smallest files, 10 = fastest)
@@ -38,6 +66,10 @@ pub struct TestArgs {
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
 
+    /// Capture only this exact <suite>:<scenario-id> (repeat for multiple scenarios)
+    #[clap(long = "scenario")]
+    pub scenarios: Vec<ScenarioFilter>,
+
     /// Skip visual comparison after test run
     #[clap(long, default_value_t = false)]
     pub skip_compare: bool,
@@ -66,6 +98,10 @@ pub struct RefArgs {
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
 
+    /// Capture only this exact <suite>:<scenario-id> (repeat for multiple scenarios)
+    #[clap(long = "scenario")]
+    pub scenarios: Vec<ScenarioFilter>,
+
     /// Replacement profile name (overrides REPLACEMENT_PROFILE env var)
     #[clap(long, visible_alias = "rp")]
     pub replacement_profile: Option<String>,
@@ -76,6 +112,10 @@ pub struct CompareArgs {
     /// Names of test suites to compare (or 'all' / '*' for all)
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
+
+    /// Compare only this exact <suite-output-id>:<scenario-id> from capture metadata
+    #[clap(long = "scenario")]
+    pub scenarios: Vec<ScenarioFilter>,
 
     /// Mismatch threshold percentage (0.0-100.0). Tests with mismatch above this fail.
     #[clap(
@@ -96,6 +136,10 @@ pub struct ApproveArgs {
     /// Names of test suites to approve (or 'all' / '*' for all)
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
+
+    /// Approve only this exact <suite-output-id>:<scenario-id> from capture metadata
+    #[clap(long = "scenario")]
+    pub scenarios: Vec<ScenarioFilter>,
 }
 
 fn speed_parser(s: &str) -> Result<u8, String> {
@@ -189,6 +233,17 @@ mod tests {
         percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser,
         site_env_parser, speed_parser,
     };
+
+    #[test]
+    fn scenario_selection_parser_preserves_exact_names_and_rejects_empty_parts() {
+        for value in ["shop:checkout", "folder/shop:home", "shop[1]:home"] {
+            let filter: super::ScenarioFilter = value.parse().unwrap();
+            assert_eq!(filter.to_string(), value);
+        }
+        for value in ["home", ":home", "shop:", "shop: "] {
+            assert!(value.parse::<super::ScenarioFilter>().is_err());
+        }
+    }
 
     #[test]
     fn optimization_speed_is_limited_to_supported_range() {

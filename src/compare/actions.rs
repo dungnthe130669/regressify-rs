@@ -1,12 +1,18 @@
-use std::fs;
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
 
 use anyhow::Result;
 use colored::Colorize;
 
 use crate::{
-    cli::args::{ApproveArgs, CompareArgs},
+    cli::args::{ApproveArgs, CompareArgs, ScenarioFilter},
     common,
-    compare::report_gen::{approve_screenshots, generate_comparison_report, select_capture_run},
+    compare::report_gen::{
+        approve_screenshots_for_scenarios, generate_comparison_report_for_scenarios,
+        select_capture_run, validate_scenario_captures,
+    },
     helpers::OnceLockExtensions,
 };
 
@@ -46,68 +52,99 @@ fn require_explicit_filter_match(
     Ok(())
 }
 
-/// Entry point for the `compare` CLI command.
-/// Compares the latest test screenshots against reference images for each test suite.
-pub fn compare(args: CompareArgs) -> Result<()> {
-    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
+struct SelectedRun {
+    path: PathBuf,
+    suite_id: String,
+    run_id: String,
+    scenario_ids: Vec<String>,
+}
 
+fn selected_runs(
+    regressify_dir: &Path,
+    suite_patterns: &[String],
+    scenario_filters: &[ScenarioFilter],
+    requested_run_id: Option<&str>,
+) -> Result<Vec<SelectedRun>> {
     if !regressify_dir.exists() {
         anyhow::bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
-
-    let mis_match_threshold = args.mis_match_threshold;
-    let async_compare_limit = args.async_compare_limit;
-    let requested_run_id = common::RUN_ID.get().map(String::as_str);
-    let suite_filters = compile_suite_filters(&args.test_suite)?;
-
+    let suite_filters = compile_suite_filters(suite_patterns)?;
     let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|e| e.file_name());
-
-    let mut any_compared = false;
+    let mut runs = Vec::new();
     let mut matched_suite = false;
-
     for entry in entries {
         let path = entry.path();
         if !path.is_dir() {
             continue;
         }
-
         let suite_id = match path.file_name().and_then(|s| s.to_str()) {
             Some(name) => name.to_string(),
             None => continue,
         };
-
-        // Filter by suite patterns if provided
         if !suite_matches_filters(&suite_id, &suite_filters) {
             continue;
         }
         matched_suite = true;
-
+        let scenario_ids = scenario_filters
+            .iter()
+            .filter(|filter| filter.suite == suite_id)
+            .map(|filter| filter.scenario.clone())
+            .collect::<Vec<_>>();
+        if !scenario_filters.is_empty() && scenario_ids.is_empty() {
+            continue;
+        }
         let tests_dir = path.join("bitmaps_test");
         if !tests_dir.exists() {
             continue;
         }
-
-        if let Some(selected_run) = select_capture_run(&tests_dir, requested_run_id)? {
-            eprintln!(
-                "Comparing test suite: {} (run: {})",
-                suite_id.cyan(),
-                selected_run
-            );
-
-            generate_comparison_report(
-                &path,
-                &suite_id,
-                &selected_run,
-                mis_match_threshold,
-                async_compare_limit,
-            )?;
-            any_compared = true;
+        if let Some(run_id) = select_capture_run(&tests_dir, requested_run_id)? {
+            if !scenario_ids.is_empty() {
+                validate_scenario_captures(&tests_dir.join(&run_id), &scenario_ids)?;
+            }
+            runs.push(SelectedRun {
+                path,
+                suite_id,
+                run_id,
+                scenario_ids,
+            });
         }
     }
-
     require_explicit_filter_match(&suite_filters, matched_suite)?;
-    if !any_compared {
+    for filter in scenario_filters {
+        anyhow::ensure!(
+            runs.iter().any(|run| run.suite_id == filter.suite),
+            "Selected scenario '{filter}' has no capture run in the selected output suites"
+        );
+    }
+    Ok(runs)
+}
+
+/// Entry point for the `compare` CLI command.
+/// Compares the latest test screenshots against reference images for each test suite.
+pub fn compare(args: CompareArgs) -> Result<()> {
+    let runs = selected_runs(
+        common::REGRESSIFY_DIR.get_required()?,
+        &args.test_suite,
+        &args.scenarios,
+        common::RUN_ID.get().map(String::as_str),
+    )?;
+    for run in &runs {
+        eprintln!(
+            "Comparing test suite: {} (run: {})",
+            run.suite_id.cyan(),
+            run.run_id
+        );
+        generate_comparison_report_for_scenarios(
+            &run.path,
+            &run.suite_id,
+            &run.run_id,
+            args.mis_match_threshold,
+            args.async_compare_limit,
+            &run.scenario_ids,
+        )?;
+    }
+    if runs.is_empty() {
         eprintln!(
             "{}",
             "No test suites with screenshots found to compare.".yellow()
@@ -120,49 +157,17 @@ pub fn compare(args: CompareArgs) -> Result<()> {
 /// Entry point for the `approve` CLI command.
 /// Promotes the latest test screenshots to reference images.
 pub fn approve(args: ApproveArgs) -> Result<()> {
-    let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
-
-    if !regressify_dir.exists() {
-        anyhow::bail!("Regressify directory does not exist: {:?}", regressify_dir);
+    let runs = selected_runs(
+        common::REGRESSIFY_DIR.get_required()?,
+        &args.test_suite,
+        &args.scenarios,
+        common::RUN_ID.get().map(String::as_str),
+    )?;
+    for run in &runs {
+        eprintln!("Approving test suite: {}", run.suite_id.cyan());
+        approve_screenshots_for_scenarios(&run.path, Some(&run.run_id), &run.scenario_ids)?;
     }
-
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
-    entries.sort_by_key(|e| e.file_name());
-
-    let mut any_approved = false;
-    let mut matched_suite = false;
-    let requested_run_id = common::RUN_ID.get().map(String::as_str);
-    let suite_filters = compile_suite_filters(&args.test_suite)?;
-
-    for entry in entries {
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-
-        let suite_id = match path.file_name().and_then(|s| s.to_str()) {
-            Some(name) => name.to_string(),
-            None => continue,
-        };
-
-        // Filter by suite patterns if provided
-        if !suite_matches_filters(&suite_id, &suite_filters) {
-            continue;
-        }
-        matched_suite = true;
-
-        let bitmaps_test_dir = path.join("bitmaps_test");
-        if !bitmaps_test_dir.exists() {
-            continue;
-        }
-
-        eprintln!("Approving test suite: {}", suite_id.cyan());
-        approve_screenshots(&path, requested_run_id)?;
-        any_approved = true;
-    }
-
-    require_explicit_filter_match(&suite_filters, matched_suite)?;
-    if !any_approved {
+    if runs.is_empty() {
         eprintln!(
             "{}",
             "No test suites with test screenshots found to approve.".yellow()

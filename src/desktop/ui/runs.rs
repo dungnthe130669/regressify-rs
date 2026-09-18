@@ -457,7 +457,10 @@ impl RunPanel {
         let Ok(fields) = schema::fields(&schema::Scope::Run) else {
             return;
         };
-        for field in fields.into_iter().filter(|field| field.key != "suites") {
+        for field in fields
+            .into_iter()
+            .filter(|field| !matches!(field.key.as_str(), "suites" | "scenarios"))
+        {
             let text = field.display(&self.options[&field.key]);
             let control = match &field.kind {
                 FieldKind::Boolean => Control::Boolean,

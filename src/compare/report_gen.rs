@@ -465,6 +465,24 @@ pub fn generate_comparison_report(
     mis_match_threshold: f64,
     max_workers: usize,
 ) -> Result<()> {
+    generate_comparison_report_for_scenarios(
+        suite_dir,
+        suite_id,
+        test_date,
+        mis_match_threshold,
+        max_workers,
+        &[],
+    )
+}
+
+pub(crate) fn generate_comparison_report_for_scenarios(
+    suite_dir: &Path,
+    suite_id: &str,
+    test_date: &str,
+    mis_match_threshold: f64,
+    max_workers: usize,
+    scenario_ids: &[String],
+) -> Result<()> {
     let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
     if !tests_dir.exists() {
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
@@ -509,6 +527,8 @@ pub fn generate_comparison_report(
         let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
         validate_capture_inventory(&tests_dir, &expected_captures, &test_screenshots)?;
     }
+    test_screenshots =
+        select_scenario_screenshots(test_screenshots, report_urls.as_ref(), scenario_ids)?;
     let mut order_index = HashMap::with_capacity(order.len() * 2);
     for (index, key) in order.iter().enumerate() {
         order_index.insert(key.as_str(), index);
@@ -744,6 +764,50 @@ pub fn generate_comparison_report(
 
 /// Promote test screenshots to reference (approve).
 pub fn approve_screenshots(suite_dir: &Path, requested_run_id: Option<&str>) -> Result<()> {
+    approve_screenshots_for_scenarios(suite_dir, requested_run_id, &[])
+}
+
+pub(crate) fn validate_scenario_captures(tests_dir: &Path, scenario_ids: &[String]) -> Result<()> {
+    let screenshots = validate_capture_run_inventory(tests_dir)?;
+    let urls = read_report_urls(tests_dir)?;
+    select_scenario_screenshots(screenshots, urls.as_ref(), scenario_ids)?;
+    Ok(())
+}
+
+fn select_scenario_screenshots(
+    screenshots: Vec<String>,
+    urls: Option<&BTreeMap<String, ReportPageUrls>>,
+    scenario_ids: &[String],
+) -> Result<Vec<String>> {
+    if scenario_ids.is_empty() {
+        return Ok(screenshots);
+    }
+    let urls = urls.ok_or_else(|| anyhow!(
+        "This run has no scenario metadata; capture the selected scenarios again or select the whole suite"
+    ))?;
+    for id in scenario_ids {
+        anyhow::ensure!(
+            screenshots.iter().any(|name| urls
+                .get(screenshot_key(name))
+                .is_some_and(|urls| urls.scenario_id.as_deref() == Some(id.as_str()))),
+            "Selected scenario '{id}' has no captures in this run; capture it before comparing or approving"
+        );
+    }
+    Ok(screenshots
+        .into_iter()
+        .filter(|name| {
+            urls.get(screenshot_key(name))
+                .and_then(|urls| urls.scenario_id.as_ref())
+                .is_some_and(|id| scenario_ids.contains(id))
+        })
+        .collect())
+}
+
+pub(crate) fn approve_screenshots_for_scenarios(
+    suite_dir: &Path,
+    requested_run_id: Option<&str>,
+    scenario_ids: &[String],
+) -> Result<()> {
     let bitmaps_test_dir = suite_dir.join("bitmaps_test");
     let reference_dir = suite_dir.join("bitmaps_reference");
 
@@ -765,6 +829,12 @@ pub fn approve_screenshots(suite_dir: &Path, requested_run_id: Option<&str>) -> 
     eprintln!("  Approving screenshots from run: {}", selected_run.cyan());
 
     let screenshots = validate_capture_run_inventory(&latest_test_dir)?;
+    let urls = if scenario_ids.is_empty() {
+        None
+    } else {
+        read_report_urls(&latest_test_dir)?
+    };
+    let screenshots = select_scenario_screenshots(screenshots, urls.as_ref(), scenario_ids)?;
 
     create_dir_all(&reference_dir)?;
 
@@ -825,6 +895,71 @@ mod tests {
 
     fn png_bytes(red: u8) -> Vec<u8> {
         lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn scenario_scoped_compare_and_approve_preserve_unselected_references() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("basic");
+        let reference_dir = suite_dir.join("bitmaps_reference");
+        let test_dir = suite_dir.join("bitmaps_test/run");
+        fs::create_dir_all(&reference_dir).unwrap();
+        fs::create_dir_all(&test_dir).unwrap();
+        let mut captures = BTreeMap::new();
+        for id in ["home", "home-extra"] {
+            let key = format!("{id}__FINAL");
+            fs::write(reference_dir.join(format!("{key}.png")), png_bytes(10)).unwrap();
+            fs::write(test_dir.join(format!("{key}.png")), png_bytes(200)).unwrap();
+            captures.insert(
+                key,
+                ReportPageUrls {
+                    scenario_id: Some(id.into()),
+                    scenario_label: Some(id.into()),
+                    reference_url: "https://example.com".into(),
+                    url: "https://example.com".into(),
+                },
+            );
+        }
+        fs::write(
+            test_dir.join(REPORT_URLS_FILE),
+            serde_json::to_vec(&ReportUrlsManifest {
+                version: REPORT_URLS_VERSION,
+                captures,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let selected = vec!["home".into()];
+        generate_comparison_report_for_scenarios(&suite_dir, "basic", "run", 0.0, 1, &selected)
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(test_dir.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["tests"].as_array().unwrap().len(), 1);
+        assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
+        approve_screenshots_for_scenarios(&suite_dir, Some("run"), &selected).unwrap();
+        assert_eq!(
+            fs::read(reference_dir.join("home__FINAL.png")).unwrap(),
+            png_bytes(200)
+        );
+        assert_eq!(
+            fs::read(reference_dir.join("home-extra__FINAL.png")).unwrap(),
+            png_bytes(10)
+        );
+        assert!(validate_scenario_captures(&test_dir, &["missing".into()]).is_err());
+    }
+
+    #[test]
+    fn scenario_scoped_approval_refuses_legacy_or_missing_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path();
+        let test_dir = suite_dir.join("bitmaps_test/run");
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::write(test_dir.join("home__FINAL.png"), png_bytes(200)).unwrap();
+        let error = approve_screenshots_for_scenarios(suite_dir, Some("run"), &["home".into()])
+            .unwrap_err();
+        assert!(error.to_string().contains("no scenario metadata"));
+        assert!(!suite_dir.join("bitmaps_reference").exists());
+        approve_screenshots(suite_dir, Some("run")).unwrap();
     }
 
     #[test]

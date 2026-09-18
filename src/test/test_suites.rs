@@ -12,7 +12,7 @@ use tokio::time::{Duration, sleep};
 use walkdir::WalkDir;
 
 use crate::{
-    cli::args::{RefArgs, SnapshotArgs, TestArgs},
+    cli::args::{RefArgs, ScenarioFilter, SnapshotArgs, TestArgs},
     common,
     compare::report_gen::{generate_comparison_report, validate_capture_run_inventory},
     config::{self, replacements},
@@ -104,12 +104,66 @@ fn ensure_capture_run_directories_are_new(
     Ok(())
 }
 
-/// Flatten every scenario/viewport pair across all parsed suites into a flat list
-/// of independent capture jobs, assigning each a 1-based dedicated index. The
-/// total number of jobs is simply the returned vec's length.
+fn filter_scenario_suites(
+    inputs: Vec<TestSuiteInput>,
+    filters: &[ScenarioFilter],
+) -> Result<Vec<TestSuiteInput>> {
+    for filter in filters {
+        anyhow::ensure!(
+            inputs.iter().any(|input| input.name == filter.suite),
+            "Selected scenario '{filter}' does not belong to an available selected suite"
+        );
+    }
+    Ok(inputs
+        .into_iter()
+        .filter(|input| {
+            filters.is_empty() || filters.iter().any(|filter| filter.suite == input.name)
+        })
+        .collect())
+}
+
+fn validate_scenario_filters(
+    suites: &[(TestSuiteInput, Arc<TestSuite>)],
+    filters: &[ScenarioFilter],
+) -> Result<()> {
+    for filter in filters {
+        let matches = suites
+            .iter()
+            .filter(|(input, _)| input.name == filter.suite)
+            .flat_map(|(_, suite)| &suite.scenarios)
+            .filter(|scenario| scenario.id.as_deref() == Some(filter.scenario.as_str()))
+            .count();
+        anyhow::ensure!(
+            matches == 1,
+            "Selected scenario '{filter}' must match exactly one scenario, found {matches}"
+        );
+    }
+    Ok(())
+}
+
+fn selected_scenarios<'suite>(
+    name: &'suite str,
+    suite: &'suite TestSuite,
+    filters: &'suite [ScenarioFilter],
+) -> impl Iterator<Item = (usize, &'suite TestScenario)> {
+    suite
+        .scenarios
+        .iter()
+        .enumerate()
+        .filter(move |(_, scenario)| {
+            filters.is_empty()
+                || filters.iter().any(|filter| {
+                    filter.suite == name && scenario.id.as_deref() == Some(filter.scenario.as_str())
+                })
+        })
+}
+
+/// Keep full suite definitions for prerequisite actions, but queue only selected
+/// scenario/viewport pairs with independent 1-based job indices.
 fn build_capture_jobs(
     parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
     workspace_config: &config::WorkspaceConfig,
+    filters: &[ScenarioFilter],
 ) -> Result<Vec<CaptureJob>> {
     let mut jobs = Vec::new();
     for (input, suite) in parsed_suites {
@@ -123,12 +177,8 @@ fn build_capture_jobs(
             workspace_config,
             suite,
         )));
-        for scenario_idx in 0..suite.scenarios.len() {
-            let viewports = scenario_capture_viewports(
-                workspace_config,
-                suite,
-                &suite.scenarios[scenario_idx],
-            )?;
+        for (scenario_idx, scenario) in selected_scenarios(&input.name, suite, filters) {
+            let viewports = scenario_capture_viewports(workspace_config, suite, scenario)?;
             for viewport in viewports {
                 jobs.push(CaptureJob {
                     suite: suite.clone(),
@@ -949,6 +999,7 @@ fn write_capture_run_manifests(
     parsed_suites: &[(TestSuiteInput, Arc<TestSuite>)],
     replacement_profile: &[UrlReplacement],
     apply_url_replacements: bool,
+    filters: &[ScenarioFilter],
 ) -> Result<()> {
     for (input, suite) in parsed_suites {
         let url_replacements = if apply_url_replacements {
@@ -960,7 +1011,7 @@ fn write_capture_run_manifests(
         let mut thresholds = Vec::new();
         let mut urls = Vec::new();
 
-        for scenario in &suite.scenarios {
+        for (_, scenario) in selected_scenarios(&input.name, suite, filters) {
             let order_keys =
                 scenario_capture_order_keys(workspace_config, suite, scenario, &suite.scenarios)?;
             let resolved = config::resolve_config(workspace_config, suite, scenario);
@@ -1004,6 +1055,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     let TestArgs {
         fetch_browser,
         test_suite: test_suites,
+        scenarios,
         skip_compare,
         mis_match_threshold,
         replacement_profile,
@@ -1019,10 +1071,12 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 
     let available = discover_test_suites(&visual_tests_dir)?;
     let filtered = filter_test_suites(available, &test_suites)?;
+    let filtered = filter_scenario_suites(filtered, &scenarios)?;
 
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_scenario_filters(&parsed_suites, &scenarios)?;
     validate_suite_capture_keys(&workspace_config, &parsed_suites)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
@@ -1034,12 +1088,13 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
         &parsed_suites,
         &active_replacements,
         true,
+        &scenarios,
     )?;
 
     // Flatten every scenario/viewport pair into an independent capture job (own
     // browser, own dedicated index) and spawn them — matching the TS/BackstopJS
     // model where pairs are scaffolded upfront and run independently.
-    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref())?;
+    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         progress::emit(ProgressEvent::Phase {
@@ -1154,12 +1209,12 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
 }
 
 /// `ref` command: capture baseline reference screenshots.
-/// Deletes existing references, runs the test suites (without comparison),
-/// then promotes captured screenshots directly as the new reference baseline.
+/// Promotes only successful selected captures, preserving unrelated references.
 pub async fn exec_ref(args: RefArgs) -> Result<()> {
     let RefArgs {
         fetch_browser,
         test_suite: test_suites,
+        scenarios,
         replacement_profile,
     } = args;
     if replacement_profile.is_some() {
@@ -1178,21 +1233,29 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     let available = discover_test_suites(&visual_tests_dir)?;
     let filtered = filter_test_suites(available, &test_suites)?;
+    let filtered = filter_scenario_suites(filtered, &scenarios)?;
 
     let regressify_dir = common::REGRESSIFY_DIR.get_required()?;
 
     // Parse all test suites upfront. YAML/config errors are infrastructure
     // errors and must fail before scenarios start.
     let parsed_suites = parse_test_suites(&visual_tests_dir, filtered)?;
+    validate_scenario_filters(&parsed_suites, &scenarios)?;
     validate_suite_capture_keys(&workspace_config, &parsed_suites)?;
     validate_external_capture_files(root_dir, &workspace_config, &parsed_suites)?;
     ensure_capture_run_directories_are_new(common::REGRESSIFY_DIR.get_required()?, &parsed_suites)?;
 
     let workspace_config = Arc::new(workspace_config);
 
-    write_capture_run_manifests(workspace_config.as_ref(), &parsed_suites, &[], false)?;
+    write_capture_run_manifests(
+        workspace_config.as_ref(),
+        &parsed_suites,
+        &[],
+        false,
+        &scenarios,
+    )?;
 
-    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref())?;
+    let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
 
     let exe_path = if fetch_browser.unwrap_or(false) {
         progress::emit(ProgressEvent::Phase {
@@ -1424,6 +1487,95 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
         }
+    }
+
+    #[test]
+    fn scenario_selection_is_exact_and_preserves_dependency_definitions() {
+        let root = match std::env::var_os("REGRESSIFY_SCENARIO_SELECTION_FIXTURE") {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let workspace = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test::test_suites::tests::scenario_selection_is_exact_and_preserves_dependency_definitions", "--nocapture"])
+                    .env("REGRESSIFY_SCENARIO_SELECTION_FIXTURE", workspace.path())
+                    .output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        common::REGRESSIFY_DIR
+            .set(root.join(".regressify"))
+            .unwrap();
+        let mut selected_suite = suite(vec![
+            scenario("base", None),
+            scenario("page", Some(Needs::String("base".into()))),
+            scenario("page-extra", None),
+        ]);
+        selected_suite.test_date = Some("selection".into());
+        let suite = Arc::new(selected_suite);
+        let filters = vec!["alloy:page".parse().unwrap(), "alloy:page".parse().unwrap()];
+        let suites = vec![(input(), suite.clone())];
+        validate_scenario_filters(&suites, &filters).unwrap();
+        let selected = selected_scenarios("alloy", &suite, &filters).collect::<Vec<_>>();
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].0, 1);
+        assert_eq!(selected[0].1.id.as_deref(), Some("page"));
+        assert_eq!(suite.scenarios.len(), 3);
+        validate_scenario_dependencies(&input(), &suite).unwrap();
+        assert_eq!(selected_scenarios("alloy", &suite, &[]).count(), 3);
+        assert_eq!(selected_scenarios("other", &suite, &filters).count(), 0);
+        let config = config::WorkspaceConfig::default();
+        let jobs = build_capture_jobs(&suites, &config, &filters).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].scenario_idx, 1);
+        assert_eq!(jobs[0].index, 1);
+        assert_eq!(jobs[0].suite.scenarios.len(), 3);
+        let keys = selected_scenarios("alloy", &suite, &filters)
+            .flat_map(|(_, scenario)| {
+                scenario_capture_order_keys(&config, &suite, scenario, &suite.scenarios).unwrap()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["page__FINAL"]);
+        write_capture_run_manifests(&config, &suites, &[], false, &filters).unwrap();
+        let run = root.join(".regressify/alloy/bitmaps_test/selection");
+        let order: capture::ReportOrderManifest =
+            serde_json::from_slice(&fs::read(run.join(capture::REPORT_ORDER_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(order.captures, keys);
+        let urls: capture::ReportUrlsManifest =
+            serde_json::from_slice(&fs::read(run.join(capture::REPORT_URLS_FILE)).unwrap())
+                .unwrap();
+        assert_eq!(urls.captures.len(), 1);
+        assert_eq!(
+            urls.captures["page__FINAL"].scenario_id.as_deref(),
+            Some("page")
+        );
+    }
+
+    #[test]
+    fn scenario_selection_rejects_unknown_and_ambiguous_targets() {
+        let suites = vec![(input(), Arc::new(suite(vec![scenario("home", None)])))];
+        for filter in ["alloy:missing", "other:home"] {
+            assert!(validate_scenario_filters(&suites, &[filter.parse().unwrap()]).is_err());
+        }
+        let duplicate = vec![(
+            input(),
+            Arc::new(suite(vec![scenario("home", None), scenario("home", None)])),
+        )];
+        assert!(validate_scenario_filters(&duplicate, &["alloy:home".parse().unwrap()]).is_err());
+        assert!(filter_scenario_suites(vec![input()], &["other:home".parse().unwrap()]).is_err());
+        assert_eq!(
+            filter_scenario_suites(vec![input()], &["alloy:home".parse().unwrap()])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[test]

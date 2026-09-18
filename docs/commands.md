@@ -53,6 +53,42 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 
 All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
 
+## Individual Scenarios
+
+`test` and `ref` accept repeated `--scenario <suite>:<scenario-id>` flags:
+
+```bash
+regressify test --scenario shop:checkout
+regressify ref --scenario shop:checkout --scenario account:sign-in
+```
+
+The suite name is its logical name under `visual_tests`, without the file suffix.
+Scenario IDs match exactly, not as globs or label substrings. An omitted `id`
+uses the same label-derived slug or URL-derived ID as a normal suite run. When
+`--test-suite` is also supplied, each scenario must belong to a matching suite.
+Unknown or ambiguous selections fail before browser launch or capture writes.
+No scenario flags retains whole-suite behavior.
+
+Only selected scenarios produce capture jobs and report entries, across their
+configured viewports and saved steps. Their `needs` actions still execute using
+the full suite definitions; dependencies do not become additional independent
+captures. Reference capture preserves unselected baselines.
+
+`compare` and `approve` also accept `--scenario`, using the suite's **output ID**
+instead of its file name when they differ. Use `--run-id` to target an exact run:
+
+```bash
+regressify --run-id reviewed-run compare --scenario shop-output:checkout
+regressify --run-id reviewed-run approve --scenario shop-output:checkout
+```
+
+These commands match recorded scenario IDs in the capture metadata, not screenshot
+filename prefixes. All requested output selections are validated before changing
+reports or references. Missing scenarios or legacy runs without scenario metadata
+fail with a recovery message; whole-suite operations remain compatible with older
+runs. Scoped comparison regenerates the report for the selected captures, while
+scoped approval leaves other reference images untouched and skips failed captures.
+
 ## Exit codes
 
 Regressify separates tool failures from website results.
