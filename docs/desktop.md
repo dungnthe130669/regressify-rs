@@ -83,7 +83,10 @@ are rejected. No external Azure, npm, or Tuyen CLI installation is required.
 The protocol follows Tuyen CLI's SWA deploy handshake: validate token, request
 upload URLs, upload Azure blob blocks, update status, and poll until completion.
 Transient network failures retry within bounds; the entire deployment has a
-30-minute deadline. Non-Standard plans reject security-sensitive `auth` and
+30-minute deadline. ZIP packaging is disk-backed, preserves already-compressed
+images without recompressing them, and uploads at most four 4 MiB blocks at once.
+Missing current/diff images fail deployment rather than publishing broken links;
+missing references remain valid report failures. Non-Standard plans reject security-sensitive `auth` and
 `networking` configuration rather than letting Azure silently discard it.
 
 Progress and the deployed site URL appear in Runs. Stop cancels the local worker

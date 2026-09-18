@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -39,9 +40,14 @@ impl DeploymentJob {
         let selected = self.suite_ids.iter().collect::<BTreeSet<_>>();
         let catalog = self.catalog_ids.iter().collect::<BTreeSet<_>>();
         ensure!(
-            selected.len() == self.suite_ids.len() && selected.is_subset(&catalog),
+            selected.len() == self.suite_ids.len()
+                && catalog.len() == self.catalog_ids.len()
+                && selected.is_subset(&catalog),
             "Deployment suite selection is invalid"
         );
+        for suite in &self.catalog_ids {
+            validate_suite_id(suite)?;
+        }
         ensure!(
             selected == catalog || self.partial_confirmed,
             "Confirm that you intend to deploy only the selected test suites"
@@ -134,12 +140,9 @@ impl DeployTargets {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        match fs::read(path) {
-            Ok(bytes) => {
-                ensure!(
-                    bytes.len() <= 1024 * 1024,
-                    "Deployment target settings exceed 1 MiB"
-                );
+        match fs::File::open(path) {
+            Ok(file) => {
+                let bytes = bounded_read(file, 1024 * 1024, "Deployment target settings")?;
                 let value: Self =
                     serde_json::from_slice(&bytes).context("Invalid deployment target settings")?;
                 value.validate()?;
@@ -181,6 +184,73 @@ impl DeployTargets {
     }
 }
 
+fn bounded_read(file: fs::File, limit: usize, label: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(bytes.len() <= limit, "{label} exceeds its size limit");
+    Ok(bytes)
+}
+
+fn validate_suite_id(suite: &str) -> Result<()> {
+    ensure!(
+        !suite.is_empty()
+            && suite == suite.trim()
+            && suite.len() <= 200
+            && Path::new(suite).components().count() == 1
+            && Path::new(suite)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_)))
+            && !suite.contains(['/', '\\', ':', '<', '>', '"', '|', '?', '*'])
+            && !suite.chars().any(char::is_control)
+            && !crate::helpers::is_windows_reserved_path_component(suite),
+        "Invalid deployment suite ID"
+    );
+    Ok(())
+}
+
+fn artifact_source(
+    output: &Path,
+    relative: &Path,
+    missing_reference: bool,
+) -> Result<Option<PathBuf>> {
+    ensure!(
+        relative
+            .components()
+            .all(|part| matches!(part, Component::Normal(_)))
+            && !relative
+                .to_string_lossy()
+                .contains([':', '\0', '<', '>', '"', '|', '?', '*']),
+        "Report path escapes deployment output"
+    );
+    let mut source = output.to_path_buf();
+    for component in relative.components() {
+        source.push(component);
+        match fs::symlink_metadata(&source) {
+            Ok(metadata) => ensure!(
+                !metadata.file_type().is_symlink(),
+                "Deployment artifacts cannot be symlinks"
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && missing_reference => {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Deployment artifact '{}' is unavailable",
+                        relative.display()
+                    )
+                });
+            }
+        }
+    }
+    let source = source.canonicalize()?;
+    ensure!(
+        source.starts_with(output) && source.is_file(),
+        "Deployment artifact must be a regular file inside report output"
+    );
+    Ok(Some(source))
+}
+
 pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) -> Result<()> {
     ensure!(
         !suite_ids.is_empty(),
@@ -194,29 +264,17 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "Deployment staging directory must be new"
     );
     fs::create_dir_all(destination)?;
-    let copy = |relative: &Path| -> Result<()> {
-        ensure!(
-            relative
-                .components()
-                .all(|part| matches!(part, Component::Normal(_))),
-            "Report path escapes deployment output"
-        );
-        let mut source = output.clone();
-        for component in relative.components() {
-            source.push(component);
-            ensure!(
-                !fs::symlink_metadata(&source)?.file_type().is_symlink(),
-                "Deployment artifacts cannot be symlinks"
-            );
+    let mut copied = BTreeSet::new();
+    let mut copy = |relative: &Path, missing_reference: bool| -> Result<()> {
+        let Some(source) = artifact_source(&output, relative, missing_reference)? else {
+            return Ok(());
+        };
+        if !copied.insert(relative.to_path_buf()) {
+            return Ok(());
         }
-        let canonical = source.canonicalize()?;
-        ensure!(
-            canonical.starts_with(&output) && canonical.is_file(),
-            "Deployment artifact must be a regular file inside report output"
-        );
         let target = destination.join(relative);
         fs::create_dir_all(target.parent().context("Staging path has no parent")?)?;
-        fs::copy(canonical, target)?;
+        fs::copy(source, target)?;
         Ok(())
     };
     for name in [
@@ -241,7 +299,7 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "apple-touch-icon.png",
     ] {
         if output.join(name).is_file() {
-            copy(Path::new(name))?;
+            copy(Path::new(name), false)?;
         }
     }
     ensure!(
@@ -250,19 +308,16 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
     );
     let mut selected = BTreeSet::new();
     for suite in suite_ids {
-        ensure!(
-            Path::new(suite).components().count() == 1
-                && Path::new(suite)
-                    .components()
-                    .all(|part| matches!(part, Component::Normal(_)))
-                && !suite.contains(['/', '\\']),
-            "Invalid deployment suite ID"
-        );
+        validate_suite_id(suite)?;
         ensure!(selected.insert(suite), "Duplicate deployment suite ID");
         let report = Path::new(suite).join("html_report");
-        copy(&report.join("index.html"))?;
-        copy(&report.join("config.js"))?;
-        let text = fs::read_to_string(destination.join(&report).join("config.js"))?;
+        copy(&report.join("index.html"), false)?;
+        copy(&report.join("config.js"), false)?;
+        let text = String::from_utf8(bounded_read(
+            fs::File::open(destination.join(&report).join("config.js"))?,
+            16 * 1024 * 1024,
+            "Report configuration",
+        )?)?;
         let data = text
             .trim()
             .strip_prefix("report(")
@@ -275,6 +330,12 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         );
         let tests = data["tests"].as_array().context("Report has no tests")?;
         for test in tests {
+            ensure!(
+                test["pair"]["test"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty()),
+                "Report entry has no current screenshot"
+            );
             for key in ["reference", "test", "diffImage"] {
                 if let Some(image) = test["pair"][key].as_str().filter(|value| !value.is_empty()) {
                     let image = image
@@ -286,14 +347,17 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
                         .strip_prefix("../")
                         .context("Report image must be suite-relative")?;
                     ensure!(
-                        image.starts_with("bitmaps_reference/")
-                            || image.starts_with("bitmaps_test/"),
+                        image.starts_with(if key == "reference" {
+                            "bitmaps_reference/"
+                        } else {
+                            "bitmaps_test/"
+                        }) && Path::new(image)
+                            .extension()
+                            .is_some_and(|extension| extension == "png"),
                         "Report image is outside capture folders"
                     );
                     let relative = Path::new(suite).join(image);
-                    if output.join(&relative).is_file() {
-                        copy(&relative)?;
-                    }
+                    copy(&relative, key == "reference")?;
                 }
             }
         }
@@ -356,6 +420,39 @@ mod tests {
             DeployTargets::path(directory.path()).unwrap(),
             DeployTargets::path(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
         );
+    }
+
+    #[test]
+    fn staging_rejects_missing_captures_and_escaping_or_nonimage_dependencies() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("output");
+        fs::create_dir_all(output.join("one/html_report")).unwrap();
+        fs::write(output.join("index.html"), "one").unwrap();
+        fs::write(output.join("one/html_report/index.html"), "report").unwrap();
+        for (index, image) in [
+            "../bitmaps_test/run/missing.png",
+            "../bitmaps_test/../../outside.png",
+            "../bitmaps_test/run/state.json",
+            "../bitmaps_test/run/image.png:stream",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let report = serde_json::json!({"id": "one", "tests": [{"pair": {"test": image}}]});
+            fs::write(
+                output.join("one/html_report/config.js"),
+                format!("report({report});"),
+            )
+            .unwrap();
+            assert!(
+                stage_reports(
+                    &output,
+                    &["one".into()],
+                    &root.path().join(format!("stage-{index}"))
+                )
+                .is_err()
+            );
+        }
     }
 
     #[test]

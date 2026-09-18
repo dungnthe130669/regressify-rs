@@ -1,5 +1,5 @@
 use std::{
-    io::{Read, Seek, SeekFrom},
+    io::{Seek, SeekFrom},
     path::Path,
     time::Duration,
 };
@@ -33,8 +33,6 @@ impl Package {
         );
         let mut file = tempfile::NamedTempFile::new()?;
         let mut archive = zip::ZipWriter::new(file.as_file_mut());
-        let options = zip::write::SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Deflated);
         let mut bytes = 0;
         let mut files = 0;
         let mut maximum_file = 0;
@@ -64,8 +62,28 @@ impl Package {
                 .to_str()
                 .context("Deployment paths must be UTF-8")?
                 .replace('\\', "/");
+            let compressed = entry
+                .path()
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|extension| {
+                    matches!(
+                        extension.to_ascii_lowercase().as_str(),
+                        "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "zip" | "gz" | "br"
+                    )
+                });
+            let options =
+                zip::write::SimpleFileOptions::default().compression_method(if compressed {
+                    zip::CompressionMethod::Stored
+                } else {
+                    zip::CompressionMethod::Deflated
+                });
             archive.start_file(name, options)?;
-            std::io::copy(&mut std::fs::File::open(entry.path())?, &mut archive)?;
+            let copied = std::io::copy(&mut std::fs::File::open(entry.path())?, &mut archive)?;
+            ensure!(
+                copied == length,
+                "Deployment content changed during packaging"
+            );
         }
         archive.finish()?;
         ensure!(
@@ -99,6 +117,7 @@ pub struct SwaClient {
     backoff: Duration,
     poll_interval: Duration,
     deadline: Duration,
+    block_bytes: usize,
 }
 
 fn token_endpoint(token: &str) -> Result<(Url, u32)> {
@@ -169,6 +188,7 @@ impl SwaClient {
             backoff: Duration::from_secs(1),
             poll_interval: Duration::from_secs(5),
             deadline: Duration::from_secs(30 * 60),
+            block_bytes: BLOCK_BYTES,
         })
     }
 
@@ -244,8 +264,8 @@ impl SwaClient {
             );
             bytes.extend_from_slice(&chunk);
         }
-        let response: Envelope =
-            serde_json::from_slice(&bytes).context("Invalid Azure response envelope")?;
+        let response: Envelope = serde_json::from_slice(&bytes)
+            .map_err(|_| anyhow!("Invalid Azure response envelope"))?;
         ensure!(
             response.is_success_status_code,
             "Azure {} failed (status {})",
@@ -274,53 +294,60 @@ impl SwaClient {
         Ok(url)
     }
 
-    async fn upload(&self, url: &Url, package: &mut Package) -> Result<()> {
+    async fn upload(&self, url: &Url, package: &Package) -> Result<()> {
+        use futures::{StreamExt, TryStreamExt, stream};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
         let length = package.file.as_file().metadata()?.len();
-        let mut blocks = Vec::new();
-        loop {
-            let mut chunk = vec![0; BLOCK_BYTES];
-            let mut count = 0;
-            while count < chunk.len() {
-                let read = package.file.as_file_mut().read(&mut chunk[count..])?;
-                if read == 0 {
-                    break;
-                }
-                count += read;
-            }
-            if count == 0 {
-                break;
-            }
-            chunk.truncate(count);
-            let mut destination = url.clone();
-            if length > BLOCK_BYTES as u64 {
-                let id = STANDARD.encode(format!("{}-{:08}", self.correlation, blocks.len()));
-                destination
-                    .query_pairs_mut()
-                    .append_pair("comp", "block")
-                    .append_pair("blockid", &id);
-                blocks.push(id);
-            }
-            self.send(|| {
-                let request = self
-                    .client
-                    .put(destination.clone())
-                    .header("x-ms-version", "2023-11-03")
-                    .header("x-ms-client-request-id", &self.correlation)
-                    .body(chunk.clone());
-                if length <= BLOCK_BYTES as u64 {
-                    request.header("x-ms-blob-type", "BlockBlob")
-                } else {
-                    request
+        let total = length.div_ceil(self.block_bytes as u64);
+        let completed = AtomicU64::new(0);
+        let blocks = (0..total)
+            .map(|index| STANDARD.encode(format!("{}-{index:08}", self.correlation)))
+            .collect::<Vec<_>>();
+        stream::iter(blocks.iter().enumerate())
+            .map(|(index, id)| {
+                let completed = &completed;
+                async move {
+                    let offset = index as u64 * self.block_bytes as u64;
+                    let mut input = tokio::fs::File::open(package.file.path()).await?;
+                    input.seek(SeekFrom::Start(offset)).await?;
+                    let mut chunk =
+                        vec![0; (length - offset).min(self.block_bytes as u64) as usize];
+                    input.read_exact(&mut chunk).await?;
+                    let count = chunk.len() as u64;
+                    let mut destination = url.clone();
+                    if total > 1 {
+                        destination
+                            .query_pairs_mut()
+                            .append_pair("comp", "block")
+                            .append_pair("blockid", id);
+                    }
+                    self.send(|| {
+                        let request = self
+                            .client
+                            .put(destination.clone())
+                            .header("x-ms-version", "2023-11-03")
+                            .header("x-ms-client-request-id", &self.correlation)
+                            .body(chunk.clone());
+                        if total == 1 {
+                            request.header("x-ms-blob-type", "BlockBlob")
+                        } else {
+                            request
+                        }
+                    })
+                    .await?;
+                    phase(&format!(
+                        "Uploading report: {} of {} KiB",
+                        (completed.fetch_add(count, Ordering::Relaxed) + count) / 1024,
+                        length / 1024
+                    ));
+                    Ok::<_, anyhow::Error>(())
                 }
             })
+            .buffer_unordered(4)
+            .try_collect::<Vec<_>>()
             .await?;
-            phase(&format!(
-                "Uploading report: {} of {} KiB",
-                package.file.as_file_mut().stream_position()? / 1024,
-                length / 1024
-            ));
-        }
-        if !blocks.is_empty() {
+        if total > 1 {
             let mut destination = url.clone();
             destination
                 .query_pairs_mut()
@@ -360,7 +387,7 @@ impl SwaClient {
             }
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
-            let mut package =
+            let package =
                 tokio::task::spawn_blocking(move || Package::create(&directory)).await??;
             let mut request = json!({
                 "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
@@ -377,6 +404,10 @@ impl SwaClient {
                 "pollingInfo": null
             });
             let response = self.api("request", Some(&request)).await?;
+            ensure!(
+                target.environment.is_empty() || response["allowStagingEnvironments"] != false,
+                "This Azure target does not allow named environments"
+            );
             let upload = self.blob_url(
                 response["packageUris"]["app"]
                     .as_str()
@@ -389,7 +420,7 @@ impl SwaClient {
             polling.insert("slice".into(), json!(self.slice));
             request["pollingInfo"] = json!(polling);
             phase("Uploading selected reports");
-            self.upload(&upload, &mut package).await?;
+            self.upload(&upload, &package).await?;
             request["uploadInfo"]["status"] = json!("Succeeded");
             self.api("updatestatus", Some(&request)).await?;
             phase("Waiting for Azure deployment");
@@ -405,7 +436,8 @@ impl SwaClient {
                             url.scheme() == "https"
                                 && url.username().is_empty()
                                 && url.password().is_none()
-                                && url.query().is_none(),
+                                && url.query().is_none()
+                                && url.fragment().is_none(),
                             "Azure returned an unsafe site URL"
                         );
                         phase(&format!("Deployed: {url}"));
@@ -610,6 +642,123 @@ mod tests {
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
         assert!(error.contains("403"));
         assert!(!error.contains("private") && !error.contains("sensitive"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multi_block_upload_commits_ordered_base64_ids_after_all_blocks() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            captured
+                .lock()
+                .unwrap()
+                .push((request.url().to_string(), body));
+            let _ = request.respond(tiny_http::Response::empty(201));
+        })?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        let package = Package::create(root.path())?;
+        let mut client = SwaClient::new(&token())?;
+        client.block_bytes = 64;
+        client
+            .upload(
+                &Url::parse(&format!("{}/blob?sig=private", site.origin))?,
+                &package,
+            )
+            .await?;
+        let records = requests.lock().unwrap();
+        let (url, body) = records.last().unwrap();
+        assert!(url.contains("comp=blocklist"));
+        let blocks = &records[..records.len() - 1];
+        assert!(blocks.len() > 1);
+        let mut ids = blocks
+            .iter()
+            .map(|(url, _)| {
+                Url::parse(&format!("{}{}", site.origin, url))
+                    .unwrap()
+                    .query_pairs()
+                    .find(|(key, _)| key == "blockid")
+                    .unwrap()
+                    .1
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        ids.sort_by_key(|id| STANDARD.decode(id).unwrap());
+        let expected = ids
+            .iter()
+            .map(|id| format!("<Latest>{id}</Latest>"))
+            .collect::<String>();
+        assert!(String::from_utf8_lossy(body).contains(&expected));
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|(_, body)| body.len() as u64)
+                .sum::<u64>(),
+            package.file.as_file().metadata()?.len()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn polling_is_bounded_and_terminal_failure_is_redacted() -> Result<()> {
+        for status in ["Failed", "InProgress"] {
+            let site = crate::test::browser_tests::Site::new(move |request| {
+                let host = request
+                    .headers()
+                    .iter()
+                    .find(|header| header.field.equiv("Host"))
+                    .unwrap()
+                    .value
+                    .to_string();
+                if request.url().starts_with("/blob") {
+                    let _ = request.respond(tiny_http::Response::empty(201));
+                    return;
+                }
+                let response = if request.url().starts_with("/api/upload/validateapitoken") {
+                    json!({"sku":"Standard"})
+                } else if request.url().starts_with("/api/upload/request") {
+                    json!({"packageUris":{"app":format!("http://{host}/blob")}, "pollingInfo":{}})
+                } else if request.url().starts_with("/api/upload/checkstatus") {
+                    json!({"deploymentStatus":status, "errorDetails":"sensitive"})
+                } else {
+                    Value::Null
+                };
+                let _ = request.respond(tiny_http::Response::from_string(
+                    json!({"isSuccessStatusCode":true,"statusCode":200,"response":response})
+                        .to_string(),
+                ));
+            })?;
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "report")?;
+            let mut client = SwaClient::new(&token())?;
+            client.endpoint = Url::parse(&site.origin)?;
+            client.poll_interval = Duration::from_millis(1);
+            client.deadline = if status == "Failed" {
+                Duration::from_secs(5)
+            } else {
+                Duration::from_millis(100)
+            };
+            let target = DeployTarget {
+                id: "qa".into(),
+                name: "QA".into(),
+                token_env: "QA_TOKEN".into(),
+                environment: String::new(),
+            };
+            let error = client
+                .deploy(root.path(), &target)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(!error.contains("sensitive"));
+            assert!(error.contains(if status == "Failed" {
+                "failed"
+            } else {
+                "deadline"
+            }));
+        }
         Ok(())
     }
 }
