@@ -12,7 +12,8 @@ param(
     [switch]$ScenarioFlows,
     [switch]$ArtifactFlows,
     [switch]$InstanceFlows,
-    [switch]$UpdateFlows
+    [switch]$UpdateFlows,
+    [switch]$DeploymentFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +24,7 @@ $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'
 $executable = Join-Path $repository 'target/debug/regressify-desktop.exe'
 
 if (-not $IsWindows) { throw 'This smoke test requires Windows.' }
+if (Get-Process LogonUI -ErrorAction SilentlyContinue) { throw 'Windows is locked. Unlock the interactive desktop before native smoke checks; no preferences or windows were changed.' }
 if (Get-Process regressify-desktop -ErrorAction SilentlyContinue) { throw 'Close desktop windows before native smoke checks because the fixture temporarily changes shared preferences.' }
 if (-not $SkipBuild) {
     Push-Location $repository
@@ -601,11 +603,70 @@ function Test-ScenarioFlows {
     Write-Output 'Scenario-only capture, attributed live logs, scoped approval/comparison, and sibling baseline checks passed.'
 }
 
+function Test-DeploymentFlows {
+    if (Test-ControlInvokable 'Deploy') { throw 'Deploy must be disabled without selected suites.' }
+    Invoke-Control 'Deployment targets'
+    Wait-Control 'No deployment targets' | Out-Null
+    Capture-Window 'deploy-no-selection'
+    Invoke-Control 'Add target'
+    Invoke-Control 'Target name' -Pointer
+    Send-FixtureText 'QA preview'
+    Invoke-Control 'Deployment token environment variable' -Pointer
+    $missingToken = 'REGRESSIFY_SMOKE_MISSING_' + [guid]::NewGuid().ToString('N')
+    Send-FixtureText $missingToken
+    Invoke-Control 'Azure environment' -Pointer
+    Send-FixtureText 'preview'
+    Capture-Window 'deploy-target-editor'
+    Invoke-Control 'Save target'
+    Wait-Control 'QA preview' | Out-Null
+    Invoke-Control 'Close'
+    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'Deploy'
+    Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+    if (Test-ControlInvokable 'Deploy selected reports') { throw 'Subset deployment must require confirmation.' }
+    Capture-Window 'deploy-partial-selection'
+    foreach ($theme in @('Dark', 'Light')) {
+        Invoke-Control 'Close'
+        Select-Theme $theme
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+        Capture-Window ('compact-titlebar-' + $theme.ToLowerInvariant())
+        Invoke-Control 'Deploy'
+        Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+        Capture-Window ('deploy-' + $theme.ToLowerInvariant() + '-compact')
+    }
+    Invoke-Control 'Yes, deploy only these 1 of 2 suites'
+    if (-not (Test-ControlInvokable 'Deploy selected reports')) { throw 'Confirmed deployment must be invokable.' }
+    Invoke-Control 'Deploy selected reports'
+    Wait-Control 'Command failed' | Out-Null
+    Invoke-Control 'View Log'
+    Wait-SourceText $missingToken 'Run log'
+    Capture-Window 'deploy-missing-token'
+    Invoke-Control 'Deployment targets'
+    Wait-Control 'QA preview' | Out-Null
+    Invoke-Control 'Remove target'
+    Wait-Control 'Keep target' | Out-Null
+    Capture-Window 'deploy-remove-confirmation'
+    Invoke-Control 'Keep target'
+    Invoke-Control 'Close'
+    $script:process.CloseMainWindow() | Out-Null
+    if (-not $script:process.WaitForExit(10000)) { throw 'Deployment fixture did not close normally.' }
+    Start-Fixture
+    Invoke-Control 'Deployment targets'
+    Wait-Control 'QA preview' | Out-Null
+    Capture-Window 'deploy-target-restored'
+    Invoke-Control 'Close'
+    Write-Output 'Deployment target persistence, subset confirmation, safe token failure, and compact titlebar layouts passed without contacting Azure.'
+}
+
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($DeploymentFlows) {
+        Test-DeploymentFlows
+        return
+    }
     if ($UpdateFlows) {
         foreach ($theme in @('Light', 'Dark')) {
             Select-Theme $theme
@@ -925,6 +986,12 @@ try {
             Remove-Item -LiteralPath $settingsPath
         }
         Write-Output 'Original desktop preferences restored.'
+        if ($DeploymentFlows -and -not $KeepOpen) {
+            $identity = $workspace.Replace('\', '/').ToLowerInvariant()
+            $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+            $targetSettings = Join-Path (Split-Path -Parent $settingsPath) ('deployments/' + $hash + '.json')
+            if (Test-Path -LiteralPath $targetSettings) { Remove-Item -LiteralPath $targetSettings }
+        }
     }
 }
 Write-Output "Native smoke test passed. Fixture: $workspace"

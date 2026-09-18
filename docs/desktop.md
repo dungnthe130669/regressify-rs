@@ -97,6 +97,13 @@ process tree; it cannot undo a deployment already accepted by Azure. Deployment
 transport is covered by local mock-server tests; a live Azure smoke deployment
 requires a configured target and is not performed by the test suite.
 
+Native Windows deployment/layout verification uses
+`./ci/desktop-smoke.ps1 -SkipBuild -DeploymentFlows` after building the GUI. It
+creates isolated target settings, exercises target persistence and subset
+confirmation, captures compact light/dark layouts, and verifies missing-token
+failure without contacting Azure. It refuses a locked session before changing
+preferences and cleans up only its own fixture settings and processes.
+
 ## Appearance and Commands
 
 Workspace navigation and global tools share a compact custom title bar with

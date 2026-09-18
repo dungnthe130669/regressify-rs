@@ -67,7 +67,11 @@ impl Workbench {
                                 gpui_kit::assets::IconName::PanelLeftClose
                             })
                             .tooltip("Toggle navigator")
-                            .accessibility_label("Toggle navigator")
+                            .accessibility_label(if self.preferences.navigator_hidden {
+                                "Show navigator"
+                            } else {
+                                "Hide navigator"
+                            })
                             .disabled(self.busy)
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_navigator(&ToggleNavigator, window, cx)

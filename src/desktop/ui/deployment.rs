@@ -216,7 +216,7 @@ impl Workbench {
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
             } else if editing {
                 for (label, id, input) in [("Target name", "deploy-name", &state.name), ("Deployment token environment variable", "deploy-token-env", &state.token), ("Azure environment", "deploy-environment", &state.environment)] {
-                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).small().disabled(saving)));
+                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)));
                 }
                 body = body.child(div().flex().justify_end().gap_2()
                     .child(Button::new("deploy-target-cancel").label("Cancel edit").disabled(saving).on_click(window.listener_for(&view, |this, _, _, cx| {
@@ -242,10 +242,11 @@ impl Workbench {
                 body = body.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Publication: full latest reports for the selected suites."));
             }
             if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).text_color(cx.theme().danger).child(state.status.clone())); }
-            dialog.title("Deploy reports").keyboard(!saving).close_button(!saving).child(body)
+            dialog.title("Deploy reports").keyboard(!saving).close_button(!saving).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
                 .footer(div().flex().justify_end().gap_2()
                     .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(|_, window, cx| window.close_dialog(cx)))
                     .child(Button::new("deploy-confirm").primary().icon(gpui_kit::assets::IconName::CloudUpload).label("Deploy")
+                        .accessibility_label("Deploy selected reports")
                         .disabled(!state.can_deploy()).on_click(window.listener_for(&view, |this, _, window, cx| this.begin_deployment(window, cx)))))
         });
     }
