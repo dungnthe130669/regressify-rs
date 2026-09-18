@@ -149,7 +149,7 @@ impl Workbench {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         let mut count = 0;
         for (index, entry) in self
             .session
@@ -512,7 +512,7 @@ impl Workbench {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         let mut count = 0;
         for (index, item) in items.iter().enumerate() {
             let label = item["label"]
@@ -747,7 +747,7 @@ impl Workbench {
                 .flex()
                 .flex_col()
                 .max_h(px(96.))
-                .overflow_y_scroll();
+                .overflow_y_scrollbar();
             for (index, entry) in entries {
                 let entry = entry.clone();
                 files = files.child(

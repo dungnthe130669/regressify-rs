@@ -502,7 +502,7 @@ impl RunPanel {
         div()
             .id("activity-scroll")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .child(content)
             .into_any_element()
     }

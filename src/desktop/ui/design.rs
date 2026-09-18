@@ -54,6 +54,7 @@ pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App)
     theme.radius = px(4.);
     theme.radius_lg = px(6.);
     theme.focus_ring = true;
+    theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
     let colors = &mut theme.colors;
     colors.background = rgb(if dark { 0x181c20 } else { 0xffffff }).into();
     colors.foreground = rgb(if dark { 0xecf0f2 } else { 0x223036 }).into();

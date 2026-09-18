@@ -215,7 +215,7 @@ impl RunPanel {
                     .id("run-options-scroll")
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
+                    .overflow_y_scrollbar()
                     .child(form),
             )
             .into_any_element()

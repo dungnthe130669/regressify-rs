@@ -95,6 +95,11 @@ or action is edited. The lower pane lists only the open suite's scenarios, with
 labels and URLs; actions are edited in the scenario's action sequence rather
 than nested in the sidebar. Both panes scroll independently.
 
+Overflowing areas show persistent, draggable scrollbars in both themes, including
+navigation, settings, action sequences, activity, source/log editors, and result
+lists. Image previews have independent horizontal and vertical scrollbars when
+the selected zoom exceeds the available space.
+
 Suite search matches paths and scenario labels, IDs, or URLs across the workspace,
 but displays matching suites only. Open a suite to see its scenarios below. The
 lower search filters only that suite, without changing the suite search or run

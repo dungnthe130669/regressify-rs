@@ -91,7 +91,7 @@ impl Workbench {
             .flex()
             .flex_col()
             .max_h(px(264.))
-            .overflow_y_scroll();
+            .overflow_y_scrollbar();
         for (index, action) in actions.iter().enumerate() {
             let kind = ACTIONS
                 .iter()

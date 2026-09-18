@@ -410,7 +410,7 @@ impl Workbench {
         div()
             .id("workspace-overview-scroll")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .child(page)
             .into_any_element()
     }

@@ -14,6 +14,7 @@ use gpui_kit::component::{
     },
     menu::DropdownMenu,
     resizable::{h_resizable, resizable_panel},
+    scroll::ScrollableElement,
     tab::{Tab, TabBar},
     *,
 };
@@ -1615,7 +1616,7 @@ impl Workbench {
         div()
             .id("field-scroll")
             .size_full()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .child(form)
             .into_any_element()
     }
@@ -1867,18 +1868,18 @@ impl Workbench {
             })
             .child(div().flex_1().min_h_0().child(content))
             .children(self.diagnostic.as_ref().map(|diagnostic| {
-                div()
-                    .id("diagnostic")
-                    .role(Role::Alert)
-                    .aria_label(diagnostic.clone())
-                    .test_support()
-                    .max_h(px(92.))
-                    .overflow_y_scroll()
-                    .px_4()
-                    .py_2()
-                    .text_sm()
-                    .text_color(cx.theme().danger)
-                    .child(diagnostic.clone())
+                div().max_h(px(92.)).overflow_y_scrollbar().child(
+                    div()
+                        .id("diagnostic")
+                        .role(Role::Alert)
+                        .aria_label(diagnostic.clone())
+                        .test_support()
+                        .px_4()
+                        .py_2()
+                        .text_sm()
+                        .text_color(cx.theme().danger)
+                        .child(diagnostic.clone()),
+                )
             }))
             .into_any_element()
     }

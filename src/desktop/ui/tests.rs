@@ -406,6 +406,10 @@ async fn theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore
                 original
             );
             assert!(view.read(cx).session.dirty());
+            assert!(matches!(
+                cx.theme().scrollbar_mode,
+                gpui_kit::component::scroll::ScrollbarMode::Always
+            ));
             if preference != ThemePreference::System {
                 assert_eq!(
                     cx.theme().mode.is_dark(),

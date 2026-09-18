@@ -794,7 +794,7 @@ impl Render for RunPanel {
             1 => div()
                 .id("run-suite-list")
                 .size_full()
-                .overflow_y_scroll()
+                .overflow_y_scrollbar()
                 .p_5()
                 .child(self.render_selection(cx))
                 .into_any_element(),

@@ -470,7 +470,7 @@ impl ResultsPanel {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scroll()
+            .overflow_y_scrollbar()
             .gap_1();
         if filtered.is_empty() {
             rows = rows.child(
@@ -679,7 +679,8 @@ impl ResultsPanel {
                             .id(("image-scroll", index))
                             .flex_1()
                             .min_h_0()
-                            .overflow_scroll()
+                            .overflow_scrollbar()
+                            .id(("image-scroll", index))
                             .bg(cx.theme().muted)
                             .child(display),
                     )
