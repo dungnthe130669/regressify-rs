@@ -1,0 +1,162 @@
+# rumdl configuration - https://rumdl.dev (v0.2.63)
+#
+# Goal: keep Markdown formatting deterministic and consistent across developers.
+# The `docs-format.yml` pipeline runs `rumdl fmt .` and opens a PR with the
+# normalized result, so every setting below is pinned to a single explicit value
+# instead of "consistent" to avoid drift between contributors.
+#
+# Project rules:
+#   - Frontmatter is optional; when present, its `title` field is the document H1.
+#   - No line-length limit (lines may be as long as needed).
+#   - Ordered lists always use `1.` (no incremental numbering).
+#   - Link text is unrestricted.
+
+[global]
+# Run every built-in rule by default, then turn off the few that conflict with
+# the project rules above and additively opt in to extra consistency rules.
+disable = [
+    "MD001",  # Keep the heading level.
+    "MD033",  # Ignore Inline HTML.
+    "MD034",  # URLs should be kept as-is.
+    "MD035",  # Horizontal rule style should be kept as-is.
+    "MD044",  # Do not enforce capitalization.
+    "MD046",  # Disable fenced code block formatting for now. Has false-positive format
+    "MD056",  # Ignore table column count
+    "MD059",  # Link text descriptiveness - any link text is allowed.
+    "MD060",  # Table columns alignment should be kept as-is.
+]
+
+# Opt-in rules (off by default) that improve cross-developer consistency.
+extend-enable = [
+    "MD060",  # Table column formatting/alignment.
+]
+
+# Files and directories that are not authored Markdown.
+exclude = [
+    ".git",
+    ".istari",
+    ".rumdl_cache",
+    "node_modules",
+    "**/bin/**",
+    "**/obj/**",
+    "docs/book",       # mdBook build output
+    "docs/adversarial-reviews/",
+    "docs/plan/",
+    "target"
+]
+
+respect-gitignore = true
+
+# ---------------------------------------------------------------------------
+# Headings
+# ---------------------------------------------------------------------------
+
+[MD003]
+style = "atx"  # `# Heading` form everywhere (no setext/closed-atx).
+
+[MD013]
+line-length = 2147483647  # Maximum characters per line (default: 80)
+reflow = true  # Enable automatic text reflow/wrapping (default: false)
+
+[MD022]
+lines-above = 1  # One blank line above every heading.
+lines-below = 1  # One blank line below every heading.
+
+[MD024]
+siblings-only = true            # Duplicate headings only flagged within the same parent.
+allow-different-nesting = false
+
+[MD025]
+level = 1
+front-matter-title = "title"  # `title:` in frontmatter counts as the single H1.
+
+[MD026]
+punctuation = ".,;:!"  # Trailing punctuation stripped from headings.
+
+[MD041]
+level = 1
+front-matter-title = "title"  # First content must be H1 (or frontmatter `title`).
+
+# ---------------------------------------------------------------------------
+# Lists
+# ---------------------------------------------------------------------------
+
+[MD004]
+style = "dash"     # Unordered lists use `-`.
+after-marker = 1   # Number of spaces after marker (default: 1)
+
+[MD007]
+indent = 2  # Two spaces per nested unordered-list level.
+
+[MD029]
+style = "one"  # Ordered lists always use `1.` (no incremental numbering).
+
+[MD030]
+ul-single = 1
+ol-single = 1
+ul-multi = 1
+ol-multi = 1
+
+# ---------------------------------------------------------------------------
+# Whitespace
+# ---------------------------------------------------------------------------
+
+[MD009]
+br-spaces = 2  # Two trailing spaces = intentional hard line break.
+strict = false
+
+[MD010]
+spaces-per-tab = 4
+code-blocks = false  # Leave tabs inside code blocks untouched.
+
+[MD012]
+maximum = 1  # At most one consecutive blank line.
+
+# ---------------------------------------------------------------------------
+# Emphasis / inline style
+# ---------------------------------------------------------------------------
+
+[MD035]
+style = "---"  # Horizontal rules are always `---`.
+
+[MD049]
+style = "asterisk"  # Italic emphasis uses `*text*`.
+
+[MD050]
+style = "asterisk"  # Bold/strong uses `**text**`.
+
+[MD044]
+names = ["Markdown", "GitHub", "Azure DevOps", "Jira"]
+code-blocks = false  # Don't enforce capitalization inside code.
+
+# ---------------------------------------------------------------------------
+# Code blocks
+# ---------------------------------------------------------------------------
+
+[MD046]
+style = "fenced"  # Always use fenced code blocks (no indented blocks).
+
+[MD048]
+style = "backtick"  # Fences use ``` (not ~~~).
+
+# ---------------------------------------------------------------------------
+# Tables
+# ---------------------------------------------------------------------------
+
+[MD055]
+style = "leading-and-trailing"  # `| cell |` - pipes on both ends.
+
+[MD058]
+minimum-before = 1
+minimum-after = 1
+
+# Table Format
+[MD060]
+enabled = true              # Default: opt-in for conservative adoption
+style = "aligned"            # Options: "aligned", "aligned-no-space", "compact", "tight", "any"
+# max-width = 0                # Default: inherit from MD013's line-length
+# column-align = "auto"        # Options: "auto", "left", "center", "right"
+# column-align-header = "auto" # Override alignment for header row only
+# column-align-body = "auto"   # Override alignment for body rows only
+# loose-last-column = false    # Cap last column at header width when true
+# aligned-delimiter = false    # Pad delimiter dashes to header widths under compact/tight

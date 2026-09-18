@@ -16,13 +16,13 @@ Review the action implementation code with an adversarial mindset. Assume the co
 For each action in `src/test/test_action.rs`:
 
 1. **Does it wait for the element to exist?** (polling, not one-shot)
-2. **Does it check element visibility?** (bbox > 0, not hidden, opacity > 0)
-3. **Does it scroll into view before interaction?**
-4. **Does it verify the element is not covered?** (elementFromPoint check)
-5. **Does it use the correct interaction method?** (CDP events, not JS shortcuts)
-6. **Are errors properly propagated?** (no `.ok()`, no silent failures)
-7. **Is selector input properly escaped?** (no injection)
-8. **Does the iframe path validate each frame exists?**
+1. **Does it check element visibility?** (bbox > 0, not hidden, opacity > 0)
+1. **Does it scroll into view before interaction?**
+1. **Does it verify the element is not covered?** (elementFromPoint check)
+1. **Does it use the correct interaction method?** (CDP events, not JS shortcuts)
+1. **Are errors properly propagated?** (no `.ok()`, no silent failures)
+1. **Is selector input properly escaped?** (no injection)
+1. **Does the iframe path validate each frame exists?**
 
 ## Report Format
 

@@ -233,9 +233,9 @@ actions:
 ## Common Mistakes to Avoid
 
 1. **Using `.ok()` to swallow errors** — Errors indicate test failures, not noise
-2. **Using JS `.click()` for click action** — Bypasses all real-user checks
-3. **Not waiting for element existence** — `find_element` fails immediately if not in DOM
-4. **Not escaping selector strings** — CSS selector injection vulnerability
-5. **Assuming frame contentDocument is accessible** — Cross-origin frames will fail
-6. **Not checking if element moved between check and action** — TOCTOU race condition
-7. **Hardcoding timeouts** — Should be configurable or at least constants
+1. **Using JS `.click()` for click action** — Bypasses all real-user checks
+1. **Not waiting for element existence** — `find_element` fails immediately if not in DOM
+1. **Not escaping selector strings** — CSS selector injection vulnerability
+1. **Assuming frame contentDocument is accessible** — Cross-origin frames will fail
+1. **Not checking if element moved between check and action** — TOCTOU race condition
+1. **Hardcoding timeouts** — Should be configurable or at least constants

@@ -486,22 +486,22 @@ refer to current baseline files; later approval can change their reference image
 Use Cmd instead of Ctrl on macOS. Native inputs retain their editing shortcuts;
 toolbar Undo/Redo always use complete document history.
 
-| Shortcut | Command |
-| --- | --- |
-| Ctrl+O | Open workspace |
-| Ctrl+P | Search suites and scenarios; reopen a hidden navigator |
-| Ctrl+B | Toggle navigator |
-| Ctrl+1 / Ctrl+2 / Ctrl+3 | Editor / Runs / Results |
-| Ctrl+Shift+F | Find a setting |
-| Ctrl+N | New suite |
-| Ctrl+S | Save |
-| Ctrl+Shift+S | Save As |
-| Ctrl+R | Reload with draft guard |
-| Ctrl+Z / Ctrl+Shift+Z | Undo / redo |
-| Ctrl+F in Source or Log | Find |
-| Ctrl+Space in Source (all platforms) | Show schema suggestions |
-| F2 | Rename suite |
-| F5 | Refresh files |
+| Shortcut                             | Command                                                |
+| ------------------------------------ | ------------------------------------------------------ |
+| Ctrl+O                               | Open workspace                                         |
+| Ctrl+P                               | Search suites and scenarios; reopen a hidden navigator |
+| Ctrl+B                               | Toggle navigator                                       |
+| Ctrl+1 / Ctrl+2 / Ctrl+3             | Editor / Runs / Results                                |
+| Ctrl+Shift+F                         | Find a setting                                         |
+| Ctrl+N                               | New suite                                              |
+| Ctrl+S                               | Save                                                   |
+| Ctrl+Shift+S                         | Save As                                                |
+| Ctrl+R                               | Reload with draft guard                                |
+| Ctrl+Z / Ctrl+Shift+Z                | Undo / redo                                            |
+| Ctrl+F in Source or Log              | Find                                                   |
+| Ctrl+Space in Source (all platforms) | Show schema suggestions                                |
+| F2                                   | Rename suite                                           |
+| F5                                   | Refresh files                                          |
 
 ## Verification
 

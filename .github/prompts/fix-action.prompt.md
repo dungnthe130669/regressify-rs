@@ -15,11 +15,11 @@ tools:
 When working on `src/test/test_action.rs`, always apply the adversarial code review approach:
 
 1. **Read the current implementation** of the action being modified
-2. **Check against the adversarial review checklist** in `.github/skills/adversarial-review.md`
-3. **Verify all pre-action validations** are implemented per `.github/skills/implement-action.md`
-4. **Never use `.ok()` to swallow errors** — action failures fail the scenario
-5. **Never use JS `.click()` for the click action** — use CDP mouse events
-6. **Never use `panic!` or `.unwrap()` on fallible ops** — use `?` to propagate errors
+1. **Check against the adversarial review checklist** in `.github/skills/adversarial-review.md`
+1. **Verify all pre-action validations** are implemented per `.github/skills/implement-action.md`
+1. **Never use `.ok()` to swallow errors** — action failures fail the scenario
+1. **Never use JS `.click()` for the click action** — use CDP mouse events
+1. **Never use `panic!` or `.unwrap()` on fallible ops** — use `?` to propagate errors
 
 ## Error Model
 
@@ -30,11 +30,11 @@ When working on `src/test/test_action.rs`, always apply the adversarial code rev
 ## Pre-Action Validation Order (MANDATORY for interactive actions)
 
 1. Wait for element to exist (30s timeout, 100ms poll)
-2. Wait for element to be visible (non-zero bbox, not hidden)
-3. Wait for element to be stable (bbox not changing)
-4. Scroll element into viewport
-5. Check element is not obscured (elementFromPoint)
-6. Check element is enabled (form controls)
+1. Wait for element to be visible (non-zero bbox, not hidden)
+1. Wait for element to be stable (bbox not changing)
+1. Scroll element into viewport
+1. Check element is not obscured (elementFromPoint)
+1. Check element is enabled (form controls)
 
 ## Reference
 

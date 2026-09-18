@@ -221,17 +221,17 @@ page.evaluate(script).await?;
 1. **`find_element` doesn't wait** — Unlike Playwright's `waitForSelector`, this fails immediately.
    Implement your own polling loop.
 
-2. **`element.click()` uses JS** — chromiumoxide's `.click()` calls JS `el.click()`,
+1. **`element.click()` uses JS** — chromiumoxide's `.click()` calls JS `el.click()`,
    which bypasses overlay detection. For real user simulation, use CDP `Input.dispatchMouseEvent`.
 
-3. **`element.hover()` behavior** — Verify if this uses CDP mouse events or JS dispatch.
+1. **`element.hover()` behavior** — Verify if this uses CDP mouse events or JS dispatch.
    May need to use raw CDP for proper CSS `:hover` activation.
 
-4. **No built-in actionability checks** — Unlike Playwright, chromiumoxide doesn't check
+1. **No built-in actionability checks** — Unlike Playwright, chromiumoxide doesn't check
    visibility, stability, or interactability before actions. You must implement these.
 
-5. **Handler must be polled** — The `handler` stream must be consumed or the browser will freeze.
+1. **Handler must be polled** — The `handler` stream must be consumed or the browser will freeze.
    Always spawn it in a background task.
 
-6. **Serialization of CDP types** — Use the builder pattern for CDP command params.
+1. **Serialization of CDP types** — Use the builder pattern for CDP command params.
    Don't construct them manually.

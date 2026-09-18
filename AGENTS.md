@@ -113,15 +113,15 @@ Contains:
 ## Key Architecture Facts for AI Sessions
 
 1. **Browser automation:** `chromiumoxide` (Rust CDP client), NOT Playwright
-2. **Browser support:** Chromium only; Firefox/WebKit config values are rejected early
-3. **Action types:** Defined in `src/types/actions.rs`, `TestAction` enum is `#[serde(untagged)]` — **variant order matters**
-4. **Actionability module:** `src/test/actionability.rs` provides `ensure_actionable`, `ensure_focusable`, `ensure_exists`, `cdp_click`, `cdp_hover`
-5. **Config cascade:** scenario → suite → workspace → defaults (see `src/config/mod.rs`)
-6. **Error handling:** Actions MUST propagate errors with `?`, never `.ok()`
-7. **Scenario isolation:** Each scenario is independent. A failed scenario MUST NOT stop other scenarios. All scenarios always execute so the user gets a full pass/fail report. Action error → scenario fails → error placeholder/report result → other scenarios continue.
-8. **Exit codes:** Config/infra/artifact errors are non-zero; website/scenario/visual failures are report-only zero-exit results
-9. **Security:** All user-provided selectors go through `escape_js_string` or `escape_css_rule` before injection into JS/CSS strings
-10. **Iframes:** Frame traversal via `contentDocument` chains built by `build_frame_document_js`
+1. **Browser support:** Chromium only; Firefox/WebKit config values are rejected early
+1. **Action types:** Defined in `src/types/actions.rs`, `TestAction` enum is `#[serde(untagged)]` — **variant order matters**
+1. **Actionability module:** `src/test/actionability.rs` provides `ensure_actionable`, `ensure_focusable`, `ensure_exists`, `cdp_click`, `cdp_hover`
+1. **Config cascade:** scenario → suite → workspace → defaults (see `src/config/mod.rs`)
+1. **Error handling:** Actions MUST propagate errors with `?`, never `.ok()`
+1. **Scenario isolation:** Each scenario is independent. A failed scenario MUST NOT stop other scenarios. All scenarios always execute so the user gets a full pass/fail report. Action error → scenario fails → error placeholder/report result → other scenarios continue.
+1. **Exit codes:** Config/infra/artifact errors are non-zero; website/scenario/visual failures are report-only zero-exit results
+1. **Security:** All user-provided selectors go through `escape_js_string` or `escape_css_rule` before injection into JS/CSS strings
+1. **Iframes:** Frame traversal via `contentDocument` chains built by `build_frame_document_js`
 
 ## Common Tasks and Which Files to Read
 

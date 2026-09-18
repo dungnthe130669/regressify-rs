@@ -88,7 +88,7 @@ If this is your first time working with **Regressify**, follow these steps (only
 
 1. Create a test suite.
 
-   Create a test suite in the [**visual_tests**](https://github.com/precise-alloy/regression-test/tree/master/visual_tests) folder. Each test suite should adhere to the naming convention:  **\<name\>.tests.yaml**.  
+   Create a test suite in the [**visual_tests**](https://github.com/precise-alloy/regression-test/tree/master/visual_tests) folder. Each test suite should adhere to the naming convention: **\<name\>.tests.yaml**.  
    For instance, you can create a file named **[visual_tests/alloy.tests.yaml][alloy-test-suite]** with the following content:
 
    ```yaml

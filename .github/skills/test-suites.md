@@ -176,12 +176,12 @@ The `url` property in wait supports:
 ## Best Practices
 
 1. **Always add a label** — Auto-generated IDs from URLs are cryptic
-2. **Use `wait` after navigation-triggering clicks** — The next screenshot needs the page loaded
-3. **Use `hide` for non-deterministic content** — Timestamps, counters, ads
-4. **Use `save` for intermediate states** — Debug failures more easily
-5. **Keep scenarios independent** — Use `needs` instead of ordering dependencies
-6. **Set `misMatchThreshold`** — Anti-aliasing differences cause false failures at 0
-7. **Use `noScrollTop: true`** for single-viewport captures — Avoids unnecessary scrolling
+1. **Use `wait` after navigation-triggering clicks** — The next screenshot needs the page loaded
+1. **Use `hide` for non-deterministic content** — Timestamps, counters, ads
+1. **Use `save` for intermediate states** — Debug failures more easily
+1. **Keep scenarios independent** — Use `needs` instead of ordering dependencies
+1. **Set `misMatchThreshold`** — Anti-aliasing differences cause false failures at 0
+1. **Use `noScrollTop: true`** for single-viewport captures — Avoids unnecessary scrolling
 
 ## Config Validation Notes
 

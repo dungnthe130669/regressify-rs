@@ -75,7 +75,7 @@ The form has the following requirements:
   ^(([^<>()\[\]\\.,;:\s@"]+(\.[^<>()\[\]\\.,;:\s@"]+)*)|(".+"))@((\[[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\])|(([a-zA-Z\-0-9]+\.)+[a-zA-Z]{2,}))$
   ```
 
-   You can independently verify emails against this pattern on [regex101.com][regex101], using **ECMAScript (JavaScript)** flavor.
+  You can independently verify emails against this pattern on [regex101.com][regex101], using **ECMAScript (JavaScript)** flavor.
 
 - [X] Password must:
 

@@ -66,11 +66,11 @@ This tool simulates **real human interactions** with a browser. Every action imp
 Before performing any interactive action (click, hover, check, uncheck, focus, input, press, select), the implementation MUST:
 
 1. **Wait for element to exist** — Poll/wait for the selector to match a DOM element (with timeout).
-2. **Wait for element to be visible** — The element must have non-zero bounding box, not be `visibility: hidden`, not be `display: none`, and have `opacity > 0`.
-3. **Wait for element to be stable** — The element's bounding box must not be changing (no animations in progress). Check at least 2 consecutive frames.
-4. **Scroll element into viewport** — A real user must see an element before interacting with it. Use `scrollIntoView({ block: 'center' })` behavior.
-5. **Check element is not obscured** — Use `document.elementFromPoint(x, y)` at the element's center to verify no other element (modal, overlay, tooltip, sticky header/footer) is covering it. If obscured, the action MUST fail with a clear error message identifying the covering element.
-6. **Check element is enabled** — For form elements (input, button, select), verify `disabled` is not set.
+1. **Wait for element to be visible** — The element must have non-zero bounding box, not be `visibility: hidden`, not be `display: none`, and have `opacity > 0`.
+1. **Wait for element to be stable** — The element's bounding box must not be changing (no animations in progress). Check at least 2 consecutive frames.
+1. **Scroll element into viewport** — A real user must see an element before interacting with it. Use `scrollIntoView({ block: 'center' })` behavior.
+1. **Check element is not obscured** — Use `document.elementFromPoint(x, y)` at the element's center to verify no other element (modal, overlay, tooltip, sticky header/footer) is covering it. If obscured, the action MUST fail with a clear error message identifying the covering element.
+1. **Check element is enabled** — For form elements (input, button, select), verify `disabled` is not set.
 
 ### Action-Specific Requirements
 
@@ -117,10 +117,10 @@ When `frame` is specified:
 ## When Modifying Actions
 
 1. Add/update the struct in `src/types/actions.rs`.
-2. Add the variant to the `TestAction` enum (order matters for untagged deserialization).
-3. Implement the handler in `src/test/test_action.rs` inside `exec_test_action`.
-4. Ensure all pre-action validations are implemented per the rules above.
-5. Update `docs/create-action.md` with the new action's properties, examples, and implementation notes.
+1. Add the variant to the `TestAction` enum (order matters for untagged deserialization).
+1. Implement the handler in `src/test/test_action.rs` inside `exec_test_action`.
+1. Ensure all pre-action validations are implemented per the rules above.
+1. Update `docs/create-action.md` with the new action's properties, examples, and implementation notes.
 
 ## Adversarial Code Review Checklist
 

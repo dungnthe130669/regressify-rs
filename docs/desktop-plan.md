@@ -517,7 +517,6 @@ check complete merely because compilation passed.
   been executed on GitHub in this session. Native macOS/Linux rendering, full
   IME composition, screen-reader usability, signing, and installer packaging
   remain platform/release follow-up checks, not locally verified deliverables.
-
 - Suite-edit regression: reproduced the color-blender error where a root field
   was inserted inside an unquoted CSS attribute selector. Plain scalar spans are
   now protected before CST editing and restored exactly afterward. Added tests

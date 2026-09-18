@@ -13,15 +13,15 @@ tools:
 When creating or modifying test suites in `visual_tests/`:
 
 1. Follow the YAML structure documented in `.github/skills/test-suites.md`
-2. Always include a `label` for each scenario (auto-generated IDs are cryptic)
-3. Add `wait` actions after clicks that trigger navigation
-4. Use `hide` for non-deterministic content (timestamps, ads, random data)
-5. Use `needs` for scenario dependencies instead of relying on execution order
-6. Set appropriate `misMatchThreshold` (default 0.1 is very strict)
+1. Always include a `label` for each scenario (auto-generated IDs are cryptic)
+1. Add `wait` actions after clicks that trigger navigation
+1. Use `hide` for non-deterministic content (timestamps, ads, random data)
+1. Use `needs` for scenario dependencies instead of relying on execution order
+1. Set appropriate `misMatchThreshold` (default 0.1 is very strict)
 
 ## File Naming
 
-```
+```text
 visual_tests/{descriptive-name}.tests.yaml
 ```
 

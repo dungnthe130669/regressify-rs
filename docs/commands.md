@@ -25,17 +25,17 @@ Global flags are placed before the command:
 regressify --root ./my-tests --site-env staging test --test-suite alloy
 ```
 
-| Flag                          | Purpose                                                                                                                      |
-| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                             |
-| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. The environment name must use only ASCII letters, digits, `_`, or `-`. |
+| Flag                          | Purpose                                                                                                                                                                                                                                                           |
+| ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--root`, `-r`                | Project root. Defaults to the current directory.                                                                                                                                                                                                                  |
+| `--site-env`                  | Writes output to `.regressify__<env>` instead of `.regressify`. Persisted state is also scoped to that directory. The environment name must use only ASCII letters, digits, `_`, or `-`.                                                                          |
 | `--run-id`                    | Portable explicit capture directory ID shared by all selected suites. `test` and `ref` write to it; `compare` and `approve` select it. Defaults to a sortable UTC timestamp for capture and the lexically latest run for standalone compare/approve when omitted. |
-| `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap. |
-| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                  |
-| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display). |
-| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.                      |
-| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                              |
-| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                              |
+| `--async-capture-limit`       | Positive global maximum scenario/viewport captures running at once. Defaults to `5`; suite/workspace `asyncCaptureLimit` can impose a lower per-suite cap.                                                                                                        |
+| `--async-capture-ramp-ms`     | Delay between adding concurrency slots. Defaults to `1000`.                                                                                                                                                                                                       |
+| `--debug`                     | Runs Chromium with a visible window. Suite-level `debug: true` also enables this. Automatically disabled in CI (no display).                                                                                                                                      |
+| `--requiredLogin`             | Forces `requiredLogin` true in the resolved scenario context exposed to custom `jsOnReadyPath` scripts.                                                                                                                                                           |
+| `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                                                                                                                                                                   |
+| `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                                                                                                                                                                   |
 
 ## Commands
 
@@ -134,6 +134,7 @@ Capture runs use sortable UTC directory IDs with nanosecond precision, so back-t
 Capture commands refuse to reuse an existing suite/run directory. Choose a new
 `--run-id` for each invocation or remove an intentionally stale run first; this
 prevents old screenshots from being mixed into a new comparison.
+
 ## Comparison Reports
 
 Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.
