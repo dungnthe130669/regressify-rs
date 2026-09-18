@@ -306,6 +306,266 @@ fn bounded_diff(text: &str) -> String {
     )
 }
 
+#[derive(Clone, Debug)]
+pub enum Action {
+    Initialize,
+    Commit { paths: Vec<String>, message: String },
+    Pull,
+    Push,
+    AddOrigin { url: String },
+}
+
+impl Action {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Initialize => "Initialize repository",
+            Self::Commit { .. } => "Commit selected files",
+            Self::Pull => "Pull",
+            Self::Push => "Push",
+            Self::AddOrigin { .. } => "Add origin",
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Request {
+    pub workspace: PathBuf,
+    pub expected: Snapshot,
+    pub action: Action,
+}
+
+impl Request {
+    pub fn execute(&self, cancellation: &Cancellation) -> Result<String> {
+        let current = status(&self.workspace, cancellation)?;
+        if matches!(self.action, Action::Initialize) {
+            ensure!(
+                current.repository.is_none(),
+                "Workspace is already inside a Git repository; refresh before continuing"
+            );
+            command(&self.workspace, ["init"], cancellation)?;
+            return Ok("Git repository initialized; files have not been staged".into());
+        }
+        let repository = current
+            .repository
+            .as_ref()
+            .context("Workspace is no longer tracked by Git")?;
+        ensure!(
+            current.repository == self.expected.repository
+                && current.head == self.expected.head
+                && current.branch == self.expected.branch,
+            "Git branch or HEAD changed; refresh and review before continuing"
+        );
+        match &self.action {
+            Action::Initialize => unreachable!(),
+            Action::Commit { paths, message } => {
+                ensure!(
+                    current.operation.is_none() && current.conflicts() == 0,
+                    "Resolve and complete the merge/rebase in VS Code before committing here"
+                );
+                ensure!(
+                    !current.detached,
+                    "HEAD is detached; choose a branch in VS Code first"
+                );
+                ensure!(!paths.is_empty(), "Select at least one changed file");
+                ensure!(
+                    !message.trim().is_empty()
+                        && message.len() <= 64 * 1024
+                        && !message.contains('\0'),
+                    "Enter a commit message (maximum 64 KiB)"
+                );
+                let mut selected = std::collections::BTreeSet::new();
+                let mut staging = std::collections::BTreeSet::new();
+                for path in paths {
+                    let change = current
+                        .changes
+                        .iter()
+                        .find(|change| &change.path == path)
+                        .with_context(|| {
+                            format!(
+                                "Selected file '{path}' is no longer changed; refresh and review"
+                            )
+                        })?;
+                    ensure!(!change.submodule, "Use VS Code to commit submodule changes");
+                    selected.insert(change.path.clone());
+                    if change.untracked || change.worktree != '.' {
+                        staging.insert(change.path.clone());
+                    }
+                    if let Some(original) = &change.original_path {
+                        selected.insert(original.clone());
+                    }
+                }
+                let mut pathspec = tempfile::NamedTempFile::new()?;
+                use std::io::Write;
+                for path in selected {
+                    pathspec.write_all(path.as_bytes())?;
+                    pathspec.write_all(&[0])?;
+                }
+                pathspec.flush()?;
+                let pathspec_arg = format!(
+                    "--pathspec-from-file={}",
+                    pathspec
+                        .path()
+                        .to_str()
+                        .context("Git pathspec file must be UTF-8")?
+                );
+                if !staging.is_empty() {
+                    let mut input = Vec::new();
+                    for path in staging {
+                        input.extend_from_slice(path.as_bytes());
+                        input.push(0);
+                    }
+                    process::run(
+                        &repository.root,
+                        ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                        Some(input),
+                        cancellation,
+                        Duration::from_secs(30),
+                    )?
+                    .ensure_success()?;
+                }
+                let output = process::run(
+                    &repository.root,
+                    [
+                        "commit",
+                        "--only",
+                        &pathspec_arg,
+                        "--pathspec-file-nul",
+                        "--file=-",
+                    ],
+                    Some(message.as_bytes().to_vec()),
+                    cancellation,
+                    Duration::from_secs(120),
+                )?;
+                output.ensure_success()?;
+                Ok(format!("Committed {} selected file(s)", paths.len()))
+            }
+            Action::Pull => {
+                ensure!(
+                    current.operation.is_none() && current.conflicts() == 0,
+                    "Resolve the current Git operation in VS Code before pulling"
+                );
+                ensure!(
+                    !current.detached && current.head.is_some(),
+                    "Pull requires a branch with a commit"
+                );
+                ensure!(
+                    current.changes.is_empty(),
+                    "Commit local changes before pulling, or use VS Code to manage them"
+                );
+                ensure!(
+                    current.remote.is_some() && current.merge_ref.is_some(),
+                    "No upstream branch; configure tracking in VS Code first"
+                );
+                let output = process::run(
+                    &repository.root,
+                    [
+                        "-c",
+                        "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
+                        "-c",
+                        "merge.autoStash=false",
+                        "-c",
+                        "rebase.autoStash=false",
+                        "pull",
+                        "--ff-only",
+                        "--no-rebase",
+                        "--no-edit",
+                        "--no-recurse-submodules",
+                    ],
+                    None,
+                    cancellation,
+                    Duration::from_secs(120),
+                )?;
+                output.ensure_success().context(
+                    "Pull stopped without resolving divergence; use VS Code to merge or rebase",
+                )?;
+                Ok("Pull completed (fast-forward only)".into())
+            }
+            Action::Push => {
+                ensure!(
+                    current.operation.is_none() && current.conflicts() == 0,
+                    "Resolve the current Git operation in VS Code before pushing"
+                );
+                ensure!(
+                    !current.detached && current.head.is_some(),
+                    "Create a commit on a branch before pushing"
+                );
+                let remote = current
+                    .default_remote()
+                    .context("No remote configured; add origin first")?;
+                ensure!(
+                    current.remotes.iter().any(|name| name == remote),
+                    "Tracking remote is unavailable"
+                );
+                let destination = if current.remote.as_deref() == Some(remote) {
+                    current
+                        .merge_ref
+                        .clone()
+                        .unwrap_or_else(|| format!("refs/heads/{}", current.branch))
+                } else {
+                    format!("refs/heads/{}", current.branch)
+                };
+                ensure!(
+                    destination.starts_with("refs/heads/"),
+                    "Upstream is not a branch; configure it in VS Code"
+                );
+                let source = format!("refs/heads/{}:{destination}", current.branch);
+                let output = process::run(
+                    &repository.root,
+                    [
+                        "-c",
+                        "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
+                        "push",
+                        "--porcelain",
+                        "--set-upstream",
+                        "--",
+                        remote,
+                        &source,
+                    ],
+                    None,
+                    cancellation,
+                    Duration::from_secs(120),
+                )?;
+                output
+                    .ensure_success()
+                    .context("Push failed; fetch and review incoming commits before retrying")?;
+                Ok("Push completed".into())
+            }
+            Action::AddOrigin { url } => {
+                ensure!(
+                    !current.remotes.iter().any(|remote| remote == "origin"),
+                    "Origin already exists; edit remotes in VS Code"
+                );
+                ensure!(
+                    !url.trim().is_empty()
+                        && url == url.trim()
+                        && url.len() <= 4096
+                        && !url.starts_with('-')
+                        && !url.contains("::")
+                        && !url.chars().any(char::is_control),
+                    "Enter a valid remote URL or repository path"
+                );
+                if url.contains("://") {
+                    let parsed = reqwest::Url::parse(url).context("Invalid remote URL")?;
+                    ensure!(
+                        matches!(parsed.scheme(), "https" | "ssh" | "file")
+                            && parsed.password().is_none()
+                            && parsed.query().is_none()
+                            && parsed.fragment().is_none()
+                            && (parsed.scheme() != "https" || parsed.username().is_empty()),
+                        "Use a credential-free HTTPS or SSH remote; configure authentication outside the app"
+                    );
+                }
+                command(
+                    &repository.root,
+                    ["remote", "add", "origin", url],
+                    cancellation,
+                )?;
+                Ok("Origin configured".into())
+            }
+        }
+    }
+}
+
 fn command(
     root: &Path,
     args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
@@ -415,6 +675,149 @@ mod tests {
         directory
     }
 
+    fn execute(root: &Path, action: Action) -> Result<String> {
+        Request {
+            workspace: root.into(),
+            expected: status(root, &Cancellation::default())?,
+            action,
+        }
+        .execute(&Cancellation::default())
+    }
+
+    #[test]
+    fn selected_commit_preserves_unrelated_staged_files_and_handles_renames_deletions() {
+        let root = repository();
+        for file in ["chosen.txt", "staged.txt", "old.txt", "deleted.txt"] {
+            fs::write(root.path().join(file), "initial\n").unwrap();
+        }
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(root.path().join("chosen.txt"), "selected\n").unwrap();
+        fs::write(root.path().join("staged.txt"), "leave staged\n").unwrap();
+        git(root.path(), &["add", "staged.txt"]);
+        git(root.path(), &["mv", "old.txt", "renamed [file].txt"]);
+        fs::remove_file(root.path().join("deleted.txt")).unwrap();
+        fs::write(root.path().join("-new.txt"), "new\n").unwrap();
+        execute(
+            root.path(),
+            Action::Commit {
+                paths: vec![
+                    "chosen.txt".into(),
+                    "renamed [file].txt".into(),
+                    "deleted.txt".into(),
+                    "-new.txt".into(),
+                ],
+                message: "selected files only".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(git(root.path(), &["show", "HEAD:staged.txt"]), "initial\n");
+        assert_eq!(git(root.path(), &["show", ":staged.txt"]), "leave staged\n");
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.changes.len(), 1);
+        assert_eq!(snapshot.changes[0].path, "staged.txt");
+        assert_eq!(snapshot.changes[0].index, 'M');
+    }
+
+    #[test]
+    fn init_first_commit_and_push_establish_tracking_without_force() {
+        let root = tempfile::tempdir().unwrap();
+        execute(root.path(), Action::Initialize).unwrap();
+        git(root.path(), &["config", "user.name", "Git UI fixture"]);
+        git(
+            root.path(),
+            &["config", "user.email", "fixture@example.test"],
+        );
+        git(root.path(), &["config", "commit.gpgsign", "false"]);
+        git(root.path(), &["config", "core.hooksPath", "disabled-hooks"]);
+        fs::write(root.path().join("first.txt"), "first\n").unwrap();
+        fs::write(root.path().join("other.txt"), "other\n").unwrap();
+        execute(
+            root.path(),
+            Action::Commit {
+                paths: vec!["first.txt".into()],
+                message: "first commit".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(root.path(), &["ls-tree", "--name-only", "HEAD"]).trim(),
+            "first.txt"
+        );
+        let remote = tempfile::tempdir().unwrap();
+        git(remote.path(), &["init", "--bare"]);
+        execute(
+            root.path(),
+            Action::AddOrigin {
+                url: remote.path().to_string_lossy().into(),
+            },
+        )
+        .unwrap();
+        execute(root.path(), Action::Push).unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert!(snapshot.upstream.is_some());
+        assert_eq!(snapshot.ahead, 0);
+        assert!(
+            execute(root.path(), Action::Pull)
+                .unwrap_err()
+                .to_string()
+                .contains("local changes")
+        );
+    }
+
+    #[test]
+    fn stale_branch_requests_and_existing_conflicts_are_rejected() {
+        let root = repository();
+        fs::write(root.path().join("file.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        let request = Request {
+            workspace: root.path().into(),
+            expected: status(root.path(), &Cancellation::default()).unwrap(),
+            action: Action::Commit {
+                paths: vec!["file.txt".into()],
+                message: "stale".into(),
+            },
+        };
+        git(root.path(), &["checkout", "-b", "other"]);
+        fs::write(root.path().join("file.txt"), "other\n").unwrap();
+        assert!(
+            request
+                .execute(&Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("HEAD changed")
+        );
+        git(root.path(), &["commit", "-am", "other"]);
+        git(root.path(), &["checkout", "main"]);
+        fs::write(root.path().join("file.txt"), "main\n").unwrap();
+        git(root.path(), &["commit", "-am", "main"]);
+        let merged = process::run(
+            root.path(),
+            ["merge", "other"],
+            None,
+            &Cancellation::default(),
+            Duration::from_secs(15),
+        )
+        .unwrap();
+        assert!(!merged.success);
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.conflicts(), 1);
+        assert_eq!(snapshot.operation.as_deref(), Some("Merge in progress"));
+        assert!(
+            execute(
+                root.path(),
+                Action::Commit {
+                    paths: vec!["file.txt".into()],
+                    message: "blocked".into()
+                }
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("VS Code")
+        );
+    }
+
     #[test]
     fn status_distinguishes_untracked_workspaces_and_counts_real_file_changes() {
         let untracked = tempfile::tempdir().unwrap();
@@ -483,6 +886,41 @@ mod tests {
         assert_eq!(
             fs::read_to_string(local.path().join("tracked.txt")).unwrap(),
             "first\n"
+        );
+        execute(local.path(), Action::Pull).unwrap();
+        assert_eq!(
+            fs::read_to_string(local.path().join("tracked.txt")).unwrap(),
+            "remote change\n"
+        );
+        fs::write(local.path().join("local.txt"), "local\n").unwrap();
+        execute(
+            local.path(),
+            Action::Commit {
+                paths: vec!["local.txt".into()],
+                message: "local branch".into(),
+            },
+        )
+        .unwrap();
+        fs::write(other.path().join("tracked.txt"), "newer remote\n").unwrap();
+        git(other.path(), &["commit", "-am", "newer remote"]);
+        git(other.path(), &["push", "origin", "main"]);
+        fetch(
+            &status(local.path(), &Cancellation::default()).unwrap(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let diverged = status(local.path(), &Cancellation::default()).unwrap();
+        assert_eq!((diverged.ahead, diverged.behind), (1, 1));
+        assert!(execute(local.path(), Action::Pull).is_err());
+        assert_eq!(
+            status(local.path(), &Cancellation::default()).unwrap().head,
+            diverged.head
+        );
+        let remote_head = git(server.path(), &["rev-parse", "refs/heads/main"]);
+        assert!(execute(local.path(), Action::Push).is_err());
+        assert_eq!(
+            git(server.path(), &["rev-parse", "refs/heads/main"]),
+            remote_head
         );
     }
 
