@@ -124,13 +124,21 @@ Configure the repository secrets `TUYEN_DRIVE_APP` (app slug) and
 `TUYEN_DRIVE_TOKEN` (that app's upload token). Only the publish step receives the
 token. Tagged Windows jobs do not require the legacy GitHub archive-upload
 credentials. The version must be higher than the latest published version.
-Releases are serialized without cancelling an active publish. The uploader uses
-one-shot uploads up to 90 MiB and multipart uploads above that, assigns the
-`installer` role, and sends SHA-256. Tuyen Drive generates the manifest; it is
-never uploaded separately. HTTP 409 is successful only when the public manifest
-matches the exact version, immutable URL, size, and checksum of this installer.
-Published versions cannot be overwritten, including with a different rebuild of
-the same tag. CI retains the installer as an Actions artifact before publishing.
+Releases are serialized without cancelling an active publish. CI installs Tuyen
+CLI with `tuyen-at-work/tuyen-cli-action@master` and checks that
+`tuyen drive upload-app` is available before building. The publish step passes the
+app, token, tagged version, installer file, and `<filename>=installer` role to
+that command. Tuyen CLI owns checksums, upload-size selection, and retries; there
+is no custom Python uploader. The setup action must provide a CLI release that
+includes `drive upload-app`.
+
+After a successful CLI upload, a separate credential-free check requires the
+public manifest to match the exact version, immutable URL, size, and SHA-256 of
+the local installer. It retries transient errors and propagation delays within
+a bound, and uses an explicit client User-Agent rather than Python's default.
+Tuyen Drive generates the manifest; it is never uploaded separately. Published
+versions cannot be overwritten, including with a different rebuild of the same
+tag. CI retains the installer as an Actions artifact before publishing.
 
 The installer is compiled with Inno Setup 6. Release CI verifies static-runtime
 dependencies and exercises installation, reinstallation, active-process blocking,
@@ -149,10 +157,11 @@ native UI smoke requires an unconfigured development build and temporarily backs
 up/restores preferences, like the other desktop smoke modes.
 
 Release tests run before generating the matrix. To run them locally, install
-`PyYAML==6.0.3` for Python 3.11+ and run `python ci/test-release.py`. Bash is also required;
-set `BASH_PATH` to Git Bash on Windows. The tests execute all 192 application/target
-selections, stub Cargo to check arguments, and exercise upload protocols against
-offline fixtures without publishing.
+`PyYAML==6.0.3` for Python 3.11+ and run `python ci/test-release.py`. Bash and
+PowerShell 7 (`pwsh`) are also required; set `BASH_PATH` to Git Bash on Windows.
+The tests execute all 192 application/target selections, stub Cargo and Tuyen CLI
+to check the real workflow arguments and failure handling, and verify manifests
+against offline fixtures without publishing.
 
 ## Workspace and Files
 

@@ -63,6 +63,17 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Setup Tuyen CLI
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        uses: tuyen-at-work/tuyen-cli-action@master
+
+      - name: Check Tuyen Drive upload support
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: pwsh
+        run: |
+          tuyen drive upload-app --help
+          if ($LASTEXITCODE -ne 0) { throw "Tuyen CLI must support 'drive upload-app'; update the CLI release used by the setup action." }
+
       - uses: actions/setup-python@v7
         if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
         with:
@@ -155,9 +166,34 @@ jobs:
           TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
           TUYEN_DRIVE_TOKEN: ${{ secrets.TUYEN_DRIVE_TOKEN }}
           INSTALLER: ${{ steps.installer.outputs.installer }}
+          INSTALLER_VERSION: ${{ needs.set-matrix.outputs.version }}
         run: |
-          python ci/drive_release.py publish --installer $env:INSTALLER
-          if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive publishing failed ($LASTEXITCODE)." }
+          if ([string]::IsNullOrWhiteSpace($env:TUYEN_DRIVE_APP) -or
+              [string]::IsNullOrWhiteSpace($env:TUYEN_DRIVE_TOKEN)) {
+            throw "Set repo secrets TUYEN_DRIVE_APP and TUYEN_DRIVE_TOKEN to publish."
+          }
+          $installer = Get-Item -LiteralPath $env:INSTALLER -ErrorAction Stop
+          $expectedName = "Regressify-Desktop-Setup-$env:INSTALLER_VERSION-x64.exe"
+          if ($installer.PSIsContainer -or $installer.Name -cne $expectedName) {
+            throw "Installer filename must match the tagged release version."
+          }
+          tuyen drive upload-app `
+            --name "$env:TUYEN_DRIVE_APP" `
+            --token "$env:TUYEN_DRIVE_TOKEN" `
+            --version "$env:INSTALLER_VERSION" `
+            --file "$($installer.FullName)" `
+            --role "$($installer.Name)=installer"
+          if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive upload failed ($LASTEXITCODE)." }
+
+      - name: Verify Windows installer publish
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: pwsh
+        env:
+          TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
+          INSTALLER: ${{ steps.installer.outputs.installer }}
+        run: |
+          python ci/drive_release.py verify --installer $env:INSTALLER
+          if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive publish verification failed ($LASTEXITCODE)." }
 
   set-matrix:
     runs-on: ubuntu-22.04

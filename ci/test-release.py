@@ -2,6 +2,7 @@
 
 import itertools
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from unittest import mock
 
 import drive_release
@@ -80,7 +82,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_windows_publishing_is_tag_gated_and_keeps_token_out_of_the_build(self):
         steps = WORKFLOW["jobs"]["release"]["steps"]
-        for name in ("Build Windows desktop release", "Build Windows installer", "Retain Windows installer", "Publish Windows installer to Tuyen Drive"):
+        for name in ("Setup Tuyen CLI", "Check Tuyen Drive upload support", "Build Windows desktop release", "Build Windows installer", "Retain Windows installer", "Publish Windows installer to Tuyen Drive", "Verify Windows installer publish"):
             step = next(step for step in steps if step.get("name") == name)
             self.assertIn("github.ref_type == 'tag'", step["if"])
             self.assertIn("matrix.application == 'desktop'", step["if"])
@@ -92,6 +94,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("+crt-static", build["env"]["RUSTFLAGS"])
         publish = next(step for step in steps if step.get("name") == "Publish Windows installer to Tuyen Drive")
         self.assertEqual(publish["env"]["TUYEN_DRIVE_TOKEN"], "${{ secrets.TUYEN_DRIVE_TOKEN }}")
+        self.assertEqual(publish["env"]["INSTALLER_VERSION"], "${{ needs.set-matrix.outputs.version }}")
+        self.assertIn("tuyen drive upload-app", publish["run"])
+        self.assertNotIn("python", publish["run"])
+        setup = next(step for step in steps if step.get("name") == "Setup Tuyen CLI")
+        self.assertEqual(setup["uses"], "tuyen-at-work/tuyen-cli-action@master")
+        support = next(step for step in steps if step.get("name") == "Check Tuyen Drive upload support")
+        self.assertIn("tuyen drive upload-app --help", support["run"])
+        self.assertLess(steps.index(setup), steps.index(support))
+        self.assertLess(steps.index(support), steps.index(build))
+        verify = next(step for step in steps if step.get("name") == "Verify Windows installer publish")
+        self.assertNotIn("TUYEN_DRIVE_TOKEN", verify["env"])
+        self.assertIn("ci/drive_release.py verify", verify["run"])
+        self.assertLess(steps.index(setup), steps.index(publish))
+        self.assertLess(steps.index(publish), steps.index(verify))
         installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
         updater = (ROOT / "src/desktop/updates.rs").read_text(encoding="utf-8")
         for setting in ("AppMutex", "SetupMutex"):
@@ -101,6 +117,44 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("CloseApplications=no", installer)
         self.assertIn("if CheckForMutexes(", installer)
         self.assertNotIn("[UninstallDelete]", installer)
+
+    def test_tuyen_upload_arguments_and_failures(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")
+        step = next(step for step in WORKFLOW["jobs"]["release"]["steps"]
+                    if step.get("name") == "Publish Windows installer to Tuyen Drive")
+        stub = '''
+$ErrorActionPreference = 'Stop'
+function tuyen {
+    @($args) | ConvertTo-Json -Compress | Set-Content -LiteralPath $env:TUYEN_ARGUMENTS_FILE
+    $global:LASTEXITCODE = [int]$env:TUYEN_TEST_EXIT
+}
+'''
+        with tempfile.TemporaryDirectory(prefix="tuyen publish ") as directory:
+            file = Path(directory) / drive_release.installer_name("1.2.3.0")
+            file.write_bytes(b"MZ synthetic installer")
+            arguments = Path(directory) / "arguments.json"
+            for app, token, version, cli_exit, invoked, succeeds in [
+                ("regressify", "test-token", "1.2.3.0", 0, True, True),
+                ("regressify", "test-token", "1.2.3.0", 7, True, False),
+                ("", "test-token", "1.2.3.0", 0, False, False),
+                ("regressify", "", "1.2.3.0", 0, False, False),
+                ("regressify", "test-token", "1.2.4.0", 0, False, False),
+            ]:
+                with self.subTest(app=app, has_token=bool(token), version=version, cli_exit=cli_exit):
+                    arguments.unlink(missing_ok=True)
+                    env = dict(os.environ, TUYEN_DRIVE_APP=app, TUYEN_DRIVE_TOKEN=token,
+                               INSTALLER=str(file), INSTALLER_VERSION=version,
+                               TUYEN_ARGUMENTS_FILE=str(arguments), TUYEN_TEST_EXIT=str(cli_exit))
+                    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", stub + step["run"]],
+                                            env=env, capture_output=True, text=True, check=False)
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                    self.assertEqual(arguments.exists(), invoked)
+                    if invoked:
+                        self.assertEqual(json.loads(arguments.read_text(encoding="utf-8-sig")), [
+                            "drive", "upload-app", "--name", app, "--token", token,
+                            "--version", version, "--file", str(file), "--role", f"{file.name}=installer",
+                        ])
 
     def test_selector_and_parallel_job_contract(self):
         selector = WORKFLOW["on"]["workflow_dispatch"]["inputs"]["build"]
@@ -246,72 +300,77 @@ class DriveReleaseTests(unittest.TestCase):
         return (f"version={version}\ninstaller={drive_release.BASE_URL}/downloads/regressify/{file.name}\n"
                 f"sha256={digest}\nsize={file.stat().st_size}\n").encode()
 
-    def test_one_shot_fields_and_an_idempotent_conflict_require_matching_manifest(self):
+    def test_manifest_request_has_client_identity_and_no_credentials(self):
+        body = b"error code: 1010\n"
+        opener = mock.Mock()
+        opener.open.side_effect = urllib.error.HTTPError(
+            drive_release.BASE_URL, 403, "Forbidden", {}, io.BytesIO(body),
+        )
+        with mock.patch.object(drive_release.urllib.request, "build_opener", return_value=opener):
+            self.assertEqual(drive_release.fetch_manifest("regressify"), (403, body))
+        opener.open.assert_called_once()
+        message = opener.open.call_args.args[0]
+        self.assertEqual(message.get_method(), "GET")
+        self.assertEqual(message.full_url, f"{drive_release.BASE_URL}/downloads/regressify/latest.txt")
+        self.assertEqual(message.get_header("User-agent"), "Regressify-Release/1.0")
+        self.assertEqual(message.get_header("Cache-control"), "no-cache")
+        self.assertFalse(message.has_header("Authorization"))
+
+    def test_verification_failure_preserves_server_reason_without_exposing_token(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / drive_release.installer_name("1.2.3.0")
             file.write_bytes(b"MZ synthetic installer")
-            calls = []
+            response = json.dumps({"error": "Upload denied for Bearer test-token"}).encode()
+            with (
+                mock.patch.object(drive_release, "fetch_manifest", return_value=(403, response)) as fetch,
+                mock.patch.dict(os.environ, {"TUYEN_DRIVE_TOKEN": "test-token"}),
+                mock.patch.object(drive_release.time, "sleep") as sleep,
+                self.assertRaises(RuntimeError) as failure,
+            ):
+                drive_release.verify_publish("regressify", "1.2.3.0", file, "0" * 64)
+            message = str(failure.exception)
+            self.assertIn("HTTP 403", message)
+            self.assertIn("Upload denied", message)
+            self.assertNotIn("test-token", message)
+            fetch.assert_called_once()
+            sleep.assert_not_called()
 
-            def request(method, path, headers=None, body_factory=None, length=None):
-                calls.append((method, path))
-                if method == "GET":
-                    self.assertNotIn("Authorization", headers)
-                    return 200, self.manifest(file)
-                body = b"".join(body_factory())
-                self.assertEqual(len(body), length)
-                self.assertEqual(headers["Authorization"], "Bearer test-token")
-                self.assertIn(f'name="role_{file.name}"\r\n\r\ninstaller'.encode(), body)
-                self.assertIn(hashlib.sha256(file.read_bytes()).hexdigest().encode(), body)
-                self.assertIn(file.read_bytes(), body)
-                self.assertNotIn(b"latest.txt", body)
-                return 409, b'{"error":"Version already published"}'
-
-            with mock.patch.object(drive_release, "request", side_effect=request):
-                drive_release.publish(file, "1.2.3.0", "regressify", "test-token")
-            self.assertEqual([call[0] for call in calls], ["POST", "GET"])
-            for invalid in (self.manifest(file, "1.2.4.0"), self.manifest(file, digest="0" * 64)):
-                with mock.patch.object(drive_release, "request", return_value=(200, invalid)), \
-                     mock.patch.object(drive_release.time, "sleep"), self.assertRaises(RuntimeError):
-                    drive_release.verify_publish("regressify", "1.2.3.0", file, hashlib.sha256(file.read_bytes()).hexdigest())
-
-    def test_multipart_obeys_part_size_and_completes_with_returned_etags(self):
+    def test_verification_requires_matching_version_url_size_and_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / drive_release.installer_name("1.2.3.0")
-            payload = b"x" * (5 * 1024 * 1024) + b"tail"
-            file.write_bytes(payload)
-            chunks = []
+            file.write_bytes(b"MZ synthetic installer")
+            digest = hashlib.sha256(file.read_bytes()).hexdigest()
+            for content in [self.manifest(file), json.dumps(drive_release.manifest_fields(self.manifest(file))).encode()]:
+                with mock.patch.object(drive_release, "fetch_manifest", return_value=(200, content)):
+                    drive_release.verify_publish("regressify", "1.2.3.0", file, digest)
+            for invalid in (self.manifest(file, "1.2.4.0"), self.manifest(file, digest="0" * 64),
+                            self.manifest(file).replace(b"size=22", b"size=23"),
+                            self.manifest(file).replace(b"/regressify/", b"/another-app/")):
+                with mock.patch.object(drive_release, "fetch_manifest", return_value=(200, invalid)), \
+                     mock.patch.object(drive_release.time, "sleep"), self.assertRaises(RuntimeError):
+                    drive_release.verify_publish("regressify", "1.2.3.0", file, digest)
 
-            def request(method, path, headers=None, body_factory=None, length=None):
-                if method == "GET":
-                    return 200, self.manifest(file)
-                body = body_factory()
-                self.assertEqual(len(body), length)
-                if path.endswith("/init"):
-                    asset = json.loads(body)["assets"][0]
-                    self.assertEqual(asset["role"], "installer")
-                    self.assertEqual(asset["size"], len(payload))
-                    return 200, json.dumps({"version_id": "version", "part_size": 5 * 1024 * 1024,
-                                            "uploads": [{"name": file.name, "asset_id": "asset"}]}).encode()
-                if method == "PUT":
-                    chunks.append(body)
-                    return 200, json.dumps({"partNumber": len(chunks), "etag": f"etag-{len(chunks)}"}).encode()
-                self.assertTrue(path.endswith("/complete"))
-                self.assertEqual(json.loads(body)["assets"], [{"asset_id": "asset", "parts": [
-                    {"partNumber": 1, "etag": "etag-1"}, {"partNumber": 2, "etag": "etag-2"}]}])
-                return 200, b"{}"
+    def test_verification_retries_transient_errors_with_a_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / drive_release.installer_name("1.2.3.0")
+            file.write_bytes(b"MZ synthetic installer")
+            digest = hashlib.sha256(file.read_bytes()).hexdigest()
+            with mock.patch.object(drive_release, "fetch_manifest", side_effect=[
+                urllib.error.URLError("offline"), (503, b"Unavailable"), (404, b"Not found"), (200, self.manifest(file)),
+            ]) as fetch, mock.patch.object(drive_release.time, "sleep"):
+                drive_release.verify_publish("regressify", "1.2.3.0", file, digest)
+                self.assertEqual(fetch.call_count, 4)
+            with mock.patch.object(drive_release, "fetch_manifest", return_value=(404, b"Not found")) as fetch, \
+                 mock.patch.object(drive_release.time, "sleep"), self.assertRaises(RuntimeError):
+                drive_release.verify_publish("regressify", "1.2.3.0", file, digest)
+            self.assertEqual(fetch.call_count, 5)
 
-            with mock.patch.object(drive_release, "request", side_effect=request), \
-                 mock.patch.object(drive_release, "one_shot", side_effect=drive_release.multipart):
-                drive_release.publish(file, "1.2.3.0", "regressify", "test-token")
-            self.assertEqual(b"".join(chunks), payload)
-            self.assertEqual([len(chunk) for chunk in chunks], [5 * 1024 * 1024, 4])
-
-    def test_branch_publish_is_rejected_before_network_access(self):
+    def test_branch_verification_is_rejected_before_network_access(self):
         env = dict(os.environ, GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="master")
-        result = subprocess.run([sys.executable, str(ROOT / "ci/drive_release.py"), "publish", "--installer", "missing.exe"],
+        result = subprocess.run([sys.executable, str(ROOT / "ci/drive_release.py"), "verify", "--installer", "missing.exe"],
                                 env=env, capture_output=True, text=True, check=False)
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Publishing requires a version tag", result.stderr)
+        self.assertIn("Release verification requires a version tag", result.stderr)
 
 
 if __name__ == "__main__":
