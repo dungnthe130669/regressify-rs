@@ -2,6 +2,14 @@ use super::*;
 
 use crate::desktop::workspace::ThemePreference;
 
+pub(super) fn titlebar_control(element: impl IntoElement) -> AnyElement {
+    div()
+        .flex_shrink_0()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(element)
+        .into_any_element()
+}
+
 pub(super) fn selection_checkbox(
     id: impl Into<ElementId>,
     checked: bool,

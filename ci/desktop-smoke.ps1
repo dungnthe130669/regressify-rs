@@ -13,7 +13,8 @@ param(
     [switch]$ArtifactFlows,
     [switch]$InstanceFlows,
     [switch]$UpdateFlows,
-    [switch]$DeploymentFlows
+    [switch]$DeploymentFlows,
+    [switch]$TitlebarFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -98,6 +99,20 @@ using System;
 using System.Runtime.InteropServices;
 public static class RegressifySmokePointer {
     [DllImport("user32.dll")] public static extern bool SetPhysicalCursorPos(int x, int y);
+}
+'@
+}
+
+if (-not ('RegressifySmokeWindowState' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeWindowState {
+    [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr window);
+    [DllImport("user32.dll")] public static extern int GetSystemMetricsForDpi(int index, uint dpi);
+    [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr window, int command);
 }
 '@
 }
@@ -658,11 +673,117 @@ function Test-DeploymentFlows {
     Write-Output 'Deployment target persistence, subset confirmation, safe token failure, and compact titlebar layouts passed without contacting Azure.'
 }
 
+function Wait-WindowState([scriptblock]$Match, [string]$Failure) {
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        if (& $Match) { return }
+        if ($process.HasExited) { throw 'The titlebar fixture exited unexpectedly.' }
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } while ($deadline.Elapsed.TotalSeconds -lt 5)
+    throw $Failure
+}
+
+function Invoke-WindowButton([ValidateSet('Minimize', 'Maximize', 'Close')][string]$Button) {
+    Focus-Fixture
+    $bounds = [RegressifySmokeNative+Rect]::new()
+    if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$bounds)) { throw 'Cannot read fixture bounds.' }
+    $dpi = [RegressifySmokeWindowState]::GetDpiForWindow($script:window)
+    $scale = $dpi / 96.0
+    $border = if ([RegressifySmokeWindowState]::IsZoomed($script:window)) { 0 } else {
+        [RegressifySmokeWindowState]::GetSystemMetricsForDpi(32, $dpi) + [RegressifySmokeWindowState]::GetSystemMetricsForDpi(92, $dpi)
+    }
+    $offset = switch ($Button) { 'Close' { 0.5 }; 'Maximize' { 1.5 }; 'Minimize' { 2.5 } }
+    $horizontal = [int]($bounds.Right - $border - 34 * $scale * $offset)
+    $vertical = [int]($bounds.Top + 19 * $scale)
+    if (-not [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal, $vertical)) { throw "Cannot reach $Button control." }
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+    [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+}
+
+function Test-TitlebarFlows {
+    Invoke-Control 'Commands' -Pointer
+    Wait-Control 'New suite' | Out-Null
+    Capture-Window 'titlebar-command-pointer'
+    Send-FixtureKeys '{ESC}'
+    Invoke-Control 'Hide navigator' -Pointer
+    Wait-Control 'Show navigator' | Out-Null
+    Invoke-Control 'Show navigator' -Pointer
+    Wait-Control 'Hide navigator' | Out-Null
+    Invoke-Control 'Runs' -Pointer
+    Wait-Control 'Run settings' | Out-Null
+    Invoke-Control 'Results' -Pointer
+    Wait-Control 'Approve This Run' | Out-Null
+    Invoke-Control 'Editor' -Pointer
+    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'Deploy' -Pointer
+    Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+    Capture-Window 'titlebar-deploy-pointer'
+    Invoke-Control 'Close'
+    $before = [RegressifySmokeNative+Rect]::new()
+    [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$before) | Out-Null
+    $drag = (Wait-Control ($workspace.Replace('\', '/'))).Current.BoundingRectangle
+    Focus-Fixture
+    $horizontal = [int]($drag.Left + $drag.Width / 2)
+    $vertical = [int]($drag.Top + $drag.Height / 2)
+    [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal, $vertical) | Out-Null
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+    [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+    try {
+        foreach ($step in 1..10) {
+            [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal + 6 * $step, $vertical + 4 * $step) | Out-Null
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        }
+    } finally {
+        [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    Wait-WindowState {
+        $after = [RegressifySmokeNative+Rect]::new()
+        [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$after) | Out-Null
+        [Math]::Abs($after.Left - $before.Left) -ge 20 -and [Math]::Abs($after.Top - $before.Top) -ge 10
+    } 'Dragging the workspace title did not move the window.'
+    Capture-Window 'titlebar-dragged'
+    Invoke-WindowButton 'Maximize'
+    Wait-WindowState { [RegressifySmokeWindowState]::IsZoomed($script:window) } 'Native maximize button did not maximize the window.'
+    Capture-Window 'titlebar-maximized'
+    Invoke-WindowButton 'Maximize'
+    Wait-WindowState { -not [RegressifySmokeWindowState]::IsZoomed($script:window) } 'Native restore button did not restore the window.'
+    Capture-Window 'titlebar-restored'
+    Invoke-WindowButton 'Minimize'
+    Wait-WindowState { [RegressifySmokeWindowState]::IsIconic($script:window) } 'Native minimize button did not minimize the window.'
+    [RegressifySmokeWindowState]::ShowWindowAsync($script:window, 9) | Out-Null
+    Wait-WindowState { -not [RegressifySmokeWindowState]::IsIconic($script:window) } 'Minimized fixture did not restore.'
+    Focus-Fixture
+    Capture-Window 'titlebar-unminimized'
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Invoke-Control 'Source'
+    Invoke-Control 'Configuration source' -Pointer
+    $script:cleanupPath = Join-Path $workspace 'visual_tests/smoke.tests.json'
+    $script:cleanupSnapshot = (Get-FileHash $script:cleanupPath -Algorithm SHA256).Hash
+    Send-FixtureKeys '^{END}'
+    Send-FixtureText 'titlebar-close-probe'
+    Wait-SourceText 'titlebar-close-probe'
+    Invoke-WindowButton 'Close'
+    Wait-Control 'Discard' | Out-Null
+    Wait-Control 'Cancel' | Out-Null
+    Capture-Window 'titlebar-close-guard'
+    Invoke-Control 'Cancel'
+    if ($process.HasExited) { throw 'Cancelling titlebar close discarded the window.' }
+    Wait-SourceText 'titlebar-close-probe'
+    if ((Get-FileHash $script:cleanupPath -Algorithm SHA256).Hash -ne $script:cleanupSnapshot) { throw 'Titlebar close changed the saved source.' }
+    Write-Output 'Native pointer controls, dragging, maximize/restore, minimize, and unsaved-close guard passed.'
+}
+
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($TitlebarFlows) {
+        Test-TitlebarFlows
+        return
+    }
     if ($DeploymentFlows) {
         Test-DeploymentFlows
         return

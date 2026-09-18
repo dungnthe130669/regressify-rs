@@ -689,6 +689,15 @@ after Close workspace and recovery after terminating only its own synthetic
 fixture. Seven native window captures are retained; all fixture processes are
 tracked for cleanup and the original preference file is restored.
 
+Use `./ci/desktop-smoke.ps1 -TitlebarFlows` for native window input acceptance.
+It uses physical pointer events for Commands, view tabs, navigator visibility,
+and Deploy, then drags the workspace-title area and verifies the native
+maximize/restore, minimize, and close controls. Closing a dirty document must
+show the save guard; cancelling preserves the draft and the saved-file hash.
+Seven screenshots include the maximized window and close prompt. Title-bar
+controls consume their pointer press so Windows cannot mistake them for a
+caption drag; only the surrounding title area remains draggable.
+
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
 and runs the bundled engine's init command from the GUI. It captures the target window

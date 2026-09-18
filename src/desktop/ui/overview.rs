@@ -56,8 +56,8 @@ impl Workbench {
                             .text_sm()
                             .child("Regressify"),
                     )
-                    .child(self.file_menu(cx))
-                    .child(
+                    .child(design::titlebar_control(self.file_menu(cx)))
+                    .child(design::titlebar_control(
                         Button::new("toggle-navigation")
                             .ghost()
                             .xsmall()
@@ -76,8 +76,8 @@ impl Workbench {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.toggle_navigator(&ToggleNavigator, window, cx)
                             })),
-                    )
-                    .child(
+                    ))
+                    .child(design::titlebar_control(
                         div().id("titlebar-navigation").test_support().child(
                             TabBar::new("workbench-tabs")
                                 .underline()
@@ -90,7 +90,7 @@ impl Workbench {
                                 .child(Tab::new().label("Runs"))
                                 .child(Tab::new().label("Results")),
                         ),
-                    )
+                    ))
                     .child(
                         div().flex_1().min_w_0().child(
                             div()
@@ -105,7 +105,7 @@ impl Workbench {
                         ),
                     )
                     .when(self.runs.read(cx).running(), |header| {
-                        header.child(
+                        header.child(design::titlebar_control(
                             Button::new("view-running")
                                 .ghost()
                                 .small()
@@ -116,9 +116,9 @@ impl Workbench {
                                     this.main_tab = 1;
                                     cx.notify();
                                 })),
-                        )
+                        ))
                     })
-                    .child(
+                    .child(design::titlebar_control(
                         Button::new("open-commands")
                             .ghost()
                             .xsmall()
@@ -129,11 +129,11 @@ impl Workbench {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.open_commands(&OpenCommands, window, cx)
                             })),
-                    )
-                    .child(self.render_update_button(cx))
-                    .child(self.render_deploy_controls(cx))
-                    .child(self.render_theme_picker())
-                    .child(
+                    ))
+                    .child(design::titlebar_control(self.render_update_button(cx)))
+                    .child(design::titlebar_control(self.render_deploy_controls(cx)))
+                    .child(design::titlebar_control(self.render_theme_picker()))
+                    .child(design::titlebar_control(
                         Button::new("open-workspace")
                             .ghost()
                             .xsmall()
@@ -152,7 +152,7 @@ impl Workbench {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.choose_workspace(&OpenWorkspace, window, cx)
                             })),
-                    ),
+                    )),
             )
             .into_any_element()
     }
