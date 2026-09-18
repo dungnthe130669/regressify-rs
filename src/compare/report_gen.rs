@@ -718,6 +718,7 @@ pub(crate) fn generate_comparison_report_for_scenarios(
                     .scenario_label
                     .clone()
                     .unwrap_or_else(|| test.pair.label.clone()),
+                scenario_id: test.pair.scenario_id.clone(),
                 passed: test.status == "pass",
                 error: test
                     .pair

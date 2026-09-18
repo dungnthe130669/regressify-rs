@@ -30,13 +30,13 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
         ));
     }
 
-    eprintln!(
+    crate::progress::scenario_log!(
         "Loading test suite from '{}'",
         test_suite_path.normalize_string(false)?
     );
     let test_suite_content = std::fs::read_to_string(&test_suite_path)?;
 
-    eprintln!("Parsing test suite...");
+    crate::progress::scenario_log!("Parsing test suite...");
     let mut test_suite: TestSuite = match format {
         crate::types::TestSuiteFormat::Yaml => serde_yaml::from_str(&test_suite_content)?,
         crate::types::TestSuiteFormat::Json => serde_json::from_str(&test_suite_content)?,
@@ -132,15 +132,18 @@ async fn wait_for_browser_handler(
 ) -> bool {
     match tokio::time::timeout(timeout, &mut *handle).await {
         Ok(Ok(())) => {
-            eprintln!("{} Browser handler finished cleanly.", log_prefix);
+            crate::progress::scenario_log!("{} Browser handler finished cleanly.", log_prefix);
             true
         }
         Ok(Err(e)) => {
-            eprintln!("{} Error waiting for browser handler task: {e}", log_prefix);
+            crate::progress::scenario_log!(
+                "{} Error waiting for browser handler task: {e}",
+                log_prefix
+            );
             false
         }
         Err(_) => {
-            eprintln!(
+            crate::progress::scenario_log!(
                 "{} Browser handler did not finish within {} ms; aborting.",
                 log_prefix,
                 timeout.as_millis()
@@ -176,16 +179,19 @@ pub async fn exec_single_scenario(
     // a page-level failure that must not fail the command.
     let scenario_result = exec_test_scenario(&browser, req).await;
 
-    eprintln!("{} Closing browser...", log_prefix);
+    crate::progress::scenario_log!("{} Closing browser...", log_prefix);
     let browser_closed =
         match tokio::time::timeout(std::time::Duration::from_secs(10), browser.close()).await {
             Ok(Ok(_)) => true,
             Ok(Err(e)) => {
-                eprintln!("{} Failed to close browser gracefully: {e}", log_prefix);
+                crate::progress::scenario_log!(
+                    "{} Failed to close browser gracefully: {e}",
+                    log_prefix
+                );
                 false
             }
             Err(_) => {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Browser close did not finish within 10000 ms.",
                     log_prefix
                 );
@@ -193,7 +199,7 @@ pub async fn exec_single_scenario(
             }
         };
 
-    eprintln!("{} Waiting for handler to finish...", log_prefix);
+    crate::progress::scenario_log!("{} Waiting for handler to finish...", log_prefix);
     let mut handle = handle;
     let handler_finished =
         wait_for_browser_handler(&mut handle, std::time::Duration::from_secs(5), &log_prefix).await;
@@ -204,7 +210,7 @@ pub async fn exec_single_scenario(
     if browser_closed || handler_finished {
         let _ = std::fs::remove_dir_all(&user_data_dir);
     } else {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Keeping browser profile '{}' because shutdown was not confirmed.",
             log_prefix,
             user_data_dir.display()

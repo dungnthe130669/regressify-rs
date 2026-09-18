@@ -24,6 +24,11 @@ Interactive actions wait for the target element to exist, be visible, become sta
 Direct browser operations used by interactive actions are bounded by the configured actionability timeout, so an unresponsive page cannot hold a scenario indefinitely.
 Unknown action properties fail suite parsing instead of being ignored.
 
+Desktop scenario logs record action targets and outcomes separately for each
+concurrent scenario/viewport job. Text supplied through `input.value` is omitted
+from action logs. Selectors, URLs, custom script messages, and errors may still
+include project-provided data, so review logs before sharing them.
+
 {% spoiler() %}
 
 check

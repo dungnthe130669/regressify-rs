@@ -50,12 +50,12 @@ pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
         let metadata = std::fs::metadata(exe)?;
         let perms = metadata.permissions();
         if perms.mode() & 0o111 == 0 {
-            eprintln!("Fixing executable permissions for: {}", exe.display());
+            crate::progress::scenario_log!("Fixing executable permissions for: {}", exe.display());
             std::fs::set_permissions(exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;
         }
     }
 
-    eprintln!("Browser executable: {}", exe.display());
+    crate::progress::scenario_log!("Browser executable: {}", exe.display());
     Ok(info.executable_path)
 }
 
@@ -66,7 +66,7 @@ fn resolve_executable(exe_path: &Option<PathBuf>) -> Option<PathBuf> {
         if path.exists() {
             return Some(path.clone());
         }
-        eprintln!(
+        crate::progress::scenario_log!(
             "Warning: provided browser path does not exist: {}. Falling back to auto-detection.",
             path.display()
         );
@@ -168,13 +168,13 @@ pub async fn launch_browser(
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
     if let Some(ref path) = resolved {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Launching browser (executable: {})...",
             log_prefix,
             path.display()
         );
     } else {
-        eprintln!("{} Launching browser (auto-detected)...", log_prefix);
+        crate::progress::scenario_log!("{} Launching browser (auto-detected)...", log_prefix);
     }
 
     let mut last_err = None;
@@ -200,9 +200,12 @@ pub async fn launch_browser(
                 return Ok((browser, handle, user_data_dir));
             }
             Err(e) => {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Browser launch attempt {}/{} failed: {:?}",
-                    log_prefix, attempt, MAX_LAUNCH_RETRIES, e
+                    log_prefix,
+                    attempt,
+                    MAX_LAUNCH_RETRIES,
+                    e
                 );
                 last_err = Some(e);
                 if attempt < MAX_LAUNCH_RETRIES {

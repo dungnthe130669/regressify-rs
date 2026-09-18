@@ -583,6 +583,11 @@ impl Workbench {
             let scenario_id = serde_json::from_value::<crate::types::TestScenario>(item.clone())
                 .ok()
                 .map(|scenario| workspace::ScenarioSummary::from_scenario(&scenario).id);
+            let log_scenario = scenario_id.clone();
+            let log_suite = owner.clone();
+            let has_log = scenario_id
+                .as_ref()
+                .is_some_and(|id| runs.has_scenario_log(&owner, id));
             rows = rows.child(
                 div()
                     .id(("scenario-row", index))
@@ -678,6 +683,24 @@ impl Workbench {
                     )
                     .when(suite, |row| {
                         row.child(
+                            Button::new(("sidebar-scenario-log", index))
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::assets::IconName::Terminal)
+                                .tooltip(format!("View run log: {label}"))
+                                .accessibility_label(format!("View run log: {label}"))
+                                .disabled(self.busy || !has_log)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(id) = &log_scenario {
+                                        this.main_tab = 1;
+                                        this.runs.update(cx, |panel, cx| {
+                                            panel.show_scenario_log(&log_suite, id, window, cx)
+                                        });
+                                        cx.notify();
+                                    }
+                                })),
+                        )
+                        .child(
                             Button::new(("sidebar-scenario-test", index))
                                 .ghost()
                                 .xsmall()

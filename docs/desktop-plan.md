@@ -214,6 +214,41 @@ the final prior-run labels and cancellation colors; those final adjustments have
 automated coverage but still need the complete native rerun. Prior appearance
 and restart validation remains recorded above, not claimed as a fresh full pass.
 
+## Scenario Controls and Logs
+
+- [x] Show persistent native overflow scrollbars across the workbench and native
+  text editors; retain independent image scrolling and correct Fit width sizing.
+- [x] Support exact repeated scenario filters through CLI and bundled workers
+  for Test, Reference, Compare, and Approve. Keep prerequisite definitions while
+  filtering capture jobs and report manifests.
+- [x] Add scenario checkboxes, mixed suite states, direct scenario actions, and
+  scope counts across the sidebar, editor, Runs, overview, and command search.
+- [x] Preserve exact scenario IDs through drafts, confirmation, and fresh disk
+  validation. Empty, removed, ambiguous, and renamed selections never widen.
+- [x] Scope artifact operations by recorded metadata and preflight every selected
+  output before approval; preserve sibling references and legacy whole-run usage.
+- [x] Attribute navigation/action/capture messages to job IDs before output
+  interleaves. Bound retained history and omit typed input values.
+- [x] Open searchable/copyable logs from Activity rows and scenario log buttons,
+  aggregate viewports safely, and preserve comparison-only scenario identity.
+- [x] Validate native scenario-only capture, live log content, results, scoped
+  approval/comparison, unchanged sibling hashes, and both theme/layout sizes.
+
+Verification: 417 library/UI tests (60 production UI tests), three bundled-worker
+integration tests, 290 default CLI tests, and 65 headless desktop tests pass.
+Strict library Clippy, formatting, and the standalone Windows build pass.
+`ci/desktop-smoke.ps1 -ScenarioFlows` completes with 11 nonblank window captures
+at 1600x1000 and 1080x720. Captured images were inspected; a Fit width regression
+was corrected and tested against actual preview/content bounds.
+
+The full authoring smoke remains incomplete: it reached viewport/dependency
+menus and then stopped when synthetic source input produced an invalid draft
+without a completion popup. The focused feature flow avoids those unrelated
+typing steps and does not replace their outstanding full native check. Original
+user settings were restored and fixture processes exited. Native macOS/Linux,
+full screen-reader/IME validation, and the prior GPUI tooltip limitation remain
+as documented above.
+
 ## Delivery Checklist
 
 ### 1. Foundation

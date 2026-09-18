@@ -54,6 +54,7 @@ pub(super) struct ResultsPanel {
     _subscription: Subscription,
     focus: FocusHandle,
     previews: Vec<Preview>,
+    preview_scrolls: [ScrollHandle; 3],
     status: String,
     loading: bool,
     image_loading: bool,
@@ -134,6 +135,7 @@ impl ResultsPanel {
             _subscription: subscription,
             focus: cx.focus_handle(),
             previews: Vec::new(),
+            preview_scrolls: Default::default(),
             status: "No reports loaded".into(),
             loading: false,
             image_loading: false,
@@ -626,7 +628,7 @@ impl ResultsPanel {
         };
         let content = match &preview.result {
             Ok(image) => {
-                let display = img(image.image.clone()).object_fit(ObjectFit::Contain);
+                let display = div().id(("image-content", index)).test_support();
                 let display = if self.fit {
                     display
                         .w_full()
@@ -635,7 +637,12 @@ impl ResultsPanel {
                     display
                         .w(px(image.width as f32 * self.zoom))
                         .h(px(image.height as f32 * self.zoom))
-                };
+                }
+                .child(
+                    img(image.image.clone())
+                        .size_full()
+                        .object_fit(ObjectFit::Contain),
+                );
                 let path = image.path.clone();
                 div()
                     .flex()
@@ -678,12 +685,15 @@ impl ResultsPanel {
                     .child(
                         div()
                             .id(("image-scroll", index))
+                            .test_support()
                             .flex_1()
                             .min_h_0()
-                            .overflow_scrollbar()
-                            .id(("image-scroll", index))
+                            .relative()
+                            .overflow_scroll()
+                            .track_scroll(&self.preview_scrolls[index])
                             .bg(cx.theme().muted)
-                            .child(display),
+                            .child(display)
+                            .scrollbar(&self.preview_scrolls[index], scroll::ScrollbarAxis::Both),
                     )
                     .into_any_element()
             }

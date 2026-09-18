@@ -1156,6 +1156,168 @@ async fn switching_workspaces_discards_old_selection_and_closing_unloads_everyth
 }
 
 #[gpui_kit::test]
+fn sidebar_scenario_log_combines_viewports_without_other_scenarios(cx: &mut TestAppContext) {
+    use crate::progress::{Event, Job, Record};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let scenario = this.session.suites[0].scenarios[0].clone();
+            let mut suites = this.session.suites.clone();
+            suites[0].output_id = "saved-output".into();
+            this.runs.update(cx, |panel, cx| {
+                panel.update_catalog(suites, None, cx);
+                for (id, viewport) in [(1, "Desktop"), (2, "Mobile")] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: Event::Queued {
+                            job: Job {
+                                id,
+                                suite_id: "saved-output".into(),
+                                suite_name: "ui-test".into(),
+                                scenario_id: scenario.id.clone(),
+                                label: scenario.label.clone(),
+                                viewport: viewport.into(),
+                                captures: vec![format!("capture-{id}")],
+                            },
+                        },
+                    });
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 10,
+                        event: Event::Log {
+                            id,
+                            message: format!("Captured {viewport}"),
+                        },
+                    });
+                }
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 0,
+                    event: Event::Queued {
+                        job: Job {
+                            id: 3,
+                            suite_id: "ui-test".into(),
+                            suite_name: "ui-test".into(),
+                            scenario_id: scenario.id.clone(),
+                            label: "Another suite's output".into(),
+                            viewport: String::new(),
+                            captures: vec!["another-output".into()],
+                        },
+                    },
+                });
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 10,
+                    event: Event::Log {
+                        id: 3,
+                        message: "Other suite message".into(),
+                    },
+                });
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        window.click(("sidebar-scenario-log", 0_usize), cx);
+        assert_eq!(view.read(cx).main_tab, 1);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        window.click("copy-run-log", cx);
+        let text = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(text.contains("[Desktop] Captured Desktop"));
+        assert!(text.contains("[Mobile] Captured Mobile"));
+        assert!(!text.contains("Other suite message"));
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn clicking_scenario_activity_opens_only_its_attributed_log(cx: &mut TestAppContext) {
+    use crate::progress::{Event, Job, Record};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                for (id, label, message) in [
+                    (1, "Checkout", "Click #place-order"),
+                    (2, "Account", "Focus #login"),
+                ] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: Event::Queued {
+                            job: Job {
+                                id,
+                                suite_id: "ui-test".into(),
+                                suite_name: "ui-test".into(),
+                                scenario_id: label.into(),
+                                label: label.into(),
+                                viewport: "Desktop".into(),
+                                captures: vec![label.into()],
+                            },
+                        },
+                    });
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 1234,
+                        event: Event::Log {
+                            id,
+                            message: message.into(),
+                        },
+                    });
+                }
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        window.click(("live-row", 1_usize), cx);
+        assert_eq!(
+            window.find("run-log-heading").label(),
+            Some("ui-test / Checkout / Desktop")
+        );
+        window.click("copy-run-log", cx);
+        let text = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(text.contains("[00:01.234] Click #place-order"));
+        assert!(!text.contains("#login"));
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 2000,
+                    event: Event::Log {
+                        id: 1,
+                        message: "Screenshot saved".into(),
+                    },
+                });
+                panel.show_scenario_log("ui-test", "Checkout", window, cx);
+            })
+        });
+        window.render_frame(cx);
+        window.click("copy-run-log", cx);
+        assert!(
+            cx.read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("Screenshot saved")
+        );
+        window.click("log-activity", cx);
+        window.click(("live-row", 2_usize), cx);
+        window.click("copy-run-log", cx);
+        let text = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(text.contains("#login"));
+        assert!(!text.contains("#place-order"));
+        window.click("log-all", cx);
+        assert_eq!(window.find("run-log-heading").label(), Some("All run logs"));
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAppContext) {
     use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     use crate::progress::{Event, Job, Record};
@@ -1217,6 +1379,7 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
                         suite_id: "shop".into(),
                         capture: "capture-1".into(),
                         label: "Home 1".into(),
+                        scenario_id: None,
                         passed: true,
                         error: None,
                     },
@@ -2895,7 +3058,7 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         run.join("home_diff.png"),
         output.join("shop/bitmaps_reference/home.png"),
     ] {
-        lodepng::encode32_file(path, &[0_u8, 128, 255, 255], 1, 1).unwrap();
+        lodepng::encode32_file(path, &[0_u8, 128, 255, 255].repeat(1280 * 720), 1280, 720).unwrap();
     }
     let pair = serde_json::json!({"label": "Home", "reference": "../bitmaps_reference/home.png", "test": "../bitmaps_test/run-1/home.png", "diffImage": "../bitmaps_test/run-1/home_diff.png"});
     let report = serde_json::json!({"id": "shop", "tests": [
@@ -2922,12 +3085,25 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
             window.find(("image-details", 1_usize)).label(),
-            Some("Current 1 x 1")
+            Some("Current 1280 x 720")
+        );
+        assert!(
+            window.find(("image-content", 1_usize)).bounds().size.width
+                <= window.find(("image-scroll", 1_usize)).bounds().size.width
         );
         window.click("zoom-in", cx);
         assert_eq!(window.find("zoom-value").label(), Some("125%"));
         window.click("actual-size", cx);
         assert_eq!(window.find("zoom-value").label(), Some("100%"));
+        assert_eq!(
+            window.find(("image-content", 1_usize)).bounds().size.width,
+            px(1280.)
+        );
+        window.click("fit-image", cx);
+        assert!(
+            window.find(("image-content", 1_usize)).bounds().size.width
+                <= window.find(("image-scroll", 1_usize)).bounds().size.width
+        );
         window.within("image-modes").click(3_usize, cx);
         assert!(window.find(("image-details", 0_usize)).visible());
         assert!(window.find(("image-details", 1_usize)).visible());

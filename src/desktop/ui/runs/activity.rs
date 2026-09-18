@@ -185,9 +185,8 @@ impl RunPanel {
                                     .small()
                                     .icon(gpui_kit::assets::IconName::Terminal)
                                     .label("View Log")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.tab = 3;
-                                        cx.notify();
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_all_logs(window, cx)
                                     })),
                             )
                         })
@@ -338,80 +337,105 @@ impl RunPanel {
                                 .saturating_sub(start)
                         });
                         let status = scenario.status;
+                        let job_id = scenario.job.id;
                         content = content.child(
-                            div()
-                                .id(("live-row", scenario.job.id))
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .border_b_1()
-                                .border_color(cx.theme().border)
-                                .pb_3()
-                                .pl_4()
+                            Button::new(("live-row", scenario.job.id))
+                                .ghost()
+                                .w_full()
+                                .h_auto()
+                                .justify_start()
+                                .accessibility_label(format!(
+                                    "View log: {}{}",
+                                    scenario.job.label,
+                                    if scenario.job.viewport.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" ({})", scenario.job.viewport)
+                                    }
+                                ))
+                                .tooltip("View scenario run log")
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.show_job_log(job_id, window, cx)
+                                }))
                                 .child(
                                     div()
                                         .flex()
-                                        .items_center()
-                                        .gap_3()
+                                        .flex_col()
+                                        .w_full()
+                                        .min_w_0()
+                                        .text_left()
+                                        .gap_1()
+                                        .border_b_1()
+                                        .border_color(cx.theme().border)
+                                        .pb_3()
+                                        .pl_4()
                                         .child(
                                             div()
-                                                .size_2()
-                                                .rounded_full()
-                                                .bg(status_color(status, cx)),
-                                        )
-                                        .child(
-                                            div()
-                                                .flex_1()
-                                                .min_w_0()
-                                                .truncate()
-                                                .child(scenario.job.label.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(100.))
-                                                .text_xs()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .truncate()
-                                                .child(scenario.job.viewport.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .w(px(64.))
-                                                .text_right()
-                                                .font_family(cx.theme().mono_font_family.clone())
-                                                .text_xs()
+                                                .flex()
+                                                .items_center()
+                                                .gap_3()
                                                 .child(
-                                                    duration
-                                                        .map(|duration| {
-                                                            format!(
-                                                                "{:.1}s",
-                                                                duration as f64 / 1000.0
-                                                            )
-                                                        })
-                                                        .unwrap_or_else(|| "-".into()),
+                                                    div()
+                                                        .size_2()
+                                                        .rounded_full()
+                                                        .bg(status_color(status, cx)),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        .child(scenario.job.label.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(100.))
+                                                        .text_xs()
+                                                        .text_color(cx.theme().muted_foreground)
+                                                        .truncate()
+                                                        .child(scenario.job.viewport.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .w(px(64.))
+                                                        .text_right()
+                                                        .font_family(
+                                                            cx.theme().mono_font_family.clone(),
+                                                        )
+                                                        .text_xs()
+                                                        .child(
+                                                            duration
+                                                                .map(|duration| {
+                                                                    format!(
+                                                                        "{:.1}s",
+                                                                        duration as f64 / 1000.0
+                                                                    )
+                                                                })
+                                                                .unwrap_or_else(|| "-".into()),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .id(("live-status", scenario.job.id))
+                                                        .role(Role::Status)
+                                                        .aria_label(status.label())
+                                                        .test_support()
+                                                        .w(px(90.))
+                                                        .text_right()
+                                                        .text_xs()
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(status_color(status, cx))
+                                                        .child(status.label()),
                                                 ),
                                         )
-                                        .child(
+                                        .children(scenario.message.as_ref().map(|message| {
                                             div()
-                                                .id(("live-status", scenario.job.id))
-                                                .role(Role::Status)
-                                                .aria_label(status.label())
-                                                .test_support()
-                                                .w(px(90.))
-                                                .text_right()
+                                                .pl_5()
                                                 .text_xs()
-                                                .font_weight(FontWeight::MEDIUM)
                                                 .text_color(status_color(status, cx))
-                                                .child(status.label()),
-                                        ),
-                                )
-                                .children(scenario.message.as_ref().map(|message| {
-                                    div()
-                                        .pl_5()
-                                        .text_xs()
-                                        .text_color(status_color(status, cx))
-                                        .child(message.clone())
-                                })),
+                                                .child(message.clone())
+                                        })),
+                                ),
                         );
                     }
                 }

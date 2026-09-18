@@ -263,7 +263,7 @@ fn spawn_capture_jobs(
         let ws_config = workspace_config.clone();
         let replacements = active_replacements.clone();
 
-        let handle = tokio::spawn(async move {
+        let handle = tokio::spawn(progress::scope_scenario(index, async move {
             let Ok((_suite_permit, _global_permit)) = acquire_capture_permits(suite_sem, sem).await
             else {
                 eprintln!("  {} Capture semaphore closed", "ERROR:".red());
@@ -332,7 +332,7 @@ fn spawn_capture_jobs(
                     TaskStatus::InfraFailed
                 }
             }
-        });
+        }));
 
         handles.push(handle);
     }

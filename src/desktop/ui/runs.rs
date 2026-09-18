@@ -10,6 +10,7 @@ use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, Run
 use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
 
 mod activity;
+mod log;
 mod settings;
 
 #[derive(Clone, Debug)]
@@ -105,6 +106,7 @@ pub(super) struct RunPanel {
     confirmation: bool,
     pending_request: Option<RunIntent>,
     log_text: String,
+    log_scope: Option<log::ScenarioLogScope>,
     suites: Vec<SuiteSummary>,
     selection: SuiteSelection,
     catalog_error: Option<String>,
@@ -141,6 +143,7 @@ impl RunPanel {
             confirmation: false,
             pending_request: None,
             log_text: String::new(),
+            log_scope: None,
             suites: Vec::new(),
             selection: SuiteSelection::default(),
             catalog_error: None,
@@ -281,6 +284,7 @@ impl RunPanel {
         self.suites.clear();
         self.catalog_error = None;
         self.log_text.clear();
+        self.log_scope = None;
         self.collapsed.clear();
         self.expanded_selections.clear();
         self.failed_only = false;
@@ -832,6 +836,7 @@ impl RunPanel {
                 self.collapsed.clear();
                 self.status = format!("Running {}", self.command.label());
                 self.log_text.clear();
+                self.log_scope = None;
                 self.log
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 cx.spawn_in(window, async move |view, cx| {
@@ -843,24 +848,7 @@ impl RunPanel {
                             .update_in(cx, |this, window, cx| {
                                 let finished = this.manager.poll();
                                 cx.emit(RunEvent::ProgressChanged);
-                                let text = this
-                                    .manager
-                                    .logs
-                                    .iter()
-                                    .map(|line| {
-                                        if line.stderr {
-                                            format!("[stderr] {}", line.text)
-                                        } else {
-                                            line.text.clone()
-                                        }
-                                    })
-                                    .collect::<String>();
-                                if text != this.log_text {
-                                    this.log.update(cx, |state, cx| {
-                                        state.set_value(text.clone(), window, cx)
-                                    });
-                                    this.log_text = text;
-                                }
+                                this.refresh_log(window, cx);
                                 if finished {
                                     this.status = match &this.manager.outcome {
                                         Some(RunOutcome::Completed) => "Completed".into(),
@@ -903,9 +891,19 @@ impl RunPanel {
                 .items_center()
                 .justify_between()
                 .child(format!(
-                    "{} scenarios in {} suites selected",
+                    "{} {} in {} {} selected",
                     self.selected_scenario_count(),
-                    self.selection.len()
+                    if self.selected_scenario_count() == 1 {
+                        "scenario"
+                    } else {
+                        "scenarios"
+                    },
+                    self.selection.len(),
+                    if self.selection.len() == 1 {
+                        "suite"
+                    } else {
+                        "suites"
+                    }
                 ))
                 .child(
                     design::selection_checkbox(
@@ -973,11 +971,19 @@ impl RunPanel {
                                 } else {
                                     IconName::ChevronRight
                                 })
-                                .label(format!(
+                                .accessibility_label(format!(
                                     "{} ({}/{} scenarios)",
                                     suite.name,
                                     self.selection.scenario_count(suite),
                                     suite.scenarios.len()
+                                ))
+                                .child(div().flex_1().min_w_0().truncate().text_left().child(
+                                    format!(
+                                        "{} ({}/{} scenarios)",
+                                        suite.name,
+                                        self.selection.scenario_count(suite),
+                                        suite.scenarios.len()
+                                    ),
                                 ))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     if !this.expanded_selections.remove(&expand_name) {
@@ -997,6 +1003,8 @@ impl RunPanel {
                 for scenario in &suite.scenarios {
                     let name = suite.name.clone();
                     let id = scenario.id.clone();
+                    let log_suite = name.clone();
+                    let log_id = id.clone();
                     section = section.child(
                         div()
                             .flex()
@@ -1017,6 +1025,24 @@ impl RunPanel {
                                 .on_change(cx.listener(
                                     move |this, checked, _, cx| {
                                         this.toggle_scenario(&name, &id, *checked, cx)
+                                    },
+                                )),
+                            )
+                            .child(
+                                Button::new(SharedString::from(format!(
+                                    "scenario-log-{log_suite}:{log_id}"
+                                )))
+                                .ghost()
+                                .xsmall()
+                                .icon(gpui_kit::assets::IconName::Terminal)
+                                .tooltip(format!("View run log: {}", scenario.label))
+                                .accessibility_label(format!("View run log: {}", scenario.label))
+                                .disabled(
+                                    self.disabled || !self.has_scenario_log(&log_suite, &log_id),
+                                )
+                                .on_click(cx.listener(
+                                    move |this, _, window, cx| {
+                                        this.show_scenario_log(&log_suite, &log_id, window, cx)
                                     },
                                 )),
                             )
@@ -1084,10 +1110,7 @@ impl Render for RunPanel {
                 .child(self.render_selection(cx))
                 .into_any_element(),
             2 => self.render_options(cx),
-            _ => CodeEditor::new(&self.log)
-                .size_full()
-                .readonly(true)
-                .into_any_element(),
+            _ => self.render_log(cx),
         };
         div()
             .id("run-panel")

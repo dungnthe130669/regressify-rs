@@ -71,7 +71,7 @@ fn collect_needs_actions<'a>(
                 actions.extend(dep_acts.iter());
             }
         } else {
-            eprintln!(
+            crate::progress::scenario_log!(
                 "    {} Dependency scenario '{}' not found",
                 "WARNING:".yellow(),
                 needed_id
@@ -224,7 +224,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
         .or(scenario.id.as_deref())
         .unwrap_or(&scenario.url);
 
-    eprintln!(
+    crate::progress::scenario_log!(
         "{} Executing scenario: {} ({})",
         log_prefix,
         label.cyan(),
@@ -247,7 +247,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
     // capture once at the browser's default size. Each pair is an independent
     // task (own browser, own index), so a failure here only fails this pair.
     if let Some(vp) = viewport {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Capturing viewport '{}' ({}x{})...",
             log_prefix,
             vp.label.cyan(),
@@ -357,7 +357,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
                 viewport_label,
                 &format!("{e:?}"),
             ) {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} {} Failed to write error placeholder screenshot: {:?}",
                     ctx.log_prefix,
                     "WARNING:".yellow(),
@@ -365,7 +365,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
                 );
                 return Err(write_err);
             } else {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Wrote error placeholder screenshot for failed scenario.",
                     ctx.log_prefix
                 );
@@ -398,9 +398,11 @@ where
 async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<()> {
     let (completed, frozen) = freeze_animations(page).await?;
     if completed > 0 || frozen > 0 {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Stabilized {} finite and {} infinite animation(s).",
-            log_prefix, completed, frozen
+            log_prefix,
+            completed,
+            frozen
         );
     }
     Ok(())
@@ -455,7 +457,7 @@ async fn run_scenario_capture_inner(
     if let Some(ref state) = resolved.state
         && load_state_local_storage(&page, state, log_prefix).await?
     {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Reloading page after restoring localStorage...",
             log_prefix
         );
@@ -483,7 +485,7 @@ async fn run_scenario_capture_inner(
     let mut visited = Vec::new();
     let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
     if !needs_actions.is_empty() {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Executing {} prerequisite actions from dependencies...",
             log_prefix,
             needs_actions.len()
@@ -507,7 +509,7 @@ async fn run_scenario_capture_inner(
 
     // Execute this scenario's own actions
     if let Some(actions) = &scenario.actions {
-        eprintln!("{} Executing {} actions...", log_prefix, actions.len());
+        crate::progress::scenario_log!("{} Executing {} actions...", log_prefix, actions.len());
         for action in actions {
             exec_test_action(
                 ActionExecutionContext {
@@ -527,7 +529,7 @@ async fn run_scenario_capture_inner(
 
     // Execute clickSelector if configured (clicks the element after all actions)
     if let Some(ref click_sel) = scenario.click_selector {
-        eprintln!("{} Clicking selector: {}", log_prefix, click_sel);
+        crate::progress::scenario_log!("{} Clicking selector: {}", log_prefix, click_sel);
         use crate::test::actionability::{self as act, ActionabilityConfig};
         let ac = ActionabilityConfig {
             element_timeout_ms: resolved.element_timeout_ms,
@@ -549,9 +551,10 @@ async fn run_scenario_capture_inner(
     if let Some(wait_ms) = resolved.post_interaction_wait
         && wait_ms > 0.0
     {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Waiting for {} ms after interactions...",
-            log_prefix, wait_ms
+            log_prefix,
+            wait_ms
         );
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
@@ -560,18 +563,19 @@ async fn run_scenario_capture_inner(
     if let Some(delay) = resolved.delay
         && delay > 0.0
     {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Delay: waiting {} ms before screenshot...",
-            log_prefix, delay
+            log_prefix,
+            delay
         );
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
     }
 
     if !resolved.no_scroll_top {
-        eprintln!("{} Scrolling page to load lazy images...", log_prefix);
+        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
         let scroll_start = std::time::Instant::now();
         trigger_lazy_loading(&page).await?;
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Lazy-load scroll completed in {} ms.",
             log_prefix,
             scroll_start.elapsed().as_millis()
@@ -590,19 +594,21 @@ async fn run_scenario_capture_inner(
         .await
         {
             Ok(result) if result.settled => {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Page settled in {} ms before capture.",
-                    log_prefix, result.elapsed_ms
+                    log_prefix,
+                    result.elapsed_ms
                 );
             }
             Ok(result) => {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Page did not settle within {} ms; capturing anyway.",
-                    log_prefix, result.elapsed_ms
+                    log_prefix,
+                    result.elapsed_ms
                 );
             }
             Err(error) => {
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Settle wait failed ({error}); capturing without settle.",
                     log_prefix
                 );
@@ -616,7 +622,7 @@ async fn run_scenario_capture_inner(
     }
 
     for screenshot_type in screenshot_types {
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} Capturing {} screenshot...",
             log_prefix,
             screenshot_type_description(screenshot_type)
@@ -630,7 +636,7 @@ async fn run_scenario_capture_inner(
             viewport_label,
         )
         .await?;
-        eprintln!(
+        crate::progress::scenario_log!(
             "{} {} screenshot captured in {} ms.",
             log_prefix,
             screenshot_type_description(screenshot_type),
@@ -682,7 +688,7 @@ async fn load_state_cookies(
     for name in &state_names {
         let (_, state) = load_persisted_state(name)?;
 
-        eprintln!("{} Loading state: {}", log_prefix, name);
+        crate::progress::scenario_log!("{} Loading state: {}", log_prefix, name);
 
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
@@ -720,7 +726,11 @@ async fn load_state_local_storage(
         // Restore localStorage
         if let Some(local_storage) = state.get("localStorage").and_then(|v| v.as_object()) {
             if !local_storage.is_empty() {
-                eprintln!("{} Restoring localStorage from state: {}", log_prefix, name);
+                crate::progress::scenario_log!(
+                    "{} Restoring localStorage from state: {}",
+                    log_prefix,
+                    name
+                );
                 restored = true;
             }
             for (key, value) in local_storage {
@@ -756,7 +766,7 @@ async fn load_cookie_path(
         return Ok(()); // No cookie file — that's fine
     };
 
-    eprintln!(
+    crate::progress::scenario_log!(
         "{} Loading cookies from: {}",
         log_prefix,
         cookie_path.display()
@@ -885,7 +895,7 @@ async fn apply_css_override(
         return Ok(()); // No override file — that's fine
     };
 
-    eprintln!(
+    crate::progress::scenario_log!(
         "{} Applying CSS override: {}",
         log_prefix,
         css_path.display()
@@ -923,7 +933,7 @@ async fn apply_js_on_ready(
         return Ok(()); // No script file — that's fine
     };
 
-    eprintln!(
+    crate::progress::scenario_log!(
         "{} Executing jsOnReady script: {}",
         log_prefix,
         js_path.display()

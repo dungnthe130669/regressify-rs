@@ -1,11 +1,11 @@
 //! Structured run telemetry, independent of console output and the UI framework.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
     fs::{File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Write},
     path::Path,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::Instant,
 };
 
@@ -14,7 +14,44 @@ use serde::{Deserialize, Serialize};
 
 const VERSION: u8 = 1;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
+const MAX_SCENARIO_LOG_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SCENARIO_LOG_ENTRIES: usize = 4096;
+const MAX_SCENARIO_LOG_MESSAGE_BYTES: usize = 16 * 1024;
 static SINK: OnceLock<Mutex<EventWriter>> = OnceLock::new();
+
+tokio::task_local! {
+    static SCENARIO_JOB: usize;
+}
+
+pub(crate) async fn scope_scenario<Work: std::future::Future>(
+    id: usize,
+    work: Work,
+) -> Work::Output {
+    SCENARIO_JOB.scope(id, work).await
+}
+
+macro_rules! scenario_log {
+    ($($message:tt)*) => {
+        $crate::progress::write_scenario_log(format_args!($($message)*))
+    };
+}
+pub(crate) use scenario_log;
+
+/// Attribute messages before concurrent console streams are interleaved.
+pub(crate) fn write_scenario_log(message: std::fmt::Arguments<'_>) {
+    if enabled()
+        && let Ok(id) = SCENARIO_JOB.try_with(|id| *id)
+    {
+        let message = message.to_string();
+        eprintln!("{message}");
+        emit(Event::Log {
+            id,
+            message: bounded_log_message(message),
+        });
+    } else {
+        eprintln!("{message}");
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +85,10 @@ pub enum Event {
     Started {
         id: usize,
     },
+    Log {
+        id: usize,
+        message: String,
+    },
     Captured {
         id: usize,
         error: Option<String>,
@@ -60,6 +101,8 @@ pub enum Event {
         suite_id: String,
         capture: String,
         label: String,
+        #[serde(default)]
+        scenario_id: Option<String>,
         passed: bool,
         error: Option<String>,
     },
@@ -241,6 +284,13 @@ pub struct SuiteProgress {
     pub finished: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct ScenarioLog {
+    pub job_id: usize,
+    pub elapsed_ms: u64,
+    pub message: Arc<str>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LiveProgress {
     pub phase: String,
@@ -249,6 +299,9 @@ pub struct LiveProgress {
     pub elapsed_ms: u64,
     pub finished: bool,
     pub error: Option<String>,
+    pub logs: VecDeque<ScenarioLog>,
+    pub omitted_logs: usize,
+    log_bytes: usize,
     captures: HashMap<(String, String), usize>,
 }
 
@@ -288,18 +341,41 @@ impl LiveProgress {
                     finished: false,
                 });
             }
-            Event::Queued { job } => self.queue(job),
+            Event::Queued { job } => {
+                let id = job.id;
+                self.queue(job);
+                self.push_log(id, record.elapsed_ms, "Queued".into());
+            }
             Event::Started { id } => {
+                self.push_log(id, record.elapsed_ms, "Started".into());
                 if let Some(scenario) = self.scenarios.get_mut(&id) {
                     scenario.status = Status::Running;
                     scenario.started_ms = Some(record.elapsed_ms);
                 }
             }
+            Event::Log { id, message } => self.push_log(id, record.elapsed_ms, message),
             Event::Captured {
                 id,
                 error,
                 infrastructure,
             } => {
+                self.push_log(
+                    id,
+                    record.elapsed_ms,
+                    error
+                        .as_ref()
+                        .map(|error| {
+                            format!(
+                                "{}: {error}",
+                                if infrastructure {
+                                    "Infrastructure failure"
+                                } else {
+                                    "Capture failed"
+                                }
+                            )
+                        })
+                        .unwrap_or_else(|| "Capture completed".into()),
+                );
                 if let Some(scenario) = self.scenarios.get_mut(&id) {
                     scenario.status = if error.is_some() {
                         Status::Failed
@@ -325,30 +401,60 @@ impl LiveProgress {
                 }) {
                     scenario.status = Status::Comparing;
                 }
+                let jobs = self
+                    .scenarios
+                    .values()
+                    .filter(|scenario| scenario.job.suite_id == suite_id)
+                    .map(|scenario| scenario.job.id)
+                    .collect::<Vec<_>>();
+                for id in jobs {
+                    self.push_log(id, record.elapsed_ms, "Comparing screenshots".into());
+                }
             }
             Event::Compared {
                 suite_id,
                 capture,
                 label,
+                scenario_id,
                 passed,
                 error,
             } => {
                 let key = (suite_id.clone(), capture.clone());
                 let id = if let Some(id) = self.captures.get(&key) {
                     *id
+                } else if let Some(scenario) = self.scenarios.values_mut().find(|scenario| {
+                    scenario.job.suite_id == suite_id
+                        && scenario.job.viewport.is_empty()
+                        && scenario_id.as_deref() == Some(scenario.job.scenario_id.as_str())
+                }) {
+                    scenario.job.captures.push(capture.clone());
+                    self.captures.insert(key, scenario.job.id);
+                    scenario.job.id
                 } else {
                     let id = self.scenarios.keys().next_back().copied().unwrap_or(0) + 1;
                     self.queue(Job {
                         id,
                         suite_id: suite_id.clone(),
                         suite_name: suite_id,
-                        scenario_id: capture.clone(),
+                        scenario_id: scenario_id.unwrap_or_else(|| capture.clone()),
                         label,
                         viewport: String::new(),
                         captures: vec![capture.clone()],
                     });
                     id
                 };
+                self.push_log(
+                    id,
+                    record.elapsed_ms,
+                    format!(
+                        "Comparison {}: {capture}{}",
+                        if passed { "passed" } else { "failed" },
+                        error
+                            .as_ref()
+                            .map(|error| format!("\n{error}"))
+                            .unwrap_or_default()
+                    ),
+                );
                 if let Some(scenario) = self.scenarios.get_mut(&id) {
                     scenario.compared.insert(capture, passed);
                     if scenario.status != Status::Failed {
@@ -374,6 +480,26 @@ impl LiveProgress {
                 }
             }
             Event::Finished { error } => self.end(false, error),
+        }
+    }
+
+    fn push_log(&mut self, id: usize, elapsed_ms: u64, message: String) {
+        if !self.scenarios.contains_key(&id) {
+            return;
+        }
+        let message = bounded_log_message(message);
+        self.log_bytes += message.len();
+        self.logs.push_back(ScenarioLog {
+            job_id: id,
+            elapsed_ms,
+            message: message.into(),
+        });
+        while self.log_bytes > MAX_SCENARIO_LOG_BYTES || self.logs.len() > MAX_SCENARIO_LOG_ENTRIES
+        {
+            if let Some(entry) = self.logs.pop_front() {
+                self.log_bytes -= entry.message.len();
+                self.omitted_logs += 1;
+            }
         }
     }
 
@@ -412,6 +538,7 @@ impl LiveProgress {
         if error.is_some() {
             self.error = error.clone();
         }
+        let mut ended = Vec::new();
         for scenario in self
             .scenarios
             .values_mut()
@@ -434,6 +561,12 @@ impl LiveProgress {
                 )
             });
             scenario.finished_ms = Some(self.elapsed_ms);
+            if let Some(message) = &scenario.message {
+                ended.push((scenario.job.id, message.clone()));
+            }
+        }
+        for (id, message) in ended {
+            self.push_log(id, self.elapsed_ms, message);
         }
     }
 
@@ -458,6 +591,19 @@ impl LiveProgress {
     }
 }
 
+fn bounded_log_message(mut message: String) -> String {
+    const SUFFIX: &str = "\n[log message truncated]";
+    if message.len() > MAX_SCENARIO_LOG_MESSAGE_BYTES {
+        let mut cutoff = MAX_SCENARIO_LOG_MESSAGE_BYTES - SUFFIX.len();
+        while !message.is_char_boundary(cutoff) {
+            cutoff -= 1;
+        }
+        message.truncate(cutoff);
+        message.push_str(SUFFIX);
+    }
+    message
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -479,6 +625,140 @@ mod tests {
             viewport: "desktop".into(),
             captures: vec![format!("capture-{id}")],
         }
+    }
+
+    #[test]
+    fn comparison_logs_group_recorded_scenario_ids_without_prefix_matching() {
+        let mut live = LiveProgress::default();
+        for (capture, scenario_id) in [
+            ("home__FINAL", "home"),
+            ("home__step", "home"),
+            ("home-extra__FINAL", "home-extra"),
+        ] {
+            live.apply(record(Event::Compared {
+                suite_id: "shop-output".into(),
+                capture: capture.into(),
+                label: scenario_id.into(),
+                scenario_id: Some(scenario_id.into()),
+                passed: true,
+                error: None,
+            }));
+        }
+        assert_eq!(live.scenarios.len(), 2);
+        let home = live
+            .scenarios
+            .values()
+            .find(|scenario| scenario.job.scenario_id == "home")
+            .unwrap();
+        assert_eq!(home.job.captures.len(), 2);
+        let logs = live
+            .logs
+            .iter()
+            .filter(|entry| entry.job_id == home.job.id)
+            .collect::<Vec<_>>();
+        assert_eq!(logs.len(), 2);
+        assert!(
+            logs.iter()
+                .all(|entry| !entry.message.contains("home-extra"))
+        );
+    }
+
+    #[test]
+    fn scenario_logs_stay_attributed_when_jobs_interleave() {
+        let mut live = LiveProgress::default();
+        for id in [1, 2] {
+            live.apply(record(Event::Queued {
+                job: job(id, "shop"),
+            }));
+        }
+        for (id, message) in [
+            (1, "Navigate checkout"),
+            (2, "Navigate account"),
+            (1, "Click #submit"),
+        ] {
+            live.apply(record(Event::Log {
+                id,
+                message: message.into(),
+            }));
+        }
+        live.apply(record(Event::Captured {
+            id: 1,
+            error: Some("Missing #submit".into()),
+            infrastructure: false,
+        }));
+        live.end(true, None);
+        let checkout = live
+            .logs
+            .iter()
+            .filter(|entry| entry.job_id == 1)
+            .map(|entry| entry.message.as_ref())
+            .collect::<Vec<_>>();
+        assert!(checkout.contains(&"Navigate checkout"));
+        assert!(checkout.contains(&"Click #submit"));
+        assert!(checkout.contains(&"Capture failed: Missing #submit"));
+        assert!(!checkout.iter().any(|message| message.contains("account")));
+        assert!(
+            live.logs
+                .iter()
+                .any(|entry| entry.job_id == 2 && entry.message.as_ref() == "Run cancelled")
+        );
+        let count = live.logs.len();
+        live.apply(record(Event::Log {
+            id: 99,
+            message: "Unattributed".into(),
+        }));
+        assert_eq!(live.logs.len(), count);
+    }
+
+    #[tokio::test]
+    async fn scenario_log_context_is_isolated_across_parallel_tasks() {
+        let mut tasks = Vec::new();
+        for id in [1, 2] {
+            tasks.push(tokio::spawn(scope_scenario(id, async move {
+                tokio::task::yield_now().await;
+                assert_eq!(SCENARIO_JOB.with(|current| *current), id);
+                id
+            })));
+        }
+        for (index, task) in tasks.into_iter().enumerate() {
+            assert_eq!(task.await.unwrap(), index + 1);
+        }
+        assert!(SCENARIO_JOB.try_with(|current| *current).is_err());
+    }
+
+    #[test]
+    fn scenario_log_history_bounds_bytes_entries_and_unicode_messages() {
+        let mut live = LiveProgress::default();
+        live.apply(record(Event::Queued {
+            job: job(1, "shop"),
+        }));
+        for _ in 0..150 {
+            live.apply(record(Event::Log {
+                id: 1,
+                message: "\u{754c}".repeat(MAX_SCENARIO_LOG_MESSAGE_BYTES),
+            }));
+        }
+        assert!(live.log_bytes <= MAX_SCENARIO_LOG_BYTES);
+        assert!(live.omitted_logs > 0);
+        assert!(
+            live.logs
+                .back()
+                .unwrap()
+                .message
+                .ends_with("[log message truncated]")
+        );
+        for _ in 0..MAX_SCENARIO_LOG_ENTRIES + 10 {
+            live.apply(record(Event::Log {
+                id: 1,
+                message: "step".into(),
+            }));
+        }
+        assert_eq!(live.logs.len(), MAX_SCENARIO_LOG_ENTRIES);
+        assert!(
+            live.logs
+                .iter()
+                .all(|entry| entry.message.as_ref() == "step")
+        );
     }
 
     #[test]
@@ -531,6 +811,7 @@ mod tests {
                 suite_id: "shop".into(),
                 capture: capture.into(),
                 label: "Home".into(),
+                scenario_id: None,
                 passed,
                 error: (!passed).then(|| "Visual mismatch".into()),
             }));
@@ -601,6 +882,7 @@ mod tests {
             suite_id: "existing".into(),
             capture: "home".into(),
             label: "Home".into(),
+            scenario_id: None,
             passed: true,
             error: None,
         }));

@@ -8,10 +8,12 @@ Artifacts and the fixture workspace remain under target/desktop-smoke.
 param(
     [switch]$SkipBuild,
     [switch]$KeepOpen,
-    [switch]$Capture
+    [switch]$Capture,
+    [switch]$ScenarioFlows
 )
 
 $ErrorActionPreference = 'Stop'
+if ($ScenarioFlows) { $Capture = $true }
 $repository = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repository 'target/desktop-smoke'
 $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'))
@@ -282,6 +284,7 @@ function Wait-Control([string]$Name, [string]$Within = '') {
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
         Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem } |
         ForEach-Object { Write-Output ('Available menu item: ' + $_.Current.Name) }
+    Capture-Window 'control-failure'
     throw "Native control '$Name' was not found."
 }
 
@@ -307,20 +310,26 @@ function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }
 
-function Wait-SourceText([string]$Text) {
+function Read-ControlText([string]$Name) {
+    $element = Wait-Control $Name
+    $pattern = $null
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
+        return ([System.Windows.Automation.ValuePattern]$pattern).Current.Value
+    }
+    if ($element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
+        return ([System.Windows.Automation.TextPattern]$pattern).DocumentRange.GetText(-1)
+    }
+    throw "Control '$Name' does not expose accessible text."
+}
+
+function Wait-SourceText([string]$Text, [string]$ControlName = 'Configuration source') {
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
     do {
-        $element = Wait-Control 'Configuration source'
-        $pattern = $null
-        if ($element.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$pattern)) {
-            $value = ([System.Windows.Automation.ValuePattern]$pattern).Current.Value
-        } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.TextPattern]::Pattern, [ref]$pattern)) {
-            $value = ([System.Windows.Automation.TextPattern]$pattern).DocumentRange.GetText(-1)
-        } else { throw 'Source editor does not expose accessible text.' }
+        $value = Read-ControlText $ControlName
         if ($value.Contains($Text)) { return }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
     } while ($deadline.Elapsed.TotalSeconds -lt 10)
-    throw "Source editor did not contain '$Text'."
+    throw "Control '$ControlName' did not contain '$Text'."
 }
 
 function Capture-Window([string]$Name) {
@@ -350,11 +359,91 @@ function Capture-Window([string]$Name) {
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
 }
 
+function Test-ScenarioFlows {
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Capture-Window 'scenario-editor'
+    Invoke-Control 'Run Suite Reference'
+    Wait-Control 'Run confirmation' | Out-Null
+    Invoke-Control 'Run Reference' -Within 'Run confirmation'
+    Wait-Control 'Capturing scenarios' | Out-Null
+    Wait-Control 'Completed' | Out-Null
+    Wait-Control 'Passed: 2' | Out-Null
+    $siblingReferences = @(Get-ChildItem (Join-Path $output 'bitmaps_reference') -Filter '*.png' |
+        Where-Object { -not $_.Name.StartsWith('8ac900fea19642cc0000') } |
+        ForEach-Object { @{ Path = $_.FullName; Hash = (Get-FileHash $_.FullName).Hash } })
+    Invoke-Control 'Suites'
+    Invoke-Control 'Select all'
+    Invoke-Control 'Select all'
+    Invoke-Control 'Select scenario Checkout'
+    Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
+    Invoke-Control 'smoke (1/2 scenarios)'
+    Capture-Window 'scenario-selection'
+    Invoke-Control 'Run settings'
+    Capture-Window 'scenario-settings-scrollbars'
+    Select-Theme 'Dark'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'scenario-settings-dark-compact'
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+    Invoke-Control 'Run Test'
+    Wait-Control 'Capturing scenarios' | Out-Null
+    Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
+    Capture-Window 'scenario-only-running'
+    Invoke-Control 'View log: Checkout (desktop)'
+    Wait-SourceText 'Executing scenario: Checkout' 'Scenario run log'
+    Capture-Window 'scenario-log-live'
+    Wait-Control 'Completed' | Out-Null
+    Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+    $log = Read-ControlText 'Scenario run log'
+    if ($log.Contains('Signed-in account') -or $log.Contains('Executing scenario: Profile')) { throw 'Scenario log contains a sibling scenario.' }
+    if (-not $log.Contains('Comparison passed:')) { throw 'Scenario log omitted the final comparison outcome.' }
+    Capture-Window 'scenario-log'
+    $reports = Get-ChildItem (Join-Path $output 'bitmaps_test') -Recurse -Filter report.json |
+        Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+    $pairs = @($reports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
+    if ($pairs.Count -ne 1 -or $pairs[0].scenarioId -ne '8ac900fea19642cc0000') { throw 'Scenario selection produced sibling captures.' }
+    foreach ($reference in $siblingReferences) {
+        if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'A sibling baseline was changed.' }
+    }
+    Select-Theme 'Dark'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'scenario-log-dark-compact'
+    Invoke-Control 'Back to Activity'
+    Wait-Control 'Passed: 1' | Out-Null
+    Capture-Window 'scenario-completed-dark-compact'
+    Invoke-Control 'View run log: Checkout'
+    Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+    Invoke-Control 'All run logs'
+    Wait-Control 'Run log' | Out-Null
+    Invoke-Control 'Back to Activity'
+    Invoke-Control 'View Results'
+    Wait-Control 'Approve This Run' | Out-Null
+    Capture-Window 'scenario-results-dark-compact'
+    Invoke-Control 'Approve This Run'
+    Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
+    Invoke-Control 'Approve Results' -Within 'Run confirmation'
+    Wait-Control 'Reference images updated' | Out-Null
+    Invoke-Control 'Compare This Run'
+    Wait-Control '1 passed' | Out-Null
+    Invoke-Control 'View run log: Checkout'
+    Wait-SourceText 'Comparison passed:' 'Scenario run log'
+    Capture-Window 'scenario-comparison-log'
+    foreach ($reference in $siblingReferences) {
+        if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'Scenario approval changed a sibling baseline.' }
+    }
+    Write-Output 'Scenario-only capture, attributed live logs, scoped approval/comparison, and sibling baseline checks passed.'
+}
+
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($ScenarioFlows) {
+        Test-ScenarioFlows
+        return
+    }
     Capture-Window 'overview'
     Invoke-Control 'Appearance: Light' -Pointer
     Wait-Control 'Dark' | Out-Null
@@ -529,6 +618,42 @@ try {
         Wait-Control 'Approve This Run' | Out-Null
         Capture-Window 'completed-run-results'
         Invoke-Control 'Runs'
+        $siblingReferences = @(Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter '*.png' |
+            Where-Object { $_.Directory.Name -eq 'bitmaps_reference' -and -not $_.Name.StartsWith('8ac900fea19642cc0000') } |
+            ForEach-Object { @{ Path = $_.FullName; Hash = (Get-FileHash $_.FullName).Hash } })
+        Invoke-Control 'Run Test: Checkout'
+        Wait-Control 'Capturing scenarios' | Out-Null
+        Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
+        Capture-Window 'scenario-only-running'
+        Wait-Control 'Completed' | Out-Null
+        Wait-Control 'Passed: 1' | Out-Null
+        $scenarioReports = Get-ChildItem (Join-Path $output 'bitmaps_test') -Recurse -Filter report.json |
+            Where-Object { $_.Directory.Name.StartsWith('desktop-') }
+        $scenarioPairs = @($scenarioReports | ForEach-Object { (Get-Content $_.FullName -Raw | ConvertFrom-Json).tests.pair })
+        if ($scenarioPairs.Count -ne 1 -or $scenarioPairs[0].scenarioId -ne '8ac900fea19642cc0000') {
+            throw 'Individual scenario execution captured an unselected sibling.'
+        }
+        foreach ($reference in $siblingReferences) {
+            if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'A scenario test changed a sibling reference.' }
+        }
+        Invoke-Control 'View log: Checkout (phone)'
+        Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+        $scenarioLog = Read-ControlText 'Scenario run log'
+        if ($scenarioLog.Contains('Signed-in account') -or $scenarioLog.Contains('Executing scenario: Profile')) {
+            throw 'Scenario log contains another scenario output.'
+        }
+        Capture-Window 'scenario-log'
+        Select-Theme 'Dark'
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+        Capture-Window 'scenario-log-dark-compact'
+        Select-Theme 'Light'
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+        Invoke-Control 'Back to Activity'
+        Invoke-Control 'View run log: Checkout'
+        Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+        Invoke-Control 'All run logs'
+        Wait-Control 'Run log' | Out-Null
+        Invoke-Control 'Back to Activity'
     }
     Invoke-Control 'More actions' -Pointer
     Invoke-Control 'Initialize Workspace'

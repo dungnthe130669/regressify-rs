@@ -427,7 +427,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
     match action {
         TestAction::Check(CheckAction { check, frame }) => {
-            eprintln!("{} Check element: {}", log_prefix, check);
+            crate::progress::scenario_log!("{} Check element: {}", log_prefix, check);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, check, frame, &ac).await?;
 
@@ -467,7 +467,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Click(ClickAction { click, frame }) => {
-            eprintln!("{} Clicking element: {}", log_prefix, click);
+            crate::progress::scenario_log!("{} Clicking element: {}", log_prefix, click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_click(
@@ -480,14 +480,14 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Focus(FocusAction { focus, frame }) => {
-            eprintln!("{} Focusing element: {}", log_prefix, focus);
+            crate::progress::scenario_log!("{} Focusing element: {}", log_prefix, focus);
             ensure_focusable(page, focus, frame, &ac).await?;
             focus_element(page, focus, frame, &ac).await?;
         }
 
         TestAction::Goto(GotoAction { goto, .. }) => {
             let target_url = apply_action_url_replacements(goto, url_replacements)?;
-            eprintln!("{} Navigating to URL: {}", log_prefix, target_url);
+            crate::progress::scenario_log!("{} Navigating to URL: {}", log_prefix, target_url);
             actionability::cdp_with_timeout(
                 Duration::from_millis(ac.element_timeout_ms),
                 "navigating to action URL",
@@ -502,7 +502,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Hide(HideAction { hide, frame }) => {
-            eprintln!("{} Hiding element: {}", log_prefix, hide);
+            crate::progress::scenario_log!("{} Hiding element: {}", log_prefix, hide);
             // Wait for the element to exist so it is actually present (and hidden)
             // in the captured screenshot; a typo'd selector fails clearly instead
             // of silently leaving the element visible.
@@ -541,7 +541,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Hover(HoverAction { hover, frame }) => {
-            eprintln!("{} Hovering over element: {}", log_prefix, hover);
+            crate::progress::scenario_log!("{} Hovering over element: {}", log_prefix, hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_hover(
@@ -568,10 +568,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             let frame_selectors = get_frame_selectors(frame);
 
             if let Some(value) = value {
-                eprintln!(
-                    "{} Typing into element: {} value: {}",
-                    log_prefix, input, value
-                );
+                crate::progress::scenario_log!("{} Typing into element: {}", log_prefix, input);
                 ensure_focusable(page, input, frame, &ac).await?;
 
                 let sel_escaped = escape_js_string(input);
@@ -708,7 +705,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     }
                 }
             } else if let Some(file) = file {
-                eprintln!("{} Uploading file to element: {}", log_prefix, input);
+                crate::progress::scenario_log!(
+                    "{} Uploading file to element: {}",
+                    log_prefix,
+                    input
+                );
                 if frame.is_some() {
                     anyhow::bail!(
                         "input file upload inside iframes is not supported yet; selector '{}' has a frame configured",
@@ -787,7 +788,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Persist(PersistAction { persist, .. }) => {
             validate_state_name(persist)?;
-            eprintln!("{} Persisting state: {}", log_prefix, persist);
+            crate::progress::scenario_log!("{} Persisting state: {}", log_prefix, persist);
 
             // Collect cookies
             let cookies = actionability::cdp_with_timeout(
@@ -821,13 +822,19 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 })?;
             }
             write_persisted_state(&state_path, &state)?;
-            eprintln!("{} State saved to: {}", log_prefix, state_path.display());
+            crate::progress::scenario_log!(
+                "{} State saved to: {}",
+                log_prefix,
+                state_path.display()
+            );
         }
 
         TestAction::Press(PressAction { press, key, frame }) => {
-            eprintln!(
+            crate::progress::scenario_log!(
                 "{} Pressing key '{}' on element: {}",
-                log_prefix, key, press
+                log_prefix,
+                key,
+                press
             );
             ensure_focusable(page, press, frame, &ac).await?;
             focus_element(page, press, frame, &ac).await?;
@@ -837,7 +844,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Remove(RemoveAction { remove, frame }) => {
-            eprintln!("{} Removing element: {}", log_prefix, remove);
+            crate::progress::scenario_log!("{} Removing element: {}", log_prefix, remove);
             // Wait for the element to exist before removing it so a typo'd selector
             // fails clearly instead of silently leaving the element in the capture.
             ensure_exists(page, remove, frame, &ac).await?;
@@ -876,7 +883,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Save(SaveAction { save, .. }) => {
             validate_screenshot_step_name(save)?;
-            eprintln!("{} Saving screenshot: {}", log_prefix, save);
+            crate::progress::scenario_log!("{} Saving screenshot: {}", log_prefix, save);
 
             save_screenshot(
                 test_suite,
@@ -889,7 +896,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Scroll(ScrollAction { scroll, frame }) => {
-            eprintln!("{} Scrolling to element: {}", log_prefix, scroll);
+            crate::progress::scenario_log!("{} Scrolling to element: {}", log_prefix, scroll);
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
             scroll_into_view(page, scroll, frame, &ac).await?;
@@ -943,9 +950,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 let values_json = serde_json::to_string(&values)?
                     .replace('\u{2028}', "\\u2028")
                     .replace('\u{2029}', "\\u2029");
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Selecting value(s) {} in element: {}",
-                    log_prefix, values_json, select
+                    log_prefix,
+                    values_json,
+                    select
                 );
 
                 let script = format!(
@@ -985,9 +994,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 }
             } else if let Some(label) = label {
                 let label_escaped = escape_js_string(label);
-                eprintln!(
+                crate::progress::scenario_log!(
                     "{} Selecting label '{}' in element: {}",
-                    log_prefix, label, select
+                    log_prefix,
+                    label,
+                    select
                 );
                 let script = format!(
                     "(() => {{
@@ -1025,7 +1036,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Uncheck(UncheckAction { uncheck, frame }) => {
-            eprintln!("{} Unchecking element: {}", log_prefix, uncheck);
+            crate::progress::scenario_log!("{} Unchecking element: {}", log_prefix, uncheck);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, uncheck, frame, &ac).await?;
 
@@ -1067,7 +1078,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Wait(WaitAction { wait, url, frame }) => {
             if let Some(url) = url {
                 let target_url = apply_action_url_replacements(url, url_replacements)?;
-                eprintln!("{} Waiting for URL: {}", log_prefix, target_url);
+                crate::progress::scenario_log!("{} Waiting for URL: {}", log_prefix, target_url);
                 let matcher = UrlMatcher::compile(&target_url)?;
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
@@ -1107,11 +1118,19 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
             match wait {
                 Wait::Number(milliseconds) => {
-                    eprintln!("{} Waiting for {} milliseconds", log_prefix, milliseconds);
+                    crate::progress::scenario_log!(
+                        "{} Waiting for {} milliseconds",
+                        log_prefix,
+                        milliseconds
+                    );
                     tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
-                    eprintln!("{} Waiting for element: {}", log_prefix, selector);
+                    crate::progress::scenario_log!(
+                        "{} Waiting for element: {}",
+                        log_prefix,
+                        selector
+                    );
                     wait_for_selector(page, selector, frame, &ac).await?;
                 }
             }

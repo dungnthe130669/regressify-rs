@@ -700,6 +700,11 @@ mod tests {
                 },
             });
             crate::progress::emit(crate::progress::Event::Started { id: 1 });
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(crate::progress::scope_scenario(1, async {
+                    crate::progress::scenario_log!("Scoped fixture action");
+                }));
             crate::progress::emit(crate::progress::Event::Captured {
                 id: 1,
                 error: None,
@@ -800,5 +805,6 @@ mod tests {
         let progress = handle.progress.lock().unwrap();
         assert!(progress.finished);
         assert_eq!(progress.counts(None).captured, 1);
+        assert!(progress.logs.iter().any(|entry| entry.job_id == 1 && entry.message.as_ref() == "Scoped fixture action"));
     }
 }

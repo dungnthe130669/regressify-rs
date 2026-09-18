@@ -324,6 +324,22 @@ omit chunks under heavy output; the omission count is displayed. Completion is
 tracked separately. Proxy input is masked and command lines are not echoed;
 CLI/script logs can still contain project-provided data.
 
+Click a scenario/viewport row in Activity to open its timestamped run log. The
+terminal button beside a scenario in the sidebar or Runs checklist opens that
+scenario's combined viewport log. These routes work while running, after
+completion, and after cancellation. Logs include navigation, action targets,
+waits, captures, browser cleanup, and comparison outcomes; typed `input.value`
+contents are omitted. Search with Ctrl+F, select/copy text, or use Copy log. Back
+to Activity and All run logs retain direct access to the other views.
+
+Scenario messages are attributed to job IDs before concurrent output interleaves.
+Their shared retained history is capped at 2 MiB or 4,096 entries, with 16 KiB
+per message and an explicit omission notice. It is independent of the console
+queue, so heavy console output cannot mix or discard scenario telemetry. The
+current run's history remains available until another run starts or the workspace
+closes; historical reports do not contain these session logs. Custom scripts,
+URLs, selectors, and error messages may still contain project-provided data.
+
 **Command completed means exit zero, not visual success.** Scenario failures,
 missing references, and mismatches are report outcomes. Configuration,
 infrastructure, and artifact-write errors are command failures.
@@ -452,6 +468,13 @@ An installed Chromium browser is required; the script asserts live pass counts
 and capture metadata. This uses local HTML only and does not contact an external
 test website or download a browser.
 
+Use `./ci/desktop-smoke.ps1 -ScenarioFlows` for focused scenario acceptance. It
+implies capture, creates suite references, selects and runs only Checkout,
+opens live logs from Activity and the sidebar, reviews results, approves and
+compares that exact scenario, and checks sibling reference hashes. It captures
+11 light/dark windows at 1600x1000 and 1080x720, including overflowing settings,
+logs, and fit-width images. This mode does not run the source-authoring sequence.
+
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
 and runs the bundled engine's init command from the GUI. It captures the target window
@@ -487,18 +510,23 @@ original preferences file, including recent workspaces. With `-KeepOpen`, the
 remaining fixture window retains its test appearance until closed; the original
 file is restored when the script returns.
 
-The latest automated gates pass 400 library/UI tests, two worker integration
-tests, 62 headless desktop tests, and 281 default CLI tests, plus formatting and
+The latest automated gates pass 417 library/UI tests (including 60 production
+UI tests), three worker integration tests, 65 headless desktop tests, and 290
+default CLI tests, plus formatting and
 strict library Clippy. The standalone Windows desktop builds successfully.
 
-Windows native checks cover 1600x1000 and 1080x720. The preceding appearance pass
-completed 28 window captures. The expanded direct-command flow exercised
-historical approval, exact comparison, reference capture, Stop, and test rerun
-before an outdated report-count assertion stopped it. The assertion now checks
-each completed run before later runs clean up its reports. Repeat attempts were
-blocked by Windows refusing verified foreground input; the expanded workflow's
-final results handoff, initialization, and restart still need an uninterrupted
-native rerun. User preferences were restored after each attempt.
+The focused scenario native flow passes all 11 captures and artifact/log checks.
+The screenshots were inspected for visible overflow bars, compact controls,
+scenario scope, and log readability; an image Fit width regression found during
+inspection was fixed and now has a production-view bounds test.
+
+The earlier appearance pass completed 28 captures and restart/cleanup checks.
+The broader authoring smoke was attempted again: its first attempt stopped at a
+viewport menu, and its next reached source completion but synthetic input left
+an invalid draft without a suggestion. That full sequence still needs an
+uninterrupted pass; the focused scenario flow is not a claim that the unrelated
+source/restart checks were rerun successfully. All attempts restored original
+preferences and closed only their synthetic fixture.
 
 Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI
