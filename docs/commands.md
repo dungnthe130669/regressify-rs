@@ -41,7 +41,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 
 | Command    | Purpose                                                                                                                                             |
 | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `init`     | Create starter `common/` files and a sample `visual_tests/alloy.tests.yaml` without overwriting existing files.                                     |
+| `init`     | Create missing starter files, Rust-derived JSON schemas, and VS Code YAML/JSON associations; copy missing legacy `data/` files without deleting their sources. Existing files, including editor settings, are preserved. |
 | `install`  | Fetch the Chromium browser binary used by this CLI into the project download cache.                                                                 |
 | `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                    |
 | `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved. |

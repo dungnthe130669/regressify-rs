@@ -21,7 +21,7 @@ pub enum TestSuiteFormat {
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct TestSuite {
     pub id: Option<String>,
 
@@ -70,7 +70,7 @@ pub struct TestSuite {
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub enum Browser {
     Chromium,
 
@@ -81,7 +81,7 @@ pub enum Browser {
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
     pub actions: Option<Vec<TestAction>>,
@@ -149,7 +149,7 @@ pub struct TestScenario {
 /// viewport; omit the property for the full page.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub enum Selectors {
     String(String),
 
@@ -167,7 +167,7 @@ impl Selectors {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct KeyPressSelector {
     pub selector: String,
     pub key_press: String,
@@ -175,14 +175,14 @@ pub struct KeyPressSelector {
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct EngineOptions {
     pub goto_parameters: Option<GotoParameters>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct GotoParameters {
     pub wait_until: Option<NavigationWait>,
     pub timeout: Option<u64>,
@@ -191,7 +191,7 @@ pub struct GotoParameters {
 
 #[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub enum NavigationWait {
     Commit,
     DomContentLoaded,
@@ -202,7 +202,7 @@ pub enum NavigationWait {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub enum Needs {
     String(String),
 
@@ -211,7 +211,7 @@ pub enum Needs {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct BasicAuth {
     pub origin: String,
     pub username: String,
@@ -220,7 +220,7 @@ pub struct BasicAuth {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub enum BasicAuthConfig {
     Single(BasicAuth),
     Multiple(Vec<BasicAuth>),
@@ -237,7 +237,7 @@ impl BasicAuthConfig {
 
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(schemars::JsonSchema)]
 pub struct UrlReplacement {
     #[serde(rename = "ref")]
     pub ref_pattern: String,

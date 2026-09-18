@@ -21,7 +21,7 @@ use crate::types::UrlReplacement;
 ///       regex: true
 ///       flags: "i"
 /// ```
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplacementProfilesFile {
     pub profiles: HashMap<String, Vec<UrlReplacement>>,

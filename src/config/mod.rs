@@ -24,8 +24,7 @@ pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
-#[derive(Deserialize, Serialize, Clone, Default)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(Deserialize, Serialize, Clone, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
     pub basic_auth: Option<BasicAuthConfig>,

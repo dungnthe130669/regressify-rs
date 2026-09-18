@@ -20,6 +20,7 @@ pub fn init() -> Result<()> {
 }
 
 fn init_workspace(root_dir: &Path) -> Result<()> {
+    migrate_legacy_files(root_dir)?;
     write_if_missing(root_dir, "common/_viewports.yaml", VIEWPORTS)?;
     write_if_missing(root_dir, "common/_cookies.yaml", COOKIES)?;
     write_if_missing(root_dir, "common/_override.css", OVERRIDE_CSS)?;
@@ -30,6 +31,95 @@ fn init_workspace(root_dir: &Path) -> Result<()> {
         REPLACEMENT_PROFILES,
     )?;
     write_if_missing(root_dir, "visual_tests/alloy.tests.yaml", SAMPLE_SUITE)?;
+    for (path, schema) in [
+        (
+            "common/test-schema.json",
+            schemars::schema_for!(crate::types::TestSuite),
+        ),
+        (
+            "common/regressify-schema.json",
+            schemars::schema_for!(crate::config::WorkspaceConfig),
+        ),
+        (
+            "common/replacement-profiles-schema.json",
+            schemars::schema_for!(crate::config::replacements::ReplacementProfilesFile),
+        ),
+    ] {
+        write_if_missing(root_dir, path, &serde_json::to_string_pretty(&schema)?)?;
+    }
+    let settings = serde_json::json!({
+        "json.schemas": [{"fileMatch": ["/visual_tests/**/*.tests.json"], "url": "./common/test-schema.json"}],
+        "yaml.schemas": {
+            "./common/test-schema.json": "/visual_tests/**/*.tests.{yaml,yml}",
+            "./common/regressify-schema.json": "/regressify.{yaml,yml}",
+            "./common/replacement-profiles-schema.json": "/common/_replacement-profiles.{yaml,yml}"
+        }
+    });
+    write_if_missing(
+        root_dir,
+        ".vscode/settings.json",
+        &serde_json::to_string_pretty(&settings)?,
+    )?;
+    write_if_missing(
+        root_dir,
+        ".vscode/extensions.json",
+        "{\n  \"recommendations\": [\"redhat.vscode-yaml\"]\n}\n",
+    )?;
+    Ok(())
+}
+
+fn migrate_legacy_files(root_dir: &Path) -> Result<()> {
+    let source = root_dir.join("data");
+    if !source.exists() {
+        return Ok(());
+    }
+    ensure_real_workspace_directory(&source)?;
+    let common_files = [
+        "_cookies.yaml",
+        "_on-ready.js",
+        "_override.css",
+        "_replacement-profiles.yaml",
+        "_signing-in.yaml",
+        "_viewports.yaml",
+    ];
+    for entry in walkdir::WalkDir::new(&source).follow_links(false) {
+        let entry = entry?;
+        anyhow::ensure!(
+            !entry.file_type().is_symlink(),
+            "Refusing to migrate symlink '{}'",
+            entry.path().display()
+        );
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let relative = entry.path().strip_prefix(&source)?;
+        let common = relative.components().count() == 1
+            && common_files.contains(&relative.to_string_lossy().as_ref());
+        let destination = Path::new(if common { "common" } else { "visual_tests" }).join(relative);
+        let path = workspace_file_path(
+            root_dir,
+            destination
+                .to_str()
+                .ok_or_else(|| anyhow::anyhow!("Legacy path must be UTF-8"))?,
+        )?;
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(mut target) => {
+                let copied = std::io::copy(&mut fs::File::open(entry.path())?, &mut target)
+                    .and_then(|_| target.sync_all());
+                if let Err(error) = copied {
+                    drop(target);
+                    fs::remove_file(&path)?;
+                    return Err(error.into());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
     Ok(())
 }
 
@@ -124,6 +214,41 @@ fn write_if_missing(root_dir: &Path, relative_path: &str, contents: &str) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn init_preserves_editor_settings_and_migrates_only_missing_legacy_files() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::create_dir_all(root.join("data/nested")).unwrap();
+        fs::write(root.join("data/_cookies.yaml"), "[]\n").unwrap();
+        fs::write(root.join("data/nested/shop.tests.yaml"), SAMPLE_SUITE).unwrap();
+        fs::create_dir_all(root.join(".vscode")).unwrap();
+        fs::write(
+            root.join(".vscode/settings.json"),
+            "{ // user settings\n}\n",
+        )
+        .unwrap();
+        init_workspace(root).unwrap();
+        init_workspace(root).unwrap();
+        assert!(root.join("data/nested/shop.tests.yaml").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("visual_tests/nested/shop.tests.yaml")).unwrap(),
+            SAMPLE_SUITE
+        );
+        assert_eq!(
+            fs::read_to_string(root.join(".vscode/settings.json")).unwrap(),
+            "{ // user settings\n}\n"
+        );
+        let schema: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(root.join("common/test-schema.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            schema["$defs"]["TestScenario"]["properties"]
+                .get("readySelector")
+                .is_some()
+        );
+    }
 
     #[test]
     fn init_creates_starter_files_without_overwriting_existing_files() {
