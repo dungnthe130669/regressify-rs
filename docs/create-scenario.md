@@ -218,6 +218,8 @@ jsOnReadyPath
 Type: `string`.  
 Default value: Test suite's value.
 
+Defaults to `common/_on-ready.js` when no level supplies a path. The script runs in the browser and may return a promise. CSS overrides, hide/remove rules, and this script are applied once per document, including after navigation, before the next action or screenshot. Hook errors fail the scenario. Files are loaded once per scenario capture.
+
 {% end %}
 
 {% spoiler() %}

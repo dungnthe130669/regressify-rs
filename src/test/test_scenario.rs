@@ -427,6 +427,9 @@ async fn run_scenario_capture_inner(
     } = ctx;
     let viewport_label = viewport.map(|v| v.label.as_str());
 
+    let hooks =
+        super::hooks::DocumentHooks::load(common::ROOT_DIR.get_required()?, scenario, resolved)?;
+
     // Create page with about:blank first, apply the viewport + CSP bypass, then
     // navigate so layout is computed at the intended size from the first paint.
     let page = browser.new_page("about:blank").await?;
@@ -459,22 +462,7 @@ async fn run_scenario_capture_inner(
 
     navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
 
-    // Apply CSS override if configured
-    apply_css_override(&page, resolved, log_prefix).await?;
-
-    for sel in &resolved.hide_selectors {
-        inject_css(&page, sel, "visibility: hidden !important").await?;
-    }
-
-    for sel in &resolved.remove_selectors {
-        inject_css(&page, sel, "display: none !important").await?;
-    }
-
-    expose_scenario_context(&page, scenario, resolved).await?;
-
-    // Execute jsOnReadyPath script (defaults to common/_on-ready.js; skipped if
-    // the file does not exist)
-    apply_js_on_ready(&page, resolved, log_prefix).await?;
+    hooks.apply(&page).await?;
 
     // Execute prerequisite actions from `needs` dependencies
     let mut visited = Vec::new();
@@ -486,6 +474,7 @@ async fn run_scenario_capture_inner(
             needs_actions.len()
         );
         for action in &needs_actions {
+            hooks.apply(&page).await?;
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
@@ -508,6 +497,7 @@ async fn run_scenario_capture_inner(
     if let Some(actions) = &scenario.actions {
         crate::progress::scenario_log!("{} Executing {} actions...", log_prefix, actions.len());
         for action in actions {
+            hooks.apply(&page).await?;
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
@@ -525,6 +515,8 @@ async fn run_scenario_capture_inner(
             .await?;
         }
     }
+
+    hooks.apply(&page).await?;
 
     // Execute clickSelector if configured (clicks the element after all actions)
     if let Some(ref click_sel) = scenario.click_selector {
@@ -627,6 +619,7 @@ async fn run_scenario_capture_inner(
     }
 
     for screenshot_type in screenshot_types {
+        hooks.apply(&page).await?;
         if let Some(authentication) = &authentication {
             authentication.check()?;
         }
@@ -837,117 +830,6 @@ fn parse_same_site(
             s
         ),
     }
-}
-
-/// Apply CSS override from file if configured.
-async fn apply_css_override(
-    page: &chromiumoxide::Page,
-    resolved: &ResolvedConfig,
-    log_prefix: &str,
-) -> Result<()> {
-    if !resolved.use_css_override {
-        return Ok(());
-    }
-
-    let css_path = resolved
-        .css_override_path
-        .as_deref()
-        .unwrap_or("common/_override.css");
-
-    let Some(css_path) = resolve_work_dir_path(css_path)? else {
-        return Ok(()); // No override file — that's fine
-    };
-
-    crate::progress::scenario_log!(
-        "{} Applying CSS override: {}",
-        log_prefix,
-        css_path.display()
-    );
-    let css_content = std::fs::read_to_string(&css_path)?;
-    let css_json = serde_json::to_string(&css_content)?;
-    let script = format!(
-        "(() => {{
-            var style = document.createElement('style');
-            style.type = 'text/css';
-            style.textContent = {};
-            document.head.appendChild(style);
-        }})()",
-        css_json
-    );
-    page.evaluate(script).await?;
-
-    Ok(())
-}
-
-/// Execute the jsOnReady script from file if it exists.
-/// Defaults to `common/_on-ready.js` (resolved relative to the workspace root).
-/// Missing files are silently skipped, matching the TS engine-script behavior.
-async fn apply_js_on_ready(
-    page: &chromiumoxide::Page,
-    resolved: &ResolvedConfig,
-    log_prefix: &str,
-) -> Result<()> {
-    let js_path = resolved
-        .js_on_ready_path
-        .as_deref()
-        .unwrap_or("common/_on-ready.js");
-
-    let Some(js_path) = resolve_work_dir_path(js_path)? else {
-        return Ok(()); // No script file — that's fine
-    };
-
-    crate::progress::scenario_log!(
-        "{} Executing jsOnReady script: {}",
-        log_prefix,
-        js_path.display()
-    );
-    let js_content = std::fs::read_to_string(&js_path)?;
-    page.evaluate(js_content).await?;
-
-    Ok(())
-}
-
-async fn expose_scenario_context(
-    page: &chromiumoxide::Page,
-    scenario: &TestScenario,
-    resolved: &ResolvedConfig,
-) -> Result<()> {
-    let payload = serde_json::json!({
-        "requiredLogin": resolved.required_login,
-        "scenario": {
-            "id": scenario.id.as_deref(),
-            "label": scenario.label.as_deref(),
-            "description": scenario.description.as_deref(),
-            "url": scenario.url.as_str(),
-            "requiredLogin": resolved.required_login,
-        }
-    });
-    let payload_json = serde_json::to_string(&payload)?;
-    let script = format!(
-        "(() => {{ window.__REGRESSIFY__ = {payload}; window.regressify = window.__REGRESSIFY__; }})()",
-        payload = payload_json
-    );
-    page.evaluate(script).await?;
-    Ok(())
-}
-
-/// Inject a CSS rule for a selector.
-async fn inject_css(page: &chromiumoxide::Page, selector: &str, rule: &str) -> Result<()> {
-    use crate::test::actionability::escape_css_rule;
-    let safe_selector = escape_css_rule(selector);
-    let css_text = format!("{} {{ {} }}", safe_selector, rule);
-    let css_json = serde_json::to_string(&css_text)?;
-    let script = format!(
-        "(() => {{
-            var style = document.createElement('style');
-            style.type = 'text/css';
-            style.textContent = {};
-            document.head.appendChild(style);
-        }})()",
-        css_json
-    );
-    page.evaluate(script).await?;
-    Ok(())
 }
 
 #[cfg(test)]
