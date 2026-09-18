@@ -398,6 +398,7 @@ impl RunHandle {
         mut command: Command,
         payload: Option<Vec<u8>>,
         events_file: Option<tempfile::NamedTempFile>,
+        scratch: Option<tempfile::TempDir>,
     ) -> Result<Self> {
         let (sender, logs) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let (cancel, cancellation) = mpsc::sync_channel(1);
@@ -412,6 +413,7 @@ impl RunHandle {
         let worker = thread::Builder::new()
             .name("regressify-run".into())
             .spawn(move || {
+                let _scratch = scratch;
                 let result = (|| -> Result<RunOutcome> {
                     let mut child = command
                         .group_spawn()
@@ -584,15 +586,30 @@ impl RunManager {
         }
         let command = request.process()?;
         let events = tempfile::NamedTempFile::new()?;
+        let scratch = (request.command == RunCommand::Deploy)
+            .then(|| {
+                tempfile::Builder::new()
+                    .prefix("regressify-deploy-")
+                    .tempdir()
+            })
+            .transpose()?;
         let payload = serde_json::to_vec(&super::worker::WorkerRequest {
             run: request.clone(),
             events_path: Some(events.path().into()),
+            scratch_directory: scratch
+                .as_ref()
+                .map(|directory| directory.path().to_path_buf()),
         })?;
         ensure!(
             payload.len() <= super::worker::MAX_REQUEST_BYTES,
             "Run request exceeds 1 MiB"
         );
-        self.active = Some(RunHandle::spawn(command, Some(payload), Some(events))?);
+        self.active = Some(RunHandle::spawn(
+            command,
+            Some(payload),
+            Some(events),
+            scratch,
+        )?);
         self.progress = LiveProgress::default();
         self.logs.clear();
         self.log_bytes = 0;
@@ -782,7 +799,7 @@ mod tests {
     #[test]
     fn subprocess_reads_both_streams_and_distinguishes_failure() {
         for (mode, success) in [("complete", true), ("fail", false)] {
-            let mut handle = RunHandle::spawn(fixture(mode), None, None).unwrap();
+            let mut handle = RunHandle::spawn(fixture(mode), None, None, None).unwrap();
             let outcome = handle.worker.take().unwrap().join().unwrap();
             assert_eq!(outcome == RunOutcome::Completed, success);
             let logs = handle.logs.try_iter().collect::<Vec<_>>();
@@ -799,12 +816,19 @@ mod tests {
 
     #[test]
     fn cancellation_stops_a_running_process_group() {
-        let mut handle = RunHandle::spawn(fixture("wait"), None, None).unwrap();
+        let scratch = tempfile::tempdir().unwrap();
+        let path = scratch.path().to_path_buf();
+        std::fs::write(path.join("package.zip"), b"synthetic package").unwrap();
+        let mut handle = RunHandle::spawn(fixture("wait"), None, None, Some(scratch)).unwrap();
         handle.logs.recv_timeout(Duration::from_secs(10)).unwrap();
         handle.cancel();
         assert_eq!(
             handle.worker.take().unwrap().join().unwrap(),
             RunOutcome::Cancelled
+        );
+        assert!(
+            !path.exists(),
+            "cancelled worker left its staging files behind"
         );
     }
 
@@ -856,7 +880,7 @@ mod tests {
         let events = tempfile::NamedTempFile::new().unwrap();
         let mut command = fixture("progress");
         command.env("REGRESSIFY_PROGRESS_FIXTURE", events.path());
-        let mut handle = RunHandle::spawn(command, None, Some(events)).unwrap();
+        let mut handle = RunHandle::spawn(command, None, Some(events), None).unwrap();
         let outcome = handle.worker.take().unwrap().join().unwrap();
         assert_eq!(outcome, RunOutcome::Completed);
         assert!(handle.omitted.load(Ordering::Relaxed) > 0);

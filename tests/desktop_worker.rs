@@ -54,6 +54,7 @@ fn invoke_with_events(
     request: &RunRequest,
     events_path: Option<&Path>,
 ) -> Output {
+    let scratch = (request.command == RunCommand::Deploy).then(|| tempfile::tempdir().unwrap());
     let mut child = Command::new(executable)
         .arg(WORKER_FLAG)
         .stdin(Stdio::piped())
@@ -69,6 +70,9 @@ fn invoke_with_events(
             &serde_json::to_vec(&WorkerRequest {
                 run: request.clone(),
                 events_path: events_path.map(Path::to_path_buf),
+                scratch_directory: scratch
+                    .as_ref()
+                    .map(|directory| directory.path().to_path_buf()),
             })
             .unwrap(),
         )

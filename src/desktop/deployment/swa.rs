@@ -31,7 +31,10 @@ impl Package {
             root.join("index.html").is_file(),
             "Deployment requires index.html"
         );
-        let mut file = tempfile::NamedTempFile::new()?;
+        let mut file = tempfile::NamedTempFile::new_in(
+            root.parent()
+                .context("Deployment staging directory has no parent")?,
+        )?;
         let mut archive = zip::ZipWriter::new(file.as_file_mut());
         let mut bytes = 0;
         let mut files = 0;

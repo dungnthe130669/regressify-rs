@@ -15,6 +15,8 @@ pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 pub struct WorkerRequest {
     pub run: RunRequest,
     pub events_path: Option<PathBuf>,
+    #[serde(default)]
+    pub scratch_directory: Option<PathBuf>,
 }
 
 pub fn read_request(input: impl Read) -> Result<WorkerRequest> {
@@ -48,6 +50,19 @@ pub fn run_stdio() -> Result<()> {
                         .as_ref()
                         .context("Deployment settings are missing")?;
                     job.validate()?;
+                    let directory = request
+                        .scratch_directory
+                        .as_ref()
+                        .context("Deployment staging directory is missing")?;
+                    ensure!(
+                        directory.is_absolute()
+                            && directory.is_dir()
+                            && !std::fs::symlink_metadata(directory)?
+                                .file_type()
+                                .is_symlink()
+                            && std::fs::read_dir(directory)?.next().is_none(),
+                        "Deployment staging directory must be a new empty directory"
+                    );
                     Some((
                         job,
                         super::deployment::swa::SwaClient::new(&job.target.token()?)?,
@@ -57,9 +72,12 @@ pub fn run_stdio() -> Result<()> {
                 };
                 crate::application::execute(cli).await?;
                 if let Some((job, client)) = deployment {
-                    let directory = tempfile::tempdir()?;
+                    let directory = request
+                        .scratch_directory
+                        .as_ref()
+                        .context("Deployment staging directory is missing")?;
                     let output = request.run.options.output_directory(&request.run.root);
-                    let staging = directory.path().join("report");
+                    let staging = directory.join("report");
                     super::deployment::stage_reports(&output, &job.suite_ids, &staging)?;
                     let url = client.deploy(&staging, &job.target).await?;
                     crate::progress::emit(crate::progress::Event::Deployed {
@@ -92,6 +110,7 @@ mod tests {
         let encoded = serde_json::to_vec(&WorkerRequest {
             run: request.clone(),
             events_path: None,
+            scratch_directory: None,
         })
         .unwrap();
         let decoded = read_request(encoded.as_slice()).unwrap();
