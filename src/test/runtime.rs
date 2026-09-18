@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
 
 use anyhow::{Result, anyhow, bail};
 use chromiumoxide::{Browser, Command, Page, cdp::browser_protocol::dom::NodeId, js::Evaluation};
@@ -20,7 +24,56 @@ struct Realm {
 pub(crate) struct Runtime {
     client: Client,
     main_session: String,
-    sessions: Arc<Mutex<BTreeMap<String, String>>>,
+    cache: Arc<Mutex<ContextCache>>,
+}
+
+struct ContextCache {
+    frames: BTreeMap<(String, String), (String, i64)>,
+    installed: BTreeSet<(String, i64)>,
+    sessions: BTreeMap<String, String>,
+    events: tokio::sync::broadcast::Receiver<super::cdp::Event>,
+}
+
+impl ContextCache {
+    fn new(events: tokio::sync::broadcast::Receiver<super::cdp::Event>) -> Self {
+        Self {
+            frames: BTreeMap::new(),
+            installed: BTreeSet::new(),
+            sessions: BTreeMap::new(),
+            events,
+        }
+    }
+
+    fn drain(&mut self) {
+        use tokio::sync::broadcast::error::TryRecvError;
+        loop {
+            match self.events.try_recv() {
+                Ok(event)
+                    if matches!(
+                        event.method.as_str(),
+                        "Page.frameNavigated"
+                            | "Page.frameDetached"
+                            | "Runtime.executionContextsCleared"
+                            | "Runtime.executionContextDestroyed"
+                            | "Target.detachedFromTarget"
+                    ) =>
+                {
+                    self.frames.clear();
+                    self.installed.clear();
+                    if event.method == "Target.detachedFromTarget" {
+                        self.sessions.clear();
+                    }
+                }
+                Ok(_) => {}
+                Err(TryRecvError::Lagged(_)) => {
+                    self.frames.clear();
+                    self.installed.clear();
+                    self.sessions.clear();
+                }
+                Err(TryRecvError::Closed | TryRecvError::Empty) => break,
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -54,14 +107,18 @@ pub(crate) struct NavigationWatch {
 impl Runtime {
     pub async fn new(browser: &Browser, page: &Page) -> Result<Self> {
         let client = Client::connect(browser).await?;
+        let events = client.subscribe();
         let main_session = client.attach(page.target_id().as_ref()).await?;
         client
             .call(Some(&main_session), "Page.enable", json!({}))
             .await?;
+        client
+            .call(Some(&main_session), "Runtime.enable", json!({}))
+            .await?;
         Ok(Self {
             client,
             main_session,
-            sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            cache: Arc::new(Mutex::new(ContextCache::new(events))),
         })
     }
 
@@ -80,6 +137,14 @@ impl Runtime {
     }
 
     async fn context(&self, realm: &Realm) -> Result<(String, i64)> {
+        let key = (realm.session.clone(), realm.frame.clone());
+        {
+            let mut cache = self.cache.lock().await;
+            cache.drain();
+            if let Some(context) = cache.frames.get(&key) {
+                return Ok(context.clone());
+            }
+        }
         let params = json!({"frameId": realm.frame, "worldName": "__regressify_runtime"});
         let mut session = realm.session.clone();
         let result = match self
@@ -89,20 +154,25 @@ impl Runtime {
         {
             Ok(result) => result,
             Err(_) => {
-                session =
-                    if let Some(session) = self.sessions.lock().await.get(&realm.frame).cloned() {
-                        session
-                    } else {
-                        let session = self.client.attach(&realm.frame).await?;
-                        self.client
-                            .call(Some(&session), "Page.enable", json!({}))
-                            .await?;
-                        self.sessions
-                            .lock()
-                            .await
-                            .insert(realm.frame.clone(), session.clone());
-                        session
-                    };
+                session = if let Some(session) =
+                    self.cache.lock().await.sessions.get(&realm.frame).cloned()
+                {
+                    session
+                } else {
+                    let session = self.client.attach(&realm.frame).await?;
+                    self.client
+                        .call(Some(&session), "Page.enable", json!({}))
+                        .await?;
+                    self.client
+                        .call(Some(&session), "Runtime.enable", json!({}))
+                        .await?;
+                    self.cache
+                        .lock()
+                        .await
+                        .sessions
+                        .insert(realm.frame.clone(), session.clone());
+                    session
+                };
                 self.client
                     .call(Some(&session), "Page.createIsolatedWorld", params)
                     .await?
@@ -111,15 +181,18 @@ impl Runtime {
         let context = result["executionContextId"]
             .as_i64()
             .ok_or_else(|| anyhow!("Frame execution context is unavailable"))?;
-        Ok((session, context))
+        let result = (session, context);
+        let mut cache = self.cache.lock().await;
+        cache.drain();
+        cache.frames.insert(key, result.clone());
+        Ok(result)
     }
 
     async fn evaluate(&self, realm: &Realm, expression: &str, by_value: bool) -> Result<Value> {
         let (session, context) = self.context(realm).await?;
-        let installed = self.client.call(Some(&session), "Runtime.evaluate", json!({
-            "contextId": context, "expression": "!!globalThis.__regressifyDocument", "returnByValue": true
-        })).await?;
-        if installed["result"]["value"] != true {
+        let key = (session.clone(), context);
+        let installed = self.cache.lock().await.installed.contains(&key);
+        if !installed {
             let bootstrap = format!(
                 r#"(() => {{
                 const module = {{ exports: {{}} }};
@@ -167,6 +240,7 @@ impl Runtime {
                 )
                 .await?;
             check_evaluation(&result)?;
+            self.cache.lock().await.installed.insert(key);
         }
         let expression = format!(
             "((document) => ({}))(globalThis.__regressifyDocument)",
@@ -188,6 +262,12 @@ impl Runtime {
     }
 
     pub async fn target(&self, frame: &Option<Frame>, timeout: Duration) -> Result<Target> {
+        tokio::time::timeout(timeout, self.resolve_target(frame, timeout))
+            .await
+            .map_err(|_| anyhow!("Frame resolution exceeded {}ms", timeout.as_millis()))?
+    }
+
+    async fn resolve_target(&self, frame: &Option<Frame>, timeout: Duration) -> Result<Target> {
         let selectors = match frame {
             Some(Frame::Single(selector)) => vec![selector.clone()],
             Some(Frame::Multiple(selectors)) if selectors.is_empty() => {
@@ -672,6 +752,35 @@ impl Target {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn context_cache_invalidates_after_navigation_or_event_overflow() {
+        let (sender, receiver) = tokio::sync::broadcast::channel(1);
+        let mut cache = ContextCache::new(receiver);
+        let key = ("session".into(), "frame".into());
+        cache.frames.insert(key.clone(), ("session".into(), 7));
+        cache.installed.insert(("session".into(), 7));
+        sender
+            .send(super::super::cdp::Event {
+                method: "Page.frameNavigated".into(),
+                session_id: Some("session".into()),
+                params: json!({}),
+            })
+            .unwrap();
+        cache.drain();
+        assert!(cache.frames.is_empty() && cache.installed.is_empty());
+        cache.frames.insert(key, ("session".into(), 8));
+        for _ in 0..2 {
+            sender
+                .send(super::super::cdp::Event {
+                    method: "Runtime.consoleAPICalled".into(),
+                    session_id: None,
+                    params: json!({}),
+                })
+                .unwrap();
+        }
+        cache.drain();
+        assert!(cache.frames.is_empty());
+    }
     use super::*;
 
     #[tokio::test]
