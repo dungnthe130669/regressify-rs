@@ -348,10 +348,24 @@ Activity headlines distinguish failed/passed captures, captures not compared,
 stopped runs, and command failures. The Running or Last run label identifies the
 executed command even while another command awaits confirmation. Stopped runs
 use amber status indicators and offer View Log, not a link to uncompleted results.
-After completion, View Results opens the executed output folder and exact run,
-never an older report when the requested run is missing. Compare This Run
-compares the exact captures after skipped comparison or after approval. Select
-suites and View Log provide direct routes from ready and completed states.
+After Run Test, Open Report stays available in the Runs header, including while
+viewing Log or Run settings. It opens the executed output folder and exact run
+with Reference and Current images side by side, never an older report when the
+requested run is missing. If Compare after test was off, Open Report compares
+that captured run first and opens its report automatically without recapturing
+or using the next run's changed settings/selection. Normal draft guards still
+apply to that comparison request. Compare This Run remains available after
+capture-only execution or approval. Select suites and View Log provide direct
+routes from ready and completed states.
+
+Once comparison results are available, the headline and Passed/Failed totals
+count **screenshot comparisons**, matching the HTML report. Scenario/job progress
+is labeled separately: four scenarios across three viewports can produce twelve
+comparison results. A row passes only when all its recorded screenshots pass.
+Browser-cleanup or other infrastructure errors remain explicit execution errors
+and can make the command fail, but they no longer turn passing image comparisons
+into visual failures. Open Report remains available when comparisons were
+produced even if the command also reported an infrastructure failure.
 
 The engine emits versioned progress events independently of console logs. Each
 scenario/viewport job reports queued, running, capture completion, comparison,
@@ -510,15 +524,23 @@ original preferences file, including recent workspaces. With `-KeepOpen`, the
 remaining fixture window retains its test appearance until closed; the original
 file is restored when the script returns.
 
-The latest automated gates pass 417 library/UI tests (including 60 production
-UI tests), three worker integration tests, 65 headless desktop tests, and 290
+The latest automated gates pass 423 library/UI tests (including 63 production
+UI tests), four worker integration tests, 65 headless desktop tests, and 293
 default CLI tests, plus formatting and
 strict library Clippy. The standalone Windows desktop builds successfully.
 
-The focused scenario native flow passes all 11 captures and artifact/log checks.
+The preceding focused scenario native flow passed all 11 captures and artifact/log checks.
 The screenshots were inspected for visible overflow bars, compact controls,
 scenario scope, and log readability; an image Fit width regression found during
 inspection was fixed and now has a production-view bounds test.
+
+The report-consistency update adds a real-worker fixture proving that HTML,
+saved report JSON, desktop loading, and live comparison totals all agree on nine
+passes and three failed captures across twelve viewport screenshots. UI tests
+cover report access after execution errors, side-by-side exact-run opening, and
+capture-only compare-and-open through the draft guard. The Windows smoke locator
+now uses Open Report; a new native run was not started while an existing user
+desktop window was open.
 
 The earlier appearance pass completed 28 captures and restart/cleanup checks.
 The broader authoring smoke was attempted again: its first attempt stopped at a

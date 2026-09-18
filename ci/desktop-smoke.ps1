@@ -417,7 +417,7 @@ function Test-ScenarioFlows {
     Invoke-Control 'All run logs'
     Wait-Control 'Run log' | Out-Null
     Invoke-Control 'Back to Activity'
-    Invoke-Control 'View Results'
+    Invoke-Control 'Open Report'
     Wait-Control 'Approve This Run' | Out-Null
     Capture-Window 'scenario-results-dark-compact'
     Invoke-Control 'Approve This Run'
@@ -614,7 +614,7 @@ try {
                 throw 'Capture reports are missing readable scenario metadata.'
             }
         }
-        Invoke-Control 'View Results'
+        Invoke-Control 'Open Report'
         Wait-Control 'Approve This Run' | Out-Null
         Capture-Window 'completed-run-results'
         Invoke-Control 'Runs'

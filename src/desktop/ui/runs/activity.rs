@@ -13,7 +13,12 @@ pub(crate) fn status_color(status: Status, cx: &App) -> Hsla {
 
 impl RunPanel {
     fn outcome_heading(&self) -> String {
-        let counts = self.manager.progress.counts(None);
+        let comparisons = self.manager.progress.comparison_counts(None);
+        let counts = if comparisons.total > 0 {
+            comparisons
+        } else {
+            self.manager.progress.counts(None)
+        };
         match &self.manager.outcome {
             Some(RunOutcome::Cancelled) => "Run stopped".into(),
             Some(RunOutcome::Failed(_)) => "Command failed".into(),
@@ -48,6 +53,12 @@ impl RunPanel {
     pub(super) fn render_activity(&self, cx: &mut Context<Self>) -> AnyElement {
         let progress = &self.manager.progress;
         let counts = progress.counts(None);
+        let comparisons = progress.comparison_counts(None);
+        let results = if comparisons.total > 0 {
+            comparisons
+        } else {
+            counts
+        };
         let has_run = self.manager.request.is_some() || !progress.scenarios.is_empty();
         let phase = if has_run {
             if progress.phase.is_empty() {
@@ -158,26 +169,6 @@ impl RunPanel {
                                     })),
                             )
                         })
-                        .when(
-                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
-                                && self
-                                    .manager
-                                    .request
-                                    .as_ref()
-                                    .is_some_and(|request| request.command.supports_suites()),
-                            |row| {
-                                row.child(
-                                    Button::new("activity-view-results")
-                                        .primary()
-                                        .small()
-                                        .icon(gpui_kit::assets::IconName::Images)
-                                        .label("View Results")
-                                        .on_click(
-                                            cx.listener(|this, _, _, cx| this.review_results(cx)),
-                                        ),
-                                )
-                            },
-                        )
                         .when(has_run, |row| {
                             row.child(
                                 Button::new("activity-view-log")
@@ -204,7 +195,7 @@ impl RunPanel {
                                         .label("Compare This Run")
                                         .disabled(self.disabled)
                                         .on_click(cx.listener(|this, _, _, cx| {
-                                            this.compare_completed_run(cx)
+                                            this.compare_completed_run(false, cx)
                                         })),
                                 )
                             },
@@ -220,17 +211,21 @@ impl RunPanel {
                         .gap_5()
                         .child(self.metric(
                             "total",
-                            "Scenarios / viewports",
+                            if comparisons.total > 0 {
+                                "Screenshot comparisons"
+                            } else {
+                                "Scenarios / viewports"
+                            },
                             if has_run {
-                                counts.total
+                                results.total
                             } else {
                                 selected_scenarios
                             },
                             cx.theme().foreground,
                         ))
                         .child(self.metric("active", "Running", counts.running, cx.theme().primary))
-                        .child(self.metric("passed", "Passed", counts.passed, cx.theme().success))
-                        .child(self.metric("failed", "Failed", counts.failed, cx.theme().danger)),
+                        .child(self.metric("passed", "Passed", results.passed, cx.theme().success))
+                        .child(self.metric("failed", "Failed", results.failed, cx.theme().danger)),
                 )
                 .child(
                     div()
@@ -244,7 +239,11 @@ impl RunPanel {
                                 .justify_between()
                                 .text_xs()
                                 .text_color(cx.theme().muted_foreground)
-                                .child(format!("{} / {} finished", counts.complete(), counts.total))
+                                .child(format!(
+                                    "{} / {} scenario jobs finished",
+                                    counts.complete(),
+                                    counts.total
+                                ))
                                 .child(format!(
                                     "{} queued  |  {} captured  |  {} cancelled",
                                     counts.queued, counts.captured, counts.cancelled
@@ -432,8 +431,16 @@ impl RunPanel {
                                             div()
                                                 .pl_5()
                                                 .text_xs()
-                                                .text_color(status_color(status, cx))
-                                                .child(message.clone())
+                                                .text_color(if scenario.infrastructure {
+                                                    cx.theme().danger
+                                                } else {
+                                                    status_color(status, cx)
+                                                })
+                                                .child(if scenario.infrastructure {
+                                                    format!("Execution error: {message}")
+                                                } else {
+                                                    message.clone()
+                                                })
                                         })),
                                 ),
                         );

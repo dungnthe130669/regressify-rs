@@ -499,9 +499,9 @@ impl Workbench {
         }
         if !intent.request.command.supports_suites() {
             match intent.resolve(&[]) {
-                Ok(request) => self
-                    .runs
-                    .update(cx, |panel, cx| panel.start(request, window, cx)),
+                Ok(request) => self.runs.update(cx, |panel, cx| {
+                    panel.start(request, intent.review_after_run, window, cx)
+                }),
                 Err(error) => {
                     self.status = format!("{error:#}");
                     cx.notify();
@@ -514,7 +514,7 @@ impl Workbench {
             this.session.suite_error = None;
             this.sync_suites(cx);
             match intent.resolve(&this.session.suites) {
-                Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, window, cx)),
+                Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, intent.review_after_run, window, cx)),
                 Err(error) => {
                     this.status = format!("Selected suites changed or contain errors; review the selection before running: {error:#}");
                     cx.notify();

@@ -1388,6 +1388,14 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
                         error: Some("Missing #sign-in".into()),
                         infrastructure: false,
                     },
+                    Event::Compared {
+                        suite_id: "account".into(),
+                        capture: "capture-2".into(),
+                        label: "Home 2".into(),
+                        scenario_id: None,
+                        passed: false,
+                        error: Some("Missing #sign-in".into()),
+                    },
                 ] {
                     panel.manager.progress.apply(Record {
                         version: 1,
@@ -1513,12 +1521,165 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
 }
 
 #[gpui_kit::test]
+fn report_totals_and_access_survive_execution_errors(cx: &mut TestAppContext) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    use crate::progress::{Event, Job, Record};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions {
+                        run_id: "mixed-run".into(),
+                        ..Default::default()
+                    },
+                });
+                for id in 1..=12 {
+                    let capture = format!("capture-{id}");
+                    let scenario_id = format!("scenario-{}", (id - 1) / 3);
+                    for event in [
+                        Event::Queued {
+                            job: Job {
+                                id,
+                                suite_id: "ui-test".into(),
+                                suite_name: "ui-test".into(),
+                                scenario_id: scenario_id.clone(),
+                                label: scenario_id.clone(),
+                                viewport: format!("viewport-{}", (id - 1) % 3),
+                                captures: vec![capture.clone()],
+                            },
+                        },
+                        Event::Captured {
+                            id,
+                            error: Some("Browser cleanup failed".into()),
+                            infrastructure: true,
+                        },
+                        Event::Compared {
+                            suite_id: "ui-test".into(),
+                            capture,
+                            label: scenario_id.clone(),
+                            scenario_id: Some(scenario_id),
+                            passed: id <= 9,
+                            error: (id > 9).then(|| "Missing selector".into()),
+                        },
+                    ] {
+                        panel.manager.progress.apply(Record {
+                            version: 1,
+                            elapsed_ms: 100,
+                            event,
+                        });
+                    }
+                }
+                panel
+                    .manager
+                    .progress
+                    .end(false, Some("Browser cleanup failed".into()));
+                panel.manager.outcome = Some(RunOutcome::Failed("Browser cleanup failed".into()));
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("run-outcome-heading").label(),
+            Some("Command failed")
+        );
+        assert_eq!(
+            window.find("metric-total").label(),
+            Some("Screenshot comparisons: 12")
+        );
+        assert_eq!(window.find("metric-passed").label(), Some("Passed: 9"));
+        assert_eq!(window.find("metric-failed").label(), Some("Failed: 3"));
+        assert_eq!(
+            window.find(("live-status", 1_usize)).label(),
+            Some("Passed")
+        );
+        assert_eq!(
+            window.find("activity-view-results").label(),
+            Some("Open Report")
+        );
+        assert!(window.find("activity-view-results").visible());
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                cx.notify();
+            })
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("run-outcome-heading").label(),
+            Some("3 failed, 9 passed")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn open_report_compares_capture_only_runs_without_changing_their_scope(cx: &mut TestAppContext) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunRequest};
+    let directory = tempfile::tempdir().unwrap();
+    let (_, view) = editor(cx, directory.path());
+    cx.update(|cx| {
+        let mut suites = view.read(cx).session.suites.clone();
+        suites[0].output_id = "ui-output".into();
+        let id = suites[0].scenarios[0].id.clone();
+        let request = RunRequest {
+            root: directory.path().canonicalize().unwrap(),
+            command: RunCommand::Test,
+            options: RunOptions {
+                regressify_dir: ".executed-output".into(),
+                run_id: "captured-run".into(),
+                suites: vec!["ui-test".into()],
+                scenarios: vec![crate::cli::args::ScenarioFilter {
+                    suite: "ui-test".into(),
+                    scenario: id.clone(),
+                }],
+                skip_compare: true,
+                mis_match_threshold: 0.25,
+                ..Default::default()
+            },
+        };
+        let intent = super::runs::RunIntent::compare_run(
+            request.clone(),
+            &[("ui-test".into(), "ui-output".into())],
+            true,
+        )
+        .unwrap();
+        assert!(intent.review_after_run);
+        let comparison = intent.resolve(&suites).unwrap();
+        assert_eq!(comparison.command, RunCommand::Compare);
+        assert_eq!(comparison.root, request.root);
+        assert_eq!(comparison.options.run_id, "captured-run");
+        assert_eq!(comparison.options.regressify_dir, ".executed-output");
+        assert_eq!(comparison.options.suites, vec!["ui-output"]);
+        assert_eq!(comparison.options.scenarios[0].scenario, id);
+        assert_eq!(comparison.options.scenarios[0].suite, "ui-output");
+        assert_eq!(comparison.options.mis_match_threshold, 0.25);
+        suites[0].output_id = "changed-output".into();
+        assert!(intent.resolve(&suites).is_err());
+    });
+}
+
+#[gpui_kit::test]
 async fn view_results_opens_the_executed_output_and_run_instead_of_current_settings(
     cx: &mut TestAppContext,
 ) {
     use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
+    let suite = directory.path().join(".custom-output/ui-test");
+    std::fs::create_dir_all(suite.join("html_report")).unwrap();
+    std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+    lodepng::encode32_file(
+        suite.join("bitmaps_reference/capture.png"),
+        &[0_u8, 128, 255, 255],
+        1,
+        1,
+    )
+    .unwrap();
     for (run, label) in [
         ("old-run", "Executed capture"),
         ("newer-run", "Different capture"),
@@ -1528,7 +1689,10 @@ async fn view_results_opens_the_executed_output_and_run_instead_of_current_setti
             .join(".custom-output/ui-test/bitmaps_test")
             .join(run);
         std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [{"status": "pass", "pair": {"label": label}}]})).unwrap()).unwrap();
+        lodepng::encode32_file(path.join("capture.png"), &[0_u8, 128, 255, 255], 1, 1).unwrap();
+        std::fs::write(path.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [{"status": "pass", "pair": {
+            "label": label, "reference": "../bitmaps_reference/capture.png", "test": format!("../bitmaps_test/{run}/capture.png")
+        }}]})).unwrap()).unwrap();
     }
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
@@ -1548,6 +1712,12 @@ async fn view_results_opens_the_executed_output_and_run_instead_of_current_setti
             });
         });
         window.render_frame(cx);
+        assert_eq!(
+            window.find("activity-view-results").label(),
+            Some("Open Report")
+        );
+        window.within("run-tabs").click(3_usize, cx);
+        assert!(window.find("activity-view-results").visible());
         window.click("activity-view-results", cx);
     })
     .unwrap();
@@ -1555,10 +1725,14 @@ async fn view_results_opens_the_executed_output_and_run_instead_of_current_setti
         window
             .try_find("capture-heading")
             .is_some_and(|heading| heading.label() == Some("Executed capture"))
+            && window.try_find(("image-details", 0_usize)).is_some()
+            && window.try_find(("image-details", 1_usize)).is_some()
     })
     .await;
     cx.update(|cx| assert_eq!(view.read(cx).main_tab, 2));
     cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find(("image-details", 0_usize)).visible());
+        assert!(window.find(("image-details", 1_usize)).visible());
         view.update(cx, |this, cx| {
             this.results.update(cx, |panel, cx| {
                 panel.show_run(
@@ -2211,7 +2385,10 @@ async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
         .unwrap();
 }
 
-fn editor(cx: &mut TestAppContext, root: &Path) -> (WindowHandle<Root>, Entity<Workbench>) {
+pub(super) fn editor(
+    cx: &mut TestAppContext,
+    root: &Path,
+) -> (WindowHandle<Root>, Entity<Workbench>) {
     cx.update(gpui_kit::init);
     cx.update(|cx| super::design::apply_theme(false, None, cx));
     cx.update(super::bind_keys);

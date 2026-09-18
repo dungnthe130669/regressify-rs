@@ -27,9 +27,40 @@ pub(super) struct RunIntent {
     pub request: RunRequest,
     pub suite_names: Vec<String>,
     pub expected_output_ids: Option<Vec<String>>,
+    pub review_after_run: bool,
 }
 
 impl RunIntent {
+    pub(super) fn compare_run(
+        mut request: RunRequest,
+        executed_suites: &[(String, String)],
+        review_after_run: bool,
+    ) -> Result<Self> {
+        if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
+            for filter in &mut request.options.scenarios {
+                let (name, _) = executed_suites
+                    .iter()
+                    .find(|(_, id)| id == &filter.suite)
+                    .ok_or_else(|| {
+                        anyhow!(
+                            "The recorded scenario's suite is unavailable; review the run selection"
+                        )
+                    })?;
+                filter.suite = name.clone();
+            }
+        }
+        request.command = RunCommand::Compare;
+        Ok(Self {
+            request,
+            suite_names: executed_suites
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect(),
+            expected_output_ids: Some(executed_suites.iter().map(|(_, id)| id.clone()).collect()),
+            review_after_run,
+        })
+    }
+
     pub(super) fn resolve(&self, suites: &[SuiteSummary]) -> Result<RunRequest> {
         let mut request = self.request.clone();
         if request.command.supports_suites() {
@@ -163,6 +194,32 @@ impl RunPanel {
     pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
         &self.manager.progress
     }
+    fn can_open_report(&self) -> bool {
+        !self.running()
+            && self
+                .manager
+                .request
+                .as_ref()
+                .is_some_and(|request| request.command.supports_suites())
+            && (matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                || matches!(self.manager.outcome, Some(RunOutcome::Failed(_)))
+                    && self.manager.progress.comparison_counts(None).total > 0)
+    }
+    fn open_report(&mut self, cx: &mut Context<Self>) {
+        if self.disabled || !self.can_open_report() {
+            return;
+        }
+        self.confirmation = false;
+        self.pending_request = None;
+        if self.manager.request.as_ref().is_some_and(|request| {
+            request.command == RunCommand::Test && request.options.skip_compare
+        }) {
+            self.compare_completed_run(true, cx);
+        } else {
+            self.review_results(cx);
+        }
+        cx.notify();
+    }
     fn review_results(&self, cx: &mut Context<Self>) {
         if let Some(request) = &self.manager.request {
             cx.emit(RunEvent::ReviewResults {
@@ -171,46 +228,20 @@ impl RunPanel {
             });
         }
     }
-    fn compare_completed_run(&mut self, cx: &mut Context<Self>) {
+    fn compare_completed_run(&mut self, review_after_run: bool, cx: &mut Context<Self>) {
         if self.running() || self.disabled {
             return;
         }
-        let Some(mut request) = self.manager.request.clone() else {
+        let Some(request) = self.manager.request.clone() else {
             return;
         };
-        if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
-            for filter in &mut request.options.scenarios {
-                let Some((name, _)) = self
-                    .executed_suites
-                    .iter()
-                    .find(|(_, id)| id == &filter.suite)
-                else {
-                    self.status =
-                        "The recorded scenario's suite is unavailable; review the run selection"
-                            .into();
-                    cx.notify();
-                    return;
-                };
-                filter.suite = name.clone();
-            }
-        }
-        request.command = RunCommand::Compare;
-        let intent = RunIntent {
-            request,
-            suite_names: self
-                .executed_suites
-                .iter()
-                .map(|(name, _)| name.clone())
-                .collect(),
-            expected_output_ids: Some(
-                self.executed_suites
-                    .iter()
-                    .map(|(_, id)| id.clone())
-                    .collect(),
-            ),
-        };
-        match intent.resolve(&self.suites) {
-            Ok(_) => cx.emit(RunEvent::Requested(Box::new(intent))),
+        let result = RunIntent::compare_run(request, &self.executed_suites, review_after_run)
+            .and_then(|intent| {
+                intent.resolve(&self.suites)?;
+                Ok(intent)
+            });
+        match result {
+            Ok(intent) => cx.emit(RunEvent::Requested(Box::new(intent))),
             Err(error) => {
                 self.status = format!("{error:#}");
                 cx.notify();
@@ -453,6 +484,7 @@ impl RunPanel {
                 },
                 suite_names: vec![name],
                 expected_output_ids: Some(vec![report.suite_id.clone()]),
+                review_after_run: false,
             };
             intent.resolve(&self.suites)?;
             Ok(intent)
@@ -775,6 +807,7 @@ impl RunPanel {
             },
             suite_names,
             expected_output_ids,
+            review_after_run: false,
         };
         intent.resolve(&self.suites)?;
         Ok(intent)
@@ -806,6 +839,7 @@ impl RunPanel {
     pub(super) fn start(
         &mut self,
         request: RunRequest,
+        review_after_run: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -857,6 +891,9 @@ impl RunPanel {
                                         None => "Command ended without a result".into(),
                                     };
                                     cx.emit(RunEvent::Finished);
+                                    if review_after_run && this.can_open_report() {
+                                        this.review_results(cx);
+                                    }
                                 }
                                 cx.notify();
                                 this.running()
@@ -1201,6 +1238,18 @@ impl Render for RunPanel {
                             .disabled(!running)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                     )
+                    .when(self.can_open_report(), |bar| {
+                        bar.child(
+                            Button::new("activity-view-results")
+                                .primary()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Images)
+                                .label("Open Report")
+                                .tooltip("Open this run's test and reference comparison")
+                                .disabled(self.disabled)
+                                .on_click(cx.listener(|this, _, _, cx| this.open_report(cx))),
+                        )
+                    })
                     .child(
                         div()
                             .id("run-scope")
@@ -1342,5 +1391,80 @@ impl Render for RunPanel {
                     self.manager.omitted_chunks
                 )))
             })
+    }
+}
+
+#[cfg(all(test, feature = "gui-tests"))]
+mod tests {
+    use super::{RunCommand, RunEvent, RunIntent, RunOptions, RunOutcome, RunRequest};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, TestAppContext};
+    use serde_json::json;
+    use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    fn open_report_button_uses_recorded_capture_scope(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        let requests = Rc::new(RefCell::new(Vec::<RunIntent>::new()));
+        let received = requests.clone();
+        let _subscription = cx.update(|cx| {
+            view.update(cx, |this, cx| {
+                cx.subscribe(&this.runs, move |_, _, event, _| {
+                    if let RunEvent::Requested(intent) = event {
+                        received.borrow_mut().push((**intent).clone());
+                    }
+                })
+            })
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("duplicate-item", cx);
+            view.update(cx, |this, cx| {
+                let suite = this.session.suites[0].clone();
+                this.main_tab = 1;
+                this.runs.update(cx, |panel, cx| {
+                    panel.manager.request = Some(RunRequest {
+                        root: directory.path().canonicalize().unwrap(),
+                        command: RunCommand::Test,
+                        options: RunOptions {
+                            regressify_dir: ".captured-output".into(),
+                            run_id: "captured-run".into(),
+                            suites: vec![suite.name.clone()],
+                            scenarios: vec![crate::cli::args::ScenarioFilter {
+                                suite: suite.name.clone(),
+                                scenario: suite.scenarios[0].id.clone(),
+                            }],
+                            skip_compare: true,
+                            ..Default::default()
+                        },
+                    });
+                    panel.executed_suites = vec![(suite.name, suite.output_id)];
+                    panel.manager.outcome = Some(RunOutcome::Completed);
+                    panel.options["regressifyDir"] = json!(".changed-output");
+                    panel.options["runId"] = json!("changed-run");
+                    panel.selection.clear();
+                    cx.notify();
+                });
+            });
+            window.render_frame(cx);
+            window.within("run-tabs").click(3_usize, cx);
+            window.click("activity-view-results", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        let intent = &requests[0];
+        assert!(intent.review_after_run);
+        assert_eq!(intent.request.command, RunCommand::Compare);
+        assert_eq!(intent.request.options.regressify_dir, ".captured-output");
+        assert_eq!(intent.request.options.run_id, "captured-run");
+        assert_eq!(intent.suite_names, vec!["ui-test"]);
+        assert_eq!(intent.request.options.scenarios.len(), 1);
+        cx.update(|cx| {
+            assert!(view.read(cx).session.dirty());
+            assert!(!view.read(cx).runs.read(cx).running());
+        });
     }
 }

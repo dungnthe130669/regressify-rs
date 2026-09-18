@@ -10,6 +10,14 @@ use regressify::desktop::{
 };
 
 fn invoke(executable: &Path, request: &RunRequest) -> Output {
+    invoke_with_events(executable, request, None)
+}
+
+fn invoke_with_events(
+    executable: &Path,
+    request: &RunRequest,
+    events_path: Option<&Path>,
+) -> Output {
     let mut child = Command::new(executable)
         .arg(WORKER_FLAG)
         .stdin(Stdio::piped())
@@ -24,7 +32,7 @@ fn invoke(executable: &Path, request: &RunRequest) -> Output {
         .write_all(
             &serde_json::to_vec(&WorkerRequest {
                 run: request.clone(),
-                events_path: None,
+                events_path: events_path.map(Path::to_path_buf),
             })
             .unwrap(),
         )
@@ -96,24 +104,11 @@ fn bundled_worker_reports_live_outcomes_for_multiple_suites() {
             ..Default::default()
         },
     };
-    let mut child = Command::new(env!("CARGO_BIN_EXE_regressify-desktop"))
-        .arg(WORKER_FLAG)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let payload = WorkerRequest {
-        run: request,
-        events_path: Some(events.path().into()),
-    };
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(&serde_json::to_vec(&payload).unwrap())
-        .unwrap();
-    let output = child.wait_with_output().unwrap();
+    let output = invoke_with_events(
+        Path::new(env!("CARGO_BIN_EXE_regressify-desktop")),
+        &request,
+        Some(events.path()),
+    );
     assert!(
         output.status.success(),
         "Visual mismatch must not fail the worker: {}",
@@ -128,6 +123,93 @@ fn bundled_worker_reports_live_outcomes_for_multiple_suites() {
     assert_eq!(live.suites.len(), 2);
     assert_eq!(live.counts(Some("shop")).passed, 1);
     assert_eq!(live.counts(Some("account")).failed, 1);
+}
+
+#[test]
+fn mixed_report_outcomes_match_html_saved_results_and_live_totals() {
+    let workspace = tempfile::tempdir().unwrap();
+    let output = workspace.path().join(".regressify");
+    let suite = output.join("alloy");
+    let reference = suite.join("bitmaps_reference");
+    let captures = suite.join("bitmaps_test/mixed-run");
+    std::fs::create_dir_all(&reference).unwrap();
+    std::fs::create_dir_all(&captures).unwrap();
+    let image = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+    let mut metadata = serde_json::Map::new();
+    for scenario in 0..4 {
+        for viewport in ["phone", "tablet", "desktop"] {
+            let scenario_id = format!("scenario-{scenario}");
+            let key = format!("{scenario_id}_{viewport}__FINAL");
+            let filename = format!("{key}.png");
+            std::fs::write(reference.join(&filename), &image).unwrap();
+            std::fs::write(captures.join(&filename), &image).unwrap();
+            if scenario == 3 {
+                std::fs::write(captures.join(format!("{filename}.error.json")),
+                    serde_json::to_vec(&serde_json::json!({"error": true, "message": "Timed out waiting for missing selector"})).unwrap()).unwrap();
+            }
+            metadata.insert(
+                key,
+                serde_json::json!({
+                    "scenarioId": scenario_id, "scenarioLabel": format!("Scenario {scenario}"),
+                    "referenceUrl": "https://example.com", "url": "https://example.com"
+                }),
+            );
+        }
+    }
+    std::fs::write(
+        captures.join(".report-urls.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1, "captures": metadata
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let events = tempfile::NamedTempFile::new().unwrap();
+    let request = RunRequest {
+        root: workspace.path().into(),
+        command: RunCommand::Compare,
+        options: RunOptions {
+            suites: vec!["alloy".into()],
+            run_id: "mixed-run".into(),
+            ..Default::default()
+        },
+    };
+    let result = invoke_with_events(
+        Path::new(env!("CARGO_BIN_EXE_regressify-desktop")),
+        &request,
+        Some(events.path()),
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(captures.join("report.json")).unwrap()).unwrap();
+    let html_config = std::fs::read_to_string(suite.join("html_report/config.js")).unwrap();
+    let html: serde_json::Value = serde_json::from_str(
+        html_config
+            .strip_prefix("report(")
+            .unwrap()
+            .strip_suffix(");")
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(html, saved);
+    let catalog = regressify::desktop::results::Catalog::load(&output).unwrap();
+    assert!(catalog.warnings.is_empty());
+    assert_eq!(catalog.reports[0].counts(), (9, 0, 3));
+    let mut reader = regressify::progress::EventReader::open(events.path()).unwrap();
+    let mut live = regressify::progress::LiveProgress::default();
+    reader.drain(|record| live.apply(record)).unwrap();
+    reader.complete().unwrap();
+    assert!(live.finished && live.error.is_none());
+    assert_eq!(live.counts(None).total, 4);
+    let comparisons = live.comparison_counts(None);
+    assert_eq!(
+        (comparisons.total, comparisons.passed, comparisons.failed),
+        (12, 9, 3)
+    );
 }
 
 #[test]

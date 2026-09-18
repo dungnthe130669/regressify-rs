@@ -82,6 +82,8 @@ impl ResultsPanel {
     ) {
         self.preferred_run = (!run_id.is_empty()).then_some(run_id);
         self.filter = 0;
+        self.image_mode = 3;
+        self.fit = true;
         self.search
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.refresh(root, window, cx);

@@ -249,6 +249,28 @@ user settings were restored and fixture processes exited. Native macOS/Linux,
 full screen-reader/IME validation, and the prior GPUI tooltip limitation remain
 as documented above.
 
+## Report Consistency
+
+- [x] Expose Open Report after testing from every Runs tab and open the executed
+  run's reference/current comparison side by side.
+- [x] Compare capture-only runs before opening their report, preserving the
+  original output, run ID, suite/scenario scope, and draft guard.
+- [x] Count individual screenshot comparisons in the final report summary while
+  keeping scenario/job progress distinct.
+- [x] Derive visual row status from comparison outcomes rather than retaining a
+  previous capture/cleanup failure forever. Preserve infrastructure errors and
+  nonzero command semantics independently; keep generated reports accessible.
+- [x] Reproduce and fix the passing-comparison/failed-live-row transition, and
+  verify HTML, saved JSON, desktop reading, and worker telemetry agree for nine
+  passes and three failed captures across four scenarios and three viewports.
+
+Verification: 423 library/UI tests (63 production UI tests), four worker tests,
+293 default CLI tests, and 65 headless desktop tests pass, together with strict
+library Clippy and formatting. The standalone Windows desktop builds. Supplied
+report artifacts were inspected read-only; no captures or references were
+changed. The Windows smoke action is updated to Open Report, but native input
+checks were not rerun while the user's desktop window remained open.
+
 ## Delivery Checklist
 
 ### 1. Foundation

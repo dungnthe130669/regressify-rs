@@ -457,16 +457,18 @@ impl LiveProgress {
                 );
                 if let Some(scenario) = self.scenarios.get_mut(&id) {
                     scenario.compared.insert(capture, passed);
-                    if scenario.status != Status::Failed {
-                        scenario.status = if !passed {
-                            Status::Failed
-                        } else if scenario.compared.len() == scenario.job.captures.len() {
-                            Status::Passed
-                        } else {
-                            Status::Comparing
-                        };
+                    scenario.status = if scenario.compared.values().any(|passed| !passed) {
+                        Status::Failed
+                    } else if scenario.compared.len() == scenario.job.captures.len() {
+                        Status::Passed
+                    } else {
+                        Status::Comparing
+                    };
+                    if !scenario.infrastructure {
                         if error.is_some() {
                             scenario.message = error;
+                        } else if scenario.status == Status::Passed {
+                            scenario.message = None;
                         }
                     }
                     if !scenario.status.active() {
@@ -568,6 +570,26 @@ impl LiveProgress {
         for (id, message) in ended {
             self.push_log(id, self.elapsed_ms, message);
         }
+    }
+
+    /// Report totals count images, not scenario groups or browser lifecycle failures.
+    pub fn comparison_counts(&self, suite_id: Option<&str>) -> Counts {
+        let mut counts = Counts::default();
+        for scenario in self
+            .scenarios
+            .values()
+            .filter(|scenario| suite_id.is_none_or(|id| scenario.job.suite_id == id))
+        {
+            for passed in scenario.compared.values() {
+                counts.total += 1;
+                if *passed {
+                    counts.passed += 1;
+                } else {
+                    counts.failed += 1;
+                }
+            }
+        }
+        counts
     }
 
     pub fn counts(&self, suite_id: Option<&str>) -> Counts {
@@ -789,6 +811,124 @@ mod tests {
         assert_eq!(
             live.scenarios[&2].message.as_deref(),
             Some("Missing #login")
+        );
+    }
+
+    #[test]
+    fn passed_comparisons_preserve_cleanup_errors_without_becoming_visual_failures() {
+        let mut live = LiveProgress::default();
+        let error = "Browser shutdown was not confirmed after a successful scenario";
+        live.apply(record(Event::Queued {
+            job: job(1, "shop"),
+        }));
+        live.apply(record(Event::Started { id: 1 }));
+        live.apply(record(Event::Captured {
+            id: 1,
+            error: Some(error.into()),
+            infrastructure: true,
+        }));
+        live.apply(record(Event::Comparing {
+            suite_id: "shop".into(),
+        }));
+        live.apply(record(Event::Compared {
+            suite_id: "shop".into(),
+            capture: "capture-1".into(),
+            label: "Home".into(),
+            scenario_id: Some("scenario-1".into()),
+            passed: true,
+            error: None,
+        }));
+        live.apply(record(Event::Finished {
+            error: Some(error.into()),
+        }));
+        assert_eq!(live.scenarios[&1].status, Status::Passed);
+        assert!(live.scenarios[&1].infrastructure);
+        assert_eq!(live.scenarios[&1].message.as_deref(), Some(error));
+        assert_eq!(live.error.as_deref(), Some(error));
+        assert_eq!(live.comparison_counts(None).passed, 1);
+        assert_eq!(live.comparison_counts(None).failed, 0);
+    }
+
+    #[test]
+    fn report_totals_count_images_independently_of_scenario_groups() {
+        let mut live = LiveProgress::default();
+        for scenario in 0..4 {
+            for viewport in ["phone", "tablet", "desktop"] {
+                let scenario_id = format!("scenario-{scenario}");
+                live.apply(record(Event::Compared {
+                    suite_id: "alloy".into(),
+                    capture: format!("{scenario_id}_{viewport}__FINAL"),
+                    label: scenario_id.clone(),
+                    scenario_id: Some(scenario_id),
+                    passed: scenario != 3,
+                    error: (scenario == 3).then(|| "Missing selector".into()),
+                }));
+            }
+        }
+        live.apply(record(Event::Finished { error: None }));
+        assert_eq!(live.counts(None).total, 4);
+        assert_eq!(live.counts(None).passed, 3);
+        assert_eq!(live.counts(None).failed, 1);
+        let comparisons = live.comparison_counts(Some("alloy"));
+        assert_eq!(comparisons.total, 12);
+        assert_eq!(comparisons.passed, 9);
+        assert_eq!(comparisons.failed, 3);
+        assert_eq!(live.comparison_counts(Some("other")).total, 0);
+    }
+
+    #[test]
+    fn mixed_viewport_results_preserve_nine_passes_and_three_capture_failures() {
+        let mut live = LiveProgress::default();
+        let mut captures = Vec::new();
+        for scenario in 0..4 {
+            for viewport in ["phone", "tablet", "desktop"] {
+                let id = captures.len() + 1;
+                let scenario_id = format!("scenario-{scenario}");
+                let capture = format!("{scenario_id}_{viewport}__FINAL");
+                live.apply(record(Event::Queued {
+                    job: Job {
+                        id,
+                        suite_id: "alloy".into(),
+                        suite_name: "alloy".into(),
+                        scenario_id: scenario_id.clone(),
+                        label: scenario_id.clone(),
+                        viewport: viewport.into(),
+                        captures: vec![capture.clone()],
+                    },
+                }));
+                live.apply(record(Event::Started { id }));
+                live.apply(record(Event::Captured {
+                    id,
+                    error: (scenario == 3).then(|| "Missing selector".into()),
+                    infrastructure: false,
+                }));
+                captures.push((capture, scenario_id, scenario != 3));
+            }
+        }
+        live.apply(record(Event::Comparing {
+            suite_id: "alloy".into(),
+        }));
+        for (capture, scenario_id, passed) in captures {
+            live.apply(record(Event::Compared {
+                suite_id: "alloy".into(),
+                capture,
+                label: scenario_id.clone(),
+                scenario_id: Some(scenario_id),
+                passed,
+                error: (!passed).then(|| "Missing selector".into()),
+            }));
+        }
+        live.apply(record(Event::SuiteFinished { id: "alloy".into() }));
+        live.apply(record(Event::Finished { error: None }));
+        let counts = live.counts(None);
+        assert_eq!(counts.total, 12);
+        assert_eq!(counts.passed, 9);
+        assert_eq!(counts.failed, 3);
+        assert_eq!(counts.running, 0);
+        assert!(
+            live.scenarios
+                .values()
+                .all(|scenario| !scenario.infrastructure)
         );
     }
 
