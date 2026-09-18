@@ -174,6 +174,7 @@ impl Workbench {
                     state.status.clear();
                     cx.notify();
                 });
+                this.status = "Deployment targets ready".into();
                 this.show_deployment_dialog(window, cx);
             },
             window,
@@ -480,6 +481,7 @@ mod tests {
         })
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(view.read(cx).status, "Deployment targets ready");
             window.click("deploy-target-add", cx);
             window.render_frame(cx);
             window.click("deploy-name", cx);
