@@ -1,7 +1,7 @@
 use std::{future::Future, time::Duration};
 
+use super::runtime::Target as Page;
 use anyhow::{Result, anyhow};
-use chromiumoxide::Page;
 
 use crate::types::Frame;
 
@@ -248,6 +248,20 @@ pub async fn wait_for_selector(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
+    wait_for_attached_selector(page, selector, frame, config).await?;
+    let visibility = ActionabilityConfig {
+        actionability_timeout_ms: config.element_timeout_ms,
+        ..config.clone()
+    };
+    wait_for_visible(page, selector, frame, &visibility).await
+}
+
+async fn wait_for_attached_selector(
+    page: &Page,
+    selector: &str,
+    frame: &Option<Frame>,
+    config: &ActionabilityConfig,
+) -> Result<()> {
     let frame_selectors = get_frame_selectors(frame);
     let element_js = build_element_js(selector, &frame_selectors);
     let script = format!("(() => {{ return !!({element_js}); }})()");
@@ -437,6 +451,7 @@ pub async fn scroll_into_view(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
+    page.scroll_frames().await?;
     let frame_selectors = get_frame_selectors(frame);
     let selectors_js = frame_selectors
         .as_deref()
@@ -629,6 +644,9 @@ pub async fn get_frame_offset(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<(f64, f64)> {
+    if page.has_frames() {
+        return page.frame_offset().await;
+    }
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) => s,
         None => return Ok((0.0, 0.0)),
@@ -734,6 +752,7 @@ async fn check_frame_not_obscured(
     center_y: f64,
     config: &ActionabilityConfig,
 ) -> Result<()> {
+    page.check_frame_coverage(center_x, center_y).await?;
     let frame_selectors = match get_frame_selectors(frame) {
         Some(s) if !s.is_empty() => s,
         _ => return Ok(()),
@@ -874,7 +893,7 @@ pub async fn ensure_actionable(
     config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
     // 1. Wait for element to exist
-    wait_for_selector(page, selector, frame, config).await?;
+    wait_for_attached_selector(page, selector, frame, config).await?;
 
     // 2. Wait for element to be visible
     wait_for_visible(page, selector, frame, config).await?;
@@ -886,15 +905,21 @@ pub async fn ensure_actionable(
     scroll_into_view(page, selector, frame, config).await?;
 
     // 5. Check element is not obscured (also returns position info)
-    let info = check_not_obscured(page, selector, frame, config).await?;
-
-    // 5b. If inside a frame, also ensure the frame isn't obscured in the parent.
-    check_frame_not_obscured(page, frame, info.center_x, info.center_y, config).await?;
-
-    // 6. Check element is enabled (for form controls)
-    check_enabled(page, selector, frame, config).await?;
-
-    Ok(info)
+    let started = std::time::Instant::now();
+    loop {
+        let result = async {
+            let info = check_not_obscured(page, selector, frame, config).await?;
+            check_frame_not_obscured(page, frame, info.center_x, info.center_y, config).await?;
+            check_enabled(page, selector, frame, config).await?;
+            Ok(info)
+        }
+        .await;
+        match result {
+            Ok(info) => return Ok(info),
+            Err(error) if started.elapsed() >= actionability_timeout(config) => return Err(error),
+            Err(_) => tokio::time::sleep(Duration::from_millis(config.poll_interval_ms)).await,
+        }
+    }
 }
 
 /// Full actionability check for focus, typing, key presses, and selection.
@@ -976,7 +1001,7 @@ pub async fn ensure_exists(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    wait_for_selector(page, selector, frame, config).await
+    wait_for_attached_selector(page, selector, frame, config).await
 }
 
 // ─── CDP Mouse Helpers ───────────────────────────────────────────────────────

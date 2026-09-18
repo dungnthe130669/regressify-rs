@@ -430,6 +430,7 @@ async fn run_scenario_capture_inner(
     // Create page with about:blank first, apply the viewport + CSP bypass, then
     // navigate so layout is computed at the intended size from the first paint.
     let page = browser.new_page("about:blank").await?;
+    let runtime = super::runtime::Runtime::new(browser, &page).await?;
     let authentication =
         super::authentication::Authentication::install(browser, &page, &resolved.basic_auth)
             .await?;
@@ -488,6 +489,7 @@ async fn run_scenario_capture_inner(
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
+                    runtime: &runtime,
                     storage: &storage,
                     test_suite,
                     scenario,
@@ -509,6 +511,7 @@ async fn run_scenario_capture_inner(
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
+                    runtime: &runtime,
                     storage: &storage,
                     test_suite,
                     scenario,
@@ -532,10 +535,16 @@ async fn run_scenario_capture_inner(
             actionability_timeout_ms: resolved.actionability_timeout_ms,
             ..Default::default()
         };
-        let info = act::ensure_actionable(&page, click_sel, &None, &ac).await?;
-        let frame_offset = act::get_frame_offset(&page, &None, &ac).await?;
+        let target = runtime
+            .target(
+                &None,
+                std::time::Duration::from_millis(ac.element_timeout_ms),
+            )
+            .await?;
+        let info = act::ensure_actionable(&target, click_sel, &None, &ac).await?;
+        let frame_offset = act::get_frame_offset(&target, &None, &ac).await?;
         act::cdp_click(
-            &page,
+            &target,
             frame_offset.0 + info.center_x,
             frame_offset.1 + info.center_y,
             &ac,

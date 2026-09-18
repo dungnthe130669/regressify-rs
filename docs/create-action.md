@@ -21,6 +21,18 @@ extra:
 Each scenario can have zero, one or multiple actions. Each action must be one of the following types.
 
 Interactive actions wait for the target element to exist, be visible, become stable, scroll into view, and not be covered by another element before interacting. Form controls must also be enabled. These checks intentionally make actions fail when a real user could not perform them.
+
+Action selectors support CSS, `text=`, `xpath=`, Playwright CSS extensions such
+as `:has-text()`, and `>>` selector chaining. CSS/text selectors traverse open
+Shadow DOM. The bundled selector helper runs inside Chromium; Node is not
+required for these actions. Closed shadow roots cannot be selected.
+
+`frame` selectors use the same selector syntax. Same-origin, cross-origin,
+and nested frames are resolved through CDP execution contexts. `goto` and URL
+waits target the specified frame without navigating or checking the main page.
+File uploads work in frames. With `useFileChooser: true`, `input` may identify
+a visible upload button opening a separate hidden file input; without it,
+`input` must identify a visible `<input type="file">`.
 Direct browser operations used by interactive actions are bounded by the configured actionability timeout, so an unresponsive page cannot hold a scenario indefinitely.
 Unknown action properties fail suite parsing instead of being ignored.
 
@@ -391,7 +403,7 @@ wait
 
 :::::
 
-Wait for X milliseconds or wait for an element to appear.  
+Wait for X milliseconds or wait for an element to exist and become visible.
 If there is navigation, add the URL pattern of the target page also.
 
 In `test` mode, URL replacements from the active replacement profile and suite/workspace `urlReplacements` are applied to `url` before matching. In `ref` mode, wait URLs are matched as written.

@@ -23,6 +23,28 @@ pub enum TestAction {
     Wait(WaitAction),
 }
 
+impl TestAction {
+    pub(crate) fn frame(&self) -> &Option<Frame> {
+        match self {
+            Self::Check(action) => &action.frame,
+            Self::Click(action) => &action.frame,
+            Self::Focus(action) => &action.frame,
+            Self::Goto(action) => &action.frame,
+            Self::Hide(action) => &action.frame,
+            Self::Hover(action) => &action.frame,
+            Self::Input(action) => &action.frame,
+            Self::Persist(action) => &action.frame,
+            Self::Press(action) => &action.frame,
+            Self::Remove(action) => &action.frame,
+            Self::Save(action) => &action.frame,
+            Self::Select(action) => &action.frame,
+            Self::Scroll(action) => &action.frame,
+            Self::Uncheck(action) => &action.frame,
+            Self::Wait(action) => &action.frame,
+        }
+    }
+}
+
 /// Shared property: frame selector for targeting iframes.
 /// Can be a single selector string or an array of selectors for nested iframes.
 #[derive(Serialize, Deserialize, Clone)]

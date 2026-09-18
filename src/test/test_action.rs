@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
+use super::runtime::Target as Page;
 use anyhow::{Result, anyhow};
-use chromiumoxide::Page;
 use chromiumoxide::cdp::browser_protocol::dom::SetFileInputFilesParams;
 use regex::Regex;
 use serde::de::DeserializeOwned;
@@ -20,7 +20,6 @@ use crate::{
             artifact_write_error, save_screenshot, state_path, validate_screenshot_step_name,
             validate_state_name,
         },
-        page_stability::wait_for_dom_ready,
     },
     types::{
         CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
@@ -404,7 +403,8 @@ async fn dispatch_key_stroke(
 }
 
 pub(crate) struct ActionExecutionContext<'a> {
-    pub page: &'a Page,
+    pub page: &'a chromiumoxide::Page,
+    pub runtime: &'a super::runtime::Runtime,
     pub storage: &'a super::storage_state::StorageState,
     pub test_suite: &'a TestSuite,
     pub scenario: &'a TestScenario,
@@ -416,7 +416,8 @@ pub(crate) struct ActionExecutionContext<'a> {
 
 pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestAction) -> Result<()> {
     let ActionExecutionContext {
-        page,
+        page: main_page,
+        runtime,
         storage,
         test_suite,
         scenario,
@@ -426,9 +427,14 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         log_prefix,
     } = ctx;
     let ac = actionability_config(config);
+    let target = runtime
+        .target(action.frame(), Duration::from_millis(ac.element_timeout_ms))
+        .await?;
+    let page = &target;
+    let frame = &None;
 
     match action {
-        TestAction::Check(CheckAction { check, frame }) => {
+        TestAction::Check(CheckAction { check, .. }) => {
             crate::progress::scenario_log!("{} Check element: {}", log_prefix, check);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, check, frame, &ac).await?;
@@ -468,7 +474,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             }
         }
 
-        TestAction::Click(ClickAction { click, frame }) => {
+        TestAction::Click(ClickAction { click, .. }) => {
             crate::progress::scenario_log!("{} Clicking element: {}", log_prefix, click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
@@ -481,7 +487,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             .await?;
         }
 
-        TestAction::Focus(FocusAction { focus, frame }) => {
+        TestAction::Focus(FocusAction { focus, .. }) => {
             crate::progress::scenario_log!("{} Focusing element: {}", log_prefix, focus);
             ensure_focusable(page, focus, frame, &ac).await?;
             focus_element(page, focus, frame, &ac).await?;
@@ -496,14 +502,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 page.goto(target_url.as_str()),
             )
             .await?;
-            wait_for_dom_ready(
-                page,
-                std::time::Duration::from_millis(config.element_timeout_ms),
-            )
-            .await?;
+            page.wait_for_ready(Duration::from_millis(config.element_timeout_ms))
+                .await?;
         }
 
-        TestAction::Hide(HideAction { hide, frame }) => {
+        TestAction::Hide(HideAction { hide, .. }) => {
             crate::progress::scenario_log!("{} Hiding element: {}", log_prefix, hide);
             // Wait for the element to exist so it is actually present (and hidden)
             // in the captured screenshot; a typo'd selector fails clearly instead
@@ -542,7 +545,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             }
         }
 
-        TestAction::Hover(HoverAction { hover, frame }) => {
+        TestAction::Hover(HoverAction { hover, .. }) => {
             crate::progress::scenario_log!("{} Hovering over element: {}", log_prefix, hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
@@ -561,7 +564,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             append,
             file,
             use_file_chooser,
-            frame,
+            ..
         }) => {
             if value.is_some() && file.is_some() {
                 anyhow::bail!("`input` action must not contain both `value` and `file`");
@@ -712,12 +715,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                     log_prefix,
                     input
                 );
-                if frame.is_some() {
-                    anyhow::bail!(
-                        "input file upload inside iframes is not supported yet; selector '{}' has a frame configured",
-                        input
-                    );
-                }
                 let root_dir = ROOT_DIR
                     .get()
                     .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
@@ -725,6 +722,18 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 let file_paths = resolve_file_paths(file, &visual_tests_dir)?;
 
                 let info = ensure_actionable(page, input, frame, &ac).await?;
+
+                if use_file_chooser.unwrap_or(false) {
+                    let offset = page.frame_offset().await?;
+                    page.choose_files(
+                        file_paths,
+                        offset.0 + info.center_x,
+                        offset.1 + info.center_y,
+                        &ac,
+                    )
+                    .await?;
+                    return Ok(());
+                }
 
                 let sel_escaped = escape_js_string(input);
                 let type_script = format!(
@@ -747,36 +756,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 )
                 .await?;
 
-                if use_file_chooser.unwrap_or(false) {
-                    use chromiumoxide::cdp::browser_protocol::page::SetInterceptFileChooserDialogParams;
-                    // Intercept the file chooser BEFORE clicking so the click does
-                    // not open the blocking native OS file-picker dialog (which
-                    // would hang the renderer). We still set the files via CDP.
-                    let enable = SetInterceptFileChooserDialogParams::builder()
-                        .enabled(true)
-                        .build()
-                        .map_err(|e| anyhow!("Failed to enable file chooser intercept: {:?}", e))?;
-                    let disable = SetInterceptFileChooserDialogParams::builder()
-                        .enabled(false)
-                        .build()
-                        .map_err(|e| {
-                            anyhow!("Failed to disable file chooser intercept: {:?}", e)
-                        })?;
-                    execute_action(page, enable, &ac, "enabling file chooser interception").await?;
-
-                    let click_result = async {
-                        cdp_click(page, info.center_x, info.center_y, &ac).await?;
-                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        Ok::<(), anyhow::Error>(())
-                    }
-                    .await;
-                    let disable_result =
-                        execute_action(page, disable, &ac, "disabling file chooser interception")
-                            .await;
-                    click_result?;
-                    disable_result?;
-                }
-
                 let cmd = SetFileInputFilesParams::builder()
                     .files(file_paths)
                     .node_id(element.node_id)
@@ -794,7 +773,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             let state = actionability::cdp_with_timeout(
                 action_timeout(&ac),
                 "capturing browser storage state",
-                storage.capture(page),
+                storage.capture(main_page),
             )
             .await?;
 
@@ -812,7 +791,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             );
         }
 
-        TestAction::Press(PressAction { press, key, frame }) => {
+        TestAction::Press(PressAction { press, key, .. }) => {
             crate::progress::scenario_log!(
                 "{} Pressing key '{}' on element: {}",
                 log_prefix,
@@ -826,7 +805,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             dispatch_key_stroke(page, &keystroke, &ac).await?;
         }
 
-        TestAction::Remove(RemoveAction { remove, frame }) => {
+        TestAction::Remove(RemoveAction { remove, .. }) => {
             crate::progress::scenario_log!("{} Removing element: {}", log_prefix, remove);
             // Wait for the element to exist before removing it so a typo'd selector
             // fails clearly instead of silently leaving the element in the capture.
@@ -871,14 +850,14 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             save_screenshot(
                 test_suite,
                 scenario,
-                page,
+                main_page,
                 ScreenshotType::Step(save.to_string()),
                 viewport_label,
             )
             .await?
         }
 
-        TestAction::Scroll(ScrollAction { scroll, frame }) => {
+        TestAction::Scroll(ScrollAction { scroll, .. }) => {
             crate::progress::scenario_log!("{} Scrolling to element: {}", log_prefix, scroll);
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
@@ -889,7 +868,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             select,
             value,
             label,
-            frame,
+            ..
         }) => {
             if value.is_some() && label.is_some() {
                 anyhow::bail!("Select action must have only either `value` or `label`, not both.");
@@ -1018,7 +997,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             }
         }
 
-        TestAction::Uncheck(UncheckAction { uncheck, frame }) => {
+        TestAction::Uncheck(UncheckAction { uncheck, .. }) => {
             crate::progress::scenario_log!("{} Unchecking element: {}", log_prefix, uncheck);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, uncheck, frame, &ac).await?;
@@ -1058,7 +1037,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             }
         }
 
-        TestAction::Wait(WaitAction { wait, url, frame }) => {
+        TestAction::Wait(WaitAction { wait, url, .. }) => {
             if let Some(url) = url {
                 let target_url = apply_action_url_replacements(url, url_replacements)?;
                 crate::progress::scenario_log!("{} Waiting for URL: {}", log_prefix, target_url);
