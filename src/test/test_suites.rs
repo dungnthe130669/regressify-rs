@@ -861,9 +861,8 @@ fn validate_external_capture_files_in(
                 };
                 for state_name in state_names {
                     crate::test::capture::validate_state_name(state_name)?;
-                    let state_path = output_dir
-                        .join("states")
-                        .join(format!("{}.json", state_name));
+                    let state_path =
+                        capture::persisted_state_source(root_dir, output_dir, state_name)?;
                     if checked_state_files.insert(state_path.clone()) {
                         crate::test::capture::read_persisted_state_file(&state_path, state_name)
                             .with_context(|| format!("Invalid persisted state for {}", context))?;

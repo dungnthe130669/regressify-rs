@@ -16,14 +16,14 @@ use super::{
     browsers::{LaunchOptions, launch_browser},
 };
 
-struct Site {
-    origin: String,
+pub(super) struct Site {
+    pub origin: String,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Site {
-    fn new(handler: impl Fn(Request) + Send + 'static) -> Result<Self> {
+    pub fn new(handler: impl Fn(Request) + Send + 'static) -> Result<Self> {
         let server = Server::http("127.0.0.1:0").map_err(|error| anyhow!("{error}"))?;
         let origin = format!("http://{}", server.server_addr());
         let stop = Arc::new(AtomicBool::new(false));

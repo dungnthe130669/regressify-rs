@@ -405,6 +405,7 @@ async fn dispatch_key_stroke(
 
 pub(crate) struct ActionExecutionContext<'a> {
     pub page: &'a Page,
+    pub storage: &'a super::storage_state::StorageState,
     pub test_suite: &'a TestSuite,
     pub scenario: &'a TestScenario,
     pub config: &'a ResolvedConfig,
@@ -416,6 +417,7 @@ pub(crate) struct ActionExecutionContext<'a> {
 pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestAction) -> Result<()> {
     let ActionExecutionContext {
         page,
+        storage,
         test_suite,
         scenario,
         config,
@@ -789,31 +791,12 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Persist(PersistAction { persist, .. }) => {
             validate_state_name(persist)?;
             crate::progress::scenario_log!("{} Persisting state: {}", log_prefix, persist);
-
-            // Collect cookies
-            let cookies = actionability::cdp_with_timeout(
+            let state = actionability::cdp_with_timeout(
                 action_timeout(&ac),
-                "reading browser cookies for persisted state",
-                page.get_cookies(),
+                "capturing browser storage state",
+                storage.capture(page),
             )
             .await?;
-            let cookies_json = serde_json::to_value(&cookies)?;
-
-            // Collect localStorage
-            let local_storage_str: String = evaluate_action(
-                page,
-                "JSON.stringify(Object.fromEntries(Object.entries(localStorage)))",
-                &ac,
-                "reading localStorage for persisted state",
-            )
-            .await?;
-            let local_storage: serde_json::Value = serde_json::from_str(&local_storage_str)
-                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-
-            let state = serde_json::json!({
-                "cookies": cookies_json,
-                "localStorage": local_storage,
-            });
 
             let state_path = state_path(persist)?;
             if let Some(state_dir) = state_path.parent() {

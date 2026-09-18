@@ -419,9 +419,27 @@ pub fn state_path(name: &str) -> Result<PathBuf> {
 /// Load a configured persisted state file and verify the data shape generated
 /// by the `persist` action before it alters browser state.
 pub fn load_persisted_state(name: &str) -> Result<(PathBuf, serde_json::Value)> {
-    let path = state_path(name)?;
+    let path = persisted_state_source(
+        common::ROOT_DIR.get_required()?,
+        common::REGRESSIFY_DIR.get_required()?,
+        name,
+    )?;
     let state = read_persisted_state_file(&path, name)?;
     Ok((path, state))
+}
+
+pub(crate) fn persisted_state_source(root: &Path, output: &Path, name: &str) -> Result<PathBuf> {
+    validate_state_name(name)?;
+    let current = output.join("states").join(format!("{}.json", name));
+    if current.exists() {
+        return Ok(current);
+    }
+    Ok(crate::config::resolve_optional_workspace_file(
+        root,
+        &format!(".states/{}.json", name),
+        "legacy persisted state",
+    )?
+    .unwrap_or(current))
 }
 
 pub(crate) fn read_persisted_state_file(path: &Path, name: &str) -> Result<serde_json::Value> {
@@ -439,6 +457,7 @@ pub(crate) fn read_persisted_state_file(path: &Path, name: &str) -> Result<serde
 }
 
 fn validate_persisted_state_value(state: &serde_json::Value, name: &str) -> Result<()> {
+    super::storage_state::validate_origins(state)?;
     let object = state
         .as_object()
         .ok_or_else(|| anyhow!("Persisted state '{}' must be a JSON object", name))?;
@@ -1063,6 +1082,27 @@ pub fn read_error_marker(png_path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn state_source_prefers_current_output_and_only_reads_legacy_fallback() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join(".regressify");
+        std::fs::create_dir(root.path().join(".states")).unwrap();
+        let legacy = root.path().join(".states/auth.json");
+        std::fs::write(&legacy, "{\"cookies\":[],\"origins\":[]}").unwrap();
+        assert_eq!(
+            persisted_state_source(root.path(), &output, "auth").unwrap(),
+            legacy.canonicalize().unwrap()
+        );
+        std::fs::create_dir_all(output.join("states")).unwrap();
+        let current = output.join("states/auth.json");
+        std::fs::write(&current, "{}").unwrap();
+        assert_eq!(
+            persisted_state_source(root.path(), &output, "auth").unwrap(),
+            current
+        );
+        assert!(legacy.exists());
+    }
 
     #[test]
     fn cookie_domains_expand_without_changing_other_attributes() {

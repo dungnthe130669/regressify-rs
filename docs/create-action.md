@@ -201,6 +201,13 @@ Type: `string`.
 
 Persists (saves) the current browser state, including cookies and local storage, to disk.
 
+New state files use Playwright's `{ cookies, origins: [{ origin, localStorage }] }`
+format. Local storage stays scoped to its origin and is restored before page
+scripts execute. Changes made during navigation are retained when persisting;
+later navigations do not reapply the original values. Legacy Rust
+`{ cookies, localStorage }` files remain readable, with their unscoped local
+storage assigned to the scenario's initial origin.
+
 Example:
 
 ```yml
@@ -222,6 +229,8 @@ state: user-aaaa
 State names must be non-empty portable filename components no longer than 80
 bytes. State files are written under the active Regressify output directory, so
 `--site-env staging` stores them under `.regressify__staging/states/`.
+When a named state is absent there, the TS workspace's `.states/<name>.json`
+is read as a migration fallback. The legacy file is never modified.
 Configured `state` and `restore` files are validated before Chromium launches;
 missing or malformed state files fail the command instead of silently using an
 empty session. State updates are written atomically so interrupted persistence

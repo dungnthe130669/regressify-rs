@@ -4,6 +4,7 @@ mod browsers;
 pub mod capture;
 mod cdp;
 mod page_stability;
+mod storage_state;
 mod test_action;
 mod test_scenario;
 mod test_suite;

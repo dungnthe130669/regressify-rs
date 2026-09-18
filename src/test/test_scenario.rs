@@ -441,6 +441,9 @@ async fn run_scenario_capture_inner(
         page.execute(cmd).await?;
     }
     apply_viewport(&page, viewport).await?;
+    let storage =
+        super::storage_state::StorageState::install(browser, &page, resolved.state.as_ref(), url)
+            .await?;
 
     // Load cookies before the first navigation so authenticated/session state
     // can affect the initial request.
@@ -454,18 +457,6 @@ async fn run_scenario_capture_inner(
     load_cookie_path(&page, cookie_path, log_prefix).await?;
 
     navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
-
-    // localStorage requires an origin, so it is restored after navigation. If
-    // anything was restored, reload so app code observes it during startup.
-    if let Some(ref state) = resolved.state
-        && load_state_local_storage(&page, state, log_prefix).await?
-    {
-        crate::progress::scenario_log!(
-            "{} Reloading page after restoring localStorage...",
-            log_prefix
-        );
-        navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
-    }
 
     // Apply CSS override if configured
     apply_css_override(&page, resolved, log_prefix).await?;
@@ -497,6 +488,7 @@ async fn run_scenario_capture_inner(
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
+                    storage: &storage,
                     test_suite,
                     scenario,
                     config: resolved,
@@ -517,6 +509,7 @@ async fn run_scenario_capture_inner(
             exec_test_action(
                 ActionExecutionContext {
                     page: &page,
+                    storage: &storage,
                     test_suite,
                     scenario,
                     config: resolved,
@@ -711,55 +704,6 @@ async fn load_state_cookies(
     }
 
     Ok(())
-}
-
-/// Load persisted localStorage after navigation, once an origin exists.
-async fn load_state_local_storage(
-    page: &chromiumoxide::Page,
-    state: &Needs,
-    log_prefix: &str,
-) -> Result<bool> {
-    let state_names = match state {
-        Needs::String(s) => vec![s.clone()],
-        Needs::StringArray(v) => v.clone(),
-    };
-
-    let mut restored = false;
-
-    for name in &state_names {
-        let (_, state) = load_persisted_state(name)?;
-
-        // Restore localStorage
-        if let Some(local_storage) = state.get("localStorage").and_then(|v| v.as_object()) {
-            if !local_storage.is_empty() {
-                crate::progress::scenario_log!(
-                    "{} Restoring localStorage from state: {}",
-                    log_prefix,
-                    name
-                );
-                restored = true;
-            }
-            for (key, value) in local_storage {
-                let val_str = value.as_str().ok_or_else(|| {
-                    anyhow!(
-                        "Persisted state '{}' localStorage key '{}' must have a string value",
-                        name,
-                        key
-                    )
-                })?;
-                let script = format!(
-                    "localStorage.setItem({}, {})",
-                    serde_json::to_string(key)?,
-                    serde_json::to_string(val_str)?
-                );
-                page.evaluate(script).await.map_err(|e| {
-                    anyhow!("Failed to restore localStorage key '{}': {:?}", key, e)
-                })?;
-            }
-        }
-    }
-
-    Ok(restored)
 }
 
 /// Load cookies from a YAML file.
