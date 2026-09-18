@@ -8,6 +8,49 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn update_dialog_preserves_the_draft_and_shows_build_status(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        window.click("software-updates", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("update-status").visible());
+        assert!(window.find("update-check").visible());
+        assert!(view.read(cx).unsaved());
+        assert!(!view.read(cx).updates.read(cx).install_on_close);
+        window.click("update-close", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn update_install_reuses_the_unsaved_cancel_guard(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        view.update(cx, |this, cx| {
+            this.guard(super::files::Pending::Update, window, cx)
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("guard-save").visible());
+        window.click("guard-cancel", cx);
+        assert!(view.read(cx).unsaved());
+        assert!(!view.read(cx).updates.read(cx).install_on_close);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable(
     cx: &mut TestAppContext,
 ) {

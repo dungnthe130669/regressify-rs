@@ -91,6 +91,7 @@ impl Workbench {
                         this.open_commands(&OpenCommands, window, cx)
                     })),
             )
+            .child(self.render_update_button(cx))
             .child(self.render_theme_picker())
             .child(self.file_menu(cx))
             .child(

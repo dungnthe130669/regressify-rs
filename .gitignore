@@ -6,3 +6,4 @@
 /.regressify__int/
 bitmaps_test/
 html_report/
+__pycache__/

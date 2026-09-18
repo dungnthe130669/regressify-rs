@@ -11,11 +11,12 @@ param(
     [switch]$Capture,
     [switch]$ScenarioFlows,
     [switch]$ArtifactFlows,
-    [switch]$InstanceFlows
+    [switch]$InstanceFlows,
+    [switch]$UpdateFlows
 )
 
 $ErrorActionPreference = 'Stop'
-if ($ScenarioFlows) { $Capture = $true }
+if ($ScenarioFlows -or $UpdateFlows) { $Capture = $true }
 $repository = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repository 'target/desktop-smoke'
 $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'))
@@ -605,6 +606,21 @@ try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($UpdateFlows) {
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+            Invoke-Control 'Software updates' -Pointer
+            Wait-Control 'Updates are unavailable in this build' | Out-Null
+            if (Test-ControlInvokable 'Check for updates') { throw 'An unconfigured build must not make update requests.' }
+            Capture-Window ('updates-' + $theme.ToLowerInvariant())
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+            Capture-Window ('updates-' + $theme.ToLowerInvariant() + '-compact')
+            Invoke-Control 'Close'
+        }
+        Write-Output 'Native update dialog, unavailable-feed state and light/dark compact layouts passed.'
+        return
+    }
     if ($InstanceFlows) {
         Test-InstanceFlows
         return

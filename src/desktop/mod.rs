@@ -7,6 +7,7 @@ pub mod results;
 pub mod runner;
 pub mod schema;
 pub mod session;
+pub mod updates;
 pub mod worker;
 pub mod workspace;
 

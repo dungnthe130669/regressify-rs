@@ -18,7 +18,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:directories", "dep:tempfile", "dep:schemars", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json"]
+desktop = ["local", "dep:yaml-edit", "dep:directories", "dep:tempfile", "dep:schemars", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
@@ -60,6 +60,9 @@ tree-sitter-yaml = { version = "0.7", optional = true }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
 yaml-edit = { version = "0.3.1", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 
 [dev-dependencies]
 tempfile = "3"

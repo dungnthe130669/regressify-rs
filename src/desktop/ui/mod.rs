@@ -40,6 +40,7 @@ mod reports;
 mod runs;
 mod sequence;
 mod source;
+mod updates;
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests;
@@ -144,6 +145,7 @@ pub struct Workbench {
     overrides_only: bool,
     collapsed_fields: BTreeSet<usize>,
     viewport_choices: choices::ViewportChoices,
+    updates: Entity<updates::UpdatePanel>,
 }
 
 impl Workbench {
@@ -313,6 +315,7 @@ impl Workbench {
             overrides_only: false,
             collapsed_fields: BTreeSet::new(),
             viewport_choices: choices::ViewportChoices::default(),
+            updates: cx.new(|_| updates::UpdatePanel::default()),
         }
     }
 
@@ -2251,7 +2254,10 @@ impl Workbench {
                     if this.close_after_preferences {
                         this.close_after_preferences = false;
                         if saved && !this.busy && !this.unsaved() && !this.runs.read(cx).running() {
-                            cx.quit();
+                            this.quit_or_install(cx);
+                        } else {
+                            this.updates
+                                .update(cx, |state, _| state.install_on_close = false);
                         }
                     }
                 }
@@ -2268,7 +2274,7 @@ impl Workbench {
             self.status = "Saving preferences...".into();
             cx.notify();
         } else {
-            cx.quit();
+            self.quit_or_install(cx);
         }
     }
 
@@ -2607,6 +2613,7 @@ pub fn launch(instance: Option<DesktopInstance>) {
                                 this.load_owned_workspace(instance, window, cx)
                             });
                         }
+                        view.update(cx, |this, cx| this.check_updates(window, cx));
                         cx.new(|cx| Root::new(view, window, cx))
                     },
                 );

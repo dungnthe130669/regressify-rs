@@ -10,7 +10,62 @@ fn generate_pe_header() {
     }
     // res.set_icon("favicon.ico");
     res.set("LegalCopyright", &copyright);
+    if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
+        let (version, parts) = desktop_version();
+        let packed = parts
+            .iter()
+            .fold(0u64, |value, part| (value << 16) | u64::from(*part));
+        res.set("OriginalFilename", "regressify-desktop.exe");
+        res.set("ProductName", "Regressify Desktop");
+        res.set("FileDescription", "Regressify Desktop");
+        res.set("FileVersion", &version);
+        res.set("ProductVersion", &version);
+        res.set_version_info(winres::VersionInfo::FILEVERSION, packed);
+        res.set_version_info(winres::VersionInfo::PRODUCTVERSION, packed);
+    }
     res.compile().expect("Failed to compile Windows resources!");
+}
+
+fn desktop_version() -> (String, [u16; 4]) {
+    let value = std::env::var("REGRESSIFY_DESKTOP_VERSION")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| std::env::var("CARGO_PKG_VERSION").expect("Cargo package version"));
+    let mut parts = [0; 4];
+    for (index, component) in value.split('.').enumerate() {
+        assert!(
+            index < 4
+                && !component.is_empty()
+                && component.bytes().all(|byte| byte.is_ascii_digit()),
+            "Desktop version must have one to four numeric components"
+        );
+        let number: u16 = component
+            .parse()
+            .expect("Invalid desktop version component");
+        assert!(number <= 9999, "Desktop version components must be 0-9999");
+        parts[index] = number;
+    }
+    (
+        format!("{}.{}.{}.{}", parts[0], parts[1], parts[2], parts[3]),
+        parts,
+    )
+}
+
+fn emit_desktop_release() {
+    println!("cargo:rerun-if-env-changed=REGRESSIFY_DESKTOP_VERSION");
+    println!("cargo:rerun-if-env-changed=TUYEN_DRIVE_APP");
+    let (version, _) = desktop_version();
+    let slug = std::env::var("TUYEN_DRIVE_APP").unwrap_or_default();
+    assert!(
+        slug.len() <= 64
+            && slug.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || byte == b'-'
+                || byte == b'_'),
+        "TUYEN_DRIVE_APP must be a Tuyen Drive app slug"
+    );
+    println!("cargo:rustc-env=REGRESSIFY_DESKTOP_VERSION={version}");
+    println!("cargo:rustc-env=TUYEN_DRIVE_APP={slug}");
 }
 
 fn emit_git_hash() {
@@ -58,6 +113,7 @@ fn emit_git_hash() {
 fn main() {
     // Always embed the git hash so it is available to every build profile.
     emit_git_hash();
+    emit_desktop_release();
 
     // GPUI's debug render trees exceed Windows' default 1 MiB main-thread stack.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")

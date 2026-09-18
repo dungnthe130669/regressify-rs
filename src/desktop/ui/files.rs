@@ -28,6 +28,7 @@ pub(super) enum Pending {
     Name(Operation),
     Reload,
     Close,
+    Update,
     Run(Box<runs::RunIntent>),
     CloseWorkspace,
 }
@@ -287,6 +288,7 @@ impl Workbench {
                 }
             }
             Pending::Close => self.finish_close(cx),
+            Pending::Update => self.finish_update(cx),
             Pending::Run(intent) => self.start_selected_run(*intent, window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
         }

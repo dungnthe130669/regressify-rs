@@ -6284,6 +6284,7 @@ dependencies = [
  "tree-sitter-yaml",
  "uuid",
  "walkdir",
+ "windows-sys 0.61.2",
  "winres",
  "yaml-edit",
 ]

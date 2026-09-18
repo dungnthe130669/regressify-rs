@@ -27,8 +27,35 @@ headless models; `gui` adds native widgets; `gui-tests` adds UI instrumentation.
 For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
 The desktop executable contains the engine; no separate `regressify` binary or
 executable picker is needed. It launches itself in a private headless worker mode
-to isolate run settings and browser processes. Signed installers and auto-update
-are not included.
+to isolate run settings and browser processes. Windows installation and in-app
+updates are described below; installer signing is not configured.
+
+## Windows Installation and Updates
+
+Windows x86_64 releases include `Regressify-Desktop-Setup-N.N.N.N-x64.exe`.
+Run the installer normally, without administrator elevation. It installs per user
+in `%LOCALAPPDATA%\Programs\Regressify Desktop`, creates a Start-menu shortcut,
+and registers an uninstaller. Workspaces and desktop preferences are preserved
+by updates and uninstall. The release executable links the MSVC runtime statically.
+
+Official Windows builds check for updates once at startup. The header's Software
+updates button shows the installed version and supports manual checks. Select
+Download update, then Install and restart. Downloads must match the manifest's
+size and SHA-256, and are checked again before execution. Only newer numeric
+versions and this app's immutable HTTPS installer URLs are accepted. A missing
+manifest (404) means no release is published; network failures remain visible in
+the dialog and do not interrupt editing.
+
+Installation requires active runs to finish and uses the usual Save/Discard/Cancel
+guard for a draft. The installer never forcibly closes other windows or workers;
+close them normally when prompted. New app launches are blocked during setup.
+After installation the initiating workspace reopens. Older installers cannot
+downgrade an installed version. Unconfigured development builds and non-Windows
+builds do not contact the update service.
+
+The public feed is `https://drive.tuyen.blog/downloads/<app-slug>/latest.txt`.
+Only the public app slug is embedded in the application, never the upload token.
+Installers are currently unsigned, so Windows may show SmartScreen warnings.
 
 ## Appearance and Commands
 
@@ -73,14 +100,59 @@ ARM64 (native macOS 15 runners), and Windows x86_64. Musl targets remain CLI-onl
 selecting only Musl with `desktop` fails early with an actionable error. With
 `both`, Musl jobs build the CLI and desktop jobs run for selected supported targets.
 
-Packages are `regressify-cli-<target>` or `regressify-desktop-<target>` in both
-ZIP and 7z formats, with SHA-256 sidecars. The existing release-branch checkout,
-destination repository, and `linux`/`macos`/`windows` release tags are retained.
+Untagged/manual archive builds produce `regressify-cli-<target>` or
+`regressify-desktop-<target>` in ZIP and 7z formats with SHA-256 sidecars. Their
+destination repository and `linux`/`macos`/`windows` release tags are unchanged.
+Every build now checks out the triggering ref, not a hard-coded release branch.
+
+Push a version tag to publish the Windows desktop installer:
+
+```sh
+git tag v0.2.1
+git push origin v0.2.1
+```
+
+Tag pushes build Windows desktop only. Tags must be `vN.N.N` or `vN.N.N.N`, with
+each numeric component between 0 and 9999. The tag supplies the desktop version,
+Windows executable metadata, installer name/version and Tuyen Drive version;
+three components normalize to four (for example `v0.2.1` becomes `0.2.1.0`).
+The Cargo/CLI package version is not changed. A manually dispatched workflow can
+also publish when run on a valid version tag with Windows desktop selected.
+Branch builds cannot publish to Tuyen Drive.
+
+Configure the repository secrets `TUYEN_DRIVE_APP` (app slug) and
+`TUYEN_DRIVE_TOKEN` (that app's upload token). Only the publish step receives the
+token. Tagged Windows jobs do not require the legacy GitHub archive-upload
+credentials. The version must be higher than the latest published version.
+Releases are serialized without cancelling an active publish. The uploader uses
+one-shot uploads up to 90 MiB and multipart uploads above that, assigns the
+`installer` role, and sends SHA-256. Tuyen Drive generates the manifest; it is
+never uploaded separately. HTTP 409 is successful only when the public manifest
+matches the exact version, immutable URL, size, and checksum of this installer.
+Published versions cannot be overwritten, including with a different rebuild of
+the same tag. CI retains the installer as an Actions artifact before publishing.
+
+The installer is compiled with Inno Setup 6. Release CI verifies static-runtime
+dependencies and exercises installation, reinstallation, active-process blocking,
+downgrade rejection and uninstall before upload. Local packaging of a desktop
+build whose executable version matches `0.2.0.0`:
+
+```powershell
+./ci/build-desktop-installer.ps1 -Version 0.2.0.0 -BinaryDirectory target/debug -Compiler 'C:/Tools/Inno Setup 6/ISCC.exe' -SmokeTest
+./ci/desktop-smoke.ps1 -SkipBuild -UpdateFlows
+```
+
+The installer smoke test refuses to run over an existing per-user installation;
+it installs only under a generated `target/installer-smoke-*` directory, suppresses
+shortcuts/relaunch, and removes its temporary installation registration. The
+native UI smoke requires an unconfigured development build and temporarily backs
+up/restores preferences, like the other desktop smoke modes.
 
 Release tests run before generating the matrix. To run them locally, install
-`PyYAML==6.0.3` for Python and run `python ci/test-release.py`. Bash is also required;
+`PyYAML==6.0.3` for Python 3.11+ and run `python ci/test-release.py`. Bash is also required;
 set `BASH_PATH` to Git Bash on Windows. The tests execute all 192 application/target
-selections and stub Cargo to check arguments without compiling or publishing.
+selections, stub Cargo to check arguments, and exercise upload protocols against
+offline fixtures without publishing.
 
 ## Workspace and Files
 

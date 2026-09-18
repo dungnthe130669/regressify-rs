@@ -4,10 +4,12 @@ use clap::Parser;
 use std::process::ExitCode;
 
 #[derive(Parser)]
-#[command(about = "Native Regressify QA workbench", version)]
+#[command(about = "Native Regressify QA workbench", version = regressify::desktop::updates::CURRENT_VERSION)]
 struct DesktopArgs {
     /// Workspace directory to open on startup
     workspace: Option<std::path::PathBuf>,
+    #[arg(long, hide = true)]
+    after_install: bool,
 }
 
 fn main() -> ExitCode {
@@ -15,6 +17,10 @@ fn main() -> ExitCode {
         .nth(1)
         .is_some_and(|argument| argument == regressify::desktop::worker::WORKER_FLAG)
     {
+        if let Err(error) = regressify::desktop::updates::protect_installation(false) {
+            eprintln!("{error:#}");
+            return ExitCode::FAILURE;
+        }
         return match regressify::desktop::worker::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -24,6 +30,14 @@ fn main() -> ExitCode {
         };
     }
     let args = DesktopArgs::parse();
+    if let Err(error) = regressify::desktop::updates::protect_installation(args.after_install) {
+        rfd::MessageDialog::new()
+            .set_title("Regressify Desktop")
+            .set_description(format!("{error:#}"))
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        return ExitCode::FAILURE;
+    }
     let instance = match args.workspace {
         Some(root) => {
             let result = regressify::desktop::workspace::Preferences::path().and_then(|path| {

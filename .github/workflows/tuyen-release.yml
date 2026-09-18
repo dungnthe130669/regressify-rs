@@ -1,5 +1,8 @@
 name: Release
 on:
+  push:
+    tags:
+      - 'v*.*.*'
   workflow_dispatch:
     inputs:
       build:
@@ -43,8 +46,8 @@ on:
         default: false
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -58,8 +61,12 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: release
           submodules: recursive
+
+      - uses: actions/setup-python@v7
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        with:
+          python-version: '3.12'
 
       - name: ⚡ Cache
         uses: actions/cache@v5
@@ -94,6 +101,7 @@ jobs:
         if: ${{ contains(matrix.os, 'windows') }}
 
       - name: Build artifacts
+        if: ${{ !(github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc') }}
         run: ci/make-release.sh
         env:
           FILE_NAME: ${{ matrix.binary }}
@@ -106,15 +114,69 @@ jobs:
           NO_DEFAULT_FEATURES: 1
         shell: bash
 
+      - name: Build Windows desktop release
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: pwsh
+        env:
+          REGRESSIFY_DESKTOP_VERSION: ${{ needs.set-matrix.outputs.version }}
+          TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
+          BINARY_GIT_HASH: ${{ github.sha }}
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo build --locked --no-default-features --features gui --bin regressify-desktop --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "Desktop build failed ($LASTEXITCODE)." }
+
+      - name: Build Windows installer
+        id: installer
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: pwsh
+        env:
+          INSTALLER_VERSION: ${{ needs.set-matrix.outputs.version }}
+        run: |
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $compiler)) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed ($LASTEXITCODE)." }
+          }
+          ./ci/build-desktop-installer.ps1 -Version $env:INSTALLER_VERSION -Compiler $compiler -RequireStaticRuntime -SmokeTest
+
+      - name: Retain Windows installer
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: regressify-desktop-windows-${{ needs.set-matrix.outputs.version }}
+          path: ${{ steps.installer.outputs.installer }}
+          if-no-files-found: error
+
+      - name: Publish Windows installer to Tuyen Drive
+        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        shell: pwsh
+        env:
+          TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
+          TUYEN_DRIVE_TOKEN: ${{ secrets.TUYEN_DRIVE_TOKEN }}
+          INSTALLER: ${{ steps.installer.outputs.installer }}
+        run: |
+          python ci/drive_release.py publish --installer $env:INSTALLER
+          if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive publishing failed ($LASTEXITCODE)." }
+
   set-matrix:
     runs-on: ubuntu-22.04
     name: Set Matrix
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v7
         with:
-          ref: release
+          python-version: '3.12'
+
+      - name: Resolve tagged installer version
+        id: version
+        env:
+          TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
+        run: python ci/drive_release.py prepare
 
       - name: Test release selection and build arguments
         run: |
@@ -135,7 +197,8 @@ jobs:
           import json
           import os
 
-          build = os.environ.get("BUILD") or "both"
+          tag_push = os.environ.get("GITHUB_EVENT_NAME") == "push" and os.environ.get("GITHUB_REF_TYPE") == "tag"
+          build = "desktop" if tag_push else os.environ.get("BUILD") or "both"
           if build not in ("cli", "desktop", "both"):
               raise SystemExit("Build must be cli, desktop, or both")
           applications = ("cli", "desktop") if build == "both" else (build,)
@@ -148,6 +211,8 @@ jobs:
               ("LINUX_GNU_X86_64", "ubuntu-22.04", "x86_64-unknown-linux-gnu", 10),
           ]
           selected = [platform for platform in platforms if os.environ.get(platform[0]) == "true"]
+          if tag_push:
+              selected = [platforms[2]]
           selected = selected or [platforms[-1]]
           include = []
           for _, runner, target, timeout in selected:
