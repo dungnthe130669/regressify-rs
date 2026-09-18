@@ -61,7 +61,11 @@ pub fn run_stdio() -> Result<()> {
                     let output = request.run.options.output_directory(&request.run.root);
                     let staging = directory.path().join("report");
                     super::deployment::stage_reports(&output, &job.suite_ids, &staging)?;
-                    client.deploy(&staging, &job.target).await?;
+                    let url = client.deploy(&staging, &job.target).await?;
+                    crate::progress::emit(crate::progress::Event::Deployed {
+                        target: job.target.name.clone(),
+                        url,
+                    });
                 }
                 Ok(())
             })

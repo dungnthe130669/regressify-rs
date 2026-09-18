@@ -89,7 +89,10 @@ Missing current/diff images fail deployment rather than publishing broken links;
 missing references remain valid report failures. Non-Standard plans reject security-sensitive `auth` and
 `networking` configuration rather than letting Azure silently discard it.
 
-Progress and the deployed site URL appear in Runs. Stop cancels the local worker
+The last selected target is remembered per workspace, and removing a target
+requires confirmation. Deploy and target management are also available from the
+command palette. Progress, the deployed site URL, and Open Site appear in Runs.
+Stop cancels the local worker
 process tree; it cannot undo a deployment already accepted by Azure. Deployment
 transport is covered by local mock-server tests; a live Azure smoke deployment
 requires a configured target and is not performed by the test suite.

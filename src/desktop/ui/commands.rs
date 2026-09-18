@@ -163,6 +163,22 @@ impl Workbench {
         let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
         let mut commands = vec![
             Command {
+                title: "Deploy selected reports",
+                group: "Workspace",
+                icon: Icon::CloudUpload,
+                action: Box::new(OpenDeployment),
+                enabled: workspace
+                    && !self.runs.read(cx).running()
+                    && self.runs.read(cx).selected_count() > 0,
+            },
+            Command {
+                title: "Deployment targets",
+                group: "Workspace",
+                icon: Icon::Settings2,
+                action: Box::new(OpenDeployment),
+                enabled: workspace && !self.runs.read(cx).running(),
+            },
+            Command {
                 title: "Run Test for current scenario",
                 group: "Run",
                 icon: Icon::Play,

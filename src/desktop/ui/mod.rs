@@ -62,6 +62,7 @@ actions!(
         FocusSettings,
         ToggleNavigator,
         CompleteSource,
+        OpenDeployment,
         OpenCommands
     ]
 );
@@ -2441,6 +2442,11 @@ impl Render for Workbench {
                 }),
             )
             .on_action(cx.listener(Self::open_commands))
+            .on_action(
+                cx.listener(|this, _: &OpenDeployment, window, cx| {
+                    this.open_deployment(window, cx)
+                }),
+            )
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::choose_deploy_target))
             .on_action(cx.listener(Self::toggle_list_choice))

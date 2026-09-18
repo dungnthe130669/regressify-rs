@@ -35,6 +35,7 @@ impl RunPanel {
                     Some(RunCommand::Init) => "Workspace initialized".into(),
                     Some(RunCommand::Install) => "Chromium is ready".into(),
                     Some(RunCommand::Snapshot) => "Report created".into(),
+                    Some(RunCommand::Deploy) => "Reports deployed".into(),
                     Some(RunCommand::Optimize) => "Image optimization completed".into(),
                     _ => "Command completed".into(),
                 }
@@ -77,223 +78,247 @@ impl RunPanel {
             progress.elapsed_ms
         };
         let selected_scenarios = self.selected_scenario_count();
-        let mut content =
-            div()
-                .flex()
-                .flex_col()
-                .gap_3()
-                .p_3()
-                .w_full()
-                .child(
-                    div()
-                        .flex()
-                        .items_start()
-                        .justify_between()
-                        .gap_3()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .children(self.manager.request.as_ref().map(|request| {
-                                    let label = format!(
-                                        "{}: {}",
-                                        if self.running() {
-                                            "Running"
-                                        } else {
-                                            "Last run"
-                                        },
-                                        request.command.action_label()
-                                    );
-                                    div()
-                                        .id("run-command-context")
-                                        .role(Role::Status)
-                                        .aria_label(label.clone())
-                                        .test_support()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(label)
-                                }))
-                                .child(
-                                    div()
-                                        .id("run-outcome-heading")
-                                        .role(Role::Status)
-                                        .aria_label(self.outcome_heading())
-                                        .test_support()
-                                        .text_base()
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(match &self.manager.outcome {
-                                            Some(RunOutcome::Failed(_)) => cx.theme().danger,
-                                            Some(RunOutcome::Cancelled) => cx.theme().warning,
-                                            Some(_) if counts.failed > 0 => cx.theme().danger,
-                                            _ => cx.theme().foreground,
-                                        })
-                                        .child(self.outcome_heading()),
-                                )
-                                .child(
-                                    div()
-                                        .id("live-phase")
-                                        .role(Role::Status)
-                                        .aria_label(phase.to_string())
-                                        .test_support()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(phase.to_string()),
-                                ),
-                        )
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .child(format!(
-                                    "{:02}:{:02}",
-                                    elapsed / 60_000,
-                                    elapsed / 1000 % 60
-                                )),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_2()
-                        .when(!has_run && !self.selection.is_empty(), |row| {
-                            row.child(
-                                Button::new("activity-select-suites")
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::ListChecks)
-                                    .label("Select suites")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.tab = 1;
-                                        cx.notify();
-                                    })),
+        let mut content = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .p_3()
+            .w_full()
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap_1()
+                            .children(self.manager.request.as_ref().map(|request| {
+                                let label = format!(
+                                    "{}: {}",
+                                    if self.running() {
+                                        "Running"
+                                    } else {
+                                        "Last run"
+                                    },
+                                    request.command.action_label()
+                                );
+                                div()
+                                    .id("run-command-context")
+                                    .role(Role::Status)
+                                    .aria_label(label.clone())
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(label)
+                            }))
+                            .child(
+                                div()
+                                    .id("run-outcome-heading")
+                                    .role(Role::Status)
+                                    .aria_label(self.outcome_heading())
+                                    .test_support()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(match &self.manager.outcome {
+                                        Some(RunOutcome::Failed(_)) => cx.theme().danger,
+                                        Some(RunOutcome::Cancelled) => cx.theme().warning,
+                                        Some(_) if counts.failed > 0 => cx.theme().danger,
+                                        _ => cx.theme().foreground,
+                                    })
+                                    .child(self.outcome_heading()),
                             )
-                        })
-                        .when(has_run, |row| {
-                            row.child(
-                                Button::new("activity-view-log")
-                                    .ghost()
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Terminal)
-                                    .label("View Log")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.show_all_logs(window, cx)
-                                    })),
-                            )
-                        })
-                        .when(
-                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
-                                && (counts.captured > 0
-                                    || self.manager.request.as_ref().is_some_and(|request| {
-                                        request.command == RunCommand::Approve
-                                    })),
-                            |row| {
-                                row.child(
-                                    Button::new("activity-compare-run")
-                                        .small()
-                                        .icon(gpui_kit::assets::IconName::Images)
-                                        .label("Compare This Run")
-                                        .disabled(self.disabled)
-                                        .on_click(cx.listener(|this, _, _, cx| {
-                                            this.compare_completed_run(false, cx)
-                                        })),
-                                )
-                            },
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .border_y_1()
-                        .border_color(cx.theme().border)
-                        .py_2()
-                        .gap_4()
-                        .child(self.metric(
-                            "total",
-                            if comparisons.total > 0 {
-                                "Screenshot comparisons"
-                            } else {
-                                "Scenarios / viewports"
-                            },
-                            if has_run {
-                                results.total
-                            } else {
-                                selected_scenarios
-                            },
-                            cx.theme().foreground,
-                        ))
-                        .child(self.metric("active", "Running", counts.running, cx.theme().primary))
-                        .child(self.metric("passed", "Passed", results.passed, cx.theme().success))
-                        .child(self.metric("failed", "Failed", results.failed, cx.theme().danger)),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .justify_between()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(format!(
-                                    "{} / {} scenario jobs finished",
-                                    counts.complete(),
-                                    counts.total
-                                ))
-                                .child(format!(
-                                    "{} queued  |  {} captured  |  {} cancelled",
-                                    counts.queued, counts.captured, counts.cancelled
-                                )),
-                        )
-                        .child(
-                            div()
-                                .h(px(5.))
-                                .w_full()
-                                .bg(cx.theme().muted)
-                                .rounded_sm()
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(counts.fraction()))
-                                        .bg(if counts.failed > 0 {
-                                            cx.theme().danger
-                                        } else if counts.cancelled > 0 {
-                                            cx.theme().warning
-                                        } else if counts.captured > 0 && counts.passed == 0 {
-                                            cx.theme().info
-                                        } else {
-                                            cx.theme().primary
-                                        })
-                                        .rounded_sm(),
-                                ),
-                        ),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .gap_3()
-                        .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
-                            "Suite activity"
-                        } else {
-                            "Selected suites"
-                        }))
-                        .child(
-                            Checkbox::new("activity-failed-only")
-                                .label("Failures only")
-                                .checked(self.failed_only)
-                                .disabled(!has_run)
-                                .on_change(cx.listener(|this, checked, _, cx| {
-                                    this.failed_only = *checked;
+                            .child(
+                                div()
+                                    .id("live-phase")
+                                    .role(Role::Status)
+                                    .aria_label(phase.to_string())
+                                    .test_support()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(phase.to_string()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_family(cx.theme().mono_font_family.clone())
+                            .child(format!(
+                                "{:02}:{:02}",
+                                elapsed / 60_000,
+                                elapsed / 1000 % 60
+                            )),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_2()
+                    .when(!has_run && !self.selection.is_empty(), |row| {
+                        row.child(
+                            Button::new("activity-select-suites")
+                                .small()
+                                .icon(gpui_kit::assets::IconName::ListChecks)
+                                .label("Select suites")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.tab = 1;
                                     cx.notify();
                                 })),
-                        ),
-                );
+                        )
+                    })
+                    .when(has_run, |row| {
+                        row.child(
+                            Button::new("activity-view-log")
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Terminal)
+                                .label("View Log")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.show_all_logs(window, cx)
+                                })),
+                        )
+                    })
+                    .when_some(
+                        progress.deployment.as_ref().filter(|_| {
+                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                        }),
+                        |row, deployment| {
+                            let url = deployment.url.clone();
+                            row.child(
+                                Button::new("deployment-open-site")
+                                    .small()
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::ExternalLink)
+                                    .label("Open Site")
+                                    .tooltip(format!("{}: {}", deployment.target, deployment.url))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Err(error) = open::that_detached(&url) {
+                                            this.status =
+                                                format!("Cannot open deployed site: {error}");
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                        },
+                    )
+                    .when(
+                        matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                            && (counts.captured > 0
+                                || self
+                                    .manager
+                                    .request
+                                    .as_ref()
+                                    .is_some_and(|request| request.command == RunCommand::Approve)),
+                        |row| {
+                            row.child(
+                                Button::new("activity-compare-run")
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Images)
+                                    .label("Compare This Run")
+                                    .disabled(self.disabled)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.compare_completed_run(false, cx)
+                                    })),
+                            )
+                        },
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .border_y_1()
+                    .border_color(cx.theme().border)
+                    .py_2()
+                    .gap_4()
+                    .child(self.metric(
+                        "total",
+                        if comparisons.total > 0 {
+                            "Screenshot comparisons"
+                        } else {
+                            "Scenarios / viewports"
+                        },
+                        if has_run {
+                            results.total
+                        } else {
+                            selected_scenarios
+                        },
+                        cx.theme().foreground,
+                    ))
+                    .child(self.metric("active", "Running", counts.running, cx.theme().primary))
+                    .child(self.metric("passed", "Passed", results.passed, cx.theme().success))
+                    .child(self.metric("failed", "Failed", results.failed, cx.theme().danger)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_between()
+                            .text_xs()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!(
+                                "{} / {} scenario jobs finished",
+                                counts.complete(),
+                                counts.total
+                            ))
+                            .child(format!(
+                                "{} queued  |  {} captured  |  {} cancelled",
+                                counts.queued, counts.captured, counts.cancelled
+                            )),
+                    )
+                    .child(
+                        div()
+                            .h(px(5.))
+                            .w_full()
+                            .bg(cx.theme().muted)
+                            .rounded_sm()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(counts.fraction()))
+                                    .bg(if counts.failed > 0 {
+                                        cx.theme().danger
+                                    } else if counts.cancelled > 0 {
+                                        cx.theme().warning
+                                    } else if counts.captured > 0 && counts.passed == 0 {
+                                        cx.theme().info
+                                    } else {
+                                        cx.theme().primary
+                                    })
+                                    .rounded_sm(),
+                            ),
+                    ),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap_3()
+                    .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
+                        "Suite activity"
+                    } else {
+                        "Selected suites"
+                    }))
+                    .child(
+                        Checkbox::new("activity-failed-only")
+                            .label("Failures only")
+                            .checked(self.failed_only)
+                            .disabled(!has_run)
+                            .on_change(cx.listener(|this, checked, _, cx| {
+                                this.failed_only = *checked;
+                                cx.notify();
+                            })),
+                    ),
+            );
         if let Some(error) = &progress.error {
             content = content.child(
                 div()

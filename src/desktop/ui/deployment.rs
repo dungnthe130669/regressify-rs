@@ -19,6 +19,7 @@ pub(super) struct DeploymentPanel {
     partial: bool,
     confirmed: bool,
     editing: bool,
+    removing: bool,
     editing_id: Option<String>,
     saving: bool,
     status: String,
@@ -39,6 +40,7 @@ impl DeploymentPanel {
             partial: false,
             confirmed: false,
             editing: false,
+            removing: false,
             editing_id: None,
             saving: false,
             status: String::new(),
@@ -62,6 +64,7 @@ impl DeploymentPanel {
         self.intent.is_some()
             && self.selected().is_some()
             && !self.editing
+            && !self.removing
             && !self.saving
             && (!self.partial || self.confirmed)
     }
@@ -166,6 +169,7 @@ impl Workbench {
                     state.suite_ids = suite_ids;
                     state.confirmed = false;
                     state.editing = false;
+                    state.removing = false;
                     state.saving = false;
                     state.status.clear();
                     cx.notify();
@@ -191,19 +195,26 @@ impl Workbench {
                 .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Azure Static Web Apps"))
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("deploy-target-menu").flex_1().min_w_0().label(selected.map(|target| target.name.clone()).unwrap_or_else(|| "No deployment targets".into()))
-                        .icon(gpui_kit::assets::IconName::ChevronDown).disabled(editing || saving || targets.is_empty())
+                        .icon(gpui_kit::assets::IconName::ChevronDown).disabled(editing || saving || state.removing || targets.is_empty())
                         .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
                             let mut menu = menu.action_context(focus.clone());
                             for target in &targets { menu = menu.menu(target.name.clone(), Box::new(ChooseDeployTarget { id: target.id.clone() })); }
                             menu
                         }}))
-                    .child(Button::new("deploy-target-add").ghost().icon(IconName::Plus).tooltip("Add target").accessibility_label("Add target").disabled(saving)
+                    .child(Button::new("deploy-target-add").ghost().icon(IconName::Plus).tooltip("Add target").accessibility_label("Add target").disabled(saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(false, window, cx))))
-                    .child(Button::new("deploy-target-edit").ghost().icon(gpui_kit::assets::IconName::Pencil).tooltip("Edit target").accessibility_label("Edit target").disabled(selected.is_none() || saving)
+                    .child(Button::new("deploy-target-edit").ghost().icon(gpui_kit::assets::IconName::Pencil).tooltip("Edit target").accessibility_label("Edit target").disabled(selected.is_none() || saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))
-                    .child(Button::new("deploy-target-remove").ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove target").accessibility_label("Remove target").disabled(selected.is_none() || saving)
-                        .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
-            if editing {
+                    .child(Button::new("deploy-target-remove").ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove target").accessibility_label("Remove target").disabled(selected.is_none() || saving || editing || state.removing)
+                        .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = true; cx.notify(); })))));
+            if state.removing {
+                body = body.child(format!("Remove target '{}'? The Azure app will not be deleted.", selected.map(|target| target.name.as_str()).unwrap_or_default()))
+                    .child(div().flex().justify_end().gap_2()
+                        .child(Button::new("deploy-remove-cancel").label("Keep target").disabled(saving)
+                            .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = false; cx.notify(); }))))
+                        .child(Button::new("deploy-remove-confirm").danger().label("Remove target").disabled(saving)
+                            .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
+            } else if editing {
                 for (label, id, input) in [("Target name", "deploy-name", &state.name), ("Deployment token environment variable", "deploy-token-env", &state.token), ("Azure environment", "deploy-environment", &state.environment)] {
                     body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).small().disabled(saving)));
                 }
@@ -248,6 +259,7 @@ impl Workbench {
         self.deployment.update(cx, |state, cx| {
             if !state.saving
                 && !state.editing
+                && !state.removing
                 && state
                     .settings
                     .targets
@@ -329,12 +341,12 @@ impl Workbench {
         settings.targets.retain(|previous| previous.id != target.id);
         settings.selected = Some(target.id.clone());
         settings.targets.push(target);
-        self.persist_deploy_targets(settings, window, cx);
+        self.persist_deploy_targets(settings, None, window, cx);
     }
 
     fn remove_deploy_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.deployment.read(cx);
-        if state.saving {
+        if state.saving || !state.removing {
             return;
         }
         let Some(target) = state.selected().cloned() else {
@@ -343,18 +355,21 @@ impl Workbench {
         let mut settings = state.settings.clone();
         settings.targets.retain(|item| item.id != target.id);
         settings.selected = settings.targets.first().map(|target| target.id.clone());
-        self.persist_deploy_targets(settings, window, cx);
+        self.persist_deploy_targets(settings, None, window, cx);
     }
 
     fn persist_deploy_targets(
         &mut self,
         settings: DeployTargets,
+        pending: Option<runs::RunIntent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(path) = self.deployment.read(cx).path.clone() else {
             return;
         };
+        self.busy = true;
+        self.sync_modal(cx);
         self.deployment.update(cx, |state, cx| {
             state.saving = true;
             cx.notify();
@@ -365,19 +380,28 @@ impl Workbench {
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
-            let _ = view.update_in(cx, |this, _, cx| {
+            let _ = view.update_in(cx, |this, window, cx| {
+                this.busy = false;
+                let succeeded = result.is_ok();
                 this.deployment.update(cx, |state, cx| {
                     state.saving = false;
                     match result {
                         Ok(settings) => {
                             state.settings = settings;
                             state.editing = false;
+                            state.removing = false;
                             state.status.clear();
                         }
                         Err(error) => state.status = format!("{error:#}"),
                     }
                     cx.notify();
                 });
+                this.sync_modal(cx);
+                if succeeded && let Some(intent) = pending {
+                    window.close_dialog(cx);
+                    this.guard_run(Box::new(intent), window, cx);
+                }
+                cx.notify();
             });
         })
         .detach();
@@ -398,6 +422,7 @@ impl Workbench {
         {
             return;
         }
+        let settings = state.settings.clone();
         let result = (|| -> Result<runs::RunIntent> {
             let mut intent = state
                 .intent
@@ -422,8 +447,7 @@ impl Workbench {
         })();
         match result {
             Ok(intent) => {
-                window.close_dialog(cx);
-                self.guard_run(Box::new(intent), window, cx);
+                self.persist_deploy_targets(settings, Some(intent), window, cx);
             }
             Err(error) => self.deployment.update(cx, |state, cx| {
                 state.status = format!("{error:#}");
@@ -441,6 +465,83 @@ mod tests {
     use std::time::Duration;
 
     #[gpui_kit::test]
+    async fn deployment_targets_can_be_added_edited_and_removed_without_secrets(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("deploy-target-add", cx);
+            window.render_frame(cx);
+            window.click("deploy-name", cx);
+            window.input("QA reports", cx);
+            window.click("deploy-token-env", cx);
+            window.input("QA_SWA_TOKEN", cx);
+            window.click("deploy-environment", cx);
+            window.input("preview", cx);
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            !state.saving && state.settings.targets.len() == 1
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("deploy-target-edit", cx);
+            window.render_frame(cx);
+            window.click("deploy-name", cx);
+            window.press("ctrl-a", cx);
+            window.input("QA preview", cx);
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            !state.saving && state.settings.targets[0].name == "QA preview"
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            let settings = DeployTargets::load(state.path.as_ref().unwrap()).unwrap();
+            assert_eq!(settings.targets[0].token_env, "QA_SWA_TOKEN");
+            window.click("deploy-target-remove", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).deployment.read(cx).settings.targets.len(), 1);
+            window.click("deploy-remove-cancel", cx);
+            window.render_frame(cx);
+            window.click("deploy-target-remove", cx);
+            window.render_frame(cx);
+            window.click("deploy-remove-confirm", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            !state.saving && state.settings.targets.is_empty()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            assert!(
+                DeployTargets::load(state.path.as_ref().unwrap())
+                    .unwrap()
+                    .targets
+                    .is_empty()
+            );
+            window.click("deploy-close", cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     async fn deploy_dialog_requires_selection_confirmation_and_preserves_unsaved_guard(
         cx: &mut TestAppContext,
     ) {
@@ -454,6 +555,7 @@ mod tests {
                     panel.deployment_intent(cx).unwrap()
                 });
                 this.deployment.update(cx, |state, cx| {
+                    state.path = Some(root.path().join("deployment-targets.json"));
                     state.root = this
                         .session
                         .workspace

@@ -109,6 +109,10 @@ pub enum Event {
     SuiteFinished {
         id: String,
     },
+    Deployed {
+        target: String,
+        url: String,
+    },
     Finished {
         error: Option<String>,
     },
@@ -293,6 +297,7 @@ pub struct ScenarioLog {
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveProgress {
+    pub deployment: Option<DeploymentResult>,
     pub phase: String,
     pub suites: BTreeMap<String, SuiteProgress>,
     pub scenarios: BTreeMap<usize, ScenarioProgress>,
@@ -303,6 +308,12 @@ pub struct LiveProgress {
     pub omitted_logs: usize,
     log_bytes: usize,
     captures: HashMap<(String, String), usize>,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeploymentResult {
+    pub target: String,
+    pub url: String,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -481,6 +492,18 @@ impl LiveProgress {
                     suite.finished = true;
                 }
             }
+            Event::Deployed { target, url } => {
+                if reqwest::Url::parse(&url).is_ok_and(|parsed| {
+                    parsed.scheme() == "https"
+                        && parsed.host_str().is_some()
+                        && parsed.username().is_empty()
+                        && parsed.password().is_none()
+                        && parsed.query().is_none()
+                        && parsed.fragment().is_none()
+                }) {
+                    self.deployment = Some(DeploymentResult { target, url });
+                }
+            }
             Event::Finished { error } => self.end(false, error),
         }
     }
@@ -628,6 +651,31 @@ fn bounded_log_message(mut message: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deployed_site_results_are_preserved_and_unsafe_urls_are_rejected() {
+        let mut live = LiveProgress::default();
+        for url in [
+            "javascript:alert(1)",
+            "https://user:secret@example.com",
+            "https://example.com/?token=private",
+        ] {
+            live.apply(record(Event::Deployed {
+                target: "QA".into(),
+                url: url.into(),
+            }));
+            assert!(live.deployment.is_none());
+        }
+        live.apply(record(Event::Deployed {
+            target: "QA".into(),
+            url: "https://reports.example.com/".into(),
+        }));
+        live.apply(record(Event::Finished { error: None }));
+        assert_eq!(live.deployment.as_ref().unwrap().target, "QA");
+        assert_eq!(
+            live.deployment.as_ref().unwrap().url,
+            "https://reports.example.com/"
+        );
+    }
     use super::*;
 
     fn record(event: Event) -> Record {
