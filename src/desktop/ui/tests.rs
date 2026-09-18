@@ -1281,12 +1281,13 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
 ) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
+    let scenario = cx.update(|cx| view.read(cx).session.suites[0].scenarios[0].clone());
     let run = directory
         .path()
         .join(".regressify/ui-test/bitmaps_test/reviewed-run");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [
-        {"status": "fail", "pair": {"label": "Checkout", "test": "../bitmaps_test/reviewed-run/checkout.png"}}
+        {"status": "fail", "pair": {"label": "Checkout", "scenarioId": scenario.id, "scenarioLabel": "Checkout", "test": "../bitmaps_test/reviewed-run/checkout.png"}}
     ]})).unwrap()).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -1313,7 +1314,17 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
             Some("Run: reviewed-run")
         );
         assert_eq!(window.find("run-confirm").label(), Some("Approve Results"));
-        assert_eq!(window.find("run-scope").label(), Some("Suites: ui-test"));
+        assert_eq!(
+            window.find("run-scope").label(),
+            Some(format!("Scenarios: ui-test / {}", scenario.label).as_str())
+        );
+        assert!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .scenario_selected("ui-test", &scenario.id)
+        );
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
         assert!(!view.read(cx).runs.read(cx).running());
         let path = directory.path().join("visual_tests/ui-test.tests.yaml");
         std::fs::write(
@@ -1450,6 +1461,146 @@ fn followup_approve_and_compare_use_the_last_matching_run_but_capture_stays_fres
                     );
                 }
             })
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn scenario_editor_actions_keep_drafts_and_do_not_change_checkbox_scope_implicitly(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        window.click(("sidebar-scenario", 0_usize), cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        window.click("scenario-run-reference", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("run-confirm").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(
+            window
+                .find("run-scope")
+                .label()
+                .unwrap()
+                .starts_with("Scenarios: ui-test /")
+        );
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        assert!(view.read(cx).session.dirty());
+        window.click("run-confirm", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("guard-save").label(), Some("Save and continue"));
+        window.click("guard-cancel", cx);
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert!(view.read(cx).session.dirty());
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn scenario_checklists_select_only_checked_scenarios_and_request_reference_directly(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let mut suites = this.session.suites.clone();
+            suites[0].scenarios[0].id = "home".into();
+            suites[0].scenarios[0].label = "Home".into();
+            suites[0]
+                .scenarios
+                .push(crate::desktop::workspace::ScenarioSummary {
+                    id: "checkout".into(),
+                    label: "Checkout".into(),
+                    url: "about:blank".into(),
+                });
+            this.runs
+                .update(cx, |panel, cx| panel.update_catalog(suites, None, cx));
+            this.main_tab = 1;
+        });
+        window.render_frame(cx);
+        window.within("run-tabs").click(1_usize, cx);
+        window.click("suite-expand-ui-test", cx);
+        window.click("scenario-check-ui-test:checkout", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        assert!(
+            !view
+                .read(cx)
+                .runs
+                .read(cx)
+                .scenario_selected("ui-test", "home")
+        );
+        assert!(!view.read(cx).runs.read(cx).all_selected("ui-test"));
+        window.click("suite-check-ui-test", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 2);
+        window.click("suite-check-ui-test", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        window.click("scenario-check-ui-test:checkout", cx);
+        window.click("scenario-ref-ui-test:checkout", cx);
+        assert!(window.find("run-confirm").visible());
+        assert_eq!(
+            window.find("run-scope").label(),
+            Some("Scenarios: ui-test / Checkout")
+        );
+        assert_eq!(
+            window.find("metric-total").label(),
+            Some("Scenarios / viewports: 1")
+        );
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn scenario_run_intents_freeze_ids_and_revalidate_saved_metadata(cx: &mut TestAppContext) {
+    use crate::desktop::runner::RunCommand;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let suites = this.session.suites.clone();
+            this.runs.update(cx, |panel, cx| {
+                let id = suites[0].scenarios[0].id.clone();
+                panel.set_scenario("ui-test", &id, cx).unwrap();
+                panel.choose(RunCommand::Reference, window, cx);
+                let intent = panel.prepare_intent(cx).unwrap();
+                assert_eq!(intent.request.options.scenarios.len(), 1);
+                assert_eq!(intent.request.options.scenarios[0].scenario, id);
+                assert_eq!(intent.request.options.scenarios[0].suite, "ui-test");
+                let mut fresh = suites.clone();
+                fresh[0].output_id = "saved-output".into();
+                let mut approval = intent.clone();
+                approval.request.command = RunCommand::Approve;
+                let request = approval.resolve(&fresh).unwrap();
+                assert_eq!(request.options.suites, vec!["saved-output"]);
+                assert_eq!(request.options.scenarios[0].suite, "saved-output");
+                assert_eq!(
+                    intent.resolve(&fresh).unwrap().options.scenarios[0].suite,
+                    "ui-test"
+                );
+                panel.select_all(false, cx);
+                assert_eq!(
+                    intent.resolve(&fresh).unwrap().options.scenarios[0].scenario,
+                    id
+                );
+                fresh[0].scenarios[0].id = "renamed".into();
+                assert!(intent.resolve(&fresh).is_err());
+                assert!(!panel.running());
+            });
         });
     })
     .unwrap();

@@ -95,6 +95,13 @@ or action is edited. The lower pane lists only the open suite's scenarios, with
 labels and URLs; actions are edited in the scenario's action sequence rather
 than nested in the sidebar. Both panes scroll independently.
 
+Scenario checkboxes select execution scope independently of the scenario being
+edited. A suite checkbox shows a mixed state for partial selection; clicking it
+selects the whole suite, then clears it on the next click. The sidebar's play
+button runs only that row's scenario. Runs > Suites also expands each suite into
+scenario checkboxes with direct Test and Reference buttons. Clearing the last
+scenario disables suite commands rather than reverting to an all-scenario run.
+
 Overflowing areas show persistent, draggable scrollbars in both themes, including
 navigation, settings, action sequences, activity, source/log editors, and result
 lists. Image previews have independent horizontal and vertical scrollbars when
@@ -258,8 +265,11 @@ More actions provides Build Report, Optimize Images, Install Chromium, and
 Initialize Workspace. Suite checkboxes in the navigator and Runs support multiple
 selections and Select all. No selection disables suite commands, never an
 implicit all-suite run. Invalid suites remain visible for
-repair and are excluded from Select all. Editor Run Test and Run Reference act
-on the open suite immediately, with Approve/Compare in More suite actions.
+repair and are excluded from Select all. Editor Run Suite Test and Run Suite
+Reference act on the whole open suite, with Approve/Compare in More suite actions.
+The scenario editor separately provides Run Scenario Test and Run Scenario
+Reference, also available while editing one of its actions. Command search
+exposes scenario-scoped Test, Reference, Compare, and Approve actions.
 Overview actions operate on checked suites. Command search also exposes direct
 open-suite actions. All routes start execution after any draft and artifact confirmations.
 Reference capture, approve, and optimize require action-named confirmations
@@ -273,15 +283,22 @@ Compare after test controls whether a test capture is immediately compared.
 Invalid settings block only commands that use them. Other drafts stay visible
 and retained, and unrelated options are omitted from the execution request.
 
-Each request freezes its command, options, and logical suite selection. The
+Each request freezes its command, options, logical suites, and exact scenario
+IDs when scenarios are selected. The
 run-specific draft prompt offers Save and continue or Run saved version, plus
 Cancel. Saving cannot silently switch the requested command. Preflight resolves
 those exact suites again, including any newly saved output IDs; it never substitutes
 another same-sized selection or expands an empty selection to all suites.
 
-The CLI has no single-scenario run flag. Selecting a scenario for editing does
-not restrict execution to it. Suite selections use exact escaped names;
-compare and approve resolve each selected suite's explicit output ID.
+Selecting a scenario for editing does not change run checkboxes. Use its direct
+scenario actions or the checkbox selection to restrict execution. Scenario runs
+include all configured viewports and saved steps, and still execute `needs`
+setup actions without separately capturing dependency scenarios. Unsaved new
+scenarios use the normal save guard; choosing Run saved version cannot run a new
+scenario absent from that saved suite. Removed or renamed IDs stop preflight for
+review rather than selecting another row. Whole-suite selections use exact
+escaped names; compare and approve resolve explicit output IDs and use recorded
+scenario metadata, never screenshot filename prefixes.
 The selected suite catalog is refreshed immediately before execution. A removed
 or newly invalid selection stops the run for review, while updated output IDs
 are resolved from disk. Workspace-only commands do not require valid suites.
@@ -338,8 +355,12 @@ tabs; live running/finished counts remain visible in the workspace navigator.
 Approve This Run promotes successful captures from the report being viewed,
 including historical runs, after an action-named confirmation. Its output folder,
 run ID, and suite output identity are pinned; if the suite output has changed,
-approval stops for review. Failed capture placeholders are still skipped by the
-engine. This is a run-wide approval, not approval of only the visible filter.
+approval stops for review. For reports with scenario metadata, approval is pinned
+to all scenarios recorded in that report, not just the visible search/filter.
+This preserves the scope of scenario-only comparison reports even when their
+run folder contains other captures. Older reports without scenario metadata
+retain whole-run approval. Failed capture placeholders are still skipped by the
+engine.
 
 Capture rows use scenario labels, with viewport and saved-step/target details on
 the secondary line. Newly captured labels are preserved in report metadata;

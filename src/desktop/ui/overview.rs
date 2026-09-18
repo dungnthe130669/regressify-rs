@@ -261,8 +261,8 @@ impl Workbench {
                             .primary()
                             .icon(gpui_kit::assets::IconName::Play)
                             .label(format!(
-                                "Run Test ({})",
-                                self.runs.read(cx).selected_count()
+                                "Run Test ({} scenarios)",
+                                self.runs.read(cx).selected_scenario_count()
                             ))
                             .disabled(
                                 self.busy
@@ -307,6 +307,8 @@ impl Workbench {
             }
             let entry = suite.entry.clone();
             let name = suite.name.clone();
+            let check_panel = self.runs.clone();
+            let all_selected = self.runs.read(cx).all_selected(&name);
             let counts = self.runs.read(cx).progress().counts(Some(&suite.output_id));
             let status = if suite.error.is_some() {
                 "Invalid"
@@ -340,18 +342,27 @@ impl Workbench {
                             .gap_3()
                             .px_3()
                             .child(
-                                Checkbox::new(("overview-check", index))
-                                    .checked(self.runs.read(cx).selected(&name))
-                                    .disabled(
-                                        self.busy
-                                            || self.runs.read(cx).running()
-                                            || suite.error.is_some(),
-                                    )
-                                    .on_change(cx.listener(move |this, checked, _, cx| {
-                                        this.runs.update(cx, |panel, cx| {
-                                            panel.toggle_suite(&name, *checked, cx)
+                                design::selection_checkbox(
+                                    ("overview-check", index),
+                                    all_selected,
+                                    self.runs.read(cx).selected(&name) && !all_selected,
+                                    self.busy
+                                        || self.runs.read(cx).running()
+                                        || suite.error.is_some(),
+                                    cx,
+                                )
+                                .accessibility_label(format!("Select suite {name}"))
+                                .on_change(
+                                    move |state, _, _, cx| {
+                                        check_panel.update(cx, |panel, cx| {
+                                            panel.toggle_suite(
+                                                &name,
+                                                state == gpui_kit::base::CheckboxState::Checked,
+                                                cx,
+                                            )
                                         })
-                                    })),
+                                    },
+                                ),
                             )
                             .child(
                                 div()

@@ -1,7 +1,7 @@
 //! Workspace-scoped persistence. Editor drafts never write directly to disk.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read, Write},
     path::{Component, Path, PathBuf},
@@ -99,6 +99,7 @@ pub struct ScenarioSummary {
 #[derive(Clone, Debug, Default)]
 pub struct SuiteSelection {
     names: BTreeSet<String>,
+    scenarios: BTreeMap<String, BTreeSet<String>>,
 }
 
 impl SuiteSelection {
@@ -113,6 +114,73 @@ impl SuiteSelection {
     }
     pub fn clear(&mut self) {
         self.names.clear();
+        self.scenarios.clear();
+    }
+    pub fn has_scenario_selection(&self) -> bool {
+        !self.scenarios.is_empty()
+    }
+    pub fn scenario_selected(&self, suite: &str, scenario: &str) -> bool {
+        self.contains(suite)
+            && self
+                .scenarios
+                .get(suite)
+                .is_none_or(|ids| ids.contains(scenario))
+    }
+    pub fn scenario_count(&self, suite: &SuiteSummary) -> usize {
+        suite
+            .scenarios
+            .iter()
+            .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
+            .count()
+    }
+    pub fn all_selected(&self, suite: &SuiteSummary) -> bool {
+        self.contains(&suite.name) && self.scenario_count(suite) == suite.scenarios.len()
+    }
+    pub fn toggle_scenario(
+        &mut self,
+        suite: &SuiteSummary,
+        id: &str,
+        selected: bool,
+    ) -> Result<()> {
+        ensure!(
+            suite.error.is_none(),
+            "Suite '{}' has configuration errors",
+            suite.name
+        );
+        ensure!(
+            suite
+                .scenarios
+                .iter()
+                .filter(|scenario| scenario.id == id)
+                .count()
+                == 1,
+            "Scenario '{id}' must match exactly one scenario in suite '{}'",
+            suite.name
+        );
+        let mut ids = self.scenarios.get(&suite.name).cloned().unwrap_or_else(|| {
+            if self.contains(&suite.name) {
+                suite
+                    .scenarios
+                    .iter()
+                    .map(|scenario| scenario.id.clone())
+                    .collect()
+            } else {
+                BTreeSet::new()
+            }
+        });
+        if selected {
+            ids.insert(id.to_string());
+        } else {
+            ids.remove(id);
+        }
+        if ids.is_empty() {
+            self.names.remove(&suite.name);
+            self.scenarios.remove(&suite.name);
+        } else {
+            self.names.insert(suite.name.clone());
+            self.scenarios.insert(suite.name.clone(), ids);
+        }
+        Ok(())
     }
     pub fn toggle(&mut self, suite: &SuiteSummary, selected: bool) -> Result<()> {
         ensure!(
@@ -125,9 +193,11 @@ impl SuiteSelection {
         } else {
             self.names.remove(&suite.name);
         }
+        self.scenarios.remove(&suite.name);
         Ok(())
     }
     pub fn select_all(&mut self, suites: &[SuiteSummary]) {
+        self.scenarios.clear();
         self.names = suites
             .iter()
             .filter(|suite| suite.error.is_none())
@@ -139,6 +209,21 @@ impl SuiteSelection {
             suites
                 .iter()
                 .any(|suite| &suite.name == name && suite.error.is_none())
+        });
+        self.scenarios.retain(|name, ids| {
+            let Some(suite) = suites
+                .iter()
+                .find(|suite| &suite.name == name && suite.error.is_none())
+            else {
+                return false;
+            };
+            ids.retain(|id| suite.scenarios.iter().any(|scenario| &scenario.id == id));
+            if ids.is_empty() {
+                self.names.remove(name);
+                false
+            } else {
+                true
+            }
         });
     }
     pub fn selected<'suite>(
@@ -154,6 +239,21 @@ impl SuiteSelection {
             selected.len() == self.len(),
             "Selected suites changed; refresh the workspace before running"
         );
+        for suite in &selected {
+            if let Some(ids) = self.scenarios.get(&suite.name) {
+                ensure!(
+                    !ids.is_empty()
+                        && ids.iter().all(|id| suite
+                            .scenarios
+                            .iter()
+                            .filter(|scenario| &scenario.id == id)
+                            .count()
+                            == 1),
+                    "Selected scenarios changed in suite '{}'; review the selection before running",
+                    suite.name
+                );
+            }
+        }
         Ok(selected)
     }
     pub fn filters(&self, suites: &[SuiteSummary], output_ids: bool) -> Result<Vec<String>> {
@@ -166,6 +266,33 @@ impl SuiteSelection {
                 } else {
                     &suite.name
                 })
+            })
+            .collect())
+    }
+    pub fn scenario_filters(
+        &self,
+        suites: &[SuiteSummary],
+        output_ids: bool,
+    ) -> Result<Vec<crate::cli::args::ScenarioFilter>> {
+        let selected = self.selected(suites)?;
+        if !self.has_scenario_selection() {
+            return Ok(Vec::new());
+        }
+        Ok(selected
+            .into_iter()
+            .flat_map(|suite| {
+                suite
+                    .scenarios
+                    .iter()
+                    .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
+                    .map(move |scenario| crate::cli::args::ScenarioFilter {
+                        suite: if output_ids {
+                            suite.output_id.clone()
+                        } else {
+                            suite.name.clone()
+                        },
+                        scenario: scenario.id.clone(),
+                    })
             })
             .collect())
     }
@@ -1081,6 +1208,77 @@ mod tests {
         assert_eq!(selected.filters(&suites, false).unwrap(), vec!["shop"]);
         selected.reconcile(&[]);
         assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn scenario_selection_transitions_never_expand_an_empty_subset() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        workspace.create_suite("shop").unwrap();
+        let mut suites = workspace.suite_catalog().unwrap();
+        suites[0].scenarios[0].id = "home".into();
+        suites[0].scenarios.push(ScenarioSummary {
+            id: "checkout".into(),
+            label: "Checkout".into(),
+            url: "about:blank".into(),
+        });
+        suites[0].output_id = "shop-output".into();
+        let mut selected = SuiteSelection::default();
+        selected
+            .toggle_scenario(&suites[0], "checkout", true)
+            .unwrap();
+        assert!(selected.contains("shop"));
+        assert!(!selected.all_selected(&suites[0]));
+        assert_eq!(selected.scenario_count(&suites[0]), 1);
+        assert_eq!(
+            selected.scenario_filters(&suites, true).unwrap(),
+            vec!["shop-output:checkout".parse().unwrap()]
+        );
+        selected.toggle(&suites[0], true).unwrap();
+        assert!(selected.all_selected(&suites[0]));
+        assert!(
+            selected
+                .scenario_filters(&suites, false)
+                .unwrap()
+                .is_empty()
+        );
+        selected.toggle_scenario(&suites[0], "home", false).unwrap();
+        assert_eq!(selected.scenario_count(&suites[0]), 1);
+        selected
+            .toggle_scenario(&suites[0], "checkout", false)
+            .unwrap();
+        assert!(selected.is_empty());
+        assert!(selected.scenario_filters(&suites, false).is_err());
+        assert!(
+            selected
+                .toggle_scenario(&suites[0], "missing", true)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scenario_selection_survives_new_scenarios_without_widening() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        workspace.create_suite("shop").unwrap();
+        let mut suites = workspace.suite_catalog().unwrap();
+        let id = suites[0].scenarios[0].id.clone();
+        let mut selected = SuiteSelection::default();
+        selected.toggle_scenario(&suites[0], &id, true).unwrap();
+        assert!(selected.all_selected(&suites[0]));
+        suites[0].scenarios.push(ScenarioSummary {
+            id: "new".into(),
+            label: "New".into(),
+            url: "about:blank".into(),
+        });
+        selected.reconcile(&suites);
+        assert_eq!(selected.scenario_count(&suites[0]), 1);
+        assert!(!selected.scenario_selected("shop", "new"));
+        suites[0].scenarios.remove(0);
+        assert!(selected.scenario_filters(&suites, false).is_err());
+        selected.reconcile(&suites);
+        assert!(selected.is_empty());
+        assert!(!selected.has_scenario_selection());
     }
 
     #[test]

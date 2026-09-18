@@ -159,8 +159,49 @@ impl Workbench {
         let workspace = self.session.workspace.is_some();
         let open = self.session.open.as_ref();
         let suite = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
+        let scenario = self.session.selection.scenario();
         let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
         let mut commands = vec![
+            Command {
+                title: "Run Test for current scenario",
+                group: "Run",
+                icon: Icon::Play,
+                action: Box::new(RunScenarioCommand {
+                    index: 0,
+                    scenario: scenario.unwrap_or(0),
+                }),
+                enabled: suite && scenario.is_some() && !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Run Reference for current scenario",
+                group: "Run",
+                icon: Icon::Camera,
+                action: Box::new(RunScenarioCommand {
+                    index: 1,
+                    scenario: scenario.unwrap_or(0),
+                }),
+                enabled: suite && scenario.is_some() && !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Compare Results for current scenario",
+                group: "Run",
+                icon: Icon::Images,
+                action: Box::new(RunScenarioCommand {
+                    index: 2,
+                    scenario: scenario.unwrap_or(0),
+                }),
+                enabled: suite && scenario.is_some() && !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Approve Results for current scenario",
+                group: "Run",
+                icon: Icon::Check,
+                action: Box::new(RunScenarioCommand {
+                    index: 3,
+                    scenario: scenario.unwrap_or(0),
+                }),
+                enabled: suite && scenario.is_some() && !self.runs.read(cx).running(),
+            },
             Command {
                 title: "Run Test for open suite",
                 group: "Run",

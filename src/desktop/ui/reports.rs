@@ -18,6 +18,7 @@ pub(super) struct ReportApproval {
     pub output: PathBuf,
     pub suite_id: String,
     pub run_id: String,
+    pub scenario_ids: Vec<String>,
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
@@ -1060,6 +1061,15 @@ impl Render for ResultsPanel {
                     output: self.root.clone()?,
                     suite_id: report.report.id.clone(),
                     run_id: report.run_id.clone(),
+                    scenario_ids: report
+                        .report
+                        .tests
+                        .iter()
+                        .map(|test| test.pair.scenario_id.clone())
+                        .collect::<Option<BTreeSet<_>>>()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .collect(),
                 })
             });
         let comparison = self.render_comparison(cx);

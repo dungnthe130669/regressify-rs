@@ -44,6 +44,28 @@ impl RunIntent {
                 suites,
                 matches!(request.command, RunCommand::Compare | RunCommand::Approve),
             )?;
+            for filter in &mut request.options.scenarios {
+                anyhow::ensure!(
+                    self.suite_names.contains(&filter.suite),
+                    "Selected scenario '{filter}' is outside the requested suites"
+                );
+                let suite = suites
+                    .iter()
+                    .find(|suite| suite.name == filter.suite)
+                    .ok_or_else(|| anyhow!("Selected suite '{}' no longer exists", filter.suite))?;
+                anyhow::ensure!(
+                    suite
+                        .scenarios
+                        .iter()
+                        .filter(|scenario| scenario.id == filter.scenario)
+                        .count()
+                        == 1,
+                    "Selected scenario '{filter}' changed or no longer exists; review the selection before running"
+                );
+                if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
+                    filter.suite = suite.output_id.clone();
+                }
+            }
             if let Some(expected) = &self.expected_output_ids {
                 anyhow::ensure!(
                     request.options.suites
@@ -87,6 +109,7 @@ pub(super) struct RunPanel {
     selection: SuiteSelection,
     catalog_error: Option<String>,
     collapsed: BTreeSet<String>,
+    expanded_selections: BTreeSet<String>,
     failed_only: bool,
     started: Option<Instant>,
     executed_suites: Vec<(String, String)>,
@@ -122,6 +145,7 @@ impl RunPanel {
             selection: SuiteSelection::default(),
             catalog_error: None,
             collapsed: BTreeSet::new(),
+            expanded_selections: BTreeSet::new(),
             failed_only: false,
             started: None,
             executed_suites: Vec::new(),
@@ -151,6 +175,22 @@ impl RunPanel {
         let Some(mut request) = self.manager.request.clone() else {
             return;
         };
+        if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
+            for filter in &mut request.options.scenarios {
+                let Some((name, _)) = self
+                    .executed_suites
+                    .iter()
+                    .find(|(_, id)| id == &filter.suite)
+                else {
+                    self.status =
+                        "The recorded scenario's suite is unavailable; review the run selection"
+                            .into();
+                    cx.notify();
+                    return;
+                };
+                filter.suite = name.clone();
+            }
+        }
         request.command = RunCommand::Compare;
         let intent = RunIntent {
             request,
@@ -242,6 +282,7 @@ impl RunPanel {
         self.catalog_error = None;
         self.log_text.clear();
         self.collapsed.clear();
+        self.expanded_selections.clear();
         self.failed_only = false;
         self.started = None;
         self.executed_suites.clear();
@@ -277,6 +318,101 @@ impl RunPanel {
     pub(super) fn selected_count(&self) -> usize {
         self.selection.len()
     }
+    pub(super) fn all_selected(&self, name: &str) -> bool {
+        self.suites
+            .iter()
+            .find(|suite| suite.name == name)
+            .is_some_and(|suite| self.selection.all_selected(suite))
+    }
+    pub(super) fn selected_scenario_count(&self) -> usize {
+        self.suites
+            .iter()
+            .map(|suite| self.selection.scenario_count(suite))
+            .sum()
+    }
+    pub(super) fn scenario_selected(&self, name: &str, id: &str) -> bool {
+        self.selection.scenario_selected(name, id)
+    }
+    pub(super) fn set_scenario(
+        &mut self,
+        name: &str,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        anyhow::ensure!(
+            !self.running() && !self.disabled,
+            "Another operation is already running"
+        );
+        let suite = self
+            .suites
+            .iter()
+            .find(|suite| suite.name == name)
+            .ok_or_else(|| anyhow!("Selected suite is no longer available"))?;
+        let mut selection = SuiteSelection::default();
+        selection.toggle_scenario(suite, id, true)?;
+        self.selection = selection;
+        self.confirmation = false;
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
+        Ok(())
+    }
+    pub(super) fn update_draft_suite(&mut self, suite: SuiteSummary, cx: &mut Context<Self>) {
+        if self.running() || self.disabled {
+            return;
+        }
+        if let Some(current) = self
+            .suites
+            .iter_mut()
+            .find(|current| current.entry.path == suite.entry.path)
+        {
+            *current = suite;
+            self.selection.reconcile(&self.suites);
+            self.confirmation = false;
+            cx.emit(RunEvent::SelectionChanged);
+            cx.notify();
+        }
+    }
+    pub(super) fn toggle_scenario(
+        &mut self,
+        name: &str,
+        id: &str,
+        checked: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled {
+            return;
+        }
+        if let Some(suite) = self.suites.iter().find(|suite| suite.name == name) {
+            if let Err(error) = self.selection.toggle_scenario(suite, id, checked) {
+                self.status = format!("{error:#}");
+            }
+            self.confirmation = false;
+            cx.emit(RunEvent::SelectionChanged);
+            cx.notify();
+        }
+    }
+    fn scope_label(&self) -> String {
+        if !self.command.supports_suites() {
+            "Workspace command".into()
+        } else if self.selection.is_empty() {
+            "No suites selected".into()
+        } else if self.selection.has_scenario_selection() {
+            let labels = self
+                .suites
+                .iter()
+                .flat_map(|suite| {
+                    suite
+                        .scenarios
+                        .iter()
+                        .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
+                        .map(|scenario| format!("{} / {}", suite.name, scenario.label))
+                })
+                .collect::<Vec<_>>();
+            format!("Scenarios: {}", labels.join(", "))
+        } else {
+            format!("Suites: {}", self.selected_names().join(", "))
+        }
+    }
     pub(super) fn approve_report(
         &mut self,
         report: &super::reports::ReportApproval,
@@ -300,6 +436,14 @@ impl RunPanel {
                     options: RunOptions {
                         regressify_dir: display_path(&report.output),
                         run_id: report.run_id.clone(),
+                        scenarios: report
+                            .scenario_ids
+                            .iter()
+                            .map(|id| crate::cli::args::ScenarioFilter {
+                                suite: name.clone(),
+                                scenario: id.clone(),
+                            })
+                            .collect(),
                         ..Default::default()
                     },
                 },
@@ -317,7 +461,15 @@ impl RunPanel {
                     .iter()
                     .filter(|suite| intent.suite_names.contains(&suite.name))
                 {
-                    if let Err(error) = selection.toggle(suite, true) {
+                    let selected = if report.scenario_ids.is_empty() {
+                        selection.toggle(suite, true)
+                    } else {
+                        report
+                            .scenario_ids
+                            .iter()
+                            .try_for_each(|id| selection.toggle_scenario(suite, id, true))
+                    };
+                    if let Err(error) = selected {
                         self.status = format!("{error:#}");
                         cx.notify();
                         return;
@@ -553,6 +705,9 @@ impl RunPanel {
             }
         }
         let mut options: RunOptions = serde_json::from_value(values)?;
+        if self.command.supports_suites() {
+            options.scenarios = self.selection.scenario_filters(&self.suites, false)?;
+        }
         let suite_names = self.selected_names();
         let mut expected_output_ids = None;
         if matches!(self.command, RunCommand::Approve | RunCommand::Compare)
@@ -560,6 +715,23 @@ impl RunPanel {
             && let Some(previous) = &self.manager.request
             && previous.command.supports_suites()
             && !previous.options.run_id.is_empty()
+            && (previous.options.scenarios.is_empty()
+                || (!options.scenarios.is_empty()
+                    && options.scenarios.iter().all(|selected| {
+                        previous.options.scenarios.iter().any(|old| {
+                            old.scenario == selected.scenario
+                                && if matches!(
+                                    previous.command,
+                                    RunCommand::Compare | RunCommand::Approve
+                                ) {
+                                    self.executed_suites.iter().any(|(name, id)| {
+                                        name == &selected.suite && id == &old.suite
+                                    })
+                                } else {
+                                    old.suite == selected.suite
+                                }
+                        })
+                    })))
             && self.root.as_ref().is_some_and(|root| {
                 options.output_directory(root) == previous.options.output_directory(&previous.root)
             })
@@ -718,58 +890,177 @@ impl RunPanel {
 impl RunPanel {
     fn render_selection(&self, cx: &mut Context<Self>) -> AnyElement {
         let disabled = self.disabled || self.running();
+        let all_selected = !self.selection.is_empty()
+            && self
+                .suites
+                .iter()
+                .filter(|suite| suite.error.is_none())
+                .all(|suite| self.selection.all_selected(suite));
+        let panel = cx.entity();
         let mut list = div().flex().flex_col().gap_2().child(
             div()
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(format!("{} suites selected", self.selection.len()))
+                .child(format!(
+                    "{} scenarios in {} suites selected",
+                    self.selected_scenario_count(),
+                    self.selection.len()
+                ))
                 .child(
-                    Checkbox::new("select-all-suites")
-                        .label("Select all")
-                        .checked(
-                            !self.selection.is_empty()
-                                && self.selection.len()
-                                    == self
-                                        .suites
-                                        .iter()
-                                        .filter(|suite| suite.error.is_none())
-                                        .count(),
-                        )
-                        .disabled(disabled || self.suites.is_empty())
-                        .on_change(
-                            cx.listener(|this, checked, _, cx| this.select_all(*checked, cx)),
-                        ),
+                    design::selection_checkbox(
+                        "select-all-suites",
+                        all_selected,
+                        !self.selection.is_empty() && !all_selected,
+                        disabled || self.suites.is_empty(),
+                        cx,
+                    )
+                    .accessibility_label("Select all")
+                    .child("Select all")
+                    .on_change(move |state, _, _, cx| {
+                        panel.update(cx, |panel, cx| {
+                            panel.select_all(state == gpui_kit::base::CheckboxState::Checked, cx)
+                        });
+                    }),
                 ),
         );
         for suite in &self.suites {
             let name = suite.name.clone();
-            list = list.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .py_1()
-                    .child(
-                        Checkbox::new(SharedString::from(format!("suite-check-{name}")))
-                            .label(format!(
-                                "{}  ({} scenarios)",
-                                suite.name,
-                                suite.scenarios.len()
-                            ))
-                            .checked(self.selection.contains(&name))
-                            .disabled(disabled || suite.error.is_some())
-                            .on_change(cx.listener(move |this, checked, _, cx| {
-                                this.toggle_suite(&name, *checked, cx)
-                            })),
-                    )
-                    .children(suite.error.as_ref().map(|error| {
+            let panel = cx.entity();
+            let expanded = self.expanded_selections.contains(&name);
+            let expand_name = name.clone();
+            let mut section = div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            design::selection_checkbox(
+                                SharedString::from(format!("suite-check-{name}")),
+                                self.selection.all_selected(suite),
+                                self.selection.contains(&name)
+                                    && !self.selection.all_selected(suite),
+                                disabled || suite.error.is_some(),
+                                cx,
+                            )
+                            .accessibility_label(format!("Select suite {name}"))
+                            .on_change(move |state, _, _, cx| {
+                                panel.update(cx, |panel, cx| {
+                                    panel.toggle_suite(
+                                        &name,
+                                        state == gpui_kit::base::CheckboxState::Checked,
+                                        cx,
+                                    )
+                                });
+                            }),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("suite-expand-{}", suite.name)))
+                                .ghost()
+                                .small()
+                                .flex_1()
+                                .min_w_0()
+                                .justify_start()
+                                .icon(if expanded {
+                                    IconName::ChevronDown
+                                } else {
+                                    IconName::ChevronRight
+                                })
+                                .label(format!(
+                                    "{} ({}/{} scenarios)",
+                                    suite.name,
+                                    self.selection.scenario_count(suite),
+                                    suite.scenarios.len()
+                                ))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    if !this.expanded_selections.remove(&expand_name) {
+                                        this.expanded_selections.insert(expand_name.clone());
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .children(suite.error.as_ref().map(|error| {
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().danger)
+                        .child(error.clone())
+                }));
+            if expanded {
+                for scenario in &suite.scenarios {
+                    let name = suite.name.clone();
+                    let id = scenario.id.clone();
+                    section = section.child(
                         div()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(error.clone())
-                    })),
-            );
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .pl_6()
+                            .py_1()
+                            .child(
+                                Checkbox::new(SharedString::from(format!(
+                                    "scenario-check-{name}:{id}"
+                                )))
+                                .label(scenario.label.clone())
+                                .flex_1()
+                                .min_w_0()
+                                .tooltip(format!("{}\n{id}", scenario.url))
+                                .checked(self.scenario_selected(&name, &id))
+                                .disabled(disabled || suite.error.is_some())
+                                .on_change(cx.listener(
+                                    move |this, checked, _, cx| {
+                                        this.toggle_scenario(&name, &id, *checked, cx)
+                                    },
+                                )),
+                            )
+                            .children([RunCommand::Test, RunCommand::Reference].into_iter().map(
+                                |command| {
+                                    let name = suite.name.clone();
+                                    let id = scenario.id.clone();
+                                    Button::new(SharedString::from(format!(
+                                        "scenario-{}-{name}:{id}",
+                                        command.argument()
+                                    )))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(if command == RunCommand::Test {
+                                        gpui_kit::assets::IconName::Play
+                                    } else {
+                                        gpui_kit::assets::IconName::Camera
+                                    })
+                                    .tooltip(format!(
+                                        "{}: {}",
+                                        command.action_label(),
+                                        scenario.label
+                                    ))
+                                    .accessibility_label(format!(
+                                        "{}: {}",
+                                        command.action_label(),
+                                        scenario.label
+                                    ))
+                                    .disabled(disabled || suite.error.is_some())
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        match this.set_scenario(&name, &id, cx) {
+                                            Ok(()) => this.request_command(command, window, cx),
+                                            Err(error) => {
+                                                this.status = format!("{error:#}");
+                                                cx.notify();
+                                            }
+                                        }
+                                    }))
+                                },
+                            )),
+                    );
+                }
+            }
+            list = list.child(section);
         }
         if let Some(error) = &self.catalog_error {
             list = list.child(div().text_color(cx.theme().danger).child(error.clone()));
@@ -782,16 +1073,7 @@ impl Render for RunPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let running = self.running();
         let focus = self.focus.clone();
-        let scope = if self.command.supports_suites() {
-            let names = self.selected_names();
-            if names.is_empty() {
-                "No suites selected".into()
-            } else {
-                format!("Suites: {}", names.join(", "))
-            }
-        } else {
-            "Workspace command".into()
-        };
+        let scope = self.scope_label();
         let content = match self.tab {
             0 => self.render_activity(cx),
             1 => div()

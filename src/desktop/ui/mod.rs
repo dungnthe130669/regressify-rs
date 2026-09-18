@@ -25,7 +25,7 @@ use super::{
     document::{ACTIONS, Document, DocumentKind},
     schema::{self, Field, FieldKind},
     session::{Selection, Session},
-    workspace::{Entry, OpenDocument, Preferences, display_path},
+    workspace::{self, Entry, OpenDocument, Preferences, display_path},
 };
 
 mod choices;
@@ -81,6 +81,12 @@ struct SelectView {
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 struct RunSuiteCommand {
     index: usize,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+struct RunScenarioCommand {
+    index: usize,
+    scenario: usize,
 }
 
 enum Control {
@@ -582,9 +588,109 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.run_open_scope(command, None, window, cx);
+    }
+
+    fn run_scenario(
+        &mut self,
+        command: super::runner::RunCommand,
+        scenario: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.run_open_scope(command, Some(scenario), window, cx);
+    }
+
+    fn draft_suite_summary(&self) -> Result<workspace::SuiteSummary> {
+        let open = self
+            .session
+            .open
+            .as_ref()
+            .ok_or_else(|| anyhow!("Open a test suite first"))?;
+        let mut summary = self
+            .session
+            .suites
+            .iter()
+            .find(|suite| suite.entry.path == open.entry.path)
+            .cloned()
+            .ok_or_else(|| anyhow!("The selected file is not an active test suite"))?;
+        let suite: crate::types::TestSuite = serde_json::from_value(self.value.clone())?;
+        summary.scenarios = suite
+            .scenarios
+            .iter()
+            .map(workspace::ScenarioSummary::from_scenario)
+            .collect();
+        summary.error = None;
+        Ok(summary)
+    }
+
+    fn toggle_open_scenario(
+        &mut self,
+        index: usize,
+        checked: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            self.flush_drafts(window, cx)?;
+            let suite = self.draft_suite_summary()?;
+            let name = suite.name.clone();
+            let id = suite
+                .scenarios
+                .get(index)
+                .ok_or_else(|| anyhow!("Scenario is no longer available"))?
+                .id
+                .clone();
+            self.runs.update(cx, |panel, cx| {
+                panel.update_draft_suite(suite, cx);
+                panel.toggle_scenario(&name, &id, checked, cx);
+            });
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.status = format!("{error:#}");
+        }
+        cx.notify();
+    }
+
+    fn run_open_scope(
+        &mut self,
+        command: super::runner::RunCommand,
+        scenario: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.busy || self.runs.read(cx).running() || !command.supports_suites() {
             return;
         }
+        if let Err(error) = self.flush_drafts(window, cx) {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
+        let scenario = match scenario
+            .map(|index| {
+                let suite = self.draft_suite_summary()?;
+                let id = suite
+                    .scenarios
+                    .get(index)
+                    .ok_or_else(|| anyhow!("Scenario is no longer available"))?
+                    .id
+                    .clone();
+                Ok::<_, anyhow::Error>((suite, id))
+            })
+            .transpose()
+        {
+            Ok(scenario) => scenario,
+            Err(error) => {
+                self.status = format!("{error:#}");
+                cx.notify();
+                return;
+            }
+        };
         let Some((workspace, entry)) = self
             .session
             .workspace
@@ -597,9 +703,14 @@ impl Workbench {
             "Checking selected suite...",
             move || workspace.runnable_suite(&entry),
             move |this, suite, window, cx| {
-                let result = this
-                    .runs
-                    .update(cx, |panel, cx| panel.set_suites(vec![suite], window, cx));
+                let result = this.runs.update(cx, |panel, cx| {
+                    if let Some((summary, id)) = scenario {
+                        panel.update_draft_suite(summary, cx);
+                        panel.set_scenario(&suite, &id, cx)
+                    } else {
+                        panel.set_suites(vec![suite], window, cx)
+                    }
+                });
                 if let Err(error) = result {
                     this.status = format!("{error:#}");
                     cx.notify();
@@ -1755,7 +1866,47 @@ impl Workbench {
                             .font_weight(FontWeight::SEMIBOLD)
                             .truncate()
                             .child(self.selection_title()),
-                    ),
+                    )
+                    .when_some(self.session.selection.scenario(), |heading, scenario| {
+                        heading.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .flex_wrap()
+                                .gap_2()
+                                .child(
+                                    Button::new("scenario-run-test")
+                                        .primary()
+                                        .small()
+                                        .icon(gpui_kit::assets::IconName::Play)
+                                        .label("Run Scenario Test")
+                                        .disabled(self.busy || self.runs.read(cx).running())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.run_scenario(
+                                                super::runner::RunCommand::Test,
+                                                scenario,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                                .child(
+                                    Button::new("scenario-run-reference")
+                                        .small()
+                                        .icon(gpui_kit::assets::IconName::Camera)
+                                        .label("Run Scenario Reference")
+                                        .disabled(self.busy || self.runs.read(cx).running())
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.run_scenario(
+                                                super::runner::RunCommand::Reference,
+                                                scenario,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -2066,6 +2217,13 @@ impl Render for Workbench {
                     this.run_open_suite(*command, window, cx);
                 }
             }))
+            .on_action(
+                cx.listener(|this, action: &RunScenarioCommand, window, cx| {
+                    if let Some(command) = super::runner::RunCommand::ALL.get(action.index) {
+                        this.run_scenario(*command, action.scenario, window, cx);
+                    }
+                }),
+            )
             .on_action(cx.listener(Self::open_commands))
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::toggle_list_choice))
@@ -2154,7 +2312,7 @@ impl Render for Workbench {
                                 Button::new("suite-run-reference")
                                     .small()
                                     .icon(gpui_kit::assets::IconName::Camera)
-                                    .label("Run Reference")
+                                    .label("Run Suite Reference")
                                     .tooltip("Capture reference images for the open suite")
                                     .disabled(self.busy || self.runs.read(cx).running())
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -2170,7 +2328,7 @@ impl Render for Workbench {
                                     .primary()
                                     .small()
                                     .icon(gpui_kit::assets::IconName::Play)
-                                    .label("Run Test")
+                                    .label("Run Suite Test")
                                     .tooltip("Run all scenarios in the open suite")
                                     .disabled(self.busy || self.runs.read(cx).running())
                                     .on_click(cx.listener(|this, _, window, cx| {

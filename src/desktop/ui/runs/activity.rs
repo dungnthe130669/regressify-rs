@@ -65,12 +65,7 @@ impl RunPanel {
         } else {
             progress.elapsed_ms
         };
-        let selected_scenarios: usize = self
-            .suites
-            .iter()
-            .filter(|suite| self.selection.contains(&suite.name))
-            .map(|suite| suite.scenarios.len())
-            .sum();
+        let selected_scenarios = self.selected_scenario_count();
         let mut content =
             div()
                 .flex()
@@ -431,8 +426,8 @@ impl RunPanel {
                     &suite.output_id,
                     &suite.name,
                     Counts {
-                        total: suite.scenarios.len(),
-                        queued: suite.scenarios.len(),
+                        total: self.selection.scenario_count(suite),
+                        queued: self.selection.scenario_count(suite),
                         ..Default::default()
                     },
                     Status::Queued,
@@ -440,7 +435,11 @@ impl RunPanel {
                     cx,
                 ));
                 if !self.collapsed.contains(&suite.output_id) {
-                    for scenario in &suite.scenarios {
+                    for scenario in suite
+                        .scenarios
+                        .iter()
+                        .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
+                    {
                         content = content.child(
                             div()
                                 .flex()

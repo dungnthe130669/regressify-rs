@@ -2,6 +2,58 @@ use super::*;
 
 use crate::desktop::workspace::ThemePreference;
 
+pub(super) fn selection_checkbox(
+    id: impl Into<ElementId>,
+    checked: bool,
+    partial: bool,
+    disabled: bool,
+    cx: &App,
+) -> gpui_kit::base::Checkbox {
+    let ring = cx.theme().ring;
+    gpui_kit::base::Checkbox::new(id)
+        .checked(checked)
+        .indeterminate(partial)
+        .disabled(disabled)
+        .flex()
+        .items_center()
+        .gap_2()
+        .border_1()
+        .border_color(cx.theme().transparent)
+        .rounded_sm()
+        .focus(move |style| style.border_color(ring))
+        .when(disabled, |control| control.opacity(0.5))
+        .child(
+            div()
+                .size(px(16.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .rounded_sm()
+                .border_color(if checked || partial {
+                    cx.theme().primary
+                } else {
+                    cx.theme().input
+                })
+                .bg(if checked || partial {
+                    cx.theme().primary
+                } else {
+                    cx.theme().background
+                })
+                .child(
+                    Icon::new(if partial {
+                        gpui_kit::assets::IconName::Minus
+                    } else {
+                        gpui_kit::assets::IconName::Check
+                    })
+                    .size(px(12.))
+                    .text_color(cx.theme().primary_foreground)
+                    .opacity(if checked || partial { 1. } else { 0. }),
+                ),
+        )
+}
+
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 pub(super) struct ChooseTheme {
     pub preference: ThemePreference,
