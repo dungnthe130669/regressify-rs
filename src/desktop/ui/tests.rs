@@ -687,6 +687,56 @@ async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+async fn guided_viewport_menu_opens_after_filtering_and_accepts_pointer_selection(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(
+        directory.path().join("common/_viewports.yaml"),
+        "- label: phone\n  width: 390\n  height: 844\n- label: desktop\n  width: 1280\n  height: 720\n",
+    )
+    .unwrap();
+    std::fs::write(
+        directory.path().join("regressify.yaml"),
+        "viewportNames: [desktop]\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.press("ctrl-shift-f", cx);
+        window.input("viewportNames", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-viewportNames").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choices-viewportNames", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.within("popup-menu").try_find(0_usize).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("phone (390 x 844)")
+        );
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["viewportNames"]
+            == serde_json::json!(["desktop", "phone"])
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn guided_choices_keep_inherited_viewports_and_draft_dependencies_consistent(
     cx: &mut TestAppContext,
 ) {

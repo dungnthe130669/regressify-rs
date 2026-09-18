@@ -725,16 +725,16 @@ try {
     Send-FixtureKeys '{ESC}'
     Send-FixtureKeys '^+f'
     Send-FixtureText 'viewportNames'
-    Invoke-Control 'Choose viewports' -Pointer
+    Invoke-Control 'Choose viewports'
     Wait-Control 'phone (390 x 844)' | Out-Null
     Capture-Window 'viewport-choices'
     Invoke-Control 'phone (390 x 844)'
-    Invoke-Control 'Choose viewports' -Pointer
+    Invoke-Control 'Choose viewports'
     Invoke-Control 'desktop (1280 x 720)'
     Send-FixtureKeys '^+f'
     Send-FixtureKeys '^a'
     Send-FixtureText 'needs'
-    Invoke-Control 'Choose dependencies' -Pointer
+    Invoke-Control 'Choose dependencies'
     Wait-Control 'Signed-in account (signed-in-account)' | Out-Null
     Capture-Window 'dependency-choices'
     Send-FixtureKeys '{ESC}'
