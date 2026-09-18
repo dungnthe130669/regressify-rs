@@ -14,27 +14,57 @@ use crate::{
             save_screenshot, saved_screenshot_types, screenshot_type_description,
             validate_cookie_value, validate_screenshot_types, write_error_screenshots,
         },
-        page_stability::{
-            freeze_animations, trigger_lazy_loading, wait_for_dom_ready, wait_for_page_settle,
-        },
+        page_stability::{freeze_animations, trigger_lazy_loading, wait_for_page_settle},
         test_action::{ActionExecutionContext, exec_test_action},
     },
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
 };
 
-async fn navigate_and_wait_for_dom(
-    page: &chromiumoxide::Page,
-    url: &str,
-    element_timeout_ms: u64,
-) -> Result<()> {
-    let timeout = std::time::Duration::from_millis(element_timeout_ms);
-    crate::test::actionability::cdp_with_timeout(
-        timeout,
-        "navigating scenario URL",
-        page.goto(url),
-    )
-    .await?;
-    wait_for_dom_ready(page, timeout).await
+fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
+    use crate::types::{ClickAction, HoverAction, InputAction, ScrollAction};
+    if scenario.actions.is_some() {
+        return Vec::new();
+    }
+    let mut actions = Vec::new();
+    let typing = scenario
+        .key_press_selectors
+        .as_deref()
+        .or_else(|| {
+            scenario
+                .key_press_selector
+                .as_ref()
+                .map(std::slice::from_ref)
+        })
+        .unwrap_or_default();
+    for entry in typing {
+        actions.push(TestAction::Input(InputAction {
+            input: entry.selector.clone(),
+            value: Some(entry.key_press.clone()),
+            append: Some(true),
+            file: None,
+            use_file_chooser: None,
+            frame: None,
+        }));
+    }
+    let selectors = |multiple: &Option<crate::types::Selectors>, single: &Option<String>| {
+        multiple
+            .as_ref()
+            .map(|value| value.values().to_vec())
+            .unwrap_or_else(|| single.iter().cloned().collect())
+    };
+    for hover in selectors(&scenario.hover_selectors, &scenario.hover_selector) {
+        actions.push(TestAction::Hover(HoverAction { hover, frame: None }));
+    }
+    for click in selectors(&scenario.click_selectors, &scenario.click_selector) {
+        actions.push(TestAction::Click(ClickAction { click, frame: None }));
+    }
+    if let Some(scroll) = &scenario.scroll_to_selector {
+        actions.push(TestAction::Scroll(ScrollAction {
+            scroll: scroll.clone(),
+            frame: None,
+        }));
+    }
+    actions
 }
 
 /// Collect all prerequisite actions from `needs` dependencies recursively.
@@ -193,6 +223,7 @@ pub(crate) struct ScenarioRequest<'a> {
 /// Bundled inputs for a single scenario/viewport capture.
 #[derive(Clone, Copy)]
 struct CaptureContext<'a> {
+    is_reference: bool,
     test_suite: &'a TestSuite,
     scenario: &'a TestScenario,
     all_scenarios: &'a [TestScenario],
@@ -257,6 +288,7 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
     }
 
     let capture_context = CaptureContext {
+        is_reference: !should_apply_url_replacements,
         test_suite,
         scenario,
         all_scenarios,
@@ -416,6 +448,7 @@ async fn run_scenario_capture_inner(
     screenshot_types: &[ScreenshotType],
 ) -> Result<()> {
     let CaptureContext {
+        is_reference,
         test_suite,
         scenario,
         all_scenarios,
@@ -460,7 +493,60 @@ async fn run_scenario_capture_inner(
         .unwrap_or("common/_cookies.yaml");
     load_cookie_path(&page, cookie_path, log_prefix).await?;
 
-    navigate_and_wait_for_dom(&page, url, resolved.element_timeout_ms).await?;
+    let run_hook = |script: Option<&str>| {
+        let script = script.map(str::to_string);
+        let endpoint = browser.websocket_address().to_string();
+        let target = page.target_id().as_ref().to_string();
+        async move {
+            if let Some(script) = script {
+                let root = common::ROOT_DIR.get_required()?;
+                let script = config::resolve_workspace_file(root, &script, "Node hook")?;
+                let mut hook_scenario = serde_json::to_value(scenario)?;
+                hook_scenario["requiredLogin"] = serde_json::json!(resolved.required_login);
+                hook_scenario["url"] = serde_json::json!(url);
+                hook_scenario["testSuite"] = serde_json::json!(test_suite.id);
+                let payload = serde_json::json!({"script": script, "endpoint": endpoint, "target": target,
+                    "scenario": hook_scenario, "viewport": viewport.map(|value| serde_json::json!({"label": value.label, "width": value.width, "height": value.height})),
+                    "isReference": is_reference, "config": resolved});
+                super::node_hook::run(
+                    root,
+                    payload,
+                    std::time::Duration::from_millis(resolved.element_timeout_ms),
+                )
+                .await?;
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+    };
+    run_hook(scenario.on_before_script.as_deref()).await?;
+
+    let target = runtime
+        .target(
+            &None,
+            std::time::Duration::from_millis(resolved.element_timeout_ms),
+        )
+        .await?;
+    let options = scenario
+        .engine_options
+        .as_ref()
+        .and_then(|value| value.goto_parameters.as_ref())
+        .cloned()
+        .unwrap_or_default();
+    target
+        .navigate(url, &options, resolved.element_timeout_ms)
+        .await?;
+    if let Some(selector) = &scenario.ready_selector {
+        let timeout = scenario
+            .ready_timeout
+            .filter(|value| *value > 0)
+            .unwrap_or(resolved.element_timeout_ms);
+        let readiness = crate::test::actionability::ActionabilityConfig {
+            element_timeout_ms: timeout,
+            actionability_timeout_ms: timeout,
+            ..Default::default()
+        };
+        crate::test::actionability::wait_for_selector(&target, selector, &None, &readiness).await?;
+    }
 
     hooks.apply(&page).await?;
 
@@ -518,31 +604,27 @@ async fn run_scenario_capture_inner(
 
     hooks.apply(&page).await?;
 
-    // Execute clickSelector if configured (clicks the element after all actions)
-    if let Some(ref click_sel) = scenario.click_selector {
-        crate::progress::scenario_log!("{} Clicking selector: {}", log_prefix, click_sel);
-        use crate::test::actionability::{self as act, ActionabilityConfig};
-        let ac = ActionabilityConfig {
-            element_timeout_ms: resolved.element_timeout_ms,
-            actionability_timeout_ms: resolved.actionability_timeout_ms,
-            ..Default::default()
-        };
-        let target = runtime
-            .target(
-                &None,
-                std::time::Duration::from_millis(ac.element_timeout_ms),
-            )
-            .await?;
-        let info = act::ensure_actionable(&target, click_sel, &None, &ac).await?;
-        let frame_offset = act::get_frame_offset(&target, &None, &ac).await?;
-        act::cdp_click(
-            &target,
-            frame_offset.0 + info.center_x,
-            frame_offset.1 + info.center_y,
-            &ac,
+    for action in &legacy_actions(scenario) {
+        hooks.apply(&page).await?;
+        exec_test_action(
+            ActionExecutionContext {
+                page: &page,
+                runtime: &runtime,
+                storage: &storage,
+                test_suite,
+                scenario,
+                config: resolved,
+                url_replacements,
+                viewport_label,
+                log_prefix,
+            },
+            action,
         )
         .await?;
     }
+
+    run_hook(scenario.on_ready_script.as_deref()).await?;
+    hooks.apply(&page).await?;
 
     // Apply postInteractionWait from resolved config
     if let Some(wait_ms) = resolved.post_interaction_wait
@@ -835,6 +917,19 @@ fn parse_same_site(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_shortcuts_preserve_order_and_yield_to_actions() {
+        let mut scenario: TestScenario = serde_yaml::from_str("url: https://example.com\nkeyPressSelector: {selector: '#input', keyPress: hello}\nhoverSelectors: ['#one', '#two']\nclickSelectors: ['#first', '#second']\nscrollToSelector: '#last'\n").unwrap();
+        let actions = legacy_actions(&scenario);
+        assert_eq!(actions.len(), 6);
+        assert!(matches!(actions[0], TestAction::Input(_)));
+        assert!(matches!(actions[1], TestAction::Hover(_)));
+        assert!(matches!(actions[3], TestAction::Click(_)));
+        assert!(matches!(actions[5], TestAction::Scroll(_)));
+        scenario.actions = Some(Vec::new());
+        assert!(legacy_actions(&scenario).is_empty());
+    }
 
     #[test]
     fn explicit_viewports_files_must_exist_inside_the_workspace() {

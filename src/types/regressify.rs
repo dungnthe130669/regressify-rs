@@ -86,6 +86,18 @@ pub struct TestScenario {
     /// Documentation: https://tuyen.blog/optimizely-cms/testing/create-action/
     pub actions: Option<Vec<TestAction>>,
 
+    pub hover_selector: Option<String>,
+    pub hover_selectors: Option<Selectors>,
+    pub click_selectors: Option<Selectors>,
+    pub key_press_selector: Option<KeyPressSelector>,
+    pub key_press_selectors: Option<Vec<KeyPressSelector>>,
+    pub scroll_to_selector: Option<String>,
+    pub ready_selector: Option<String>,
+    pub ready_timeout: Option<u64>,
+    pub engine_options: Option<EngineOptions>,
+    pub on_before_script: Option<String>,
+    pub on_ready_script: Option<String>,
+
     pub basic_auth: Option<BasicAuthConfig>,
 
     pub bypass_csp: Option<bool>,
@@ -142,6 +154,50 @@ pub enum Selectors {
     String(String),
 
     StringArray(Vec<String>),
+}
+
+impl Selectors {
+    pub fn values(&self) -> &[String] {
+        match self {
+            Self::String(value) => std::slice::from_ref(value),
+            Self::StringArray(values) => values,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub struct KeyPressSelector {
+    pub selector: String,
+    pub key_press: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub struct EngineOptions {
+    pub goto_parameters: Option<GotoParameters>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub struct GotoParameters {
+    pub wait_until: Option<NavigationWait>,
+    pub timeout: Option<u64>,
+    pub referer: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+pub enum NavigationWait {
+    Commit,
+    DomContentLoaded,
+    #[default]
+    Load,
+    NetworkIdle,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

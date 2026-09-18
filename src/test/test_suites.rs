@@ -828,6 +828,14 @@ fn validate_external_capture_files_in(
             config::basic_auth::resolve(&resolved.basic_auth)
                 .with_context(|| format!("Invalid basicAuth for {}", context))?;
 
+            for script in [&scenario.on_before_script, &scenario.on_ready_script]
+                .into_iter()
+                .flatten()
+            {
+                super::node_hook::validate(root_dir, script)
+                    .with_context(|| format!("Invalid Node hook for {}", context))?;
+            }
+
             let cookie_path = match resolved.cookie_path.as_deref() {
                 Some(cookie_path) => Some(
                     config::resolve_workspace_file(root_dir, cookie_path, "cookiePath")

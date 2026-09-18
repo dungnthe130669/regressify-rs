@@ -212,6 +212,51 @@ fn interaction_page(request: Request) {
 
 #[tokio::test]
 #[ignore = "requires a locally installed Chromium browser"]
+async fn navigation_options_wait_for_load_and_network_idle() -> Result<()> {
+    let site = Site::new(interaction_page)?;
+    let (mut browser, handler, directory) =
+        launch_browser(&None, "navigation-options", LaunchOptions::default())
+            .await
+            .map_err(|error| anyhow!("{error}"))?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = super::runtime::Runtime::new(&browser, &page).await?;
+        let target = runtime.target(&None, Duration::from_secs(5)).await?;
+        for wait in [
+            crate::types::NavigationWait::Load,
+            crate::types::NavigationWait::NetworkIdle,
+        ] {
+            target
+                .navigate(
+                    &format!("{}/done", site.origin),
+                    &crate::types::GotoParameters {
+                        wait_until: Some(wait),
+                        timeout: Some(5000),
+                        referer: Some(format!("{}/source", site.origin)),
+                    },
+                    5000,
+                )
+                .await?;
+            let loaded: bool = target
+                .evaluate("document.body.dataset.loaded === 'yes'")
+                .await?
+                .into_value()?;
+            anyhow::ensure!(
+                loaded,
+                "navigation returned before external script completed"
+            );
+        }
+        Ok(())
+    }
+    .await;
+    browser.close().await?;
+    handler.await?;
+    let _ = std::fs::remove_dir_all(directory);
+    result
+}
+
+#[tokio::test]
+#[ignore = "requires a locally installed Chromium browser"]
 async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()> {
     use super::{
         runtime::Runtime,

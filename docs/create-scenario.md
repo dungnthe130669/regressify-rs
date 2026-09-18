@@ -220,6 +220,12 @@ Default value: Test suite's value.
 
 Defaults to `common/_on-ready.js` when no level supplies a path. The script runs in the browser and may return a promise. CSS overrides, hide/remove rules, and this script are applied once per document, including after navigation, before the next action or screenshot. Hook errors fail the scenario. Files are loaded once per scenario capture.
 
+Optional `onBeforeScript` and `onReadyScript` run Node/Playwright hooks before navigation and after scenario actions respectively. Paths are relative to the workspace and must stay inside it. These hooks require Node.js and `npm install --save-dev playwright-core` in the workspace; ordinary scenarios do not require Node. Export an async function `(page, scenario, viewport, isReference, browserContext, config)` from a CommonJS `.cjs` or ES module. Hooks attach to the current Chromium page; do not close the browser. `elementTimeout` bounds hook execution.
+
+`readySelector` waits for a visible selector before on-ready scripts and actions. `readyTimeout` overrides its timeout. `engineOptions.gotoParameters` accepts `waitUntil: commit | domcontentloaded | load | networkidle`, a `timeout` in milliseconds, and `referer`. Navigation defaults to `load`; zero timeout uses the bounded workspace timeout.
+
+Legacy `keyPressSelector`/`keyPressSelectors` (`{selector, keyPress}`), `hoverSelector`/`hoverSelectors`, `clickSelector`/`clickSelectors`, and `scrollToSelector` are accepted when `actions` is omitted. They execute in that order through the same validated action engine. Prefer `actions` for new scenarios; an explicit action list takes precedence over all shortcuts.
+
 {% end %}
 
 {% spoiler() %}

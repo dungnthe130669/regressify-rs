@@ -506,6 +506,81 @@ impl Target {
         Ok(())
     }
 
+    pub(crate) async fn navigate(
+        &self,
+        url: &str,
+        options: &crate::types::GotoParameters,
+        default_timeout: u64,
+    ) -> Result<()> {
+        use crate::types::NavigationWait;
+        let timeout = Duration::from_millis(
+            options
+                .timeout
+                .filter(|value| *value > 0)
+                .unwrap_or(default_timeout),
+        );
+        tokio::time::timeout(timeout, async {
+            let (session, _) = self.runtime.context(&self.realm).await?;
+            let wait = options.wait_until.unwrap_or_default();
+            let mut events = self.runtime.client.subscribe();
+            if wait == NavigationWait::NetworkIdle {
+                self.runtime
+                    .client
+                    .call(Some(&session), "Network.enable", json!({}))
+                    .await?;
+            }
+            let mut parameters = json!({"url": url, "frameId": self.realm.frame});
+            if let Some(referer) = &options.referer {
+                parameters["referrer"] = json!(referer);
+            }
+            let response = self
+                .runtime
+                .client
+                .call(Some(&session), "Page.navigate", parameters)
+                .await?;
+            if let Some(error) = response["errorText"].as_str() {
+                bail!("Navigation failed: {}", error);
+            }
+            match wait {
+                NavigationWait::Commit => {}
+                NavigationWait::DomContentLoaded => self.wait_for_ready(timeout).await?,
+                NavigationWait::Load => self.wait_for_load(timeout).await?,
+                NavigationWait::NetworkIdle => {
+                    let mut pending = std::collections::HashSet::new();
+                    loop {
+                        let received =
+                            tokio::time::timeout(Duration::from_millis(500), events.recv()).await;
+                        match received {
+                            Err(_) if pending.is_empty() => break,
+                            Err(_) => continue,
+                            Ok(Err(_)) => bail!("Network event stream closed or overflowed"),
+                            Ok(Ok(event))
+                                if event.session_id.as_deref() == Some(session.as_str()) =>
+                            {
+                                if let Some(request) = event.params["requestId"].as_str() {
+                                    match event.method.as_str() {
+                                        "Network.requestWillBeSent" => {
+                                            pending.insert(request.to_string());
+                                        }
+                                        "Network.loadingFinished" | "Network.loadingFailed" => {
+                                            pending.remove(request);
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.wait_for_ready(timeout).await?;
+                }
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| anyhow!("Navigation exceeded {}ms", timeout.as_millis()))?
+    }
+
     pub async fn url(&self) -> Result<Option<String>> {
         Ok(Some(self.evaluate("location.href").await?.into_value()?))
     }
