@@ -163,6 +163,13 @@ impl Workbench {
         let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
         let mut commands = vec![
             Command {
+                title: "Git changes and remote status",
+                group: "Workspace",
+                icon: Icon::GitBranch,
+                action: Box::new(OpenGit),
+                enabled: workspace,
+            },
+            Command {
                 title: "Deploy selected reports",
                 group: "Workspace",
                 icon: Icon::CloudUpload,

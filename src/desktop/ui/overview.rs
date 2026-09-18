@@ -20,7 +20,9 @@ impl Workbench {
             .h(px(38.))
             .bg(cx.theme().title_bar)
             .on_close_window(cx.listener(|this, _, window, cx| {
-                if this.runs.read(cx).running() {
+                if this.git.read(cx).active() {
+                    this.git.update(cx, |panel, cx| panel.cancel_operation(cx));
+                } else if this.runs.read(cx).running() {
                     this.runs.update(cx, |panel, cx| panel.cancel(cx));
                 } else if !this.busy {
                     this.guard(files::Pending::Close, window, cx);
@@ -131,6 +133,25 @@ impl Workbench {
                             })),
                     ))
                     .child(design::titlebar_control(self.render_update_button(cx)))
+                    .when(self.session.workspace.is_some(), |header| {
+                        let git = self.git.read(cx);
+                        header.child(design::titlebar_control(
+                            Button::new("git-status")
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::GitBranch)
+                                .label(git.badge())
+                                .accessibility_label(format!("Git: {}", git.summary()))
+                                .tooltip(git.summary())
+                                .selected(self.main_tab == 3)
+                                .when(git.attention(), |button| {
+                                    button.text_color(cx.theme().warning)
+                                })
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.select_view(3, window, cx)
+                                })),
+                        ))
+                    })
                     .child(design::titlebar_control(self.render_deploy_controls(cx)))
                     .child(design::titlebar_control(self.render_theme_picker()))
                     .child(design::titlebar_control(

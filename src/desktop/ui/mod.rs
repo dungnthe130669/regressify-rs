@@ -35,6 +35,7 @@ mod commands;
 mod deployment;
 mod design;
 mod files;
+mod git;
 mod navigation;
 mod overview;
 mod reports;
@@ -63,6 +64,7 @@ actions!(
         ToggleNavigator,
         CompleteSource,
         OpenDeployment,
+        OpenGit,
         OpenCommands
     ]
 );
@@ -149,6 +151,7 @@ pub struct Workbench {
     viewport_choices: choices::ViewportChoices,
     updates: Entity<updates::UpdatePanel>,
     deployment: Entity<deployment::DeploymentPanel>,
+    git: Entity<git::GitPanel>,
 }
 
 impl Workbench {
@@ -210,6 +213,12 @@ impl Workbench {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let runs = cx.new(|cx| runs::RunPanel::new(window, cx));
+        let git = cx.new(|cx| git::GitPanel::new(window, cx));
+        let git_subscription =
+            cx.subscribe_in(&git, window, |this, _, event, window, cx| match event {
+                git::GitEvent::Changed => cx.notify(),
+                git::GitEvent::Requested(request) => this.guard_git(request.clone(), window, cx),
+            });
         let run_subscription =
             cx.subscribe_in(&runs, window, |this, _, event, window, cx| match event {
                 runs::RunEvent::Requested(intent) => this.guard_run(intent.clone(), window, cx),
@@ -220,6 +229,10 @@ impl Workbench {
                     }
                     this.sync_suites(cx);
                     this.refresh_results(window, cx);
+                    this.git.update(cx, |panel, cx| {
+                        panel.set_disabled(this.busy, cx);
+                        panel.refresh(window, cx);
+                    });
                     cx.notify();
                 }
                 runs::RunEvent::SelectionChanged => {
@@ -229,6 +242,8 @@ impl Workbench {
                 }
                 runs::RunEvent::ArtifactsChanged | runs::RunEvent::ProgressChanged => {
                     let disabled = this.busy || this.runs.read(cx).running();
+                    this.git
+                        .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
                     this.results
                         .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
                     cx.notify();
@@ -285,6 +300,7 @@ impl Workbench {
                 scenario_search_subscription,
                 results_subscription,
                 appearance_subscription,
+                git_subscription,
             ],
             field_subscriptions: Vec::new(),
             field_errors: BTreeMap::new(),
@@ -320,6 +336,7 @@ impl Workbench {
             viewport_choices: choices::ViewportChoices::default(),
             updates: cx.new(|_| updates::UpdatePanel::default()),
             deployment: cx.new(|cx| deployment::DeploymentPanel::new(window, cx)),
+            git,
         }
     }
 
@@ -458,8 +475,13 @@ impl Workbench {
                 if let Some(workspace) = &this.session.workspace {
                     this.preferences.remember(workspace);
                     let root = workspace.root.clone();
-                    this.runs
-                        .update(cx, |panel, cx| panel.set_workspace(root, window, cx));
+                    this.runs.update(cx, |panel, cx| {
+                        panel.set_workspace(root.clone(), window, cx)
+                    });
+                    this.git.update(cx, |panel, cx| {
+                        panel.set_disabled(false, cx);
+                        panel.set_workspace(Some(root), window, cx);
+                    });
                     this.save_preferences(window, cx);
                 }
                 this.sync_editor(window, cx);
@@ -637,6 +659,8 @@ impl Workbench {
                 self.workspace_instance = None;
                 self.runs.update(cx, |panel, cx| panel.clear(window, cx));
                 self.results.update(cx, |panel, cx| panel.clear(window, cx));
+                self.git
+                    .update(cx, |panel, cx| panel.set_workspace(None, window, cx));
                 self.search
                     .update(cx, |state, cx| state.set_value("", window, cx));
                 self.main_tab = 0;
@@ -2350,7 +2374,7 @@ impl Workbench {
     }
 
     fn select_view(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if index > 2 {
+        if index > 3 {
             return;
         }
         let changed = self.main_tab != index;
@@ -2365,14 +2389,16 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor = if self.main_tab == 2 {
+        let editor = if self.main_tab == 3 {
+            self.git.clone().into_any_element()
+        } else if self.main_tab == 2 {
             self.results.clone().into_any_element()
         } else if self.main_tab == 1 {
             self.runs.clone().into_any_element()
         } else {
             self.render_editor(cx)
         };
-        let layout = if self.preferences.navigator_hidden {
+        let layout = if self.preferences.navigator_hidden || self.main_tab == 3 {
             editor
         } else {
             h_resizable("workspace-layout")
@@ -2442,6 +2468,7 @@ impl Render for Workbench {
                 }),
             )
             .on_action(cx.listener(Self::open_commands))
+            .on_action(cx.listener(|this, _: &OpenGit, window, cx| this.select_view(3, window, cx)))
             .on_action(
                 cx.listener(|this, _: &OpenDeployment, window, cx| {
                     this.open_deployment(window, cx)
@@ -2542,8 +2569,14 @@ pub fn launch(instance: Option<DesktopInstance>) {
                         window.on_window_should_close(cx, move |window, cx| {
                             weak.update(cx, |this, cx| {
                                 if this.busy {
-                                    this.status =
-                                        "Finish the current operation before closing".into();
+                                    if this.git.read(cx).active() {
+                                        this.git.update(cx, |panel, cx| panel.cancel_operation(cx));
+                                        this.status =
+                                            "Cancelling Git; close again after it finishes".into();
+                                    } else {
+                                        this.status =
+                                            "Finish the current operation before closing".into();
+                                    }
                                     cx.notify();
                                     false
                                 } else if this.runs.read(cx).running() {
@@ -2593,6 +2626,7 @@ fn bind_keys(cx: &mut App) {
             Some("Regressify"),
         ),
         KeyBinding::new("ctrl-space", CompleteSource, Some("RegressifySource")),
+        KeyBinding::new(&format!("{modifier}-shift-g"), OpenGit, Some("Regressify")),
         KeyBinding::new(&format!("{modifier}-p"), FocusNavigator, Some("Regressify")),
         KeyBinding::new(
             &format!("{modifier}-b"),

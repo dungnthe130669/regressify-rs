@@ -57,6 +57,51 @@ The public feed is `https://drive.tuyen.blog/downloads/<app-slug>/latest.txt`.
 Only the public app slug is embedded in the application, never the upload token.
 Installers are currently unsigned, so Windows may show SmartScreen warnings.
 
+## Git
+
+The title bar shows the number of changed files and incoming/outgoing commits
+for the workspace's repository. Click it, use Ctrl+Shift+G (Cmd+Shift+G on macOS),
+or choose Git from Commands to open the change tree and read-only diff review.
+The repository root is shown explicitly, including when the workspace is a
+subdirectory of a larger repository. Counts and the tree cover that repository.
+
+Local status refreshes every five seconds. The app checks the tracking remote
+(otherwise origin or the only configured remote) every minute while idle.
+Automatic checks fetch remote refs only: they never pull, merge, rebase, stash,
+or change working files. Fetch also provides a manual remote check. Incoming
+commits, divergence, merge conflicts, and failed remote checks are highlighted;
+the last successful check remains visible so cached counts are not mistaken
+for a successful fresh check. Network commands have deadlines and terminal
+credential prompts are disabled. Configure Git credentials/SSH trust outside
+the app; authentication failures can be handled in VS Code.
+
+Changed files appear as a collapsible, virtualized folder tree. Select a file to
+review its staged and unstaged changes; binary files are identified by Git.
+Choose files with the checkboxes, enter a commit message, and confirm the commit.
+The current contents of selected files are committed, including selected
+renames/deletions and untracked files. Unselected staged files remain staged and
+are not included. A failed commit may leave the selected files staged, as in
+normal Git; no changes are discarded. Git hooks and signing configuration remain
+in effect. Submodule commits and in-progress merge/rebase commits are delegated
+to VS Code. Filenames are passed literally using NUL-delimited pathspecs.
+
+Untracked workspaces display Not tracked and offer Initialize Git; initialization
+does not stage files. Add origin accepts a credential-free HTTPS/SSH URL or local
+repository path. Push uses the configured tracking branch, or publishes the
+current branch to origin/the sole remote and establishes upstream tracking. It
+never force-pushes. Pull requires a clean working tree and uses fast-forward-only
+semantics. Diverged branches and existing conflicts show Open in VS Code for
+merge/rebase resolution; refresh afterward. This avoids embedding a second merge
+editor or silently resolving conflicts. VS Code must be installed and registered
+for its `vscode://` URL handler.
+
+Commit, pull, push, initialization, and remote setup use explicit confirmation
+and the editor's unsaved-draft guard. Mutating operations block workspace edits
+until completion and offer Stop; other Git work runs off the UI thread. Requests
+revalidate repository identity and HEAD before acting. Cancelling a network
+operation cannot undo changes already accepted by the remote. Git must be
+installed on PATH. Git UI tests use isolated repositories and local bare remotes.
+
 ## Deploy Reports
 
 The header's Deploy command publishes selected suites to Azure Static Web Apps.

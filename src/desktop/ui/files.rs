@@ -30,6 +30,7 @@ pub(super) enum Pending {
     Close,
     Update,
     Run(Box<runs::RunIntent>),
+    Git(Box<crate::desktop::git::Request>),
     CloseWorkspace,
 }
 
@@ -103,6 +104,8 @@ impl Workbench {
 
     pub(super) fn sync_modal(&self, cx: &mut Context<Self>) {
         let disabled = self.busy || self.runs.read(cx).running();
+        self.git
+            .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
         self.results
             .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
         self.runs
@@ -292,6 +295,7 @@ impl Workbench {
             Pending::Close => self.finish_close(cx),
             Pending::Update => self.finish_update(cx),
             Pending::Run(intent) => self.start_selected_run(*intent, window, cx),
+            Pending::Git(request) => self.confirm_git(*request, window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
         }
     }
