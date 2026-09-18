@@ -16,7 +16,7 @@ use super::{
     browsers::{LaunchOptions, launch_browser},
 };
 
-pub(super) struct Site {
+pub(crate) struct Site {
     pub origin: String,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,

@@ -1,0 +1,615 @@
+use std::{
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+    time::Duration,
+};
+
+use anyhow::{Context, Result, anyhow, bail, ensure};
+use base64::{Engine, engine::general_purpose::STANDARD};
+use reqwest::{
+    Client, Url,
+    header::{AUTHORIZATION, HeaderValue},
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+
+use super::DeployTarget;
+
+const BLOCK_BYTES: usize = 4 * 1024 * 1024;
+const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
+struct Package {
+    file: tempfile::NamedTempFile,
+    bytes: u64,
+    files: u64,
+    maximum_file: u64,
+}
+
+impl Package {
+    fn create(root: &Path) -> Result<Self> {
+        ensure!(
+            root.join("index.html").is_file(),
+            "Deployment requires index.html"
+        );
+        let mut file = tempfile::NamedTempFile::new()?;
+        let mut archive = zip::ZipWriter::new(file.as_file_mut());
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        let mut bytes = 0;
+        let mut files = 0;
+        let mut maximum_file = 0;
+        for entry in walkdir::WalkDir::new(root)
+            .follow_links(false)
+            .sort_by_file_name()
+        {
+            let entry = entry?;
+            ensure!(
+                !entry.file_type().is_symlink(),
+                "Deployment package cannot contain symlinks"
+            );
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let length = entry.metadata()?.len();
+            bytes += length;
+            files += 1;
+            maximum_file = maximum_file.max(length);
+            ensure!(
+                bytes <= 10 * MAX_PACKAGE_BYTES && files <= 100_000,
+                "Deployment content exceeds packaging limits"
+            );
+            let name = entry
+                .path()
+                .strip_prefix(root)?
+                .to_str()
+                .context("Deployment paths must be UTF-8")?
+                .replace('\\', "/");
+            archive.start_file(name, options)?;
+            std::io::copy(&mut std::fs::File::open(entry.path())?, &mut archive)?;
+        }
+        archive.finish()?;
+        ensure!(
+            file.as_file().metadata()?.len() <= MAX_PACKAGE_BYTES,
+            "Compressed deployment package exceeds 2 GiB"
+        );
+        file.as_file_mut().seek(SeekFrom::Start(0))?;
+        Ok(Self {
+            file,
+            bytes,
+            files,
+            maximum_file,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Envelope {
+    response: Option<Value>,
+    is_success_status_code: bool,
+    status_code: u16,
+}
+
+pub struct SwaClient {
+    client: Client,
+    endpoint: Url,
+    authorization: HeaderValue,
+    slice: u32,
+    correlation: String,
+    backoff: Duration,
+    poll_interval: Duration,
+    deadline: Duration,
+}
+
+fn token_endpoint(token: &str) -> Result<(Url, u32)> {
+    ensure!(
+        token.is_ascii() && (104..=256).contains(&token.len()),
+        "Invalid Azure deployment token format"
+    );
+    let (prefix, suffix) = token
+        .split_once('-')
+        .context("Invalid Azure deployment token format")?;
+    ensure!(
+        prefix.len() >= 64
+            && suffix.len() == 39
+            && prefix[..64].bytes().all(|byte| byte.is_ascii_hexdigit())
+            && suffix[..36].bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Invalid Azure deployment token format"
+    );
+    let slice = if prefix.len() == 64 {
+        0
+    } else {
+        prefix[64..]
+            .parse::<u32>()
+            .context("Invalid Azure deployment token slice")?
+    };
+    let region =
+        u16::from_str_radix(&suffix[36..], 16).context("Invalid Azure deployment token region")?;
+    let (region, version) = match region {
+        0 => ("hk1", ""),
+        3 => ("am2", ""),
+        15 => ("eus2", ""),
+        16 => ("dm1", ""),
+        30 => ("wus2", ""),
+        21 | 26 => ("msftinthk1", "beta"),
+        33 => ("euapbn1", "canary"),
+        34 => ("euapdm1", "canary"),
+        _ => bail!("Unsupported Azure deployment token region"),
+    };
+    let slice_label = if slice == 0 {
+        String::new()
+    } else {
+        format!("{slice}.")
+    };
+    Ok((
+        Url::parse(&format!(
+            "https://content-{region}.infrastructure.{slice_label}azurestaticapps{version}.net"
+        ))?,
+        slice,
+    ))
+}
+
+impl SwaClient {
+    pub fn new(token: &str) -> Result<Self> {
+        let (endpoint, slice) = token_endpoint(token)?;
+        let mut authorization = HeaderValue::from_str(&format!("token {token}"))
+            .map_err(|_| anyhow!("Invalid Azure deployment token"))?;
+        authorization.set_sensitive(true);
+        Ok(Self {
+            client: Client::builder()
+                .user_agent("staticsites-github-client")
+                .redirect(reqwest::redirect::Policy::none())
+                .connect_timeout(Duration::from_secs(30))
+                .timeout(Duration::from_secs(180))
+                .build()?,
+            endpoint,
+            authorization,
+            slice,
+            correlation: uuid::Uuid::new_v4().to_string(),
+            backoff: Duration::from_secs(1),
+            poll_interval: Duration::from_secs(5),
+            deadline: Duration::from_secs(30 * 60),
+        })
+    }
+
+    async fn send(
+        &self,
+        request: impl Fn() -> reqwest::RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        for attempt in 0..6 {
+            let result = request().send().await;
+            let mut retry_after = None;
+            let error = match result {
+                Ok(response) if response.status().is_success() => return Ok(response),
+                Ok(response) => {
+                    let status = response.status();
+                    ensure!(
+                        status.is_server_error()
+                            || status.as_u16() == 408
+                            || status.as_u16() == 429,
+                        "Azure request failed (HTTP {})",
+                        status.as_u16()
+                    );
+                    retry_after = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(|seconds| Duration::from_secs(seconds.min(60)));
+                    anyhow!("Azure request failed (HTTP {})", status.as_u16())
+                }
+                Err(error) => anyhow!(
+                    "Azure request {}",
+                    if error.is_timeout() {
+                        "timed out"
+                    } else {
+                        "could not connect"
+                    }
+                ),
+            };
+            if attempt == 5 {
+                return Err(error);
+            }
+            tokio::time::sleep(retry_after.unwrap_or(self.backoff * (1 << attempt))).await;
+        }
+        bail!("Azure request retry budget exhausted")
+    }
+
+    async fn api(&self, operation: &str, body: Option<&Value>) -> Result<Value> {
+        let mut url = self.endpoint.join(&format!("/api/upload/{operation}"))?;
+        url.query_pairs_mut()
+            .append_pair("apiVersion", "v1")
+            .append_pair("deploymentCorrelationId", &self.correlation);
+        let response = self
+            .send(|| {
+                let request = self
+                    .client
+                    .post(url.clone())
+                    .header(AUTHORIZATION, self.authorization.clone())
+                    .header("Content-Type", "application/json; charset=utf-8");
+                match body {
+                    Some(body) => request.json(body),
+                    None => request.header("Content-Length", 0),
+                }
+            })
+            .await?;
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        use futures::StreamExt;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| anyhow!("Cannot read Azure response"))?;
+            ensure!(
+                bytes.len() + chunk.len() <= 1024 * 1024,
+                "Azure response exceeds 1 MiB"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        let response: Envelope =
+            serde_json::from_slice(&bytes).context("Invalid Azure response envelope")?;
+        ensure!(
+            response.is_success_status_code,
+            "Azure {} failed (status {})",
+            operation,
+            response.status_code
+        );
+        Ok(response.response.unwrap_or(Value::Null))
+    }
+
+    fn blob_url(&self, value: &str) -> Result<Url> {
+        let url = Url::parse(value).map_err(|_| anyhow!("Azure returned an invalid upload URL"))?;
+        let azure = url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host.ends_with(".blob.core.windows.net"));
+        let test = cfg!(test)
+            && url.origin() == self.endpoint.origin()
+            && url.host_str() == Some("127.0.0.1");
+        ensure!(
+            (azure || test)
+                && url.username().is_empty()
+                && url.password().is_none()
+                && url.fragment().is_none(),
+            "Azure returned an untrusted upload URL"
+        );
+        Ok(url)
+    }
+
+    async fn upload(&self, url: &Url, package: &mut Package) -> Result<()> {
+        let length = package.file.as_file().metadata()?.len();
+        let mut blocks = Vec::new();
+        loop {
+            let mut chunk = vec![0; BLOCK_BYTES];
+            let mut count = 0;
+            while count < chunk.len() {
+                let read = package.file.as_file_mut().read(&mut chunk[count..])?;
+                if read == 0 {
+                    break;
+                }
+                count += read;
+            }
+            if count == 0 {
+                break;
+            }
+            chunk.truncate(count);
+            let mut destination = url.clone();
+            if length > BLOCK_BYTES as u64 {
+                let id = STANDARD.encode(format!("{}-{:08}", self.correlation, blocks.len()));
+                destination
+                    .query_pairs_mut()
+                    .append_pair("comp", "block")
+                    .append_pair("blockid", &id);
+                blocks.push(id);
+            }
+            self.send(|| {
+                let request = self
+                    .client
+                    .put(destination.clone())
+                    .header("x-ms-version", "2023-11-03")
+                    .header("x-ms-client-request-id", &self.correlation)
+                    .body(chunk.clone());
+                if length <= BLOCK_BYTES as u64 {
+                    request.header("x-ms-blob-type", "BlockBlob")
+                } else {
+                    request
+                }
+            })
+            .await?;
+            phase(&format!(
+                "Uploading report: {} of {} KiB",
+                package.file.as_file_mut().stream_position()? / 1024,
+                length / 1024
+            ));
+        }
+        if !blocks.is_empty() {
+            let mut destination = url.clone();
+            destination
+                .query_pairs_mut()
+                .append_pair("comp", "blocklist");
+            let body = format!(
+                "<?xml version=\"1.0\" encoding=\"utf-8\"?><BlockList>{}</BlockList>",
+                blocks
+                    .iter()
+                    .map(|id| format!("<Latest>{id}</Latest>"))
+                    .collect::<String>()
+            );
+            self.send(|| {
+                self.client
+                    .put(destination.clone())
+                    .header("x-ms-version", "2023-11-03")
+                    .header("Content-Type", "application/xml")
+                    .body(body.clone())
+            })
+            .await?;
+        }
+        Ok(())
+    }
+
+    pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+        target.validate()?;
+        let operation = async {
+            phase("Validating Azure deployment target");
+            let info = self.api("validateapitoken", None).await?;
+            let settings = root.join("staticwebapp.config.json");
+            if settings.is_file() {
+                let data: Value = serde_json::from_slice(&std::fs::read(settings)?)?;
+                ensure!(
+                    info["sku"] == "Standard"
+                        || data.get("auth").is_none() && data.get("networking").is_none(),
+                    "This report's auth/networking configuration requires the Azure Standard SKU"
+                );
+            }
+            phase("Packaging selected reports");
+            let directory = root.to_path_buf();
+            let mut package =
+                tokio::task::spawn_blocking(move || Package::create(&directory)).await??;
+            let mut request = json!({
+                "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
+                    "pullRequestId": null, "pullRequestTitle": null, "headBranch": null, "baseBranch": null,
+                    "environmentName": if target.environment.is_empty() { None } else { Some(&target.environment) },
+                    "tenantId": null, "defaultHostname": null, "slice": self.slice},
+                "uploadInfo": {"totalAppSizeInBytes": package.bytes, "apiSizeInBytes": 0, "hasFunctions": false,
+                    "hasDataApiFiles": false, "hasDataApiConfigFile": false, "databaseType": "", "hasRoutes": false,
+                    "status": "RequestingUpload", "defaultFileType": "index.html", "apiContentHash": null,
+                    "configuredRoles": ["administrator"], "appFileCount": package.files, "functionLanguage": null,
+                    "functionLanguageVersion": null, "serverRenderFramework": "StaticWebApp", "deploymentProvider": "GitHub",
+                    "maxSingleFileSizeInBytes": package.maximum_file, "backendStartupCommandType": 0,
+                    "shouldDeployToWebApp": false, "tenantId": "", "defaultHostname": null, "slice": self.slice},
+                "pollingInfo": null
+            });
+            let response = self.api("request", Some(&request)).await?;
+            let upload = self.blob_url(
+                response["packageUris"]["app"]
+                    .as_str()
+                    .context("Azure returned no app upload URL")?,
+            )?;
+            let mut polling = response["pollingInfo"]
+                .as_object()
+                .cloned()
+                .context("Azure returned no deployment polling information")?;
+            polling.insert("slice".into(), json!(self.slice));
+            request["pollingInfo"] = json!(polling);
+            phase("Uploading selected reports");
+            self.upload(&upload, &mut package).await?;
+            request["uploadInfo"]["status"] = json!("Succeeded");
+            self.api("updatestatus", Some(&request)).await?;
+            phase("Waiting for Azure deployment");
+            loop {
+                let result = self.api("checkstatus", Some(&json!(polling))).await?;
+                match result["deploymentStatus"].as_str() {
+                    Some("Succeeded") => {
+                        let value = result["siteUrl"]
+                            .as_str()
+                            .context("Azure deployment succeeded without a site URL")?;
+                        let url = Url::parse(value).context("Invalid deployed site URL")?;
+                        ensure!(
+                            url.scheme() == "https"
+                                && url.username().is_empty()
+                                && url.password().is_none()
+                                && url.query().is_none(),
+                            "Azure returned an unsafe site URL"
+                        );
+                        phase(&format!("Deployed: {url}"));
+                        return Ok(url.to_string());
+                    }
+                    Some("Failed" | "Canceled" | "Cancelled") => bail!(
+                        "Azure deployment failed; check the Static Web App deployment history"
+                    ),
+                    Some(_) => tokio::time::sleep(self.poll_interval).await,
+                    None => bail!("Azure returned no deployment status"),
+                }
+            }
+        };
+        tokio::time::timeout(self.deadline, operation)
+            .await
+            .context("Azure deployment exceeded its 30-minute deadline")?
+    }
+}
+
+fn phase(name: &str) {
+    eprintln!("{name}");
+    crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn token() -> String {
+        format!("{}-{}00f", "a".repeat(64), "b".repeat(36))
+    }
+
+    #[test]
+    fn token_regions_and_untrusted_upload_urls_are_validated_without_secret_errors() {
+        let (url, slice) = token_endpoint(&token()).unwrap();
+        assert_eq!(slice, 0);
+        assert_eq!(
+            url.host_str(),
+            Some("content-eus2.infrastructure.azurestaticapps.net")
+        );
+        for token in [
+            "not-a-token".into(),
+            "\u{1f600}".repeat(104),
+            format!("{}-{}fff", "a".repeat(64), "b".repeat(36)),
+        ] {
+            let error = token_endpoint(&token).unwrap_err().to_string();
+            assert!(!error.contains(&token));
+        }
+        let client = SwaClient::new(&token()).unwrap();
+        assert!(
+            client
+                .blob_url("https://example.com/blob?sig=secret")
+                .is_err()
+        );
+        assert!(
+            client
+                .blob_url("https://storage.blob.core.windows.net/a?sig=secret")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn packaging_tracks_files_and_writes_a_readable_zip() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), "report").unwrap();
+        let package = Package::create(root.path()).unwrap();
+        assert_eq!(package.bytes, 6);
+        assert_eq!(package.files, 1);
+        let mut archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
+        assert_eq!(archive.by_name("index.html").unwrap().size(), 6);
+    }
+
+    #[tokio::test]
+    async fn deployment_protocol_retries_upload_and_never_sends_token_to_blob() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let upload_count = Arc::new(AtomicUsize::new(0));
+        let uploads = upload_count.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let path = request
+                .url()
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .to_string();
+            let authorization = request
+                .headers()
+                .iter()
+                .any(|header| header.field.equiv("Authorization"));
+            let host = request
+                .headers()
+                .iter()
+                .find(|header| header.field.equiv("Host"))
+                .unwrap()
+                .value
+                .to_string();
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            captured
+                .lock()
+                .unwrap()
+                .push((path.clone(), authorization, body));
+            let response = match path.as_str() {
+                "/api/upload/validateapitoken" => json!({"sku":"Standard"}),
+                "/api/upload/request" => {
+                    json!({"packageUris":{"app": format!("http://{host}/blob?sig=sensitive")}, "pollingInfo":{"version":"one","tenantId":"tenant","defaultHostname":"reports.azurestaticapps.net","stageSiteIdentifier":"site"}})
+                }
+                "/api/upload/updatestatus" => Value::Null,
+                "/api/upload/checkstatus" => {
+                    json!({"deploymentStatus":"Succeeded", "siteUrl":"https://reports.azurestaticapps.net/"})
+                }
+                "/blob" => {
+                    let code = if uploads.fetch_add(1, Ordering::Relaxed) == 0 {
+                        503
+                    } else {
+                        201
+                    };
+                    let _ = request.respond(tiny_http::Response::empty(code));
+                    return;
+                }
+                _ => {
+                    let _ = request.respond(tiny_http::Response::empty(404));
+                    return;
+                }
+            };
+            let _ = request.respond(tiny_http::Response::from_string(
+                json!({"isSuccessStatusCode":true,"statusCode":200,"response":response})
+                    .to_string(),
+            ));
+        })?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        let mut client = SwaClient::new(&token())?;
+        client.endpoint = Url::parse(&site.origin)?;
+        client.backoff = Duration::from_millis(1);
+        let target = DeployTarget {
+            id: "test".into(),
+            name: "Test".into(),
+            token_env: "TEST_SWA_TOKEN".into(),
+            environment: "preview".into(),
+        };
+        assert_eq!(
+            client.deploy(root.path(), &target).await?,
+            "https://reports.azurestaticapps.net/"
+        );
+        let records = requests.lock().unwrap();
+        assert_eq!(upload_count.load(Ordering::Relaxed), 2);
+        assert!(
+            records
+                .iter()
+                .filter(|(path, _, _)| path == "/blob")
+                .all(|(_, auth, _)| !auth)
+        );
+        assert!(
+            records
+                .iter()
+                .filter(|(path, _, _)| path.starts_with("/api/"))
+                .all(|(_, auth, _)| *auth)
+        );
+        let request = records
+            .iter()
+            .find(|(path, _, _)| path == "/api/upload/request")
+            .unwrap();
+        let payload: Value = serde_json::from_slice(&request.2)?;
+        assert_eq!(payload["eventInfo"]["environmentName"], "preview");
+        assert_eq!(payload["uploadInfo"]["appFileCount"], 1);
+        let request = records
+            .iter()
+            .find(|(path, _, _)| path == "/api/upload/updatestatus")
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&request.2)?["uploadInfo"]["status"],
+            "Succeeded"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn permanent_http_errors_are_not_retried_and_do_not_expose_sas_urls() -> Result<()> {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let calls = attempts.clone();
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            calls.fetch_add(1, Ordering::Relaxed);
+            let _ = request.respond(
+                tiny_http::Response::from_string("sensitive server body").with_status_code(403),
+            );
+        })?;
+        let client = SwaClient::new(&token())?;
+        let error = client
+            .send(|| {
+                client
+                    .client
+                    .put(format!("{}/blob?sig=private", site.origin))
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(attempts.load(Ordering::Relaxed), 1);
+        assert!(error.contains("403"));
+        assert!(!error.contains("private") && !error.contains("sensitive"));
+        Ok(())
+    }
+}

@@ -15,7 +15,7 @@ mod test_suite;
 mod test_suites;
 
 #[cfg(test)]
-mod browser_tests;
+pub(crate) mod browser_tests;
 
 pub use browsers::fetcher;
 pub use test_suites::exec_ref;
