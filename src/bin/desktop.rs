@@ -24,22 +24,31 @@ fn main() -> ExitCode {
         };
     }
     let args = DesktopArgs::parse();
-    let instance = regressify::desktop::workspace::Preferences::path().and_then(|path| {
-        regressify::desktop::workspace::DesktopInstance::acquire(
-            &path.with_file_name("desktop.lock"),
-        )
-    });
-    let _instance = match instance {
-        Ok(instance) => instance,
-        Err(error) => {
-            rfd::MessageDialog::new()
-                .set_title("Regressify Desktop")
-                .set_description(error.to_string())
-                .set_level(rfd::MessageLevel::Info)
-                .show();
-            return ExitCode::FAILURE;
+    let instance = match args.workspace {
+        Some(root) => {
+            let result = regressify::desktop::workspace::Preferences::path().and_then(|path| {
+                regressify::desktop::instance::DesktopInstance::open(
+                    &path.with_file_name("instances"),
+                    &root,
+                )
+            });
+            match result {
+                Ok(regressify::desktop::instance::OpenInstance::Owned(instance)) => Some(instance),
+                Ok(regressify::desktop::instance::OpenInstance::Activated) => {
+                    return ExitCode::SUCCESS;
+                }
+                Err(error) => {
+                    rfd::MessageDialog::new()
+                        .set_title("Regressify Desktop")
+                        .set_description(format!("{error:#}"))
+                        .set_level(rfd::MessageLevel::Error)
+                        .show();
+                    return ExitCode::FAILURE;
+                }
+            }
         }
+        None => None,
     };
-    regressify::desktop::ui::launch(args.workspace);
+    regressify::desktop::ui::launch(instance);
     ExitCode::SUCCESS
 }

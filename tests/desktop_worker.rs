@@ -41,6 +41,59 @@ fn invoke_with_events(
 }
 
 #[test]
+fn duplicate_workspace_launches_activate_the_owner_without_starting_another_gui() {
+    use regressify::desktop::{
+        instance::{DesktopInstance, OpenInstance},
+        workspace::Preferences,
+    };
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let workspace = tempfile::tempdir().unwrap();
+    let locks = Preferences::path().unwrap().with_file_name("instances");
+    let owner = match DesktopInstance::open(&locks, workspace.path()).unwrap() {
+        OpenInstance::Owned(instance) => instance,
+        OpenInstance::Activated => panic!("Expected isolated workspace ownership"),
+    };
+    for path in [workspace.path().to_path_buf(), workspace.path().join(".")] {
+        let mut child = Command::new(executable)
+            .arg(path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("Duplicate launcher did not hand off the workspace");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(owner.take_activation());
+    }
+    let request = RunRequest {
+        root: workspace.path().into(),
+        command: RunCommand::Init,
+        options: RunOptions::default(),
+    };
+    let output = invoke(executable, &request);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!owner.take_activation());
+    assert!(workspace.path().join("visual_tests").is_dir());
+}
+
+#[test]
 fn standalone_desktop_runs_shared_engine_without_a_cli_binary() {
     let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
     let installation = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();

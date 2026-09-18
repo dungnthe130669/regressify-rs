@@ -31,7 +31,7 @@ remain the source of truth. The CLI remains usable without GUI dependencies.
   running, capture, comparison, failure, and cancellation states.
 - [x] Provide checkbox-based multi-suite selection with select-all/clear and
   an explicit run scope; never silently run all suites for an empty selection.
-- [x] Keep exactly one active workspace, clear workspace-owned state on switch,
+- [x] Keep one active workspace per window, clear workspace-owned state on switch,
   guard unsaved work, and prevent stale asynchronous results from crossing roots.
 - [x] Redesign navigation, forms, execution, and results for a polished QA
   workbench with clear hierarchy, compact controls, and useful empty states.
@@ -300,6 +300,38 @@ because GPUI does not expose their disabled state through Windows IsEnabled.
 
 The preceding full authoring-smoke limitation remains separate from this focused
 pass; native macOS/Linux and full screen-reader/IME checks remain outstanding.
+
+## Workspace Instances
+
+- [x] Replace the global GUI lock with per-workspace ownership; permit multiple
+  distinct workspace windows and multiple empty instances.
+- [x] Resolve canonical path aliases and Windows case variants to the same owner.
+  Serialize simultaneous launch contenders using an OS-held file lock.
+- [x] Forward duplicate startup, folder-choice, and recent-workspace requests to
+  a token-checked local activation endpoint; restore/focus the existing owner.
+- [x] Preserve the requester's drafts and running work during duplicate handoff.
+  Keep normal save/discard and running-job guards for an actual workspace switch.
+- [x] Retain old ownership until a new workspace successfully loads; release on
+  Close workspace and process exit, and recover stale endpoint data after crashes.
+- [x] Keep internal workers independent of GUI ownership and coordinate shared
+  preference writes without dropping other windows' recent workspaces.
+- [x] Verify two workspaces, multiple empty instances, minimized-owner activation,
+  dirty-draft preservation, recent-workspace handoff, and close/crash recovery in
+  native Windows acceptance with fixture-only cleanup.
+
+Verification: 438 library/UI tests, five executable integration tests, 293 default
+CLI tests, and 72 headless desktop tests pass. Strict library Clippy, formatting,
+and the normal Windows GUI build pass. `ci/desktop-smoke.ps1 -InstanceFlows` passes
+with seven inspected 1600x1000 captures and actual foreground/minimized-state
+assertions. Original preferences are restored, saved fixture hashes are unchanged,
+and only test-owned processes are closed or terminated.
+
+Native test setup initially hit Windows foreground restrictions; duplicate
+activation itself then passed and was used to activate the recovered fixture
+before its pointer-driven Close workspace action. Missing cached rlib archives
+were rebuilt for three affected dependencies before the full test gate passed.
+Native macOS/Linux activation and the previously recorded full authoring-smoke,
+screen-reader, and IME follow-ups remain unverified.
 
 ## Delivery Checklist
 

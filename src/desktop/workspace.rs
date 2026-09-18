@@ -32,30 +32,6 @@ pub struct Workspace {
     pub root: PathBuf,
 }
 
-/// One desktop window per user. Worker processes never acquire this lease.
-pub struct DesktopInstance {
-    _lock: fs::File,
-}
-
-impl DesktopInstance {
-    pub fn acquire(path: &Path) -> Result<Self> {
-        fs::create_dir_all(
-            path.parent()
-                .ok_or_else(|| anyhow!("Invalid instance lock path"))?,
-        )?;
-        let lock = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
-        lock.try_lock().map_err(|_| {
-            anyhow!("Regressify Desktop is already open. Switch workspaces in the existing window.")
-        })?;
-        Ok(Self { _lock: lock })
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Entry {
     pub path: PathBuf,
@@ -832,7 +808,23 @@ impl Preferences {
             path.parent()
                 .ok_or_else(|| anyhow!("Invalid preferences path"))?,
         )?;
-        write_file_atomically(path, &serde_json::to_vec_pretty(self)?)
+        let lock = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path.with_extension("lock"))?;
+        lock.lock()
+            .context("Cannot lock shared desktop preferences")?;
+        let latest = Self::load(path)?;
+        let mut merged = self.clone();
+        for root in latest.recent_workspaces {
+            if !merged.recent_workspaces.contains(&root) {
+                merged.recent_workspaces.push(root);
+            }
+        }
+        merged.recent_workspaces.truncate(10);
+        write_file_atomically(path, &serde_json::to_vec_pretty(&merged)?)
     }
 }
 
@@ -1101,6 +1093,45 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_preferences_saves_preserve_recent_workspaces_from_both_windows() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let roots = [
+            directory.path().join("first"),
+            directory.path().join("second"),
+        ];
+        let saves = roots
+            .iter()
+            .map(|root| {
+                let mut preferences = Preferences::default();
+                preferences.remember(&Workspace { root: root.clone() });
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    preferences.save(&path).unwrap();
+                    preferences
+                })
+            })
+            .collect::<Vec<_>>();
+        let mut snapshots = saves
+            .into_iter()
+            .map(|save| save.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(Preferences::load(&path).unwrap().recent_workspaces.len(), 2);
+        snapshots[0].source_font_size = 18;
+        snapshots[0].save(&path).unwrap();
+        let saved = Preferences::load(&path).unwrap();
+        assert_eq!(saved.source_font_size, 18);
+        assert!(
+            roots
+                .iter()
+                .all(|root| saved.recent_workspaces.contains(root))
+        );
+    }
+
+    #[test]
     fn preferences_round_trip_and_bound_recent_workspaces() {
         let directory = tempfile::tempdir().unwrap();
         let mut preferences = Preferences::default();
@@ -1296,15 +1327,5 @@ mod tests {
         assert_eq!(selected.len(), 1);
         assert!(selected.toggle(&suites[0], true).is_err());
         assert_eq!(selected.filters(&suites, false).unwrap(), vec!["good"]);
-    }
-
-    #[test]
-    fn only_one_desktop_instance_holds_the_workspace_window_lease() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("desktop.lock");
-        let instance = DesktopInstance::acquire(&path).unwrap();
-        assert!(DesktopInstance::acquire(&path).is_err());
-        drop(instance);
-        assert!(DesktopInstance::acquire(&path).is_ok());
     }
 }

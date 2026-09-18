@@ -1116,14 +1116,88 @@ async fn multiple_suites_can_be_checked_and_empty_selection_cannot_run(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn duplicate_workspace_open_activates_owner_without_discarding_current_draft(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::instance::{DesktopInstance, OpenInstance};
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let locks = first.path().join("instances");
+    let owner = match DesktopInstance::open(&locks, second.path()).unwrap() {
+        OpenInstance::Owned(owner) => owner,
+        OpenInstance::Activated => panic!("Expected fixture ownership"),
+    };
+    let (handle, view) = editor(cx, first.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+            this.load_workspace(second.path().into(), window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("status").is_some_and(|status| {
+            status.label() == Some("Switched to the existing workspace window")
+        })
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(owner.take_activation());
+        assert_eq!(
+            view.read(cx).session.workspace.as_ref().unwrap().root,
+            first.path().canonicalize().unwrap()
+        );
+        assert!(view.read(cx).session.dirty());
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        assert_eq!(view.read(cx).runs.read(cx).selected_count(), 1);
+        assert!(window.try_find("guard-save").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn reopening_current_workspace_keeps_its_unsaved_document(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        view.update(cx, |this, cx| {
+            this.load_workspace(directory.path().join("."), window, cx)
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("status").is_some_and(|status| {
+            status.label() == Some("Workspace is already open in this window")
+        })
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).session.dirty());
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        assert!(window.try_find("guard-save").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn switching_workspaces_discards_old_selection_and_closing_unloads_everything(
     cx: &mut TestAppContext,
 ) {
+    use crate::desktop::instance::{DesktopInstance, OpenInstance};
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
+    let locks = first.path().join("instances");
     let (handle, view) = editor(cx, first.path());
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
+            this.workspace_instance = match DesktopInstance::open(&locks, first.path()).unwrap() {
+                OpenInstance::Owned(instance) => Some(instance),
+                OpenInstance::Activated => panic!("Expected first fixture ownership"),
+            };
             this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
             this.load_workspace(second.path().into(), window, cx);
         });
@@ -1147,10 +1221,26 @@ async fn switching_workspaces_discards_old_selection_and_closing_unloads_everyth
             view.read(cx).runs.read(cx).output_root().unwrap(),
             second.path().canonicalize().unwrap().join(".regressify")
         );
+        assert!(matches!(
+            DesktopInstance::open(&locks, first.path()).unwrap(),
+            OpenInstance::Owned(_)
+        ));
+        assert!(
+            view.read(cx)
+                .workspace_instance
+                .as_ref()
+                .unwrap()
+                .owns_workspace(second.path())
+                .unwrap()
+        );
         view.update(cx, |this, cx| this.close_workspace(window, cx));
         assert!(view.read(cx).session.workspace.is_none());
         assert!(view.read(cx).runs.read(cx).output_root().is_err());
         assert!(view.read(cx).source.read(cx).value().is_empty());
+        assert!(matches!(
+            DesktopInstance::open(&locks, second.path()).unwrap(),
+            OpenInstance::Owned(_)
+        ));
     })
     .unwrap();
 }

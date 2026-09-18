@@ -10,7 +10,8 @@ param(
     [switch]$KeepOpen,
     [switch]$Capture,
     [switch]$ScenarioFlows,
-    [switch]$ArtifactFlows
+    [switch]$ArtifactFlows,
+    [switch]$InstanceFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -21,7 +22,7 @@ $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'
 $executable = Join-Path $repository 'target/debug/regressify-desktop.exe'
 
 if (-not $IsWindows) { throw 'This smoke test requires Windows.' }
-if (Get-Process regressify-desktop -ErrorAction SilentlyContinue) { throw 'Close the existing desktop window before running native smoke checks.' }
+if (Get-Process regressify-desktop -ErrorAction SilentlyContinue) { throw 'Close desktop windows before native smoke checks because the fixture temporarily changes shared preferences.' }
 if (-not $SkipBuild) {
     Push-Location $repository
     try {
@@ -211,9 +212,14 @@ $settingsBackup = Join-Path $workspace 'original-desktop-settings.json'
 if ($settingsExisted) { Copy-Item -LiteralPath $settingsPath -Destination $settingsBackup }
 $process = $null
 $script:window = [IntPtr]::Zero
+$script:fixtureProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
-function Start-Fixture {
-    $script:process = Start-Process -FilePath $executable -ArgumentList ('"' + $workspace + '"') -RedirectStandardError $stderr -RedirectStandardOutput $stdout -PassThru
+function Start-Fixture([string]$Root = $workspace, [string]$Name = 'native', [switch]$Empty) {
+    $errorLog = Join-Path $artifacts ($Name + '-stderr.log')
+    $start = @{ FilePath = $executable; RedirectStandardError = $errorLog; RedirectStandardOutput = (Join-Path $artifacts ($Name + '-stdout.log')); PassThru = $true }
+    if (-not $Empty) { $start.ArgumentList = '"' + $Root + '"' }
+    $script:process = Start-Process @start
+    $script:fixtureProcesses.Add($process)
     if (-not $process.WaitForInputIdle(15000)) { throw 'Desktop did not initialize.' }
     $initialization = [System.Diagnostics.Stopwatch]::StartNew()
     do {
@@ -222,10 +228,10 @@ function Start-Fixture {
         if ($script:window -ne [IntPtr]::Zero -or $process.HasExited) { break }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
     } while ($initialization.Elapsed.TotalSeconds -lt 15)
-    if ($script:window -eq [IntPtr]::Zero) { throw "Desktop has no native window. $(Get-Content $stderr -Raw)" }
+    if ($script:window -eq [IntPtr]::Zero) { throw "Desktop has no native window. $(Get-Content $errorLog -Raw)" }
     $script:screen = [System.Windows.Forms.Screen]::FromHandle($script:window).WorkingArea
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
-    Wait-Control 'Workspace opened' | Out-Null
+    if ($Empty) { Wait-Control 'Open workspace' | Out-Null } else { Wait-Control 'Workspace opened' | Out-Null }
 }
 
 function Wait-Settings([scriptblock]$Match) {
@@ -363,6 +369,88 @@ function Capture-Window([string]$Name) {
         $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
         Write-Output "$Name`: ${width}x${height}, $($colors.Count) sampled colors, $path"
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
+}
+
+function Test-InstanceFlows {
+    if (-not ('RegressifyInstanceWindow' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RegressifyInstanceWindow {
+    [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr window, int command);
+}
+'@
+    }
+    function Wait-OwnerForeground([System.Diagnostics.Process]$Owner) {
+        $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+        do {
+            if ($Owner.HasExited) { throw 'The workspace owner exited during activation.' }
+            $Owner.Refresh()
+            $handle = $Owner.MainWindowHandle
+            if ($handle -ne [IntPtr]::Zero -and [RegressifySmokeFocus]::GetForegroundWindow() -eq $handle -and -not [RegressifyInstanceWindow]::IsIconic($handle)) { return }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        } while ($deadline.Elapsed.TotalSeconds -lt 10)
+        throw 'The existing workspace window was not restored and foregrounded.'
+    }
+    function Open-Duplicate([string]$Root, [System.Diagnostics.Process]$Owner, [string]$Name) {
+        $duplicate = Start-Process -FilePath $executable -ArgumentList ('"' + $Root + '"') -PassThru `
+            -RedirectStandardOutput (Join-Path $artifacts ($Name + '-stdout.log')) -RedirectStandardError (Join-Path $artifacts ($Name + '-stderr.log'))
+        $script:fixtureProcesses.Add($duplicate)
+        if (-not $duplicate.WaitForExit(15000)) { throw 'A duplicate launcher did not exit after workspace handoff.' }
+        if ($duplicate.ExitCode -ne 0) { throw "Duplicate launcher failed with exit code $($duplicate.ExitCode)." }
+        Wait-OwnerForeground $Owner
+    }
+    $first = $process
+    $source = Join-Path $workspace 'visual_tests/smoke.tests.json'
+    $originalSource = (Get-FileHash $source).Hash
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Invoke-Control 'Duplicate selected item'
+    Wait-Control 'Unsaved changes' | Out-Null
+    Capture-Window 'instances-first-draft'
+    $secondRoot = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'))
+    Write-JsonFixture (Join-Path $secondRoot 'visual_tests/second.tests.json') @{ scenarios = @(@{ label = 'Second workspace'; url = 'about:blank' }) }
+    Start-Fixture -Root $secondRoot -Name 'instance-second'
+    $second = $process
+    if ($first.HasExited) { throw 'Opening another workspace closed the first instance.' }
+    Wait-Control ($secondRoot.Replace('\', '/')) | Out-Null
+    Capture-Window 'instances-second-workspace'
+    [RegressifyInstanceWindow]::ShowWindow($first.MainWindowHandle, 6) | Out-Null
+    Open-Duplicate (Join-Path $workspace '.') $first 'instance-duplicate'
+    $script:process = $first
+    $script:window = $first.MainWindowHandle
+    Wait-Control 'Unsaved changes' | Out-Null
+    Capture-Window 'instances-duplicate-focused'
+    if ((Get-FileHash $source).Hash -ne $originalSource) { throw 'Workspace handoff changed the saved document.' }
+    $script:process = $second
+    $script:window = $second.MainWindowHandle
+    [RegressifyInstanceWindow]::ShowWindow($first.MainWindowHandle, 6) | Out-Null
+    Open-Duplicate $workspace.ToUpperInvariant() $first 'instance-case-alias'
+    Start-Fixture -Empty -Name 'instance-empty'
+    $empty = $process
+    Invoke-Control (Split-Path -Leaf $workspace)
+    Wait-Control 'Switched to the existing workspace window' | Out-Null
+    Wait-OwnerForeground $first
+    Capture-Window 'instances-empty-redirect'
+    Start-Fixture -Empty -Name 'instance-empty-second'
+    if ($empty.HasExited) { throw 'An empty desktop instance was globally restricted.' }
+    Capture-Window 'instances-concurrent-empty'
+    $first.Kill($true)
+    $first.WaitForExit()
+    Start-Fixture -Root $workspace -Name 'instance-crash-recovery'
+    $recovered = $process
+    if ($second.HasExited) { throw 'Recovering one workspace affected another instance.' }
+    if ((Get-FileHash $source).Hash -ne $originalSource) { throw 'Recovery changed the saved source.' }
+    Capture-Window 'instances-crash-recovery'
+    Open-Duplicate $workspace $recovered 'instance-recovered-activation'
+    Invoke-Control 'File' -Pointer
+    Invoke-Control 'Close workspace'
+    Wait-Control 'Workspace closed' | Out-Null
+    Start-Fixture -Root $workspace -Name 'instance-reopened'
+    if ($recovered.HasExited) { throw 'Closing a workspace should leave its window available.' }
+    Capture-Window 'instances-reopened-workspace'
+    Write-Output 'Multiple workspace/empty windows, duplicate activation, minimized restoration, draft preservation, and close/crash ownership release passed.'
 }
 
 function Test-ArtifactFlows {
@@ -517,6 +605,10 @@ try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($InstanceFlows) {
+        Test-InstanceFlows
+        return
+    }
     if ($ArtifactFlows) {
         Test-ArtifactFlows
         return
@@ -764,7 +856,13 @@ try {
     }
 } finally {
     try {
-    if (-not $KeepOpen -and $null -ne $process -and -not $process.HasExited) {
+    $cleanupProcess = if ($null -ne $process) { $process.Id } else { 0 }
+    foreach ($fixture in $script:fixtureProcesses) {
+    if (-not $KeepOpen -and -not $fixture.HasExited) {
+        $script:process = $fixture
+        $process.Refresh()
+        $script:window = $process.MainWindowHandle
+        $verifyDraft = $null -ne $cleanupSnapshot -and $process.Id -eq $cleanupProcess
         $process.CloseMainWindow() | Out-Null
         $closing = [System.Diagnostics.Stopwatch]::StartNew()
         $discarded = $false
@@ -792,15 +890,16 @@ try {
             Write-Warning 'The synthetic test process did not close normally; terminating it.'
             $process.Kill($true)
             $process.WaitForExit()
-            if ($null -ne $cleanupSnapshot) { throw 'Native draft cleanup did not close the fixture normally.' }
+            if ($verifyDraft) { throw 'Native draft cleanup did not close the fixture normally.' }
         }
-        if ($null -ne $cleanupSnapshot) {
+        if ($verifyDraft) {
             if (-not $discarded) { throw 'The unsaved fixture draft was not discarded through its confirmation dialog.' }
             if ((Get-FileHash $cleanupPath -Algorithm SHA256).Hash -ne $cleanupSnapshot) {
                 throw 'Cleanup unexpectedly changed the saved fixture source.'
             }
             Write-Output 'Dirty fixture closed without changing its saved source.'
         }
+    }
     }
     } finally {
         if ($settingsExisted) {

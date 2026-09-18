@@ -6,6 +6,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
+use futures::StreamExt;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
@@ -23,6 +24,7 @@ use serde_json::{Value, json};
 
 use super::{
     document::{ACTIONS, Document, DocumentKind},
+    instance::{DesktopInstance, OpenInstance},
     schema::{self, Field, FieldKind},
     session::{Selection, Session},
     workspace::{self, Entry, OpenDocument, Preferences, display_path},
@@ -103,6 +105,8 @@ struct Binding {
 
 pub struct Workbench {
     session: Session,
+    activation_task: Option<Task<()>>,
+    workspace_instance: Option<DesktopInstance>,
     source: Entity<EditorState>,
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
@@ -261,6 +265,8 @@ impl Workbench {
             });
         Self {
             session: Session::default(),
+            workspace_instance: None,
+            activation_task: None,
             source,
             resolved,
             search,
@@ -344,23 +350,92 @@ impl Workbench {
     }
 
     fn load_workspace(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.runs.read(cx).running() {
-            self.status = "Cancel the active command before switching workspaces".into();
-            cx.notify();
-            return;
-        }
-        if self.unsaved() {
-            self.guard(files::Pending::Workspace(path), window, cx);
-            return;
-        }
+        let directory = self
+            .preferences_path
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(Preferences::path)
+            .map(|path| path.with_file_name("instances"));
+        let current = self
+            .session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root.clone());
+        self.task(
+            "Checking workspace...",
+            move || {
+                let root = workspace::Workspace::open(&path)?.root;
+                if current.as_ref() == Some(&root) {
+                    return Ok(None);
+                }
+                DesktopInstance::open(&directory?, &root).map(Some)
+            },
+            |this, opened, window, cx| {
+                match opened {
+                    None => {
+                        window.activate_window();
+                        cx.activate(true);
+                        this.status = "Workspace is already open in this window".into();
+                    }
+                    Some(OpenInstance::Activated) => {
+                        this.status = "Switched to the existing workspace window".into();
+                    }
+                    Some(OpenInstance::Owned(instance)) => {
+                        if this.runs.read(cx).running() {
+                            this.status =
+                                "Cancel the active command before switching workspaces".into();
+                        } else if this.unsaved() {
+                            let path = instance.root().to_path_buf();
+                            drop(instance);
+                            this.guard(files::Pending::Workspace(path), window, cx);
+                        } else {
+                            this.load_owned_workspace(instance, window, cx);
+                        }
+                    }
+                }
+                cx.notify();
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn load_owned_workspace(
+        &mut self,
+        instance: DesktopInstance,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.task(
             "Opening workspace...",
             move || {
                 let mut session = Session::default();
-                session.connect(&path)?;
-                Ok(session)
+                session.connect(instance.root())?;
+                Ok((session, instance))
             },
-            |this, session, window, cx| {
+            |this, (session, mut instance), window, cx| {
+                this.activation_task = instance.activation_events().map(|mut events| {
+                    cx.spawn_in(window, async move |view, cx| {
+                        while events.next().await.is_some() {
+                            if view
+                                .update_in(cx, |this, window, cx| {
+                                    if this
+                                        .workspace_instance
+                                        .as_ref()
+                                        .is_some_and(DesktopInstance::take_activation)
+                                    {
+                                        window.activate_window();
+                                        cx.activate(true);
+                                    }
+                                })
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    })
+                });
+                this.workspace_instance = Some(instance);
                 this.session = session;
                 this.main_tab = 0;
                 this.overview = true;
@@ -551,6 +626,8 @@ impl Workbench {
         }
         match self.session.close() {
             Ok(()) => {
+                self.activation_task = None;
+                self.workspace_instance = None;
                 self.runs.update(cx, |panel, cx| panel.clear(window, cx));
                 self.results.update(cx, |panel, cx| panel.clear(window, cx));
                 self.search
@@ -1230,6 +1307,7 @@ impl Workbench {
                     .ghost()
                     .icon(IconName::Copy)
                     .tooltip("Duplicate selected item")
+                    .accessibility_label("Duplicate selected item")
                     .disabled(self.busy || self.session.selection == Selection::Root)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(Session::duplicate_selected, window, cx)
@@ -2474,7 +2552,7 @@ impl Render for Workbench {
     }
 }
 
-pub fn launch(root: Option<PathBuf>) {
+pub fn launch(instance: Option<DesktopInstance>) {
     gpui_kit::application()
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
@@ -2524,8 +2602,10 @@ pub fn launch(root: Option<PathBuf>) {
                             })
                             .unwrap_or(true)
                         });
-                        if let Some(root) = root {
-                            view.update(cx, |this, cx| this.load_workspace(root, window, cx));
+                        if let Some(instance) = instance {
+                            view.update(cx, |this, cx| {
+                                this.load_owned_workspace(instance, window, cx)
+                            });
                         }
                         cx.new(|cx| Root::new(view, window, cx))
                     },

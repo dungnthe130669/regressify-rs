@@ -132,11 +132,33 @@ Discard, or Cancel. A failed save retains the prompt and draft. Recent workspace
 and appearance are stored outside the project in the
 operating system's per-user Regressify Desktop configuration directory.
 
-Only one desktop window and one workspace are active at a time. Close workspace
-unloads documents, run options, suite selections, logs, and report previews.
-Switching replaces the workspace rather than adding another root. Active runs
-must finish or be cancelled before switching. A per-user instance lock prevents
-a second GUI process; bundled worker processes do not take that lock.
+Multiple desktop instances can run at once, each with its own workspace. Empty
+windows are also independent. Opening a workspace already owned by another
+instance restores and focuses that existing window instead of opening a duplicate.
+This applies to startup paths, the folder chooser, and recent workspaces. A
+duplicate startup exits successfully after handoff; an existing requesting window
+keeps its current workspace, draft, selection, and run. Reopening the current
+workspace also preserves its draft rather than reloading it.
+
+Each window still has one active workspace. Close workspace unloads documents,
+run options, selections, logs, and previews and releases its ownership without
+closing the window. Switching to a different unowned workspace retains the normal
+save/discard guard and requires active runs to finish or be cancelled. The old
+workspace remains owned until the new workspace loads successfully.
+
+Ownership uses the canonical workspace path, resolving relative and symlink
+aliases; Windows paths are also case-normalized. Per-workspace file locks and a
+token-checked, loopback-only activation endpoint live in the user's configuration
+directory, not the project. Closing or crashing releases the OS lock, and the next
+owner replaces stale activation data. An unresponsive owner is reported rather
+than bypassing the lock. Bundled engine workers do not acquire GUI ownership.
+Use the updated executable for all windows; an older globally locked version
+cannot receive the new activation requests.
+
+Preferences remain per-user. Concurrent writes are serialized and recent-workspace
+entries are merged so separate windows retain each other's history. Appearance
+and editor defaults use the last saved settings; existing windows keep their
+current appearance until changed or reopened.
 
 Choose Initialize workspace in Runs to invoke the existing non-destructive
 `init` command, which only creates missing starter files.
@@ -525,6 +547,14 @@ capture-only data, exact suite identity when run IDs match, and detection after
 restart. Screenshot and reference hashes remain unchanged. It captures seven
 light/dark windows at 1600x1000 and 1080x720 and restores user preferences.
 
+Use `./ci/desktop-smoke.ps1 -InstanceFlows` for multi-instance acceptance. It opens
+two different workspaces and multiple empty windows, verifies duplicate startup
+and recent-workspace handoff, restores a minimized owner, and checks its unsaved
+draft and saved-file hash remain unchanged. It also verifies ownership release
+after Close workspace and recovery after terminating only its own synthetic
+fixture. Seven native window captures are retained; all fixture processes are
+tracked for cleanup and the original preference file is restored.
+
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
 and runs the bundled engine's init command from the GUI. It captures the target window
@@ -540,8 +570,9 @@ promoted image's checksum, compares that exact run, and opens Run settings in
 both themes. Input steps verify foreground focus and stable control bounds;
 literal fixture text uses Unicode input packets without changing the user's
 keyboard settings.
-Close any existing desktop window before starting the smoke check; the
-single-instance guard still applies.
+Close existing desktop windows before starting the smoke check because the
+fixture temporarily changes shared preferences, not because the application
+restricts the number of windows.
 
 Unless `-KeepOpen` is set, cleanup automatically discards unsaved changes in the
 smoke runner's own synthetic fixture. The test deliberately closes a dirty draft
@@ -560,9 +591,18 @@ original preferences file, including recent workspaces. With `-KeepOpen`, the
 remaining fixture window retains its test appearance until closed; the original
 file is restored when the script returns.
 
-The latest automated gates pass 432 library/UI tests, four worker integration
-tests, 68 headless desktop tests, and 293 default CLI tests, plus formatting and
+The latest automated gates pass 438 library/UI tests, five executable integration
+tests, 72 headless desktop tests, and 293 default CLI tests, plus formatting and
 strict library Clippy. The standalone Windows desktop builds successfully.
+
+The multi-instance native flow passes all seven captures and foreground/restore,
+draft preservation, independent-window, close/reopen, and crash-recovery checks.
+Transport tests cover simultaneous launches, canonical aliases, stale endpoints,
+invalid tokens, and oversized requests. The executable integration test verifies
+duplicate launchers exit successfully and internal workers bypass GUI ownership.
+Window switching and duplicate-open draft guards have production-view coverage;
+concurrent preference tests verify both windows' recent workspaces are retained.
+Native focus/restore behavior has been checked on Windows, not yet macOS/Linux.
 
 The saved-artifact native flow passes all seven captures, no-baseline action
 checks, compare-only generation, unchanged-image assertions, and restart checks.

@@ -2,6 +2,7 @@
 
 pub mod completion;
 pub mod document;
+pub mod instance;
 pub mod results;
 pub mod runner;
 pub mod schema;
