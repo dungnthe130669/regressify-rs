@@ -213,7 +213,12 @@ impl Workbench {
                     this.refresh_results(window, cx);
                     cx.notify();
                 }
-                runs::RunEvent::SelectionChanged | runs::RunEvent::ProgressChanged => {
+                runs::RunEvent::SelectionChanged => {
+                    this.runs
+                        .update(cx, |panel, cx| panel.refresh_artifacts_if_idle(cx));
+                    cx.notify();
+                }
+                runs::RunEvent::ArtifactsChanged | runs::RunEvent::ProgressChanged => {
                     let disabled = this.busy || this.runs.read(cx).running();
                     this.results
                         .update(cx, |panel, cx| panel.set_disabled(disabled, cx));
@@ -225,6 +230,15 @@ impl Workbench {
                     this.results.update(cx, |panel, cx| {
                         panel.set_suites(suites);
                         panel.show_run(root.clone(), run_id.clone(), window, cx);
+                    });
+                    cx.notify();
+                }
+                runs::RunEvent::ReviewSavedResults { root, targets } => {
+                    this.main_tab = 2;
+                    let suites = this.session.suites.clone();
+                    this.results.update(cx, |panel, cx| {
+                        panel.set_suites(suites);
+                        panel.show_saved_reports(root.clone(), targets.clone(), window, cx);
                     });
                     cx.notify();
                 }
@@ -509,12 +523,17 @@ impl Workbench {
             }
             return;
         }
-        self.task("Validating selected suites...", move || workspace.suite_catalog(), move |this, suites, window, cx| {
+        let review_after_run = intent.review_after_run;
+        self.task("Validating selected suites...", move || {
+            let suites = workspace.suite_catalog()?;
+            let request = intent.resolve_for_execution(&suites).map_err(|error| format!("{error:#}"));
+            Ok((suites, request))
+        }, move |this, (suites, request), window, cx| {
             this.session.suites = suites;
             this.session.suite_error = None;
             this.sync_suites(cx);
-            match intent.resolve(&this.session.suites) {
-                Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, intent.review_after_run, window, cx)),
+            match request {
+                Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, review_after_run, window, cx)),
                 Err(error) => {
                     this.status = format!("Selected suites changed or contain errors; review the selection before running: {error:#}");
                     cx.notify();
@@ -564,6 +583,7 @@ impl Workbench {
             cx.notify();
             return;
         }
+        self.main_tab = 1;
         self.guard(files::Pending::Run(intent), window, cx);
     }
 
@@ -580,6 +600,17 @@ impl Workbench {
         self.runs
             .update(cx, |panel, cx| panel.request_command(command, window, cx));
         cx.notify();
+    }
+
+    fn can_test_open_suite(&self, cx: &App) -> bool {
+        !self.busy
+            && !self.runs.read(cx).running()
+            && self
+                .session
+                .open
+                .as_ref()
+                .and_then(|open| open.entry.suite_name())
+                .is_some_and(|name| self.runs.read(cx).has_reference(&name))
     }
 
     fn run_open_suite(
@@ -1867,6 +1898,52 @@ impl Workbench {
                             .truncate()
                             .child(self.selection_title()),
                     )
+                    .when_some(
+                        self.session
+                            .open
+                            .as_ref()
+                            .and_then(|open| open.entry.suite_name()),
+                        |heading, name| {
+                            let summary = self.runs.read(cx).artifact_summary(&name);
+                            let available = self.runs.read(cx).can_open_saved_suite(&name);
+                            heading.child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .gap_2()
+                                    .child(
+                                        div()
+                                            .id("suite-artifact-status")
+                                            .role(Role::Status)
+                                            .aria_label(summary.clone())
+                                            .test_support()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(summary),
+                                    )
+                                    .when(available, |row| {
+                                        row.child(
+                                            Button::new("suite-open-report")
+                                                .small()
+                                                .icon(gpui_kit::assets::IconName::Images)
+                                                .label("Open Report")
+                                                .disabled(self.busy)
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.runs.update(cx, |panel, cx| {
+                                                        panel.open_saved_reports(
+                                                            vec![name.clone()],
+                                                            cx,
+                                                        )
+                                                    })
+                                                })),
+                                        )
+                                    }),
+                            )
+                        },
+                    )
                     .when_some(self.session.selection.scenario(), |heading, scenario| {
                         heading.child(
                             div()
@@ -1880,7 +1957,8 @@ impl Workbench {
                                         .small()
                                         .icon(gpui_kit::assets::IconName::Play)
                                         .label("Run Scenario Test")
-                                        .disabled(self.busy || self.runs.read(cx).running())
+                                        .tooltip("Requires reference images for this suite")
+                                        .disabled(!self.can_test_open_suite(cx))
                                         .on_click(cx.listener(move |this, _, window, cx| {
                                             this.run_scenario(
                                                 super::runner::RunCommand::Test,
@@ -2329,8 +2407,8 @@ impl Render for Workbench {
                                     .small()
                                     .icon(gpui_kit::assets::IconName::Play)
                                     .label("Run Suite Test")
-                                    .tooltip("Run all scenarios in the open suite")
-                                    .disabled(self.busy || self.runs.read(cx).running())
+                                    .tooltip("Run all scenarios in the open suite; requires reference images")
+                                    .disabled(!self.can_test_open_suite(cx))
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.run_open_suite(
                                             super::runner::RunCommand::Test,

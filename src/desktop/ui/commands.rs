@@ -170,7 +170,7 @@ impl Workbench {
                     index: 0,
                     scenario: scenario.unwrap_or(0),
                 }),
-                enabled: suite && scenario.is_some() && !self.runs.read(cx).running(),
+                enabled: suite && scenario.is_some() && self.can_test_open_suite(cx),
             },
             Command {
                 title: "Run Reference for current scenario",
@@ -207,7 +207,7 @@ impl Workbench {
                 group: "Run",
                 icon: Icon::Play,
                 action: Box::new(RunSuiteCommand { index: 0 }),
-                enabled: suite && !self.runs.read(cx).running(),
+                enabled: suite && self.can_test_open_suite(cx),
             },
             Command {
                 title: "Run Reference for open suite",

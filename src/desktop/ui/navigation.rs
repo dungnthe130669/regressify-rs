@@ -707,7 +707,12 @@ impl Workbench {
                                 .icon(gpui_kit::assets::IconName::Play)
                                 .tooltip(format!("Run Test: {label}"))
                                 .accessibility_label(format!("Run Test: {label}"))
-                                .disabled(self.busy || runs.running() || scenario_id.is_none())
+                                .disabled(
+                                    self.busy
+                                        || runs.running()
+                                        || scenario_id.is_none()
+                                        || !runs.has_reference(&owner),
+                                )
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     this.run_scenario(
                                         super::super::runner::RunCommand::Test,

@@ -276,6 +276,35 @@ Reference capture, approve, and optimize require action-named confirmations
 describing the baseline or image changes. Pending option text is read before
 command changes and execution; invalid option drafts are retained for correction.
 
+Opening or selecting a suite automatically discovers its reference images and
+saved test runs in the active output folder, using the suite's output ID. The
+editor, Overview, and Runs show the detected counts. Discovery runs in the
+background and refreshes after commands, workspace refreshes, and output-folder
+or environment changes. Refresh saved captures also checks changes made outside
+the app. Results from an older workspace or output-folder scan cannot replace
+the current inventory.
+
+Run Test is disabled until every selected suite has at least one successful
+reference image. The same requirement applies to suite/scenario buttons and
+command search; Run Reference remains available for initial setup. Empty folders,
+diff images, invalid PNGs, and failed-capture placeholders do not establish a
+baseline. References are rechecked immediately before execution, including after
+saving a draft. This is a suite-level existence check, not a guarantee that every
+scenario, viewport, or saved step has a reference. Missing individual references
+remain comparison results. Standalone CLI behavior is unchanged.
+
+When references and test data exist, Open Report is available beside the open
+suite, on its Runs/Overview row, and for a compatible checked-suite selection.
+An existing report opens directly without starting a worker or changing captures.
+If saved screenshots have no usable report, the app compares those screenshots
+against the references and opens the result automatically, without launching a
+browser or creating a capture run. The latest saved run is chosen by screenshot
+modification time, not UUID ordering; an explicit Run name selects that exact
+run. Suite output IDs and run IDs are pinned together, so another suite with the
+same run ID cannot appear accidentally. Existing reports from multiple suites
+can be viewed together even when their run IDs differ. If report generation is
+needed for different run IDs, use each suite's Open Report control separately.
+
 Run settings is independent of the last command. Search the Environment & output,
 Capture, Comparison, Report, Image optimization, and Diagnostics & network groups
 before running any action. Browser download has Auto/Always/Never choices;
@@ -489,6 +518,13 @@ compares that exact scenario, and checks sibling reference hashes. It captures
 11 light/dark windows at 1600x1000 and 1080x720, including overflowing settings,
 logs, and fit-width images. This mode does not run the source-authoring sequence.
 
+Use `./ci/desktop-smoke.ps1 -ArtifactFlows` to verify first-open artifact detection
+without Chromium or network access. It checks disabled Test actions with no
+baseline, multi-suite gating, direct saved-report opening, comparison of existing
+capture-only data, exact suite identity when run IDs match, and detection after
+restart. Screenshot and reference hashes remain unchanged. It captures seven
+light/dark windows at 1600x1000 and 1080x720 and restores user preferences.
+
 The script builds the standalone desktop executable, creates an isolated synthetic workspace under
 `target/desktop-smoke`, navigates fields/source/results with Windows UI Automation,
 and runs the bundled engine's init command from the GUI. It captures the target window
@@ -524,10 +560,16 @@ original preferences file, including recent workspaces. With `-KeepOpen`, the
 remaining fixture window retains its test appearance until closed; the original
 file is restored when the script returns.
 
-The latest automated gates pass 423 library/UI tests (including 63 production
-UI tests), four worker integration tests, 65 headless desktop tests, and 293
-default CLI tests, plus formatting and
+The latest automated gates pass 432 library/UI tests, four worker integration
+tests, 68 headless desktop tests, and 293 default CLI tests, plus formatting and
 strict library Clippy. The standalone Windows desktop builds successfully.
+
+The saved-artifact native flow passes all seven captures, no-baseline action
+checks, compare-only generation, unchanged-image assertions, and restart checks.
+The screenshots were inspected in both themes and window sizes. GPUI's Windows
+accessibility bridge removes disabled buttons' Invoke action but does not expose
+`IsEnabled=false`; the native check verifies action availability instead. An
+empty Activity view's duplicate Select suites accessibility ID was also fixed.
 
 The preceding focused scenario native flow passed all 11 captures and artifact/log checks.
 The screenshots were inspected for visible overflow bars, compact controls,
@@ -539,8 +581,8 @@ saved report JSON, desktop loading, and live comparison totals all agree on nine
 passes and three failed captures across twelve viewport screenshots. UI tests
 cover report access after execution errors, side-by-side exact-run opening, and
 capture-only compare-and-open through the draft guard. The Windows smoke locator
-now uses Open Report; a new native run was not started while an existing user
-desktop window was open.
+uses Open Report; the saved-artifact native flow above now also verifies the
+comparison handoff from the suite editor and after restarting the app.
 
 The earlier appearance pass completed 28 captures and restart/cleanup checks.
 The broader authoring smoke was attempted again: its first attempt stopped at a

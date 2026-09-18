@@ -1,0 +1,279 @@
+use super::*;
+use crate::desktop::results::{SavedRun, SuiteArtifacts};
+
+#[derive(Default)]
+pub(super) struct ArtifactScan {
+    root: Option<PathBuf>,
+    generation: u64,
+    pub(super) loading: bool,
+    suites: BTreeMap<String, std::result::Result<SuiteArtifacts, String>>,
+}
+
+impl ArtifactScan {
+    pub(super) fn clear(&mut self) {
+        self.generation += 1;
+        self.root = None;
+        self.loading = false;
+        self.suites.clear();
+    }
+}
+
+impl RunPanel {
+    pub(in crate::desktop::ui) fn refresh_artifacts_if_idle(&mut self, cx: &mut Context<Self>) {
+        if !self.running() && !self.artifacts.loading {
+            self.refresh_artifacts(cx);
+        }
+    }
+
+    pub(in crate::desktop::ui) fn refresh_artifacts(&mut self, cx: &mut Context<Self>) {
+        let Ok(root) = self.output_root() else {
+            self.artifacts.clear();
+            cx.emit(RunEvent::ArtifactsChanged);
+            cx.notify();
+            return;
+        };
+        self.artifacts.generation += 1;
+        if self.artifacts.root.as_ref() != Some(&root) {
+            self.artifacts.suites.clear();
+        }
+        self.artifacts.root = Some(root.clone());
+        self.artifacts.loading = true;
+        let generation = self.artifacts.generation;
+        let ids = self
+            .suites
+            .iter()
+            .filter(|suite| suite.error.is_none())
+            .map(|suite| suite.output_id.clone())
+            .collect::<BTreeSet<_>>();
+        let task = cx.background_executor().spawn(async move {
+            ids.into_iter()
+                .map(|id| {
+                    let artifacts =
+                        SuiteArtifacts::load(&root, &id).map_err(|error| format!("{error:#}"));
+                    (id, artifacts)
+                })
+                .collect::<BTreeMap<_, _>>()
+        });
+        cx.spawn(async move |panel, cx| {
+            let artifacts = task.await;
+            let _ = panel.update(cx, |panel, cx| {
+                if panel.artifacts.generation != generation {
+                    return;
+                }
+                panel.artifacts.suites = artifacts;
+                panel.artifacts.loading = false;
+                cx.emit(RunEvent::ArtifactsChanged);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.emit(RunEvent::ArtifactsChanged);
+        cx.notify();
+    }
+
+    fn suite_artifacts(&self, name: &str) -> Result<&SuiteArtifacts> {
+        anyhow::ensure!(
+            self.artifacts.root.as_ref() == Some(&self.output_root()?),
+            "Checking saved captures..."
+        );
+        let suite = self
+            .suites
+            .iter()
+            .find(|suite| suite.name == name)
+            .ok_or_else(|| anyhow!("Selected suite is unavailable"))?;
+        anyhow::ensure!(
+            suite.error.is_none(),
+            "Suite '{name}' has configuration errors"
+        );
+        self.artifacts
+            .suites
+            .get(&suite.output_id)
+            .ok_or_else(|| anyhow!("Checking saved captures..."))?
+            .as_ref()
+            .map_err(|error| anyhow!("{error}"))
+    }
+
+    pub(in crate::desktop::ui) fn has_reference(&self, name: &str) -> bool {
+        self.suite_artifacts(name)
+            .is_ok_and(|artifacts| artifacts.reference_count > 0)
+    }
+
+    pub(in crate::desktop::ui) fn artifact_summary(&self, name: &str) -> String {
+        match self.suite_artifacts(name) {
+            Ok(artifacts) => format!(
+                "{} reference {} / {} saved test {}",
+                artifacts.reference_count,
+                if artifacts.reference_count == 1 {
+                    "image"
+                } else {
+                    "images"
+                },
+                artifacts.runs.len(),
+                if artifacts.runs.len() == 1 {
+                    "run"
+                } else {
+                    "runs"
+                }
+            ),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    fn saved_run(&self, name: &str) -> Result<&SavedRun> {
+        let artifacts = self.suite_artifacts(name)?;
+        anyhow::ensure!(
+            artifacts.reference_count > 0,
+            "No reference images for '{name}'"
+        );
+        let requested = self.options["runId"].as_str().unwrap_or_default();
+        artifacts
+            .runs
+            .iter()
+            .find(|run| requested.is_empty() || run.run_id == requested)
+            .ok_or_else(|| anyhow!("No matching saved test run for '{name}'"))
+    }
+
+    pub(in crate::desktop::ui) fn can_open_saved_suite(&self, name: &str) -> bool {
+        !self.running() && self.saved_run(name).is_ok()
+    }
+
+    pub(in crate::desktop::ui) fn can_open_saved_selection(&self) -> bool {
+        if self.running() {
+            return false;
+        }
+        let names = self.selected_names();
+        if names.is_empty() {
+            return false;
+        }
+        let runs = names
+            .iter()
+            .map(|name| self.saved_run(name))
+            .collect::<Result<Vec<_>>>();
+        runs.is_ok_and(|runs| {
+            runs.iter().all(|run| run.has_report)
+                || runs.iter().all(|run| run.run_id == runs[0].run_id)
+        })
+    }
+
+    pub(in crate::desktop::ui) fn open_saved_reports(
+        &mut self,
+        names: Vec<String>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.disabled || self.running() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            self.flush_options(RunCommand::Init, cx)?;
+            anyhow::ensure!(!names.is_empty(), "Select a suite to open its report");
+            let root = self.output_root()?;
+            let mut targets = Vec::new();
+            let mut has_reports = true;
+            for name in &names {
+                let run = self.saved_run(name)?;
+                let suite = self
+                    .suites
+                    .iter()
+                    .find(|suite| &suite.name == name)
+                    .ok_or_else(|| anyhow!("Selected suite is unavailable"))?;
+                has_reports &= run.has_report;
+                targets.push((suite.output_id.clone(), run.run_id.clone()));
+            }
+            self.confirmation = false;
+            self.pending_request = None;
+            if has_reports {
+                cx.emit(RunEvent::ReviewSavedResults { root, targets });
+            } else {
+                anyhow::ensure!(
+                    targets.iter().all(|(_, run)| run == &targets[0].1),
+                    "These suites have different capture runs. Open each suite's report to compare its saved captures."
+                );
+                self.flush_options(RunCommand::Compare, cx)?;
+                let mut options: RunOptions = serde_json::from_value(self.options.clone())?;
+                options.regressify_dir = display_path(&root);
+                options.run_id = targets[0].1.clone();
+                options.scenarios.clear();
+                let intent = RunIntent {
+                    request: RunRequest {
+                        root: self
+                            .root
+                            .clone()
+                            .ok_or_else(|| anyhow!("Open a workspace first"))?,
+                        command: RunCommand::Compare,
+                        options,
+                    },
+                    suite_names: names,
+                    expected_output_ids: Some(targets.iter().map(|(id, _)| id.clone()).collect()),
+                    review_after_run: true,
+                };
+                intent.resolve(&self.suites)?;
+                cx.emit(RunEvent::Requested(Box::new(intent)));
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.status = format!("{error:#}");
+        }
+        cx.notify();
+    }
+
+    pub(super) fn require_references(&self) -> Result<()> {
+        for suite in self.selection.selected(&self.suites)? {
+            let artifacts = self.suite_artifacts(&suite.name)?;
+            anyhow::ensure!(
+                artifacts.reference_count > 0,
+                "No reference images for '{}'. Run Reference before Run Test.",
+                suite.name
+            );
+        }
+        Ok(())
+    }
+
+    pub(in crate::desktop::ui) fn can_test_selection(&self) -> bool {
+        self.can_request(RunCommand::Test)
+    }
+
+    pub(super) fn render_artifact_status(&self, cx: &mut Context<Self>) -> AnyElement {
+        let summary = if self.selection.is_empty() {
+            "Select a suite".into()
+        } else {
+            self.selected_names()
+                .iter()
+                .map(|name| format!("{name}: {}", self.artifact_summary(name)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        div()
+            .flex()
+            .items_center()
+            .flex_wrap()
+            .gap_2()
+            .px_4()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .id("artifact-status")
+                    .role(Role::Status)
+                    .aria_label(summary.clone())
+                    .test_support()
+                    .flex_1()
+                    .min_w_0()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(summary),
+            )
+            .child(
+                Button::new("refresh-run-artifacts")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::RefreshCw)
+                    .tooltip("Refresh references and saved test runs")
+                    .accessibility_label("Refresh saved captures")
+                    .disabled(self.disabled || self.running() || self.root.is_none())
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh_artifacts(cx))),
+            )
+            .into_any_element()
+    }
+}

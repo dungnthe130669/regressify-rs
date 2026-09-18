@@ -271,6 +271,36 @@ report artifacts were inspected read-only; no captures or references were
 changed. The Windows smoke action is updated to Open Report, but native input
 checks were not rerun while the user's desktop window remained open.
 
+## Saved Artifact Discovery
+
+- [x] Discover baseline images and saved capture runs by suite output ID when
+  opening/selecting suites, after commands, and after output/environment changes.
+- [x] Scan asynchronously with generation checks; retain same-folder results
+  during refresh and reject stale results after changing folders/workspaces.
+- [x] Disable all desktop Test routes without a successful baseline in every
+  selected suite, keep Reference available, and recheck disk during preflight.
+- [x] Exclude empty folders, diff files, invalid PNGs, and failed placeholders
+  from baseline availability without changing standalone CLI semantics.
+- [x] Open existing reports directly from Editor, Overview, and Runs, including
+  reports discovered after restart. Compare capture-only data without recapture.
+- [x] Pin output and run identities, select newest captures by timestamp, and
+  support existing multi-suite reports with independent run IDs.
+- [x] Exercise the native no-baseline, discovered-baseline, existing-report,
+  compare-only, shared-run-ID, and restart paths with unchanged image hashes.
+
+Verification: 432 library/UI tests, four worker tests, 293 default CLI tests,
+and 68 headless desktop tests pass. Strict library Clippy, formatting, and the
+normal Windows desktop build pass. `ci/desktop-smoke.ps1 -ArtifactFlows` passes
+with seven inspected light/dark captures at 1600x1000 and 1080x720, without browser
+capture or network access. Original preferences were restored and no fixture
+processes remain. Native testing found and fixed duplicate accessibility IDs in
+empty Activity and a compare-and-open handoff incorrectly tied to unrelated
+checkbox selections. Disabled buttons are checked through Invoke availability
+because GPUI does not expose their disabled state through Windows IsEnabled.
+
+The preceding full authoring-smoke limitation remains separate from this focused
+pass; native macOS/Linux and full screen-reader/IME checks remain outstanding.
+
 ## Delivery Checklist
 
 ### 1. Foundation

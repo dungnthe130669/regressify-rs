@@ -400,6 +400,120 @@ pub struct ImageInfo {
     pub height: usize,
 }
 
+#[derive(Clone, Debug)]
+pub struct SavedRun {
+    pub run_id: String,
+    pub modified: SystemTime,
+    pub has_report: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SuiteArtifacts {
+    pub reference_count: usize,
+    pub runs: Vec<SavedRun>,
+}
+
+impl SuiteArtifacts {
+    pub fn load(output_root: &Path, suite_id: &str) -> Result<Self> {
+        let mut components = Path::new(suite_id).components();
+        ensure!(
+            matches!(components.next(), Some(std::path::Component::Normal(_)))
+                && components.next().is_none(),
+            "Invalid suite output ID"
+        );
+        if !output_root.try_exists()? {
+            return Ok(Self::default());
+        }
+        let root = output_root.canonicalize()?;
+        let suite = root.join(suite_id);
+        if !artifact_directory(&suite, &root)? {
+            return Ok(Self::default());
+        }
+        let mut artifacts = Self::default();
+        let references = suite.join("bitmaps_reference");
+        if artifact_directory(&references, &root)? {
+            artifacts.reference_count = capture_inventory(&references, true)?.0;
+        }
+        let tests = suite.join("bitmaps_test");
+        if !artifact_directory(&tests, &root)? {
+            return Ok(artifacts);
+        }
+        for entry in fs::read_dir(&tests)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() || !artifact_directory(&entry.path(), &root)? {
+                continue;
+            }
+            let run_id = entry
+                .file_name()
+                .into_string()
+                .map_err(|_| anyhow!("Capture run name must be UTF-8"))?;
+            let (captures, mut modified) = capture_inventory(&entry.path(), false)?;
+            let report_path = entry.path().join("report.json");
+            let has_report = read_report(&root, &report_path, modified).is_ok_and(|report| {
+                report.report.id == suite_id && !report.report.tests.is_empty()
+            });
+            if captures == 0 && has_report {
+                modified = fs::metadata(&report_path)?.modified()?;
+            }
+            if captures > 0 || has_report {
+                artifacts.runs.push(SavedRun {
+                    run_id,
+                    modified,
+                    has_report,
+                });
+            }
+        }
+        artifacts.runs.sort_by(|left, right| {
+            right
+                .modified
+                .cmp(&left.modified)
+                .then_with(|| right.run_id.cmp(&left.run_id))
+        });
+        artifacts.runs.truncate(MAX_REPORTS);
+        Ok(artifacts)
+    }
+}
+
+fn artifact_directory(path: &Path, root: &Path) -> Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        metadata.is_dir()
+            && !metadata.file_type().is_symlink()
+            && path.canonicalize()?.starts_with(root),
+        "Artifact directory is not a real directory inside the output folder: {}",
+        super::workspace::display_path(path)
+    );
+    Ok(true)
+}
+
+fn capture_inventory(path: &Path, successful_only: bool) -> Result<(usize, SystemTime)> {
+    let mut count = 0;
+    let mut modified = SystemTime::UNIX_EPOCH;
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".png") || name.ends_with("_diff.png") {
+            continue;
+        }
+        if successful_only
+            && (crate::test::capture::read_error_marker(&entry.path()).is_some()
+                || crate::helpers::png::read_bounded_png_dimensions(&entry.path()).is_err())
+        {
+            continue;
+        }
+        count += 1;
+        modified = modified.max(entry.metadata()?.modified()?);
+    }
+    Ok((count, modified))
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Catalog {
     pub reports: Vec<ReportEntry>,
@@ -562,6 +676,91 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn artifact_inventory_ignores_empty_folders_diffs_and_failed_baselines() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        assert_eq!(
+            SuiteArtifacts::load(&root.join("missing"), "shop")
+                .unwrap()
+                .reference_count,
+            0
+        );
+        let references = root.join("shop/bitmaps_reference");
+        let run = root.join("shop/bitmaps_test/captured-run");
+        fs::create_dir_all(&references).unwrap();
+        fs::create_dir_all(&run).unwrap();
+        assert!(SuiteArtifacts::load(root, "shop").unwrap().runs.is_empty());
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        fs::write(references.join("home_diff.png"), &png).unwrap();
+        fs::write(references.join("failed.png"), &png).unwrap();
+        fs::write(
+            references.join("failed.png.error.json"),
+            r#"{"error":true,"message":"capture failed"}"#,
+        )
+        .unwrap();
+        fs::write(references.join("invalid.png"), "not a PNG").unwrap();
+        fs::write(run.join("home_diff.png"), &png).unwrap();
+        let artifacts = SuiteArtifacts::load(root, "shop").unwrap();
+        assert_eq!(artifacts.reference_count, 0);
+        assert!(artifacts.runs.is_empty());
+        fs::write(references.join("home.png"), &png).unwrap();
+        fs::write(run.join("home.png"), &png).unwrap();
+        let artifacts = SuiteArtifacts::load(root, "shop").unwrap();
+        assert_eq!(artifacts.reference_count, 1);
+        assert_eq!(artifacts.runs.len(), 1);
+        assert_eq!(artifacts.runs[0].run_id, "captured-run");
+        assert!(!artifacts.runs[0].has_report);
+        assert_eq!(
+            SuiteArtifacts::load(root, "different-output")
+                .unwrap()
+                .reference_count,
+            0
+        );
+        assert!(SuiteArtifacts::load(root, "../shop").is_err());
+    }
+
+    #[test]
+    fn artifact_inventory_selects_latest_capture_not_lexically_largest_run_id() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, seconds) in [("zz-older-run", 10), ("aa-newer-run", 20)] {
+            let run = directory.path().join("shop/bitmaps_test").join(name);
+            fs::create_dir_all(&run).unwrap();
+            let png = run.join("home.png");
+            fs::write(&png, lodepng::encode32(&[255_u8; 4], 1, 1).unwrap()).unwrap();
+            fs::File::options()
+                .write(true)
+                .open(png)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new().set_modified(
+                        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                    ),
+                )
+                .unwrap();
+        }
+        let artifacts = SuiteArtifacts::load(directory.path(), "shop").unwrap();
+        assert_eq!(artifacts.runs[0].run_id, "aa-newer-run");
+    }
+
+    #[test]
+    fn artifact_inventory_detects_existing_reports_and_requires_matching_suite_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory.path().join("shop/bitmaps_test/existing-run");
+        fs::create_dir_all(&run).unwrap();
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        fs::write(run.join("home.png"), png).unwrap();
+        for (id, expected) in [("shop", true), ("other", false)] {
+            fs::write(run.join("report.json"), serde_json::to_vec(&json!({"id": id, "tests": [
+                {"status":"pass","pair":{"label":"Home","test":"../bitmaps_test/existing-run/home.png"}}
+            ]})).unwrap()).unwrap();
+            let artifacts = SuiteArtifacts::load(directory.path(), "shop").unwrap();
+            assert_eq!(artifacts.runs[0].has_report, expected);
+        }
+        fs::write(run.join("report.json"), "invalid json").unwrap();
+        assert!(!SuiteArtifacts::load(directory.path(), "shop").unwrap().runs[0].has_report);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, Run
 use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
 
 mod activity;
+mod artifacts;
 mod log;
 mod settings;
 
@@ -18,8 +19,16 @@ pub(super) enum RunEvent {
     Requested(Box<RunIntent>),
     Finished,
     SelectionChanged,
+    ArtifactsChanged,
     ProgressChanged,
-    ReviewResults { root: PathBuf, run_id: String },
+    ReviewResults {
+        root: PathBuf,
+        run_id: String,
+    },
+    ReviewSavedResults {
+        root: PathBuf,
+        targets: Vec<(String, String)>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +40,26 @@ pub(super) struct RunIntent {
 }
 
 impl RunIntent {
+    pub(super) fn resolve_for_execution(&self, suites: &[SuiteSummary]) -> Result<RunRequest> {
+        let request = self.resolve(suites)?;
+        if request.command == RunCommand::Test {
+            let output = request.options.output_directory(&request.root);
+            for name in &self.suite_names {
+                let suite = suites
+                    .iter()
+                    .find(|suite| &suite.name == name)
+                    .ok_or_else(|| anyhow!("Selected suite '{name}' is unavailable"))?;
+                let artifacts =
+                    crate::desktop::results::SuiteArtifacts::load(&output, &suite.output_id)?;
+                anyhow::ensure!(
+                    artifacts.reference_count > 0,
+                    "No reference images for '{name}'. Run Reference before Run Test."
+                );
+            }
+        }
+        Ok(request)
+    }
+
     pub(super) fn compare_run(
         mut request: RunRequest,
         executed_suites: &[(String, String)],
@@ -146,6 +175,7 @@ pub(super) struct RunPanel {
     failed_only: bool,
     started: Option<Instant>,
     executed_suites: Vec<(String, String)>,
+    artifacts: artifacts::ArtifactScan,
 }
 
 impl EventEmitter<RunEvent> for RunPanel {}
@@ -183,6 +213,7 @@ impl RunPanel {
             failed_only: false,
             started: None,
             executed_suites: Vec::new(),
+            artifacts: artifacts::ArtifactScan::default(),
         };
         panel.rebuild(window, cx);
         panel
@@ -195,6 +226,19 @@ impl RunPanel {
         &self.manager.progress
     }
     fn can_open_report(&self) -> bool {
+        self.can_open_saved_selection() || self.can_open_executed_report()
+    }
+    fn can_open_executed_report(&self) -> bool {
+        (self.selection.is_empty()
+            || self.selected_names()
+                == self
+                    .executed_suites
+                    .iter()
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>())
+            && self.executed_report_available()
+    }
+    fn executed_report_available(&self) -> bool {
         !self.running()
             && self
                 .manager
@@ -207,6 +251,10 @@ impl RunPanel {
     }
     fn open_report(&mut self, cx: &mut Context<Self>) {
         if self.disabled || !self.can_open_report() {
+            return;
+        }
+        if self.can_open_saved_selection() {
+            self.open_saved_reports(self.selected_names(), cx);
             return;
         }
         self.confirmation = false;
@@ -222,10 +270,22 @@ impl RunPanel {
     }
     fn review_results(&self, cx: &mut Context<Self>) {
         if let Some(request) = &self.manager.request {
-            cx.emit(RunEvent::ReviewResults {
-                root: request.options.output_directory(&request.root),
-                run_id: request.options.run_id.clone(),
-            });
+            let root = request.options.output_directory(&request.root);
+            if !request.options.run_id.is_empty() && !self.executed_suites.is_empty() {
+                cx.emit(RunEvent::ReviewSavedResults {
+                    root,
+                    targets: self
+                        .executed_suites
+                        .iter()
+                        .map(|(_, id)| (id.clone(), request.options.run_id.clone()))
+                        .collect(),
+                });
+            } else {
+                cx.emit(RunEvent::ReviewResults {
+                    root,
+                    run_id: request.options.run_id.clone(),
+                });
+            }
         }
     }
     fn compare_completed_run(&mut self, review_after_run: bool, cx: &mut Context<Self>) {
@@ -268,6 +328,7 @@ impl RunPanel {
         self.root = Some(root);
         self.confirmation = false;
         self.rebuild(window, cx);
+        self.refresh_artifacts(cx);
         cx.notify();
     }
 
@@ -321,6 +382,7 @@ impl RunPanel {
         self.failed_only = false;
         self.started = None;
         self.executed_suites.clear();
+        self.artifacts.clear();
         self.log
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.status = "No command running".into();
@@ -343,6 +405,7 @@ impl RunPanel {
         self.suites = suites;
         self.catalog_error = error;
         self.confirmation = false;
+        self.refresh_artifacts(cx);
         cx.emit(RunEvent::SelectionChanged);
         cx.notify();
     }
@@ -569,11 +632,13 @@ impl RunPanel {
                 .keys()
                 .any(|key| RunOptions::applies(key, command))
             && self.root.is_some()
+            && (command != RunCommand::Test || self.require_references().is_ok())
             && (!command.supports_suites()
                 || (!self.selection.is_empty() && self.catalog_error.is_none()))
     }
 
-    fn flush_options(&mut self, command: RunCommand, cx: &App) -> Result<()> {
+    fn flush_options(&mut self, command: RunCommand, cx: &mut Context<Self>) -> Result<()> {
+        let previous_output = self.output_root().ok();
         let mut options = self.options.clone();
         for binding in &self.bindings {
             let text = match &binding.control {
@@ -603,6 +668,9 @@ impl RunPanel {
             }
         }
         self.options = options;
+        if self.output_root().ok() != previous_output {
+            self.refresh_artifacts(cx);
+        }
         anyhow::ensure!(
             !self
                 .errors
@@ -706,6 +774,9 @@ impl RunPanel {
                 self.errors.insert(field.key.clone(), format!("{error:#}"));
             }
         }
+        if matches!(field.key.as_str(), "siteEnv" | "regressifyDir") {
+            self.refresh_artifacts(cx);
+        }
         self.confirmation = false;
         cx.notify();
     }
@@ -725,8 +796,11 @@ impl RunPanel {
         cx.notify();
     }
 
-    pub(super) fn prepare_intent(&mut self, cx: &App) -> Result<RunIntent> {
+    pub(super) fn prepare_intent(&mut self, cx: &mut Context<Self>) -> Result<RunIntent> {
         self.flush_options(self.command, cx)?;
+        if self.command == RunCommand::Test {
+            self.require_references()?;
+        }
         anyhow::ensure!(
             self.can_start(),
             "Select valid suites and correct run settings before continuing"
@@ -891,7 +965,7 @@ impl RunPanel {
                                         None => "Command ended without a result".into(),
                                     };
                                     cx.emit(RunEvent::Finished);
-                                    if review_after_run && this.can_open_report() {
+                                    if review_after_run && this.executed_report_available() {
                                         this.review_results(cx);
                                     }
                                 }
@@ -961,6 +1035,7 @@ impl RunPanel {
         );
         for suite in &self.suites {
             let name = suite.name.clone();
+            let report_name = name.clone();
             let panel = cx.entity();
             let expanded = self.expanded_selections.contains(&name);
             let expand_name = name.clone();
@@ -1028,7 +1103,32 @@ impl RunPanel {
                                     }
                                     cx.notify();
                                 })),
-                        ),
+                        )
+                        .when(self.can_open_saved_suite(&suite.name), |row| {
+                            row.child(
+                                Button::new(SharedString::from(format!(
+                                    "saved-report-{}",
+                                    suite.name
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Images)
+                                .label("Open Report")
+                                .disabled(self.disabled)
+                                .on_click(cx.listener(
+                                    move |this, _, _, cx| {
+                                        this.open_saved_reports(vec![report_name.clone()], cx)
+                                    },
+                                )),
+                            )
+                        }),
+                )
+                .child(
+                    div()
+                        .pl_6()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(self.artifact_summary(&suite.name)),
                 )
                 .children(suite.error.as_ref().map(|error| {
                     div()
@@ -1108,7 +1208,12 @@ impl RunPanel {
                                         command.action_label(),
                                         scenario.label
                                     ))
-                                    .disabled(disabled || suite.error.is_some())
+                                    .disabled(
+                                        disabled
+                                            || suite.error.is_some()
+                                            || (command == RunCommand::Test
+                                                && !self.has_reference(&name)),
+                                    )
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         match this.set_scenario(&name, &id, cx) {
                                             Ok(()) => this.request_command(command, window, cx),
@@ -1200,6 +1305,11 @@ impl Render for RunPanel {
                                 .small()
                                 .icon(icon)
                                 .label(command.action_label())
+                                .when(command == RunCommand::Test, |button| {
+                                    button.tooltip(
+                                        "Requires reference images for every selected suite",
+                                    )
+                                })
                                 .when(command == RunCommand::Test, |button| button.primary())
                                 .disabled(!self.can_request(command))
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -1262,6 +1372,7 @@ impl Render for RunPanel {
                             .child(scope),
                     ),
             )
+            .child(self.render_artifact_status(cx))
             .when_some(
                 self.pending_request.as_ref().filter(|_| self.confirmation),
                 |panel, intent| {
@@ -1397,10 +1508,240 @@ impl Render for RunPanel {
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
     use super::{RunCommand, RunEvent, RunIntent, RunOptions, RunOutcome, RunRequest};
-    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use serde_json::json;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    fn different_suite_selection_does_not_offer_an_unrelated_previous_report(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, view) = super::super::tests::editor(cx, directory.path());
+        cx.update(|cx| {
+            view.update(cx, |this, cx| {
+                this.runs.update(cx, |panel, cx| {
+                    panel.manager.request = Some(RunRequest {
+                        root: directory.path().canonicalize().unwrap(),
+                        command: RunCommand::Test,
+                        options: RunOptions {
+                            suites: vec!["previous-suite".into()],
+                            run_id: "old-run".into(),
+                            ..Default::default()
+                        },
+                    });
+                    panel.executed_suites =
+                        vec![("previous-suite".into(), "previous-output".into())];
+                    panel.manager.outcome = Some(RunOutcome::Completed);
+                    panel.select_all(true, cx);
+                    assert!(!panel.can_open_report());
+                    assert!(panel.executed_report_available());
+                    panel.select_all(false, cx);
+                    assert!(panel.can_open_report());
+                })
+            })
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn saved_capture_report_request_compares_without_recapturing(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join(".regressify/ui-test");
+        for path in [
+            output.join("bitmaps_reference/home.png"),
+            output.join("bitmaps_test/stored-capture/home.png"),
+        ] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            lodepng::encode32_file(path, &[255_u8; 4], 1, 1).unwrap();
+        }
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        let requests = Rc::new(RefCell::new(Vec::<RunIntent>::new()));
+        let received = requests.clone();
+        let _subscription = cx.update(|cx| {
+            view.update(cx, |this, cx| {
+                cx.subscribe(&this.runs, move |_, _, event, _| {
+                    if let RunEvent::Requested(intent) = event {
+                        received.borrow_mut().push((**intent).clone());
+                    }
+                })
+            })
+        });
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            view.read(cx).runs.read(cx).can_open_saved_suite("ui-test")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("duplicate-item", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            view.read(cx).runs.read(cx).can_open_saved_suite("ui-test")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("suite-open-report", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let requests = requests.borrow();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].request.command, RunCommand::Compare);
+        assert_eq!(requests[0].request.options.run_id, "stored-capture");
+        assert_eq!(requests[0].suite_names, vec!["ui-test"]);
+        assert!(requests[0].review_after_run);
+        cx.update(|cx| assert!(!view.read(cx).runs.read(cx).running()));
+    }
+
+    #[gpui_kit::test]
+    async fn artifact_detection_tracks_output_changes_and_multiple_suite_baselines(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let reference = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_reference/home.png");
+        std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+        lodepng::encode32_file(reference, &[255_u8; 4], 1, 1).unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            view.read(cx).runs.read(cx).has_reference("ui-test")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.runs.update(cx, |panel, cx| {
+                    panel.select_all(true, cx);
+                    let mut suites = panel.suites.clone();
+                    let mut second = suites[0].clone();
+                    second.name = "another-suite".into();
+                    second.output_id = "another-output".into();
+                    suites.push(second);
+                    panel.update_catalog(suites, None, cx);
+                    panel.select_all(true, cx);
+                    panel.choose(RunCommand::Reference, window, cx);
+                });
+            })
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).runs.read(cx).artifacts.loading
+        })
+        .await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            view.update(cx, |this, cx| {
+                this.runs.update(cx, |panel, cx| {
+                    assert!(!panel.can_test_selection());
+                    panel.toggle_suite("another-suite", false, cx);
+                    assert!(panel.can_test_selection());
+                    let field = panel
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.field.key == "siteEnv")
+                        .unwrap()
+                        .field
+                        .clone();
+                    panel.change(&field, "staging", cx);
+                    assert!(!panel.has_reference("ui-test"));
+                    panel.change(&field, "", cx);
+                    panel.change(&field, "staging", cx);
+                })
+            })
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).runs.read(cx).artifacts.loading
+        })
+        .await;
+        cx.update(|cx| {
+            let panel = view.read(cx).runs.read(cx);
+            assert_eq!(
+                panel.output_root().unwrap(),
+                directory
+                    .path()
+                    .canonicalize()
+                    .unwrap()
+                    .join(".regressify__staging")
+            );
+            assert!(!panel.has_reference("ui-test"));
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn baseline_detection_controls_test_and_revalidates_before_execution(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 1;
+                this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+            });
+            window.render_frame(cx);
+            window.click("run-test", cx);
+            assert!(!view.read(cx).runs.read(cx).running());
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).runs.read(cx).artifacts.loading
+        })
+        .await;
+        cx.update(|cx| {
+            let panel = view.read(cx).runs.read(cx);
+            assert!(!panel.can_test_selection());
+            assert!(panel.can_request(RunCommand::Reference));
+            assert!(!view.read(cx).can_test_open_suite(cx));
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("workbench-tabs").click(0_usize, cx);
+            window.click("suite-run-test", cx);
+            window.click("scenario-run-test", cx);
+            window.click(("sidebar-scenario-test", 0_usize), cx);
+            assert_eq!(view.read(cx).main_tab, 0);
+            assert!(!view.read(cx).runs.read(cx).running());
+            window.within("workbench-tabs").click(1_usize, cx);
+        })
+        .unwrap();
+        let reference = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_reference/home.png");
+        std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+        lodepng::encode32_file(&reference, &[255_u8; 4], 1, 1).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("refresh-run-artifacts", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            view.read(cx).runs.read(cx).can_test_selection()
+        })
+        .await;
+        cx.update(|cx| assert!(view.read(cx).can_test_open_suite(cx)));
+        cx.update(|cx| {
+            view.update(cx, |this, cx| {
+                let suites = this.session.suites.clone();
+                this.runs.update(cx, |panel, cx| {
+                    let intent = panel.prepare_intent(cx).unwrap();
+                    assert!(intent.resolve_for_execution(&suites).is_ok());
+                    std::fs::remove_file(&reference).unwrap();
+                    assert!(
+                        intent
+                            .resolve_for_execution(&suites)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("Run Reference")
+                    );
+                    panel.refresh_artifacts(cx);
+                });
+            })
+        });
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(3), |_, cx| {
+            !view.read(cx).runs.read(cx).artifacts.loading
+        })
+        .await;
+        cx.update(|cx| assert!(!view.read(cx).runs.read(cx).can_test_selection()));
+    }
 
     #[gpui_kit::test]
     fn open_report_button_uses_recorded_capture_scope(cx: &mut TestAppContext) {

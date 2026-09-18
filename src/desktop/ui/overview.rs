@@ -264,11 +264,7 @@ impl Workbench {
                                 "Run Test ({} scenarios)",
                                 self.runs.read(cx).selected_scenario_count()
                             ))
-                            .disabled(
-                                self.busy
-                                    || self.runs.read(cx).selected_count() == 0
-                                    || self.runs.read(cx).running(),
-                            )
+                            .disabled(self.busy || !self.runs.read(cx).can_test_selection())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 this.request_selected_command(
                                     crate::desktop::runner::RunCommand::Test,
@@ -276,7 +272,22 @@ impl Workbench {
                                     cx,
                                 );
                             })),
-                    ),
+                    )
+                    .when(self.runs.read(cx).can_open_saved_selection(), |row| {
+                        row.child(
+                            Button::new("overview-open-report")
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Images)
+                                .label("Open Report")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    let names = this.runs.read(cx).selected_names();
+                                    this.runs.update(cx, |panel, cx| {
+                                        panel.open_saved_reports(names, cx)
+                                    });
+                                })),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -307,6 +318,7 @@ impl Workbench {
             }
             let entry = suite.entry.clone();
             let name = suite.name.clone();
+            let report_name = name.clone();
             let check_panel = self.runs.clone();
             let all_selected = self.runs.read(cx).all_selected(&name);
             let counts = self.runs.read(cx).progress().counts(Some(&suite.output_id));
@@ -382,10 +394,43 @@ impl Workbench {
                                             .text_color(cx.theme().muted_foreground)
                                             .truncate()
                                             .child(suite.entry.label()),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child(
+                                                self.runs.read(cx).artifact_summary(&suite.name),
+                                            ),
                                     ),
                             )
                             .child(div().w(px(90.)).child(suite.scenarios.len().to_string()))
                             .child(div().w(px(100.)).text_xs().text_color(color).child(status))
+                            .when(
+                                self.runs.read(cx).can_open_saved_suite(&suite.name),
+                                |row| {
+                                    row.child(
+                                        Button::new(("overview-report", index))
+                                            .ghost()
+                                            .small()
+                                            .icon(gpui_kit::assets::IconName::Images)
+                                            .accessibility_label(format!(
+                                                "Open Report: {}",
+                                                suite.name
+                                            ))
+                                            .tooltip("Open saved report")
+                                            .disabled(self.busy)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.runs.update(cx, |panel, cx| {
+                                                    panel.open_saved_reports(
+                                                        vec![report_name.clone()],
+                                                        cx,
+                                                    )
+                                                });
+                                            })),
+                                    )
+                                },
+                            )
                             .child(
                                 Button::new(("overview-edit", index))
                                     .ghost()

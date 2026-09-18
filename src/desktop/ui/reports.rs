@@ -60,6 +60,7 @@ pub(super) struct ResultsPanel {
     image_loading: bool,
     generation: u64,
     preferred_run: Option<String>,
+    preferred_reports: Option<Vec<(String, String)>>,
     disabled: bool,
 }
 
@@ -80,7 +81,25 @@ impl ResultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.preferred_reports = None;
         self.preferred_run = (!run_id.is_empty()).then_some(run_id);
+        self.filter = 0;
+        self.image_mode = 3;
+        self.fit = true;
+        self.search
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.refresh(root, window, cx);
+    }
+
+    pub(super) fn show_saved_reports(
+        &mut self,
+        root: PathBuf,
+        targets: Vec<(String, String)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.preferred_reports = Some(targets);
+        self.preferred_run = None;
         self.filter = 0;
         self.image_mode = 3;
         self.fit = true;
@@ -97,6 +116,7 @@ impl ResultsPanel {
         self.generation += 1;
         self.root = None;
         self.preferred_run = None;
+        self.preferred_reports = None;
         self.catalog = Catalog::default();
         self.suites.clear();
         self.report = 0;
@@ -143,12 +163,14 @@ impl ResultsPanel {
             image_loading: false,
             generation: 0,
             preferred_run: None,
+            preferred_reports: None,
             disabled: false,
         }
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let preferred_run = self.preferred_run.take();
+        let requested_reports = self.preferred_reports.take();
         let previous = self
             .selected_report()
             .map(|report| (report.path.clone(), self.capture));
@@ -166,6 +188,13 @@ impl ResultsPanel {
             catalog.resolve_names(&suites);
             if let Some(run) = requested_run {
                 catalog.reports.retain(|report| report.run_id == run);
+            }
+            if let Some(targets) = requested_reports {
+                catalog.reports.retain(|report| {
+                    targets
+                        .iter()
+                        .any(|(suite, run)| suite == &report.report.id && run == &report.run_id)
+                });
             }
             Ok::<_, anyhow::Error>(catalog)
         });

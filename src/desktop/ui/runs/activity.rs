@@ -157,7 +157,7 @@ impl RunPanel {
                         .items_center()
                         .flex_wrap()
                         .gap_2()
-                        .when(!has_run, |row| {
+                        .when(!has_run && !self.selection.is_empty(), |row| {
                             row.child(
                                 Button::new("activity-select-suites")
                                     .small()

@@ -1521,6 +1521,127 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
 }
 
 #[gpui_kit::test]
+async fn overview_opens_multiple_saved_reports_with_independent_run_ids(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second-suite")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.overview = true;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+        })
+    })
+    .unwrap();
+    for (suite, run_id) in [("ui-test", "first-run"), ("second-suite", "second-run")] {
+        let output = directory.path().join(".regressify").join(suite);
+        let run = output.join("bitmaps_test").join(run_id);
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(output.join("bitmaps_reference")).unwrap();
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        std::fs::write(run.join("home.png"), &png).unwrap();
+        std::fs::write(output.join("bitmaps_reference/home.png"), &png).unwrap();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"id":suite,"tests":[{"status":"pass","pair":{"label":suite}}]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    cx.update(|cx| {
+        view.update(cx, |this, cx| {
+            this.runs
+                .update(cx, |panel, cx| panel.refresh_artifacts(cx))
+        })
+    });
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("overview-open-report").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("overview-open-report", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("results-status")
+            .is_some_and(|status| status.label() == Some("2 reports, 0 warnings"))
+    })
+    .await;
+    cx.update(|cx| assert!(view.read(cx).runs.read(cx).manager.request.is_none()));
+}
+
+#[gpui_kit::test]
+async fn selecting_suite_discovers_baseline_and_opens_saved_report_without_running(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    for (suite, label) in [
+        ("ui-test", "Saved capture"),
+        ("other", "Other suite capture"),
+    ] {
+        let output = directory.path().join(".regressify").join(suite);
+        let run = output.join("bitmaps_test/existing-run");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(output.join("bitmaps_reference")).unwrap();
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        std::fs::write(run.join("home.png"), &png).unwrap();
+        std::fs::write(output.join("bitmaps_reference/home.png"), &png).unwrap();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(
+                &serde_json::json!({"id":suite,"tests":[{"status":"pass","pair":{"label":label}}]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let report_path = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/existing-run/report.json");
+    let before = std::fs::read(&report_path).unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("suite-open-report").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).can_test_open_suite(cx));
+        assert!(view.read(cx).runs.read(cx).manager.request.is_none());
+        assert_eq!(
+            window.find("suite-artifact-status").label(),
+            Some("1 reference image / 1 saved test run")
+        );
+        window.click("suite-open-report", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Saved capture"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("results-status").label(),
+            Some("1 report, 0 warnings")
+        );
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert!(view.read(cx).runs.read(cx).manager.request.is_none());
+    })
+    .unwrap();
+    assert_eq!(std::fs::read(report_path).unwrap(), before);
+}
+
+#[gpui_kit::test]
 fn report_totals_and_access_survive_execution_errors(cx: &mut TestAppContext) {
     use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     use crate::progress::{Event, Job, Record};
@@ -1758,12 +1879,12 @@ async fn view_results_opens_the_executed_output_and_run_instead_of_current_setti
 }
 
 #[gpui_kit::test]
-fn followup_approve_and_compare_use_the_last_matching_run_but_capture_stays_fresh(
+async fn followup_approve_and_compare_use_the_last_matching_run_but_capture_stays_fresh(
     cx: &mut TestAppContext,
 ) {
     use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let (handle, view) = editor_with_reference(cx, directory.path()).await;
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.runs.update(cx, |panel, cx| {
@@ -1981,7 +2102,7 @@ fn run_intents_freeze_command_options_and_scope_but_resolve_fresh_output_ids(
 #[gpui_kit::test]
 async fn run_preflight_rejects_a_selected_suite_changed_on_disk(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let (handle, view) = editor_with_reference(cx, directory.path()).await;
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
@@ -2383,6 +2504,21 @@ async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     std::thread::sleep(Duration::from_millis(300));
     cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
+}
+
+async fn editor_with_reference(
+    cx: &mut TestAppContext,
+    root: &Path,
+) -> (WindowHandle<Root>, Entity<Workbench>) {
+    let reference = root.join(".regressify/ui-test/bitmaps_reference/home.png");
+    std::fs::create_dir_all(reference.parent().unwrap()).unwrap();
+    lodepng::encode32_file(reference, &[255_u8; 4], 1, 1).unwrap();
+    let (handle, view) = editor(cx, root);
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).runs.read(cx).has_reference("ui-test")
+    })
+    .await;
+    (handle, view)
 }
 
 pub(super) fn editor(
@@ -2864,7 +3000,7 @@ async fn editor_run_test_preserves_pending_drafts_and_cancel_never_starts_a_work
     cx: &mut TestAppContext,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let (handle, view) = editor_with_reference(cx, directory.path()).await;
     let saved =
         std::fs::read_to_string(directory.path().join("visual_tests/ui-test.tests.yaml")).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
@@ -2903,7 +3039,7 @@ async fn run_settings_are_available_before_execution_and_validate_only_relevant_
 ) {
     use crate::desktop::runner::RunCommand;
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let (handle, view) = editor_with_reference(cx, directory.path()).await;
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.main_tab = 1;
