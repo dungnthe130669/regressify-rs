@@ -172,6 +172,8 @@ delay
 Type: `number`.  
 Default value: `1000`.
 
+Resolution order: scenario, workspace, then the default. Set `delay: 0` to disable this wait.
+
 When the page is ready, wait for X milliseconds before taking the screenshot.  
 Use this for scenarios where the page under test needs extra time to load or render.
 

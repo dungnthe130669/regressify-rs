@@ -13,6 +13,7 @@ use crate::{
     types::{Browser, Needs, Selectors, TestScenario, TestSuite, UrlReplacement},
 };
 
+pub const DEFAULT_DELAY_MS: f64 = 1000.0;
 pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
 pub const DEFAULT_ASYNC_COMPARE_LIMIT: usize = 2;
 pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
@@ -101,7 +102,7 @@ impl Default for ResolvedConfig {
             cookie_path: None,
             css_override_path: None,
             debug: false,
-            delay: None,
+            delay: Some(DEFAULT_DELAY_MS),
             freeze_animations: true,
             hide_selectors: Vec::new(),
             ignore_ssl_errors: false,
@@ -305,7 +306,7 @@ pub fn resolve_config(
 
         debug: suite.debug.or(workspace.debug).unwrap_or(defaults.debug),
 
-        delay: scenario.delay.or(workspace.delay),
+        delay: scenario.delay.or(workspace.delay).or(defaults.delay),
 
         freeze_animations: workspace
             .freeze_animations
@@ -453,6 +454,30 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
         }
+    }
+
+    #[test]
+    fn delay_defaults_to_1000_ms_and_preserves_explicit_zero() {
+        let workspace = WorkspaceConfig::default();
+        let suite = suite();
+        let mut scenario = scenario();
+        assert_eq!(
+            resolve_config(&workspace, &suite, &scenario).delay,
+            Some(1000.0)
+        );
+        let workspace = WorkspaceConfig {
+            delay: Some(250.0),
+            ..workspace
+        };
+        assert_eq!(
+            resolve_config(&workspace, &suite, &scenario).delay,
+            Some(250.0)
+        );
+        scenario.delay = Some(0.0);
+        assert_eq!(
+            resolve_config(&workspace, &suite, &scenario).delay,
+            Some(0.0)
+        );
     }
 
     #[test]
