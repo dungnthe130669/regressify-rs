@@ -147,7 +147,9 @@ Default value: Test suite's value, then workspace value, then `common/_cookies.y
 
 Import cookies in YAML format. Cookies are loaded before the first navigation
 and the path must stay inside the project root. Each cookie needs a non-empty
-`name`, a string `value`, and either `url` or `domain`. Optional `secure` and
+`name`, a string `value`, and either `url` or `domain`. `domain` may be a string
+or a non-empty array of strings; arrays create one cookie per domain while
+preserving the other attributes. Optional `secure` and
 `httpOnly` values must be booleans; `sameSite` is `Strict`, `Lax`, or `None`.
 `SameSite: None` requires `secure: true`.
 

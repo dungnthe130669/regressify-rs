@@ -479,6 +479,31 @@ fn validate_persisted_state_value(state: &serde_json::Value, name: &str) -> Resu
 /// Validate cookie data before it is sent through CDP. Chromium's cookie JSON
 /// carries additional fields, so unknown fields remain allowed, but every field
 /// this CLI consumes must be well typed and meaningful.
+pub(crate) fn expand_cookie_entries(
+    cookies: &[serde_json::Value],
+    context: &str,
+) -> Result<Vec<serde_json::Value>> {
+    let mut expanded = Vec::new();
+    for (index, cookie) in cookies.iter().enumerate() {
+        let label = format!("{} cookie {}", context, index);
+        if let Some(domains) = cookie.get("domain").and_then(serde_json::Value::as_array) {
+            if domains.is_empty() {
+                anyhow::bail!("{} domain array must not be empty", label);
+            }
+            for domain in domains {
+                let mut entry = cookie.clone();
+                entry["domain"] = domain.clone();
+                validate_cookie_value(&entry, &label)?;
+                expanded.push(entry);
+            }
+        } else {
+            validate_cookie_value(cookie, &label)?;
+            expanded.push(cookie.clone());
+        }
+    }
+    Ok(expanded)
+}
+
 pub(crate) fn validate_cookie_value(cookie: &serde_json::Value, context: &str) -> Result<()> {
     let cookie = cookie
         .as_object()
@@ -1038,6 +1063,28 @@ pub fn read_error_marker(png_path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cookie_domains_expand_without_changing_other_attributes() {
+        let cookies = serde_json::json!([
+            {"name": "session", "value": "token", "domain": [".example.com", ".example.org"], "path": "/", "secure": true},
+            {"name": "theme", "value": "dark", "domain": "example.net"}
+        ]);
+        let expanded = expand_cookie_entries(cookies.as_array().unwrap(), "fixture").unwrap();
+        assert_eq!(expanded.len(), 3);
+        assert_eq!(expanded[0]["domain"], ".example.com");
+        assert_eq!(expanded[1]["domain"], ".example.org");
+        assert_eq!(expanded[0]["value"], expanded[1]["value"]);
+        assert_eq!(expanded[1]["secure"], true);
+        for domain in [
+            serde_json::json!([]),
+            serde_json::json!([12]),
+            serde_json::json!(["valid.example", ""]),
+        ] {
+            let cookie = serde_json::json!({"name": "session", "value": "token", "domain": domain});
+            assert!(expand_cookie_entries(&[cookie], "fixture").is_err());
+        }
+    }
 
     fn test_suite() -> TestSuite {
         serde_json::from_value(serde_json::json!({

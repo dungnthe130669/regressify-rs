@@ -779,6 +779,10 @@ async fn load_cookie_path(
     );
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
+    let cookies = super::capture::expand_cookie_entries(
+        &cookies,
+        &format!("cookiePath '{}'", cookie_path.display()),
+    )?;
 
     for (index, cookie) in cookies.iter().enumerate() {
         let (name, cookie_param) = build_cookie_param(

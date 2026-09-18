@@ -847,13 +847,11 @@ fn validate_external_capture_files_in(
                     .with_context(|| format!("Failed to read cookiePath '{}'", path.display()))?;
                 let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)
                     .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
-                for (index, cookie) in cookies.iter().enumerate() {
-                    crate::test::capture::validate_cookie_value(
-                        cookie,
-                        &format!("cookiePath '{}' cookie {}", path.display(), index),
-                    )
-                    .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
-                }
+                capture::expand_cookie_entries(
+                    &cookies,
+                    &format!("cookiePath '{}'", path.display()),
+                )
+                .with_context(|| format!("Invalid cookie YAML '{}'", path.display()))?;
             }
 
             if let Some(state) = resolved.state.as_ref() {
