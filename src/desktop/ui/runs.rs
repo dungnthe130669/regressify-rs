@@ -511,7 +511,7 @@ impl RunPanel {
             "Workspace command".into()
         } else if self.selection.is_empty() {
             "No suites selected".into()
-        } else if self.selection.has_scenario_selection() {
+        } else if self.command.supports_scenarios() && self.selection.has_scenario_selection() {
             let labels = self
                 .suites
                 .iter()

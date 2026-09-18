@@ -6307,6 +6307,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winres",
  "yaml-edit",
+ "zip",
 ]
 
 [[package]]
@@ -10252,6 +10253,7 @@ dependencies = [
  "indexmap",
  "memchr",
  "typed-path",
+ "zopfli",
 ]
 
 [[package]]

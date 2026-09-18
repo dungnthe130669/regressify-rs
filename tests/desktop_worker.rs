@@ -306,6 +306,89 @@ fn mixed_report_outcomes_match_html_saved_results_and_live_totals() {
 }
 
 #[test]
+fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies() {
+    let workspace = tempfile::tempdir().unwrap();
+    let output = workspace.path().join(".regressify");
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let image = lodepng::encode32(&[20_u8, 40, 60, 255], 1, 1).unwrap();
+    for suite in ["shop", "account"] {
+        let baseline = output.join(suite).join("bitmaps_reference");
+        let capture = output.join(suite).join("bitmaps_test/run-one");
+        std::fs::create_dir_all(&baseline).unwrap();
+        std::fs::create_dir_all(&capture).unwrap();
+        std::fs::write(baseline.join("home__FINAL.png"), &image).unwrap();
+        std::fs::write(capture.join("home__FINAL.png"), &image).unwrap();
+    }
+    let mut request = RunRequest {
+        root: workspace.path().into(),
+        command: RunCommand::Compare,
+        options: RunOptions {
+            suites: vec!["shop".into(), "account".into()],
+            ..Default::default()
+        },
+    };
+    let compared = invoke(executable, &request);
+    assert!(
+        compared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compared.stderr)
+    );
+    std::fs::create_dir_all(output.join("states")).unwrap();
+    std::fs::write(output.join("states/private.json"), "private").unwrap();
+    std::fs::write(
+        output.join("shop/bitmaps_test/run-one/unreferenced.png"),
+        &image,
+    )
+    .unwrap();
+    let sibling = std::fs::read(output.join("account/html_report/config.js")).unwrap();
+    request.command = RunCommand::Snapshot;
+    request.options.suites = vec!["shop".into()];
+    let snapshot = invoke(executable, &request);
+    assert!(
+        snapshot.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snapshot.stderr)
+    );
+    assert_eq!(
+        std::fs::read(output.join("account/html_report/config.js")).unwrap(),
+        sibling
+    );
+    let staging = workspace.path().join("staging");
+    regressify::desktop::deployment::stage_reports(&output, &["shop".into()], &staging).unwrap();
+    let summary = std::fs::read_to_string(staging.join("index.html")).unwrap();
+    assert!(summary.contains("shop/html_report/index.html"));
+    assert!(!summary.contains("account/html_report/index.html"));
+    for name in [
+        "shop/html_report/index.html",
+        "shop/html_report/config.js",
+        "shop/bitmaps_test/run-one/home__FINAL.png",
+        "shop/bitmaps_reference/home__FINAL.png",
+        "index_bundle.js",
+        "styles.css",
+        "script.js",
+        "divergedWorker.js",
+        "lato-regular-webfont.woff2",
+        "staticwebapp.config.json",
+    ] {
+        assert!(
+            staging.join(name).is_file(),
+            "missing deployment asset: {name}"
+        );
+    }
+    for name in [
+        "account",
+        "states",
+        "shop/bitmaps_test/run-one/unreferenced.png",
+        "shop/bitmaps_test/run-one/report.json",
+    ] {
+        assert!(
+            !staging.join(name).exists(),
+            "private or unselected artifact was staged: {name}"
+        );
+    }
+}
+
+#[test]
 fn bundled_worker_scopes_scenarios_and_preflights_all_approvals() {
     let workspace = tempfile::tempdir().unwrap();
     let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
