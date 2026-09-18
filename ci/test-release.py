@@ -61,6 +61,13 @@ class ReleaseTests(unittest.TestCase):
             [(row["application"], row["target"]) for row in rows],
             [("desktop", "x86_64-pc-windows-msvc")],
         )
+        self.assertNotIn("regressify", json.dumps(rows))
+
+    def test_matrix_job_does_not_load_secrets(self):
+        self.assertNotIn(
+            "secrets.", json.dumps(WORKFLOW["jobs"]["set-matrix"]),
+            "Release planning must not load secrets that can cause GitHub to suppress its job outputs",
+        )
 
     def test_tagged_source_and_serial_publish(self):
         self.assertIn("v*.*.*", WORKFLOW["on"]["push"]["tags"])
@@ -114,8 +121,9 @@ class ReleaseTests(unittest.TestCase):
         self.assertNotIn("max-parallel", job["strategy"])
         self.assertEqual(job["strategy"]["matrix"], "${{ fromJson(needs.set-matrix.outputs.matrix) }}")
         build = next(step for step in job["steps"] if step.get("name") == "Build artifacts")
-        for variable, field in [("FILE_NAME", "binary"), ("PACKAGE_NAME", "package"), ("CARGO_FEATURES", "features")]:
-            self.assertEqual(build["env"][variable], "${{ matrix." + field + " }}")
+        self.assertEqual(build["env"]["FILE_NAME"], "${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}")
+        self.assertEqual(build["env"]["PACKAGE_NAME"], "${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify-cli' }}")
+        self.assertEqual(build["env"]["CARGO_FEATURES"], "${{ matrix.features }}")
         self.assertEqual(build["env"]["NO_DEFAULT_FEATURES"], "1")
         cache = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/cache@"))
         self.assertIn("matrix.application", cache["with"]["key"])
@@ -141,11 +149,11 @@ class ReleaseTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual({(row["application"], row["target"]) for row in rows}, expected)
                     self.assertEqual(len(rows), len(expected))
-                    self.assertEqual(len({(row["package"], row["target"]) for row in rows}), len(rows))
+                    self.assertNotIn("regressify", json.dumps(rows))
                     for row in rows:
                         desktop = row["application"] == "desktop"
-                        self.assertEqual(row["binary"], "regressify-desktop" if desktop else "regressify")
-                        self.assertEqual(row["package"], "regressify-desktop" if desktop else "regressify-cli")
+                        self.assertNotIn("binary", row)
+                        self.assertNotIn("package", row)
                         self.assertEqual(row["features"], "gui" if desktop else "")
                         if desktop:
                             self.assertGreaterEqual(row["timeout"], 60)
@@ -203,6 +211,28 @@ class ReleaseTests(unittest.TestCase):
 
 
 class DriveReleaseTests(unittest.TestCase):
+    def test_prepare_needs_only_the_ref_and_output_file(self):
+        for ref_type, ref_name, version in [
+            ("tag", "v0.2.0", "0.2.0.0"),
+            ("branch", "master", ""),
+            ("tag", "v0.2.0-beta", None),
+        ]:
+            with self.subTest(ref_type=ref_type, ref_name=ref_name), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "output"
+                env = dict(os.environ, GITHUB_REF_TYPE=ref_type, GITHUB_REF_NAME=ref_name, GITHUB_OUTPUT=str(output))
+                env.pop("TUYEN_DRIVE_APP", None)
+                env.pop("TUYEN_DRIVE_TOKEN", None)
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "ci/drive_release.py"), "prepare"],
+                    env=env, capture_output=True, text=True, check=False,
+                )
+                if version is None:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertFalse(output.exists())
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(encoding="utf-8"), f"version={version}\n")
+
     def test_version_requires_a_tag_and_normalizes_numeric_components(self):
         self.assertEqual(drive_release.tag_version("branch", "v1.2.3"), "")
         self.assertEqual(drive_release.tag_version("tag", "v1.2.3"), "1.2.3.0")

@@ -214,8 +214,6 @@ def main():
     args = parser.parse_args()
     version = tag_version(os.environ.get("GITHUB_REF_TYPE", ""), os.environ.get("GITHUB_REF_NAME", ""))
     if args.command == "prepare":
-        if version:
-            validate_app(os.environ.get("TUYEN_DRIVE_APP", ""))
         with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
             output.write(f"version={version}\n")
         return

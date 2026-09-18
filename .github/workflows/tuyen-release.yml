@@ -104,8 +104,8 @@ jobs:
         if: ${{ !(github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc') }}
         run: ci/make-release.sh
         env:
-          FILE_NAME: ${{ matrix.binary }}
-          PACKAGE_NAME: ${{ matrix.package }}
+          FILE_NAME: ${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}
+          PACKAGE_NAME: ${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify-cli' }}
           CARGO_FEATURES: ${{ matrix.features }}
           OS: ${{ matrix.os }}
           TARGET: ${{ matrix.target }}
@@ -174,8 +174,6 @@ jobs:
 
       - name: Resolve tagged installer version
         id: version
-        env:
-          TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
         run: python ci/drive_release.py prepare
 
       - name: Test release selection and build arguments
@@ -226,8 +224,6 @@ jobs:
                       "os": "ubuntu-24.04" if desktop and runner.startswith("ubuntu") else runner,
                       "target": target,
                       "timeout": 90 if desktop else timeout,
-                      "binary": "regressify-desktop" if desktop else "regressify",
-                      "package": "regressify-desktop" if desktop else "regressify-cli",
                       "features": "gui" if desktop else "",
                   })
           if not include:
