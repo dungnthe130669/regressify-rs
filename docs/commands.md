@@ -53,6 +53,15 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 
 All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
 
+`snapshot` also accepts repeated suite filters, matched against output IDs:
+
+```bash
+regressify snapshot --test-suite 'shop*' --test-suite account
+```
+
+The summary contains only the selected suites. Excluded suite reports and
+capture directories are not rewritten or cleaned up.
+
 ## Individual Scenarios
 
 `test` and `ref` accept repeated `--scenario <suite>:<scenario-id>` flags:

@@ -16,7 +16,7 @@ use crate::{
     helpers::OnceLockExtensions,
 };
 
-fn compile_suite_filters(patterns: &[String]) -> Result<Option<Vec<glob::Pattern>>> {
+pub(crate) fn compile_suite_filters(patterns: &[String]) -> Result<Option<Vec<glob::Pattern>>> {
     if patterns.is_empty()
         || patterns
             .iter()
@@ -36,13 +36,13 @@ fn compile_suite_filters(patterns: &[String]) -> Result<Option<Vec<glob::Pattern
         .map(Some)
 }
 
-fn suite_matches_filters(suite_id: &str, filters: &Option<Vec<glob::Pattern>>) -> bool {
+pub(crate) fn suite_matches_filters(suite_id: &str, filters: &Option<Vec<glob::Pattern>>) -> bool {
     filters
         .as_ref()
         .is_none_or(|filters| filters.iter().any(|filter| filter.matches(suite_id)))
 }
 
-fn require_explicit_filter_match(
+pub(crate) fn require_explicit_filter_match(
     filters: &Option<Vec<glob::Pattern>>,
     matched_suite: bool,
 ) -> Result<()> {

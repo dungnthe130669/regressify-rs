@@ -92,6 +92,9 @@ impl RunIntent {
 
     pub(super) fn resolve(&self, suites: &[SuiteSummary]) -> Result<RunRequest> {
         let mut request = self.request.clone();
+        if !request.command.supports_scenarios() {
+            request.options.scenarios.clear();
+        }
         if request.command.supports_suites() {
             let mut selection = SuiteSelection::default();
             for name in &self.suite_names {
@@ -101,10 +104,8 @@ impl RunIntent {
                     .ok_or_else(|| anyhow!("Selected suite '{name}' no longer exists"))?;
                 selection.toggle(suite, true)?;
             }
-            request.options.suites = selection.filters(
-                suites,
-                matches!(request.command, RunCommand::Compare | RunCommand::Approve),
-            )?;
+            request.options.suites =
+                selection.filters(suites, request.command.uses_output_suite_ids())?;
             for filter in &mut request.options.scenarios {
                 anyhow::ensure!(
                     self.suite_names.contains(&filter.suite),
@@ -701,7 +702,7 @@ impl RunPanel {
             return;
         }
         self.command = command;
-        self.tab = if command.supports_suites() { 0 } else { 2 };
+        self.tab = if command.supports_scenarios() { 0 } else { 2 };
         self.confirmation = false;
         cx.notify();
     }
@@ -815,7 +816,7 @@ impl RunPanel {
             }
         }
         let mut options: RunOptions = serde_json::from_value(values)?;
-        if self.command.supports_suites() {
+        if self.command.supports_scenarios() {
             options.scenarios = self.selection.scenario_filters(&self.suites, false)?;
         }
         let suite_names = self.selected_names();
@@ -926,7 +927,7 @@ impl RunPanel {
             .iter()
             .filter(|suite| {
                 request.options.suites.contains(&glob::Pattern::escape(
-                    if matches!(request.command, RunCommand::Compare | RunCommand::Approve) {
+                    if request.command.uses_output_suite_ids() {
                         &suite.output_id
                     } else {
                         &suite.name
@@ -1330,7 +1331,7 @@ impl Render for RunPanel {
                                 for (index, command) in RunCommand::ALL
                                     .iter()
                                     .enumerate()
-                                    .filter(|(_, command)| !command.supports_suites())
+                                    .filter(|(_, command)| !command.supports_scenarios())
                                 {
                                     menu = menu.menu(
                                         command.action_label(),

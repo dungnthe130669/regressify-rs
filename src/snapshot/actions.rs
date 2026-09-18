@@ -6,6 +6,7 @@ use std::path::Path;
 use crate::{
     cli::args::SnapshotArgs,
     common,
+    compare::{compile_suite_filters, require_explicit_filter_match, suite_matches_filters},
     helpers::{IOExtensions, OnceLockExtensions},
     snapshot::{
         helpers::get_asset_version,
@@ -39,7 +40,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     let index_bundle_content = include_str!("data/index_bundle.js");
     let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
 
-    for dir_name in snapshot_suite_directories(regressify_dir)? {
+    for dir_name in selected_snapshot_suites(regressify_dir, &args.test_suite)? {
         // Hash paths are relative to each suite's html_report directory;
         // sharing them across suites can apply the wrong cache version.
         let mut hashes = BTreeMap::new();
@@ -68,6 +69,16 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
 
 /// List all UTF-8 output directories in stable order. Capture validation owns
 /// identifier policy; snapshot only needs to discover potential suite outputs.
+fn selected_snapshot_suites(regressify_dir: &Path, patterns: &[String]) -> Result<Vec<String>> {
+    let filters = compile_suite_filters(patterns)?;
+    let directories = snapshot_suite_directories(regressify_dir)?
+        .into_iter()
+        .filter(|suite| suite_matches_filters(suite, &filters))
+        .collect::<Vec<_>>();
+    require_explicit_filter_match(&filters, !directories.is_empty())?;
+    Ok(directories)
+}
+
 fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
     let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
     entries.sort_by_key(|entry| entry.file_name());
@@ -86,6 +97,35 @@ fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshots_filter_exact_names_globs_and_multiple_suites() {
+        let root = tempfile::tempdir().unwrap();
+        for suite in ["shop", "shop-mobile", "account"] {
+            std::fs::create_dir(root.path().join(suite)).unwrap();
+        }
+        assert_eq!(
+            selected_snapshot_suites(root.path(), &["shop".into()]).unwrap(),
+            vec!["shop"]
+        );
+        assert_eq!(
+            selected_snapshot_suites(root.path(), &["shop*".into()]).unwrap(),
+            vec!["shop", "shop-mobile"]
+        );
+        assert_eq!(
+            selected_snapshot_suites(root.path(), &["account".into(), "shop".into()]).unwrap(),
+            vec!["account", "shop"]
+        );
+        assert_eq!(selected_snapshot_suites(root.path(), &[]).unwrap().len(), 3);
+        assert_eq!(
+            selected_snapshot_suites(root.path(), &["all".into()])
+                .unwrap()
+                .len(),
+            3
+        );
+        assert!(selected_snapshot_suites(root.path(), &["missing".into()]).is_err());
+        assert!(selected_snapshot_suites(root.path(), &["[".into()]).is_err());
+    }
 
     #[test]
     fn snapshot_directory_discovery_accepts_portable_utf8_suite_ids() {

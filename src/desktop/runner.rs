@@ -111,8 +111,16 @@ impl RunCommand {
     pub fn supports_suites(self) -> bool {
         matches!(
             self,
-            Self::Test | Self::Reference | Self::Compare | Self::Approve
+            Self::Test | Self::Reference | Self::Compare | Self::Approve | Self::Snapshot
         )
+    }
+
+    pub fn supports_scenarios(self) -> bool {
+        self.supports_suites() && self != Self::Snapshot
+    }
+
+    pub fn uses_output_suite_ids(self) -> bool {
+        matches!(self, Self::Compare | Self::Approve | Self::Snapshot)
     }
 }
 
@@ -183,7 +191,8 @@ impl RunOptions {
 
     pub fn applies(key: &str, command: RunCommand) -> bool {
         match key {
-            "suites" | "scenarios" => command.supports_suites(),
+            "suites" => command.supports_suites(),
+            "scenarios" => command.supports_scenarios(),
             "fetchBrowser" | "asyncCaptureLimit" | "asyncCaptureRampMs" | "debug"
             | "requiredLogin" => command.captures(),
             "skipCompare" => command == RunCommand::Test,
@@ -248,6 +257,8 @@ impl RunRequest {
             for suite in &options.suites {
                 arguments.extend(["--test-suite".into(), suite.into()]);
             }
+        }
+        if self.command.supports_scenarios() {
             for scenario in &options.scenarios {
                 arguments.extend(["--scenario".into(), scenario.to_string().into()]);
             }
@@ -606,6 +617,19 @@ impl RunManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn snapshot_arguments_include_suites_but_not_scenario_filters() {
+        let mut request = request(RunCommand::Snapshot);
+        request.options.suites = vec!["shop-output".into()];
+        request.options.scenarios = vec!["shop:home".parse().unwrap()];
+        let arguments = request.arguments().unwrap();
+        assert!(arguments.contains(&OsString::from("--test-suite")));
+        assert!(arguments.contains(&OsString::from("shop-output")));
+        assert!(!arguments.contains(&OsString::from("--scenario")));
+        assert!(RunOptions::applies("suites", RunCommand::Snapshot));
+        assert!(!RunOptions::applies("scenarios", RunCommand::Snapshot));
+    }
 
     fn request(command: RunCommand) -> RunRequest {
         RunRequest {

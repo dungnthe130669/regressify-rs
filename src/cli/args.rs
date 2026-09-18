@@ -43,6 +43,9 @@ pub struct OptimizeArgs {
 
 #[derive(clap::Args)]
 pub struct SnapshotArgs {
+    #[clap(long, short = 's')]
+    pub test_suite: Vec<String>,
+
     /// The title of the report
     #[clap(long, default_value = "Visual Tests Summary | Regressify")]
     pub title: String,
