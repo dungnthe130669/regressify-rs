@@ -3,6 +3,7 @@
 pub mod completion;
 pub mod deployment;
 pub mod document;
+pub mod git;
 pub mod instance;
 pub mod results;
 pub mod runner;
