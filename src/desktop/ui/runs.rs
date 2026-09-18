@@ -92,6 +92,22 @@ impl RunIntent {
 
     pub(super) fn resolve(&self, suites: &[SuiteSummary]) -> Result<RunRequest> {
         let mut request = self.request.clone();
+        if request.command == RunCommand::Deploy {
+            let deployment = request
+                .options
+                .deployment
+                .as_ref()
+                .ok_or_else(|| anyhow!("Choose a deployment target"))?;
+            let current = suites
+                .iter()
+                .map(|suite| &suite.output_id)
+                .collect::<BTreeSet<_>>();
+            let confirmed = deployment.catalog_ids.iter().collect::<BTreeSet<_>>();
+            anyhow::ensure!(
+                current == confirmed,
+                "Workspace suites changed; review deployment selection again"
+            );
+        }
         if !request.command.supports_scenarios() {
             request.options.scenarios.clear();
         }
@@ -716,7 +732,7 @@ impl RunPanel {
         };
         for field in fields
             .into_iter()
-            .filter(|field| !matches!(field.key.as_str(), "suites" | "scenarios"))
+            .filter(|field| !matches!(field.key.as_str(), "suites" | "scenarios" | "deployment"))
         {
             let text = field.display(&self.options[&field.key]);
             let control = match &field.kind {
@@ -909,6 +925,14 @@ impl RunPanel {
         self.tab = 0;
         self.confirmation = false;
         self.request_start(cx);
+    }
+
+    pub(super) fn deployment_intent(&mut self, cx: &mut Context<Self>) -> Result<RunIntent> {
+        let previous = self.command;
+        self.command = RunCommand::Snapshot;
+        let result = self.prepare_intent(cx);
+        self.command = previous;
+        result
     }
 
     pub(super) fn start(

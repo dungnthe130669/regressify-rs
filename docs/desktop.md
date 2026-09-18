@@ -57,6 +57,40 @@ The public feed is `https://drive.tuyen.blog/downloads/<app-slug>/latest.txt`.
 Only the public app slug is embedded in the application, never the upload token.
 Installers are currently unsigned, so Windows may show SmartScreen warnings.
 
+## Deploy Reports
+
+The header's Deploy command publishes selected suites to Azure Static Web Apps.
+Use Deployment targets to add, edit, or remove multiple targets for the current
+workspace. Choose the target in the deployment dialog each time. A target has a
+name, a deployment-token environment variable, and an optional Azure named
+environment (blank means production). Define the environment variable before
+launching the desktop app. Token values are never saved in project files or
+target settings, passed on the command line, or included in deployment logs.
+Target settings are stored in the per-user application configuration, keyed by
+the canonical workspace path; removing a target does not delete the Azure app.
+
+At least one suite must be selected. When only a subset is selected, the dialog
+lists it and requires explicit confirmation that excluding the other suites is
+intentional. Individual scenario checkboxes do not narrow deployment: the full
+latest report of each selected suite is published. Unsaved changes use the normal
+Save/Cancel guard, and a changed suite catalog requires selection review again.
+
+Deploy validates the token, runs the bundled `snapshot` command for the selected
+suites, stages only their reports and referenced images, and then publishes.
+Unselected suites, old unreferenced runs, persisted authentication state, source
+YAML, and unrelated files are not uploaded. Symlinked or escaping artifact paths
+are rejected. No external Azure, npm, or Tuyen CLI installation is required.
+The protocol follows Tuyen CLI's SWA deploy handshake: validate token, request
+upload URLs, upload Azure blob blocks, update status, and poll until completion.
+Transient network failures retry within bounds; the entire deployment has a
+30-minute deadline. Non-Standard plans reject security-sensitive `auth` and
+`networking` configuration rather than letting Azure silently discard it.
+
+Progress and the deployed site URL appear in Runs. Stop cancels the local worker
+process tree; it cannot undo a deployment already accepted by Azure. Deployment
+transport is covered by local mock-server tests; a live Azure smoke deployment
+requires a configured target and is not performed by the test suite.
+
 ## Appearance and Commands
 
 The header appearance menu offers System, Light, and Dark. System follows the

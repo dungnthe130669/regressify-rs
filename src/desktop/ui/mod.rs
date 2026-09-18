@@ -32,6 +32,7 @@ use super::{
 
 mod choices;
 mod commands;
+mod deployment;
 mod design;
 mod files;
 mod navigation;
@@ -146,6 +147,7 @@ pub struct Workbench {
     collapsed_fields: BTreeSet<usize>,
     viewport_choices: choices::ViewportChoices,
     updates: Entity<updates::UpdatePanel>,
+    deployment: Entity<deployment::DeploymentPanel>,
 }
 
 impl Workbench {
@@ -316,6 +318,7 @@ impl Workbench {
             collapsed_fields: BTreeSet::new(),
             viewport_choices: choices::ViewportChoices::default(),
             updates: cx.new(|_| updates::UpdatePanel::default()),
+            deployment: cx.new(|cx| deployment::DeploymentPanel::new(window, cx)),
         }
     }
 
@@ -2388,6 +2391,7 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(Self::open_commands))
             .on_action(cx.listener(Self::change_theme))
+            .on_action(cx.listener(Self::choose_deploy_target))
             .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)

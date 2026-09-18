@@ -36,6 +36,7 @@ pub enum RunCommand {
     Compare,
     Approve,
     Snapshot,
+    Deploy,
     Optimize,
     Install,
     Init,
@@ -60,6 +61,7 @@ impl RunCommand {
             Self::Compare => "compare",
             Self::Approve => "approve",
             Self::Snapshot => "snapshot",
+            Self::Deploy => "snapshot",
             Self::Optimize => "optimize",
             Self::Install => "install",
             Self::Init => "init",
@@ -73,6 +75,7 @@ impl RunCommand {
             Self::Compare => "Compare",
             Self::Approve => "Approve",
             Self::Snapshot => "Snapshot",
+            Self::Deploy => "Deploy",
             Self::Optimize => "Optimize",
             Self::Install => "Install Chromium",
             Self::Init => "Initialize workspace",
@@ -89,6 +92,7 @@ impl RunCommand {
             Self::Compare => "Compare Results",
             Self::Approve => "Approve Results",
             Self::Snapshot => "Build Report",
+            Self::Deploy => "Deploy",
             Self::Optimize => "Optimize Images",
             Self::Install => "Install Chromium",
             Self::Init => "Initialize Workspace",
@@ -111,22 +115,31 @@ impl RunCommand {
     pub fn supports_suites(self) -> bool {
         matches!(
             self,
-            Self::Test | Self::Reference | Self::Compare | Self::Approve | Self::Snapshot
+            Self::Test
+                | Self::Reference
+                | Self::Compare
+                | Self::Approve
+                | Self::Snapshot
+                | Self::Deploy
         )
     }
 
     pub fn supports_scenarios(self) -> bool {
-        self.supports_suites() && self != Self::Snapshot
+        self.supports_suites() && !matches!(self, Self::Snapshot | Self::Deploy)
     }
 
     pub fn uses_output_suite_ids(self) -> bool {
-        matches!(self, Self::Compare | Self::Approve | Self::Snapshot)
+        matches!(
+            self,
+            Self::Compare | Self::Approve | Self::Snapshot | Self::Deploy
+        )
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct RunOptions {
+    pub deployment: Option<super::deployment::DeploymentJob>,
     pub site_env: String,
     pub regressify_dir: String,
     pub run_id: String,
@@ -153,6 +166,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
+            deployment: None,
             site_env: String::new(),
             regressify_dir: String::new(),
             run_id: String::new(),
@@ -191,6 +205,7 @@ impl RunOptions {
 
     pub fn applies(key: &str, command: RunCommand) -> bool {
         match key {
+            "deployment" => false,
             "suites" => command.supports_suites(),
             "scenarios" => command.supports_scenarios(),
             "fetchBrowser" | "asyncCaptureLimit" | "asyncCaptureRampMs" | "debug"
@@ -200,7 +215,9 @@ impl RunOptions {
             "misMatchThreshold" => matches!(command, RunCommand::Test | RunCommand::Compare),
             "asyncCompareLimit" => command == RunCommand::Compare,
             "speed" | "minSizeKb" => command == RunCommand::Optimize,
-            "title" | "heading" | "subheading" => command == RunCommand::Snapshot,
+            "title" | "heading" | "subheading" => {
+                matches!(command, RunCommand::Snapshot | RunCommand::Deploy)
+            }
             _ => true,
         }
     }
@@ -222,6 +239,23 @@ impl RunRequest {
     }
 
     pub fn arguments(&self) -> Result<Vec<OsString>> {
+        if self.command == RunCommand::Deploy {
+            let deployment = self
+                .options
+                .deployment
+                .as_ref()
+                .context("Choose a deployment target")?;
+            deployment.validate()?;
+            ensure!(
+                self.options.suites
+                    == deployment
+                        .suite_ids
+                        .iter()
+                        .map(|id| glob::Pattern::escape(id))
+                        .collect::<Vec<_>>(),
+                "Deployment suite filters changed; review the selection"
+            );
+        }
         let mut arguments = vec![
             OsString::from("--root"),
             self.root.as_os_str().to_os_string(),
@@ -299,7 +333,7 @@ impl RunRequest {
                 options.min_size_kb.to_string().into(),
             ]);
         }
-        if self.command == RunCommand::Snapshot {
+        if matches!(self.command, RunCommand::Snapshot | RunCommand::Deploy) {
             for (flag, value) in [
                 ("--title", &options.title),
                 ("--heading", &options.heading),

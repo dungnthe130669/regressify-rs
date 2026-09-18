@@ -39,7 +39,32 @@ pub fn run_stdio() -> Result<()> {
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?
-            .block_on(crate::application::execute(cli))
+            .block_on(async {
+                let deployment = if request.run.command == super::runner::RunCommand::Deploy {
+                    let job = request
+                        .run
+                        .options
+                        .deployment
+                        .as_ref()
+                        .context("Deployment settings are missing")?;
+                    job.validate()?;
+                    Some((
+                        job,
+                        super::deployment::swa::SwaClient::new(&job.target.token()?)?,
+                    ))
+                } else {
+                    None
+                };
+                crate::application::execute(cli).await?;
+                if let Some((job, client)) = deployment {
+                    let directory = tempfile::tempdir()?;
+                    let output = request.run.options.output_directory(&request.run.root);
+                    let staging = directory.path().join("report");
+                    super::deployment::stage_reports(&output, &job.suite_ids, &staging)?;
+                    client.deploy(&staging, &job.target).await?;
+                }
+                Ok(())
+            })
     })();
     crate::progress::emit(crate::progress::Event::Finished {
         error: result.as_ref().err().map(|error| format!("{error:#}")),

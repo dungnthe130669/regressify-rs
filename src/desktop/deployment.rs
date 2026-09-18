@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 
 pub mod swa;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeployTarget {
     pub id: String,
@@ -18,6 +18,36 @@ pub struct DeployTarget {
     pub token_env: String,
     #[serde(default)]
     pub environment: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DeploymentJob {
+    pub target: DeployTarget,
+    pub suite_ids: Vec<String>,
+    pub catalog_ids: Vec<String>,
+    pub partial_confirmed: bool,
+}
+
+impl DeploymentJob {
+    pub fn validate(&self) -> Result<()> {
+        self.target.validate()?;
+        ensure!(
+            !self.suite_ids.is_empty(),
+            "Select at least one test suite to deploy"
+        );
+        let selected = self.suite_ids.iter().collect::<BTreeSet<_>>();
+        let catalog = self.catalog_ids.iter().collect::<BTreeSet<_>>();
+        ensure!(
+            selected.len() == self.suite_ids.len() && selected.is_subset(&catalog),
+            "Deployment suite selection is invalid"
+        );
+        ensure!(
+            selected == catalog || self.partial_confirmed,
+            "Confirm that you intend to deploy only the selected test suites"
+        );
+        Ok(())
+    }
 }
 
 impl DeployTarget {
@@ -86,13 +116,16 @@ pub struct DeployTargets {
 
 impl DeployTargets {
     pub fn path(root: &Path) -> Result<PathBuf> {
+        Self::path_in(root, &super::workspace::Preferences::path()?)
+    }
+
+    pub fn path_in(root: &Path, preferences: &Path) -> Result<PathBuf> {
         let root = root.canonicalize()?;
         let mut identity = super::workspace::display_path(&root);
         if cfg!(windows) {
             identity.make_ascii_lowercase();
         }
         let key = format!("{:x}", Sha256::digest(identity.as_bytes()));
-        let preferences = super::workspace::Preferences::path()?;
         Ok(preferences
             .parent()
             .context("Preferences directory unavailable")?
@@ -271,6 +304,31 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deployment_requires_nonempty_selection_and_explicit_subset_confirmation() {
+        let mut job = DeploymentJob {
+            target: DeployTarget {
+                id: "qa".into(),
+                name: "QA".into(),
+                token_env: "QA_TOKEN".into(),
+                environment: String::new(),
+            },
+            suite_ids: Vec::new(),
+            catalog_ids: vec!["one".into(), "two".into()],
+            partial_confirmed: false,
+        };
+        assert!(job.validate().is_err());
+        job.suite_ids = vec!["one".into()];
+        assert!(job.validate().is_err());
+        job.partial_confirmed = true;
+        assert!(job.validate().is_ok());
+        job.suite_ids.push("two".into());
+        job.partial_confirmed = false;
+        assert!(job.validate().is_ok());
+        job.suite_ids.push("outside".into());
+        assert!(job.validate().is_err());
+    }
 
     #[test]
     fn target_settings_are_workspace_scoped_and_secret_free() {

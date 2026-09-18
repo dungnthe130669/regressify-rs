@@ -13,6 +13,42 @@ fn invoke(executable: &Path, request: &RunRequest) -> Output {
     invoke_with_events(executable, request, None)
 }
 
+#[test]
+fn deploy_missing_token_fails_before_snapshot_modifies_output() {
+    use regressify::desktop::deployment::{DeployTarget, DeploymentJob};
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join(".regressify");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("index.html"), "untouched summary").unwrap();
+    let request = RunRequest {
+        root: root.path().into(),
+        command: RunCommand::Deploy,
+        options: RunOptions {
+            suites: vec!["shop".into()],
+            deployment: Some(DeploymentJob {
+                target: DeployTarget {
+                    id: "test".into(),
+                    name: "Test".into(),
+                    token_env: format!("REGRESSIFY_MISSING_{}", uuid::Uuid::new_v4().simple()),
+                    environment: String::new(),
+                },
+                suite_ids: vec!["shop".into()],
+                catalog_ids: vec!["shop".into()],
+                partial_confirmed: false,
+            }),
+            ..Default::default()
+        },
+    };
+    let result = invoke(executable, &request);
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("is not set"));
+    assert_eq!(
+        std::fs::read_to_string(output.join("index.html")).unwrap(),
+        "untouched summary"
+    );
+}
+
 fn invoke_with_events(
     executable: &Path,
     request: &RunRequest,
