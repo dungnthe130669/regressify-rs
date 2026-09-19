@@ -99,6 +99,7 @@ pub(super) struct ResultsPanel {
     active_suite: Option<PathBuf>,
     report: Option<usize>,
     capture: Option<usize>,
+    visible_captures: Vec<usize>,
     filter: usize,
     page: usize,
     image_mode: usize,
@@ -226,6 +227,7 @@ impl ResultsPanel {
         self.active_suite = Some(entry.path.clone());
         self.report = self.suite_report();
         self.capture = None;
+        self.visible_captures.clear();
         self.page = 0;
         self.reset_previews();
         let outside_requested = self.preferred_reports.as_ref().is_some_and(|targets| {
@@ -265,6 +267,7 @@ impl ResultsPanel {
         self.active_suite = None;
         self.report = None;
         self.capture = None;
+        self.visible_captures.clear();
         self.filter = 0;
         self.page = 0;
         self.reset_previews();
@@ -297,6 +300,7 @@ impl ResultsPanel {
             active_suite: None,
             report: None,
             capture: None,
+            visible_captures: Vec::new(),
             filter: 0,
             page: 0,
             image_mode: 1,
@@ -332,6 +336,7 @@ impl ResultsPanel {
         let generation = self.generation;
         self.root = Some(root.clone());
         self.loading = true;
+        self.visible_captures.clear();
         self.reset_previews();
         self.status = "Loading reports...".into();
         let suites = self.suites.clone();
@@ -365,6 +370,7 @@ impl ResultsPanel {
                         this.report = this.suite_report();
                         this.capture = None;
                         this.page = 0;
+                        this.rebuild_capture_filter(cx);
                         this.status = format!(
                             "{} {}, {} {}",
                             this.catalog.reports.len(),
@@ -389,8 +395,7 @@ impl ResultsPanel {
                                 .and_then(|(_, index)| *index)
                                 .filter(|index| *index < report.report.tests.len())
                                 .unwrap_or(0);
-                            let filtered = this.filtered(cx);
-                            if filtered.contains(&capture) {
+                            if this.visible_captures.contains(&capture) {
                                 this.select_capture(capture, window, cx);
                             } else {
                                 this.reconcile_capture(window, cx);
@@ -423,7 +428,8 @@ impl ResultsPanel {
         if self.loading {
             return;
         }
-        let filtered = self.filtered(cx);
+        self.rebuild_capture_filter(cx);
+        let filtered = &self.visible_captures;
         let selection = self
             .capture
             .filter(|capture| filtered.contains(capture))
@@ -481,7 +487,7 @@ impl ResultsPanel {
             scroll.set_offset(point(px(0.), px(0.)));
         }
         self.page = self
-            .filtered(cx)
+            .visible_captures
             .iter()
             .position(|index| *index == capture)
             .unwrap_or(0)
@@ -526,9 +532,10 @@ impl ResultsPanel {
         cx.notify();
     }
 
-    fn filtered(&self, cx: &App) -> Vec<usize> {
+    fn rebuild_capture_filter(&mut self, cx: &App) {
         let query = self.search.read(cx).value().trim().to_lowercase();
-        self.selected_report()
+        self.visible_captures = self
+            .selected_report()
             .map(|report| {
                 report
                     .report
@@ -546,15 +553,15 @@ impl ResultsPanel {
                     .map(|(index, _)| index)
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default();
     }
 
-    fn adjacent_capture(&self, forward: bool, failed_only: bool, cx: &App) -> Option<usize> {
+    fn adjacent_capture(&self, forward: bool, failed_only: bool) -> Option<usize> {
         if self.loading {
             return None;
         }
         let report = self.selected_report()?;
-        let mut candidates = self.filtered(cx).into_iter().filter(|index| {
+        let mut candidates = self.visible_captures.iter().copied().filter(|index| {
             !failed_only || report.report.tests[*index].outcome() != Outcome::Passed
         });
         if forward {
@@ -571,7 +578,7 @@ impl ResultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(capture) = self.adjacent_capture(forward, failed_only, cx) {
+        if let Some(capture) = self.adjacent_capture(forward, failed_only) {
             self.select_capture(capture, window, cx);
         }
     }
@@ -629,7 +636,7 @@ impl ResultsPanel {
     }
 
     fn render_captures(&self, cx: &mut Context<Self>) -> AnyElement {
-        let filtered = self.filtered(cx);
+        let filtered = &self.visible_captures;
         let pages = filtered.len().div_ceil(PAGE_SIZE).max(1);
         let mut list = div()
             .id("capture-list")
@@ -699,7 +706,8 @@ impl ResultsPanel {
         }
         if let Some(report) = self.selected_report() {
             for index in filtered
-                .into_iter()
+                .iter()
+                .copied()
                 .skip(self.page * PAGE_SIZE)
                 .take(PAGE_SIZE)
             {
@@ -1014,7 +1022,7 @@ impl ResultsPanel {
         let title = test
             .map(|test| test.pair.display.title.clone())
             .unwrap_or_else(|| "Comparison".into());
-        let filtered = self.filtered(cx);
+        let filtered = &self.visible_captures;
         let position = self
             .capture
             .and_then(|capture| filtered.iter().position(|index| *index == capture))
@@ -1189,7 +1197,7 @@ impl ResultsPanel {
                                     .icon(gpui_kit::assets::IconName::ChevronsLeft)
                                     .tooltip("Previous failed capture")
                                     .accessibility_label("Previous failed capture")
-                                    .disabled(self.adjacent_capture(false, true, cx).is_none())
+                                    .disabled(self.adjacent_capture(false, true).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(false, true, window, cx)
                                     })),
@@ -1201,7 +1209,7 @@ impl ResultsPanel {
                                     .icon(IconName::ChevronLeft)
                                     .tooltip("Previous capture")
                                     .accessibility_label("Previous capture")
-                                    .disabled(self.adjacent_capture(false, false, cx).is_none())
+                                    .disabled(self.adjacent_capture(false, false).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(false, false, window, cx)
                                     })),
@@ -1224,7 +1232,7 @@ impl ResultsPanel {
                                     .icon(IconName::ChevronRight)
                                     .tooltip("Next capture")
                                     .accessibility_label("Next capture")
-                                    .disabled(self.adjacent_capture(true, false, cx).is_none())
+                                    .disabled(self.adjacent_capture(true, false).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(true, false, window, cx)
                                     })),
@@ -1236,7 +1244,7 @@ impl ResultsPanel {
                                     .icon(gpui_kit::assets::IconName::ChevronsRight)
                                     .tooltip("Next failed capture")
                                     .accessibility_label("Next failed capture")
-                                    .disabled(self.adjacent_capture(true, true, cx).is_none())
+                                    .disabled(self.adjacent_capture(true, true).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(true, true, window, cx)
                                     })),
@@ -1472,6 +1480,12 @@ mod pointer_tests {
             window.within("image-modes").click(3_usize, cx);
             window.click("actual-size", cx);
             let results = view.read(cx).results.clone();
+            let filtered = results.read(cx).visible_captures.as_ptr();
+            for _ in 0..20 {
+                window.render_frame(cx);
+                assert_eq!(results.read(cx).visible_captures.as_ptr(), filtered);
+                assert_eq!(results.read(cx).visible_captures.as_slice(), &[0]);
+            }
             for (id, label) in [
                 ("previous-capture", "Previous capture"),
                 ("next-capture", "Next capture"),
