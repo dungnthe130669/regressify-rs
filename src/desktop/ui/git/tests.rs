@@ -177,6 +177,10 @@ fn incoming_conflict_and_remote_failure_indicators_remain_visible(cx: &mut TestA
         window.render_frame(cx);
         assert!(window.find("git-status").visible());
         assert!(window.find("git-conflict-banner").visible());
+        assert_eq!(
+            window.find("git-conflict-banner").label(),
+            Some("Branches diverged. Resolve in VS Code, then refresh Git status.")
+        );
         assert!(view.read(cx).git.read(cx).badge().contains("3 incoming"));
         assert_eq!(
             window.find("git-incoming").label(),

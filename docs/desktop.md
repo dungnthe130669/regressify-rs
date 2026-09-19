@@ -102,6 +102,15 @@ revalidate repository identity and HEAD before acting. Cancelling a network
 operation cannot undo changes already accepted by the remote. Git must be
 installed on PATH. Git UI tests use isolated repositories and local bare remotes.
 
+`./ci/desktop-smoke.ps1 -GitFlows` runs the native acceptance flow against local
+repositories only. It verifies initialization, tree and diff review, selected
+commits that preserve unrelated staging, push, automatic one-minute incoming
+checks, fast-forward pull, and conflict handoff in light/dark compact windows.
+The Git workspace is isolated under the OS temporary directory; screenshots
+remain under `target/desktop-smoke`. Other native fixtures initialize an isolated
+repository before opening, so periodic checks cannot use the parent project's
+remote. No real project commits or remote pushes are made by these tests.
+
 ## Deploy Reports
 
 The header's Deploy command publishes selected suites to Azure Static Web Apps.

@@ -557,6 +557,9 @@ impl Workbench {
                 )
                 .footer(
                     div()
+                        .id("git-confirmation")
+                        .role(Role::Group)
+                        .aria_label("Git confirmation")
                         .flex()
                         .justify_end()
                         .gap_2()

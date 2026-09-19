@@ -14,7 +14,8 @@ param(
     [switch]$InstanceFlows,
     [switch]$UpdateFlows,
     [switch]$DeploymentFlows,
-    [switch]$TitlebarFlows
+    [switch]$TitlebarFlows,
+    [switch]$GitFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -22,6 +23,7 @@ if ($ScenarioFlows -or $UpdateFlows) { $Capture = $true }
 $repository = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repository 'target/desktop-smoke'
 $workspace = Join-Path $artifacts ('workspace-' + [guid]::NewGuid().ToString('N'))
+if ($GitFlows) { $workspace = Join-Path ([System.IO.Path]::GetTempPath()) ('regressify-git-smoke-' + [guid]::NewGuid().ToString('N')) }
 $executable = Join-Path $repository 'target/debug/regressify-desktop.exe'
 
 if (-not $IsWindows) { throw 'This smoke test requires Windows.' }
@@ -233,6 +235,10 @@ $script:window = [IntPtr]::Zero
 $script:fixtureProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 
 function Start-Fixture([string]$Root = $workspace, [string]$Name = 'native', [switch]$Empty) {
+    if (-not $Empty -and -not $GitFlows -and -not (Test-Path (Join-Path $Root '.git'))) {
+        & git -C $Root init -q
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot isolate native fixture Git repository.' }
+    }
     $errorLog = Join-Path $artifacts ($Name + '-stderr.log')
     $start = @{ FilePath = $executable; RedirectStandardError = $errorLog; RedirectStandardOutput = (Join-Path $artifacts ($Name + '-stdout.log')); PassThru = $true }
     if (-not $Empty) { $start.ArgumentList = '"' + $Root + '"' }
@@ -285,7 +291,7 @@ function Find-Control([string]$Name, [string]$Within = '') {
     $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $condition)
 }
 
-function Wait-Control([string]$Name, [string]$Within = '') {
+function Wait-Control([string]$Name, [string]$Within = '', [int]$TimeoutSeconds = 60) {
     $deadline = [System.Diagnostics.Stopwatch]::StartNew()
     $stable = [System.Diagnostics.Stopwatch]::StartNew()
     $previousBounds = $null
@@ -303,7 +309,7 @@ function Wait-Control([string]$Name, [string]$Within = '') {
         }
         if ($process.HasExited) { throw "Desktop exited with code $($process.ExitCode)." }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
-    } while ($deadline.Elapsed.TotalSeconds -lt 60)
+    } while ($deadline.Elapsed.TotalSeconds -lt $TimeoutSeconds)
     Capture-Window 'missing-control'
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
@@ -775,11 +781,126 @@ function Test-TitlebarFlows {
     Write-Output 'Native pointer controls, dragging, maximize/restore, minimize, and unsaved-close guard passed.'
 }
 
+function Invoke-FixtureGit([string]$Root, [string[]]$Arguments) {
+    $result = & git -C $Root @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Fixture Git failed: $($result -join [Environment]::NewLine)" }
+    $result
+}
+
+function Test-GitFlows {
+    Send-FixtureKeys '^+g'
+    Wait-Control 'Workspace is not tracked by Git' | Out-Null
+    Capture-Window 'git-not-tracked'
+    Invoke-Control 'Initialize Git'
+    Invoke-Control 'Initialize repository' -Within 'Git confirmation'
+    Wait-Control 'Git repository initialized; files have not been staged' | Out-Null
+    if (-not (Test-Path (Join-Path $workspace '.git'))) { throw 'Git UI did not initialize the fixture.' }
+    Invoke-FixtureGit $workspace @('symbolic-ref', 'HEAD', 'refs/heads/main') | Out-Null
+    foreach ($config in @(@('user.name', 'Git UI smoke'), @('user.email', 'git-ui@example.test'), @('commit.gpgsign', 'false'), @('core.hooksPath', 'disabled-hooks'))) {
+        Invoke-FixtureGit $workspace (@('config') + $config) | Out-Null
+    }
+    [System.IO.File]::WriteAllText((Join-Path $workspace '.gitignore'), ".regressify*/`noriginal-desktop-settings.json`n")
+    [System.IO.Directory]::CreateDirectory((Join-Path $workspace 'nested')) | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/selected.txt'), "initial`n")
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/staged.txt'), "initial`n")
+    Invoke-FixtureGit $workspace @('add', '.') | Out-Null
+    Invoke-FixtureGit $workspace @('commit', '-m', 'initial fixture') | Out-Null
+    $remote = Join-Path $artifacts ('git-remote-' + [guid]::NewGuid().ToString('N'))
+    [System.IO.Directory]::CreateDirectory($remote) | Out-Null
+    Invoke-FixtureGit $remote @('init', '--bare', '-b', 'main') | Out-Null
+    Invoke-FixtureGit $workspace @('remote', 'add', 'origin', $remote) | Out-Null
+    Invoke-FixtureGit $workspace @('push', '-u', 'origin', 'main') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/selected.txt'), "reviewed local change`n")
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/staged.txt'), "keep staged`n")
+    Invoke-FixtureGit $workspace @('add', 'nested/staged.txt') | Out-Null
+    Invoke-Control 'Refresh Git status'
+    Wait-Control '2 changed files' | Out-Null
+    Wait-Control 'Review nested/selected.txt' | Out-Null
+    Capture-Window 'git-change-tree'
+    Invoke-Control 'Review nested/selected.txt'
+    Wait-SourceText '+reviewed local change' 'Git diff'
+    Capture-Window 'git-diff-review'
+    Invoke-Control 'Select nested/selected.txt'
+    Invoke-Control 'Git commit message' -Pointer
+    Send-FixtureText 'Commit selected fixture change'
+    Invoke-Control 'Commit selected files'
+    Capture-Window 'git-commit-confirmation'
+    Invoke-Control 'Commit selected files' -Within 'Git confirmation'
+    Wait-Control 'Committed 1 selected file(s)' | Out-Null
+    $stagedHead = (Invoke-FixtureGit $workspace @('show', 'HEAD:nested/staged.txt')) -join "`n"
+    $stagedIndex = (Invoke-FixtureGit $workspace @('show', ':nested/staged.txt')) -join "`n"
+    if ($stagedHead.Trim() -ne 'initial' -or $stagedIndex.Trim() -ne 'keep staged') { throw 'Selected commit changed the unrelated staged file.' }
+    Invoke-Control 'Push'
+    Invoke-Control 'Push' -Within 'Git confirmation'
+    Wait-Control 'Push completed' | Out-Null
+    Capture-Window 'git-pushed'
+    $clone = Join-Path $artifacts ('git-peer-' + [guid]::NewGuid().ToString('N'))
+    Invoke-FixtureGit $artifacts @('clone', $remote, $clone) | Out-Null
+    foreach ($config in @(@('user.name', 'Git peer fixture'), @('user.email', 'peer@example.test'), @('commit.gpgsign', 'false'), @('core.hooksPath', 'disabled-hooks'))) {
+        Invoke-FixtureGit $clone (@('config') + $config) | Out-Null
+    }
+    [System.IO.File]::WriteAllText((Join-Path $clone 'incoming.txt'), "incoming remote commit`n")
+    Invoke-FixtureGit $clone @('add', 'incoming.txt') | Out-Null
+    Invoke-FixtureGit $clone @('commit', '-m', 'remote incoming') | Out-Null
+    Invoke-FixtureGit $clone @('push', 'origin', 'main') | Out-Null
+    Wait-Control '1 incoming commits' -TimeoutSeconds 100 | Out-Null
+    Capture-Window 'git-remote-ahead'
+    if (Test-ControlInvokable 'Pull') { throw 'Pull must be disabled while local changes remain.' }
+    Invoke-Control 'Select nested/staged.txt'
+    Invoke-Control 'Git commit message' -Pointer
+    Send-FixtureKeys '^a'
+    Send-FixtureText 'Commit retained staged fixture'
+    Invoke-Control 'Commit selected files'
+    Invoke-Control 'Commit selected files' -Within 'Git confirmation'
+    Wait-Control 'Committed 1 selected file(s)' | Out-Null
+    Invoke-Control 'Fetch'
+    Wait-Control 'Branches diverged. Resolve in VS Code, then refresh Git status.' | Out-Null
+    Capture-Window 'git-diverged'
+    if (Test-ControlInvokable 'Pull') { throw 'Diverged branch must not pull silently.' }
+    Invoke-FixtureGit $workspace @('merge', '--no-edit', 'origin/main') | Out-Null
+    Invoke-FixtureGit $workspace @('push', 'origin', 'main') | Out-Null
+    Invoke-FixtureGit $clone @('pull', '--ff-only', 'origin', 'main') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $clone 'incoming.txt'), "newest remote commit`n")
+    Invoke-FixtureGit $clone @('commit', '-am', 'remote fast-forward') | Out-Null
+    Invoke-FixtureGit $clone @('push', 'origin', 'main') | Out-Null
+    Invoke-Control 'Refresh Git status'
+    Invoke-Control 'Fetch'
+    Wait-Control '1 incoming commits' | Out-Null
+    Invoke-Control 'Pull'
+    Invoke-Control 'Pull' -Within 'Git confirmation'
+    Wait-Control 'Pull completed (fast-forward only)' | Out-Null
+    if ((Get-Content (Join-Path $workspace 'incoming.txt') -Raw).Trim() -ne 'newest remote commit') { throw 'Pull did not update the selected branch.' }
+    Capture-Window 'git-pulled'
+    Invoke-FixtureGit $workspace @('checkout', '-b', 'conflict-peer') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'incoming.txt'), "peer conflict`n")
+    Invoke-FixtureGit $workspace @('commit', '-am', 'peer conflict') | Out-Null
+    Invoke-FixtureGit $workspace @('checkout', 'main') | Out-Null
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'incoming.txt'), "local conflict`n")
+    Invoke-FixtureGit $workspace @('commit', '-am', 'local conflict') | Out-Null
+    & git -C $workspace merge conflict-peer 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw 'Expected a synthetic merge conflict.' }
+    Invoke-Control 'Refresh Git status'
+    Wait-Control 'Review incoming.txt' | Out-Null
+    Invoke-Control 'Review incoming.txt'
+    Wait-Control 'Open in VS Code' | Out-Null
+    Capture-Window 'git-conflicts'
+    Select-Theme 'Dark'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Capture-Window 'git-conflicts-dark-compact'
+    Select-Theme 'Light'
+    Capture-Window 'git-conflicts-light-compact'
+    Write-Output 'Git init, selected commits, diff/tree review, automatic incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
+}
+
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    if ($GitFlows) {
+        Test-GitFlows
+        return
+    }
     if ($TitlebarFlows) {
         Test-TitlebarFlows
         return

@@ -239,6 +239,10 @@ impl GitPanel {
                     .border_color(cx.theme().border)
                     .child(
                         div()
+                            .id("git-change-count")
+                            .role(Role::Status)
+                            .aria_label(format!("{count} changed files"))
+                            .test_support()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(format!("Changes ({count})")),
                     )
@@ -299,10 +303,12 @@ impl GitPanel {
                             .child(format!("{} file(s) selected", self.selection.len())),
                     )
                     .child(
-                        div()
-                            .id("git-commit-message")
-                            .test_support()
-                            .child(Textarea::new(&self.message).h(px(80.)).disabled(disabled)),
+                        div().id("git-commit-message").test_support().child(
+                            Textarea::new(&self.message)
+                                .aria_label("Git commit message")
+                                .h(px(80.))
+                                .disabled(disabled),
+                        ),
                     )
                     .child(
                         Button::new("git-commit")
@@ -611,27 +617,29 @@ impl Render for GitPanel {
                 )
             })
             .when(blocked || diverged, |panel| {
+                let warning = format!(
+                    "{}{}. Resolve in VS Code, then refresh Git status.",
+                    operation.unwrap_or(if diverged {
+                        "Branches diverged"
+                    } else {
+                        "Merge conflicts"
+                    }),
+                    if conflicts > 0 {
+                        format!(" | {conflicts} conflicted file(s)")
+                    } else {
+                        String::new()
+                    }
+                );
                 panel.child(
                     div()
                         .id("git-conflict-banner")
                         .role(Role::Alert)
+                        .aria_label(warning.clone())
                         .test_support()
                         .px_3()
                         .py_2()
                         .bg(cx.theme().warning.opacity(0.12))
-                        .child(format!(
-                            "{}{}. Resolve in VS Code, then refresh Git status.",
-                            operation.unwrap_or(if diverged {
-                                "Branches diverged"
-                            } else {
-                                "Merge conflicts"
-                            }),
-                            if conflicts > 0 {
-                                format!(" | {conflicts} conflicted file(s)")
-                            } else {
-                                String::new()
-                            }
-                        )),
+                        .child(warning),
                 )
             })
             .when_some(self.error.as_ref(), |panel, error| {
