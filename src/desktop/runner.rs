@@ -17,11 +17,11 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, ensure};
 use clap::Parser;
-use command_group::CommandGroup;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
 use crate::cli::args::ScenarioFilter;
+use crate::helpers::spawn_background_group;
 use crate::progress::{EventReader, LiveProgress};
 
 const LOG_QUEUE_CAPACITY: usize = 256;
@@ -361,11 +361,6 @@ impl RunRequest {
             .stderr(Stdio::piped())
             .env("NO_COLOR", "1")
             .env("CLICOLOR", "0");
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            command.creation_flags(0x08000000);
-        }
         Ok(command)
     }
 }
@@ -415,8 +410,7 @@ impl RunHandle {
             .spawn(move || {
                 let _scratch = scratch;
                 let result = (|| -> Result<RunOutcome> {
-                    let mut child = command
-                        .group_spawn()
+                    let mut child = spawn_background_group(&mut command)
                         .context("Cannot launch the bundled engine worker")?;
                     let stdout = child.inner().stdout.take();
                     let stderr = child.inner().stderr.take();
@@ -858,6 +852,17 @@ mod tests {
         let Ok(mode) = std::env::var("REGRESSIFY_DESKTOP_FIXTURE") else {
             return;
         };
+        #[cfg(windows)]
+        if mode == "no-console" {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            }
+            assert!(
+                unsafe { GetConsoleWindow() }.is_null(),
+                "Worker process unexpectedly created a console"
+            );
+        }
         println!("fixture stdout");
         eprintln!("fixture stderr");
         if mode == "progress" {
@@ -897,6 +902,19 @@ mod tests {
         if mode == "fail" {
             std::process::exit(7);
         }
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn bundled_workers_do_not_create_a_console_window() {
+        let mut handle = RunHandle::spawn(fixture("no-console"), None, None, None).unwrap();
+        let outcome = handle.worker.take().unwrap().join().unwrap();
+        let output = handle
+            .logs
+            .try_iter()
+            .map(|line| line.text)
+            .collect::<String>();
+        assert_eq!(outcome, RunOutcome::Completed, "{output}");
     }
 
     #[test]

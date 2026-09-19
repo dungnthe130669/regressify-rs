@@ -7,8 +7,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::helpers::spawn_background_group as spawn_group;
 use anyhow::{Context, Result, bail, ensure};
-use command_group::CommandGroup;
 
 use super::Cancellation;
 
@@ -45,13 +45,6 @@ fn drain(mut reader: impl Read, maximum: usize) -> std::io::Result<(Vec<u8>, boo
         truncated |= retained < count;
     }
     Ok((output, truncated))
-}
-
-fn spawn_group(command: &mut Command) -> std::io::Result<command_group::GroupChild> {
-    let mut group = command.group();
-    #[cfg(windows)]
-    group.creation_flags(0x08000000);
-    group.spawn()
 }
 
 pub(super) fn run(

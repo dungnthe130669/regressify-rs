@@ -15,6 +15,8 @@ mod mode;
 
 pub use asset::AssetExtensions;
 pub use command::CommandExtensions;
+#[cfg(feature = "desktop")]
+pub(crate) use command::spawn_background_group;
 pub use date_time::{NaiveTimeExtensions, elapsed_time, sleep_remaining_time};
 pub use http::HttpExtensions;
 pub use io::{

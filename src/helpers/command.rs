@@ -11,6 +11,18 @@ use crate::common;
 
 use super::OnceLockBoolExtensions;
 
+#[cfg(feature = "desktop")]
+pub(crate) fn spawn_background_group(
+    command: &mut Command,
+) -> std::io::Result<command_group::GroupChild> {
+    use command_group::CommandGroup;
+
+    let mut group = command.group();
+    #[cfg(windows)]
+    group.creation_flags(0x08000000);
+    group.spawn()
+}
+
 pub trait CommandExtensions {
     /// Conditionally add an argument to the command.
     fn arg_if<S: AsRef<OsStr>>(&mut self, condition: bool, arg: S) -> &mut Self;
