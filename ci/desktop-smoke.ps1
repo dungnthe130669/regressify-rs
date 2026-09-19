@@ -505,11 +505,11 @@ function Test-ComparisonFlows {
             $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
         } finally { $graphics.Dispose(); $bitmap.Dispose() }
     }
-    function Move-ComparisonPointer([string]$Pane) {
+    function Move-ComparisonPointer([string]$Pane, [double]$HorizontalFraction = 0.43, [double]$VerticalFraction = 0.41) {
         $bounds = (Wait-Control "$Pane image preview").Current.BoundingRectangle
         Focus-Fixture
-        $horizontal = [int]($bounds.Left + $bounds.Width * 0.43)
-        $vertical = [int]($bounds.Top + $bounds.Height * 0.41)
+        $horizontal = [int]($bounds.Left + $bounds.Width * $HorizontalFraction)
+        $vertical = [int]($bounds.Top + $bounds.Height * $VerticalFraction)
         if (-not [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal, $vertical)) { throw 'Cannot position the comparison pointer.' }
         Wait-Control "$Pane image preview" | Out-Null
         return @(($horizontal - $bounds.Left), ($vertical - $bounds.Top))
@@ -547,8 +547,8 @@ function Test-ComparisonFlows {
         }
         throw 'Comparison pixel probe did not find a stable tile interior.'
     }
-    function Assert-ComparisonPixels([string]$Name, [string]$Pane = 'Reference', [switch]$HideGuides) {
-        $pointer = Move-ComparisonPointer $Pane
+    function Assert-ComparisonPixels([string]$Name, [string]$Pane = 'Reference', [switch]$HideGuides, [double]$HorizontalFraction = 0.43, [double]$VerticalFraction = 0.41) {
+        $pointer = Move-ComparisonPointer $Pane $HorizontalFraction $VerticalFraction
         $native = [RegressifySmokeNative+Rect]::new()
         if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read comparison window bounds.' }
         $bounds = @('Reference', 'Current') | ForEach-Object {
@@ -611,6 +611,7 @@ function Test-ComparisonFlows {
             Invoke-Control 'Actual size (100%)'
             $name = 'comparison-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]
             Assert-ComparisonPixels "$name-initial"
+            Assert-ComparisonPixels "$name-moved-guides" -HorizontalFraction 0.61 -VerticalFraction 0.54
             foreach ($pane in @('Reference', 'Current')) {
                 foreach ($horizontal in @($false, $true)) {
                     $before = $script:comparisonSignature

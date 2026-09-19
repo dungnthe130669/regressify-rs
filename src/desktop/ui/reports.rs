@@ -54,6 +54,44 @@ impl PointerGuides {
     }
 }
 
+struct PointerLayer {
+    index: usize,
+    guides: Rc<PointerGuides>,
+}
+
+impl Render for PointerLayer {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let index = self.index;
+        let geometry = self.guides.clone();
+        let guides = self.guides.clone();
+        canvas(
+            move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
+            move |bounds, _, window, _| {
+                let Some(pointer) = guides.position(index, window.mouse_position()) else {
+                    return;
+                };
+                for (thickness, color) in [(3., rgba(0x000000b3)), (1., rgba(0xffffffff))] {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(pointer.x - px(thickness / 2.), bounds.origin.y),
+                            size(px(thickness), bounds.size.height),
+                        ),
+                        color,
+                    ));
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(bounds.origin.x, pointer.y - px(thickness / 2.)),
+                            size(bounds.size.width, px(thickness)),
+                        ),
+                        color,
+                    ));
+                }
+            },
+        )
+        .size_full()
+    }
+}
+
 pub(super) struct ResultsPanel {
     root: Option<PathBuf>,
     catalog: Catalog,
@@ -75,6 +113,7 @@ pub(super) struct ResultsPanel {
     preview_scrolls: [ScrollHandle; 3],
     comparison_scroll: ScrollHandle,
     pointer_guides: Rc<PointerGuides>,
+    pointer_layers: [Entity<PointerLayer>; 3],
     status: String,
     loading: bool,
     image_loading: bool,
@@ -244,6 +283,13 @@ impl ResultsPanel {
                     this.reconcile_capture(window, cx);
                 }
             });
+        let pointer_guides = Rc::<PointerGuides>::default();
+        let pointer_layers = std::array::from_fn(|index| {
+            cx.new(|_| PointerLayer {
+                index,
+                guides: pointer_guides.clone(),
+            })
+        });
         Self {
             root: None,
             catalog: Catalog::default(),
@@ -264,7 +310,8 @@ impl ResultsPanel {
             image_load_gate: Arc::default(),
             preview_scrolls: Default::default(),
             comparison_scroll: ScrollHandle::default(),
-            pointer_guides: Rc::default(),
+            pointer_guides,
+            pointer_layers,
             status: "No reports loaded".into(),
             loading: false,
             image_loading: false,
@@ -405,7 +452,10 @@ impl ResultsPanel {
         self.image_task = None;
         self.image_loading = false;
         self.previews.clear();
-        self.pointer_guides = Rc::default();
+        self.pointer_guides.active.set(None);
+        for bounds in &self.pointer_guides.bounds {
+            bounds.set(None);
+        }
     }
 
     fn select_capture(&mut self, capture: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -836,53 +886,40 @@ impl ResultsPanel {
                         .object_fit(ObjectFit::Contain),
                 )
                 .cursor(CursorStyle::Crosshair)
-                .on_mouse_move(cx.listener(move |this, _, _, cx| {
-                    this.pointer_guides.active.set(Some(index));
-                    cx.notify();
-                }))
-                .on_hover(cx.listener(move |this, hovered, _, cx| {
-                    if *hovered {
-                        this.pointer_guides.active.set(Some(index));
-                    } else if this.pointer_guides.active.get() == Some(index) {
-                        this.pointer_guides.active.set(None);
-                    }
-                    cx.notify();
-                }))
-                .child({
-                    let geometry = self.pointer_guides.clone();
+                .on_mouse_move({
                     let guides = self.pointer_guides.clone();
-                    canvas(
-                        move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
-                        move |bounds, _, window, _| {
-                            let Some(pointer) = guides.position(index, window.mouse_position())
-                            else {
-                                return;
-                            };
-                            for (thickness, color) in
-                                [(3., rgba(0x000000b3)), (1., rgba(0xffffffff))]
-                            {
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(pointer.x - px(thickness / 2.), bounds.origin.y),
-                                        size(px(thickness), bounds.size.height),
-                                    ),
-                                    color,
-                                ));
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        point(bounds.origin.x, pointer.y - px(thickness / 2.)),
-                                        size(bounds.size.width, px(thickness)),
-                                    ),
-                                    color,
-                                ));
+                    let layers = self.pointer_layers.clone();
+                    move |_, _, cx| {
+                        guides.active.set(Some(index));
+                        for layer in &layers {
+                            layer.update(cx, |_, cx| cx.notify());
+                        }
+                    }
+                })
+                .on_hover({
+                    let guides = self.pointer_guides.clone();
+                    let layers = self.pointer_layers.clone();
+                    move |hovered, _, cx| {
+                        let active = if *hovered {
+                            Some(index)
+                        } else {
+                            guides.active.get().filter(|active| *active != index)
+                        };
+                        if guides.active.replace(active) != active {
+                            for layer in &layers {
+                                layer.update(cx, |_, cx| cx.notify());
                             }
-                        },
-                    )
-                    .absolute()
-                    .top_0()
-                    .left_0()
-                    .size_full()
-                });
+                        }
+                    }
+                })
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .size_full()
+                        .child(self.pointer_layers[index].clone()),
+                );
                 let path = image.path.clone();
                 div()
                     .flex()
@@ -1397,8 +1434,8 @@ mod pointer_tests {
     #[cfg(feature = "gui-tests")]
     #[gpui_kit::test]
     async fn crosshairs_follow_either_pane_and_clear_on_exit(cx: &mut gpui_kit::TestAppContext) {
-        use gpui_kit::AppContext;
         use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use gpui_kit::{AppContext, InputEvent as _};
         use std::time::Duration;
 
         let directory = tempfile::tempdir().unwrap();
@@ -1498,6 +1535,45 @@ mod pointer_tests {
             assert!(guides.position(1, window.mouse_position()).is_none());
         })
         .unwrap();
+        cx.run_until_parked();
+        let results = cx.update(|cx| view.read(cx).results.clone());
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let observed = notifications.clone();
+        let _subscription = cx.update(|cx| {
+            cx.observe(&results, move |_, _| {
+                observed.set(observed.get() + 1);
+            })
+        });
+        for index in [0_usize, 1] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.hover(("image-scroll", index), cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            notifications.set(0);
+            for step in 1..=20 {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    let origin = window.find(("image-scroll", index)).bounds().center();
+                    window.dispatch_event(
+                        gpui_kit::MouseMoveEvent {
+                            position: origin + point(px(step as f32), px(step as f32)),
+                            pressed_button: None,
+                            modifiers: Default::default(),
+                        }
+                        .to_platform_input(),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                })
+                .unwrap();
+                cx.run_until_parked();
+            }
+            assert_eq!(
+                notifications.get(),
+                0,
+                "Pointer movement within pane {index} must not invalidate Results or its navigation observers"
+            );
+        }
     }
 }
 
