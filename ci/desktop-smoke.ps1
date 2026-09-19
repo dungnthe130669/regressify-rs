@@ -530,6 +530,23 @@ function Test-ComparisonFlows {
         }
         return $false
     }
+    function Read-StableComparisonSample($Bitmap, $Bounds, [int]$Horizontal, [int]$Vertical) {
+        for ($shift = 0; $shift -le 4; $shift++) {
+            $colors = @()
+            $stable = $true
+            foreach ($preview in $Bounds) {
+                $column = [int]($preview.Left + $Horizontal + 2 * $shift)
+                $row = [int]($preview.Top + $Vertical + 2 * $shift)
+                $color = $Bitmap.GetPixel($column, $row)
+                foreach ($neighbor in @(@(-2, 0), @(2, 0), @(0, -2), @(0, 2))) {
+                    if ($Bitmap.GetPixel($column + $neighbor[0], $row + $neighbor[1]).ToArgb() -ne $color.ToArgb()) { $stable = $false }
+                }
+                $colors += $color
+            }
+            if ($stable) { return $colors }
+        }
+        throw 'Comparison pixel probe did not find a stable tile interior.'
+    }
     function Assert-ComparisonPixels([string]$Name, [string]$Pane = 'Reference', [switch]$HideGuides) {
         $pointer = Move-ComparisonPointer $Pane
         $native = [RegressifySmokeNative+Rect]::new()
@@ -556,13 +573,14 @@ function Test-ComparisonFlows {
             $signature = @()
             foreach ($vertical in @(46, 146, 246)) {
                 foreach ($horizontal in @(55, 155, 255)) {
-                    $reference = $bitmap.GetPixel([int]($bounds[0].Left + $horizontal), [int]($bounds[0].Top + $vertical))
-                    $current = $bitmap.GetPixel([int]($bounds[1].Left + $horizontal), [int]($bounds[1].Top + $vertical))
+                    $sample = Read-StableComparisonSample $bitmap $bounds $horizontal $vertical
+                    $reference = $sample[0]
+                    $current = $sample[1]
                     if ([Math]::Abs([int]$reference.R - $current.R) -le 8 -and [Math]::Abs([int]$reference.G - $current.G) -le 8 -and [Math]::Abs([int]$reference.B - $current.B) -le 8) { $matches++ }
                     $signature += $reference.ToArgb()
                 }
             }
-            if ($matches -lt 7) { throw "Comparison offsets differ in '$Name' ($matches/9 matching pixel samples)." }
+            if ($matches -ne 9) { throw "Comparison offsets differ in '$Name' ($matches/9 matching pixel samples)." }
             $script:comparisonSignature = $signature -join ','
         } finally { $bitmap.Dispose() }
     }
