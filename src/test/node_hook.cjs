@@ -8,8 +8,11 @@ const path = require('node:path');
   const args = JSON.parse(input);
   const localRequire = createRequire(path.join(process.cwd(), 'package.json'));
   let playwright;
-  try { playwright = localRequire('playwright'); }
-  catch { playwright = localRequire('playwright-core'); }
+  try {
+    playwright = localRequire('playwright');
+  } catch {
+    playwright = localRequire('playwright-core');
+  }
   const browser = await playwright.chromium.connectOverCDP(args.endpoint);
   let target;
   let context;
@@ -18,7 +21,10 @@ const path = require('node:path');
       const session = await candidate.newCDPSession(page);
       const info = await session.send('Target.getTargetInfo');
       await session.detach();
-      if (info.targetInfo.targetId === args.target) { target = page; context = candidate; }
+      if (info.targetInfo.targetId === args.target) {
+        target = page;
+        context = candidate;
+      }
     }
   }
   if (!target) throw new Error('Scenario page is unavailable');
@@ -26,7 +32,7 @@ const path = require('node:path');
   if (typeof imported.default !== 'function') throw new Error('Node hook must export a function');
   await imported.default(target, args.scenario, args.viewport, args.isReference, context, args.config);
   process.exit(0);
-})().catch(error => {
+})().catch((error) => {
   console.error(error.message);
   process.exit(1);
 });

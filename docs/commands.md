@@ -39,17 +39,17 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 
 ## Commands
 
-| Command    | Purpose                                                                                                                                             |
-| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Command    | Purpose                                                                                                                                                                                                                  |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `init`     | Create missing starter files, Rust-derived JSON schemas, and VS Code YAML/JSON associations; copy missing legacy `data/` files without deleting their sources. Existing files, including editor settings, are preserved. |
-| `install`  | Fetch the Chromium browser binary used by this CLI into the project download cache.                                                                 |
-| `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                    |
-| `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved. |
-| `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                          |
-| `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                  |
-| `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                  |
-| `snapshot` | Generate the HTML summary report from existing comparison data.                                                                                     |
-| `optimize` | Optimize PNG files in the project output tree.                                                                                                      |
+| `install`  | Fetch the Chromium browser binary used by this CLI into the project download cache.                                                                                                                                      |
+| `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                                         |
+| `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved.                                                                      |
+| `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                               |
+| `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                                                                                       |
+| `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                                                                                       |
+| `snapshot` | Generate the HTML summary report from existing comparison data.                                                                                                                                                          |
+| `optimize` | Optimize PNG files in the project output tree.                                                                                                                                                                           |
 
 All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
 
