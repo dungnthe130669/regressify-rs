@@ -750,6 +750,7 @@ impl ResultsPanel {
                         .ghost()
                         .icon(IconName::ArrowLeft)
                         .tooltip("Previous captures")
+                        .accessibility_label("Previous captures")
                         .disabled(self.page == 0)
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.page = this.page.saturating_sub(1);
@@ -762,6 +763,7 @@ impl ResultsPanel {
                         .ghost()
                         .icon(IconName::ArrowRight)
                         .tooltip("Next captures")
+                        .accessibility_label("Next captures")
                         .disabled(self.page + 1 >= pages)
                         .on_click(cx.listener(move |this, _, _, cx| {
                             if this.page + 1 < pages {
@@ -1153,6 +1155,7 @@ impl ResultsPanel {
                                     .small()
                                     .icon(gpui_kit::assets::IconName::ChevronsLeft)
                                     .tooltip("Previous failed capture")
+                                    .accessibility_label("Previous failed capture")
                                     .disabled(self.adjacent_capture(false, true, cx).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(false, true, window, cx)
@@ -1164,6 +1167,7 @@ impl ResultsPanel {
                                     .small()
                                     .icon(IconName::ChevronLeft)
                                     .tooltip("Previous capture")
+                                    .accessibility_label("Previous capture")
                                     .disabled(self.adjacent_capture(false, false, cx).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(false, false, window, cx)
@@ -1186,6 +1190,7 @@ impl ResultsPanel {
                                     .small()
                                     .icon(IconName::ChevronRight)
                                     .tooltip("Next capture")
+                                    .accessibility_label("Next capture")
                                     .disabled(self.adjacent_capture(true, false, cx).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(true, false, window, cx)
@@ -1197,6 +1202,7 @@ impl ResultsPanel {
                                     .small()
                                     .icon(gpui_kit::assets::IconName::ChevronsRight)
                                     .tooltip("Next failed capture")
+                                    .accessibility_label("Next failed capture")
                                     .disabled(self.adjacent_capture(true, true, cx).is_none())
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         this.move_capture(true, true, window, cx)
@@ -1433,6 +1439,16 @@ mod pointer_tests {
             window.within("image-modes").click(3_usize, cx);
             window.click("actual-size", cx);
             let results = view.read(cx).results.clone();
+            for (id, label) in [
+                ("previous-capture", "Previous capture"),
+                ("next-capture", "Next capture"),
+                ("previous-failed-capture", "Previous failed capture"),
+                ("next-failed-capture", "Next failed capture"),
+                ("previous-captures", "Previous captures"),
+                ("next-captures", "Next captures"),
+            ] {
+                assert_eq!(window.find(id).label(), Some(label));
+            }
             for index in [0_usize, 1] {
                 window.hover(("image-scroll", index), cx);
                 window.render_frame(cx);
