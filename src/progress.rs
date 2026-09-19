@@ -308,6 +308,7 @@ pub struct LiveProgress {
     pub omitted_logs: usize,
     log_bytes: usize,
     captures: HashMap<(String, String), usize>,
+    revision: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -341,7 +342,12 @@ impl Counts {
 }
 
 impl LiveProgress {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn apply(&mut self, record: Record) {
+        self.revision = self.revision.wrapping_add(1);
         self.elapsed_ms = self.elapsed_ms.max(record.elapsed_ms);
         match record.event {
             Event::Phase { name } => self.phase = name,
@@ -552,6 +558,7 @@ impl LiveProgress {
     }
 
     pub fn end(&mut self, cancelled: bool, error: Option<String>) {
+        self.revision = self.revision.wrapping_add(1);
         self.finished = true;
         if cancelled {
             self.phase = "Cancelled".into();

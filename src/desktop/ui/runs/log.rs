@@ -125,17 +125,20 @@ impl RunPanel {
             }
             text
         } else {
-            self.manager
+            let capacity = self
+                .manager
                 .logs
                 .iter()
-                .map(|line| {
-                    if line.stderr {
-                        format!("[stderr] {}", line.text)
-                    } else {
-                        line.text.clone()
-                    }
-                })
-                .collect()
+                .map(|line| line.text.len() + if line.stderr { "[stderr] ".len() } else { 0 })
+                .sum();
+            let mut text = String::with_capacity(capacity);
+            for line in &self.manager.logs {
+                if line.stderr {
+                    text.push_str("[stderr] ");
+                }
+                text.push_str(&line.text);
+            }
+            text
         };
         if text != self.log_text {
             self.log

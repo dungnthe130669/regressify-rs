@@ -572,9 +572,14 @@ pub struct RunManager {
     pub omitted_chunks: usize,
     log_bytes: usize,
     pub progress: LiveProgress,
+    revision: u64,
 }
 
 impl RunManager {
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
     pub fn running(&self) -> bool {
         self.active.is_some()
     }
@@ -616,6 +621,7 @@ impl RunManager {
         self.omitted_chunks = 0;
         self.outcome = None;
         self.request = Some(request);
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
     }
 
@@ -630,11 +636,22 @@ impl RunManager {
         let Some(active) = &self.active else {
             return false;
         };
-        let lines = active.logs.try_iter().collect::<Vec<_>>();
-        self.omitted_chunks = active.omitted.load(Ordering::Relaxed);
+        let lines = active
+            .logs
+            .try_iter()
+            .take(LOG_QUEUE_CAPACITY)
+            .collect::<Vec<_>>();
+        let omitted = active.omitted.load(Ordering::Relaxed);
+        if self.omitted_chunks != omitted {
+            self.omitted_chunks = omitted;
+            self.revision = self.revision.wrapping_add(1);
+        }
         let finished = active.worker.as_ref().is_some_and(JoinHandle::is_finished);
-        if let Ok(state) = active.progress.lock() {
+        if let Ok(state) = active.progress.try_lock()
+            && state.revision() != self.progress.revision()
+        {
             self.progress = state.clone();
+            self.revision = self.revision.wrapping_add(1);
         }
         for line in lines {
             self.push_log(line);
@@ -648,11 +665,13 @@ impl RunManager {
                     RunOutcome::Failed("Execution worker stopped unexpectedly".into())
                 })
             });
+            self.revision = self.revision.wrapping_add(1);
         }
         finished
     }
 
     fn push_log(&mut self, line: LogLine) {
+        self.revision = self.revision.wrapping_add(1);
         self.log_bytes += line.text.len();
         self.logs.push_back(line);
         while self.log_bytes > MAX_LOG_BYTES {
@@ -668,6 +687,90 @@ impl RunManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn polling_fixture() -> (RunManager, Arc<Mutex<LiveProgress>>) {
+        let (_, logs) = mpsc::sync_channel(1);
+        let (cancel, _) = mpsc::sync_channel(1);
+        let progress = Arc::new(Mutex::new(LiveProgress::default()));
+        let manager = RunManager {
+            active: Some(RunHandle {
+                logs,
+                cancel,
+                worker: None,
+                omitted: Arc::new(AtomicUsize::new(0)),
+                progress: progress.clone(),
+                _events_file: None,
+            }),
+            ..Default::default()
+        };
+        (manager, progress)
+    }
+
+    #[test]
+    fn polling_unchanged_progress_reuses_the_snapshot() {
+        let (mut manager, shared) = polling_fixture();
+        shared.lock().unwrap().apply(crate::progress::Record {
+            version: 1,
+            elapsed_ms: 1,
+            event: crate::progress::Event::Phase {
+                name: "Capturing".repeat(1000),
+            },
+        });
+        assert!(!manager.poll());
+        let allocation = manager.progress.phase.as_ptr();
+        let revision = manager.revision();
+        for _ in 0..100 {
+            assert!(!manager.poll());
+            assert_eq!(manager.progress.phase.as_ptr(), allocation);
+            assert_eq!(manager.revision(), revision);
+        }
+        shared.lock().unwrap().end(true, None);
+        manager.poll();
+        assert!(manager.progress.finished);
+        assert_eq!(manager.progress.phase, "Cancelled");
+        assert_ne!(manager.revision(), revision);
+    }
+
+    #[test]
+    fn polling_does_not_wait_for_the_worker_progress_lock() {
+        let (mut manager, shared) = polling_fixture();
+        let held = shared.lock().unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            assert!(!manager.poll());
+            sender.send(manager).unwrap();
+        });
+        let result = receiver.recv_timeout(Duration::from_secs(1));
+        drop(held);
+        worker.join().unwrap();
+        assert!(
+            result.is_ok(),
+            "The UI poll must not block behind the event reader"
+        );
+    }
+
+    #[test]
+    fn polling_bounds_console_work_per_tick_without_losing_chunks() {
+        let (mut manager, _) = polling_fixture();
+        let (sender, receiver) = mpsc::channel();
+        manager.active.as_mut().unwrap().logs = receiver;
+        for index in 0..LOG_QUEUE_CAPACITY * 2 {
+            sender
+                .send(LogLine {
+                    stderr: false,
+                    text: format!("{index}\n"),
+                })
+                .unwrap();
+        }
+        manager.poll();
+        assert_eq!(manager.logs.len(), LOG_QUEUE_CAPACITY);
+        manager.poll();
+        assert_eq!(manager.logs.len(), LOG_QUEUE_CAPACITY * 2);
+        assert_eq!(
+            manager.logs.back().unwrap().text,
+            format!("{}\n", LOG_QUEUE_CAPACITY * 2 - 1)
+        );
+    }
 
     #[test]
     fn snapshot_arguments_include_suites_but_not_scenario_filters() {

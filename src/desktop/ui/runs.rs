@@ -979,9 +979,12 @@ impl RunPanel {
                             .await;
                         let running = view
                             .update_in(cx, |this, window, cx| {
+                                let revision = this.manager.revision();
                                 let finished = this.manager.poll();
-                                cx.emit(RunEvent::ProgressChanged);
-                                this.refresh_log(window, cx);
+                                if this.manager.revision() != revision {
+                                    cx.emit(RunEvent::ProgressChanged);
+                                    this.refresh_log(window, cx);
+                                }
                                 if finished {
                                     this.status = match &this.manager.outcome {
                                         Some(RunOutcome::Completed) => "Completed".into(),
