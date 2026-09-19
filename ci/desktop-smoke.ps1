@@ -368,6 +368,18 @@ function Wait-SourceText([string]$Text, [string]$ControlName = 'Configuration so
     throw "Control '$ControlName' did not contain '$Text'."
 }
 
+function Write-FixtureControlText([string]$Name, [string]$Text) {
+    Invoke-Control $Name -Pointer
+    Wait-Control $Name | Out-Null
+    [System.Windows.Forms.SendKeys]::SendWait('^a')
+    [RegressifySmokeText]::Type($Text)
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+    try { Wait-SourceText $Text $Name } catch {
+        Capture-Window 'text-input-failure'
+        throw
+    }
+}
+
 function Capture-Window([string]$Name) {
     [RegressifySmokeNative]::DwmFlush() | Out-Null
     $bounds = [RegressifySmokeNative+Rect]::new()
@@ -821,8 +833,7 @@ function Test-GitFlows {
     Wait-SourceText '+reviewed local change' 'Git diff'
     Capture-Window 'git-diff-review'
     Invoke-Control 'Select nested/selected.txt'
-    Invoke-Control 'Git commit message' -Pointer
-    Send-FixtureText 'Commit selected fixture change'
+    Write-FixtureControlText 'Git commit message' 'Commit selected fixture change'
     Invoke-Control 'Commit selected files'
     Capture-Window 'git-commit-confirmation'
     Invoke-Control 'Commit selected files' -Within 'Git confirmation'
@@ -847,9 +858,7 @@ function Test-GitFlows {
     Capture-Window 'git-remote-ahead'
     if (Test-ControlInvokable 'Pull') { throw 'Pull must be disabled while local changes remain.' }
     Invoke-Control 'Select nested/staged.txt'
-    Invoke-Control 'Git commit message' -Pointer
-    Send-FixtureKeys '^a'
-    Send-FixtureText 'Commit retained staged fixture'
+    Write-FixtureControlText 'Git commit message' 'Commit retained staged fixture'
     Invoke-Control 'Commit selected files'
     Invoke-Control 'Commit selected files' -Within 'Git confirmation'
     Wait-Control 'Committed 1 selected file(s)' | Out-Null
@@ -866,6 +875,7 @@ function Test-GitFlows {
     Invoke-Control 'Refresh Git status'
     Invoke-Control 'Fetch'
     Wait-Control '1 incoming commits' | Out-Null
+    Wait-WindowState { Test-ControlInvokable 'Pull' } 'Pull remained disabled after the clean remote refresh.'
     Invoke-Control 'Pull'
     Invoke-Control 'Pull' -Within 'Git confirmation'
     Wait-Control 'Pull completed (fast-forward only)' | Out-Null

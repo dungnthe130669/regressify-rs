@@ -25,6 +25,7 @@ pub(super) struct GitPanel {
     last_fetch: Option<Instant>,
     last_fetch_attempt: Option<Instant>,
     generation: u64,
+    remote_generation: u64,
     scan: Option<Cancellation>,
     fetch: Option<Cancellation>,
     action: Option<Cancellation>,
@@ -70,6 +71,7 @@ impl GitPanel {
             last_fetch: None,
             last_fetch_attempt: None,
             generation: 0,
+            remote_generation: 0,
             scan: None,
             fetch: None,
             action: None,
@@ -116,6 +118,7 @@ impl GitPanel {
     ) {
         self.cancel_all();
         self.generation += 1;
+        self.remote_generation += 1;
         self.diff_generation += 1;
         self.root = root;
         self.snapshot = None;
@@ -189,6 +192,19 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|previous| !previous.same_tracking_as(&snapshot))
+        {
+            self.remote_generation += 1;
+            if let Some(operation) = self.fetch.take() {
+                operation.cancel();
+            }
+            self.last_fetch = None;
+            self.last_fetch_attempt = None;
+            self.remote_error = None;
+        }
         self.selection.retain(|path| {
             snapshot
                 .changes
@@ -226,7 +242,15 @@ impl GitPanel {
             return "Not tracked".into();
         }
         if snapshot.conflicts() > 0 {
-            return format!("Git {} conflicts", snapshot.conflicts());
+            return format!(
+                "Git {} {}",
+                snapshot.conflicts(),
+                if snapshot.conflicts() == 1 {
+                    "conflict"
+                } else {
+                    "conflicts"
+                }
+            );
         }
         if snapshot.behind > 0 {
             return format!(
@@ -286,6 +310,9 @@ impl GitPanel {
         let Some(snapshot) = &self.snapshot else {
             return String::new();
         };
+        if snapshot.remote.as_deref() == Some(".") {
+            return "Local upstream branch; no remote fetch required".into();
+        }
         if snapshot.remotes.is_empty() {
             return "No remote configured".into();
         }
@@ -323,7 +350,9 @@ impl GitPanel {
                 match result {
                     Ok(snapshot) => {
                         this.install_snapshot(snapshot, window, cx);
-                        if let Some(path) = this.active_file.clone() {
+                        if this.diff_cancel.is_none()
+                            && let Some(path) = this.active_file.clone()
+                        {
                             this.review(path, window, cx);
                         }
                         if this
@@ -358,13 +387,14 @@ impl GitPanel {
         self.fetch = Some(cancellation.clone());
         self.last_fetch_attempt = Some(Instant::now());
         let generation = self.generation;
+        let remote_generation = self.remote_generation;
         let task = cx
             .background_executor()
             .spawn(async move { model::fetch(&snapshot, &cancellation) });
         cx.spawn_in(window, async move |panel, cx| {
             let result = task.await;
             let _ = panel.update_in(cx, |this, window, cx| {
-                if this.generation != generation {
+                if this.generation != generation || this.remote_generation != remote_generation {
                     return;
                 }
                 this.fetch = None;
@@ -646,21 +676,46 @@ impl Workbench {
                 });
                 this.sync_modal(cx);
                 if matches!(action, model::Action::Pull) {
-                    if let Err(error) = this.session.refresh() {
-                        this.status =
-                            format!("Git finished, but workspace refresh failed: {error:#}");
-                    }
-                    this.sync_suites(cx);
-                    if let Some(entry) = this.session.open.as_ref().map(|open| open.entry.clone()) {
-                        let selection = this.session.selection;
-                        this.load_document_at(entry, selection, window, cx);
-                    }
-                    this.refresh_results(window, cx);
+                    this.reload_after_git_pull(window, cx);
                 }
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
+    }
+
+    fn reload_after_git_pull(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(workspace) = self.session.workspace.clone() else {
+            return;
+        };
+        let entry = self.session.open.as_ref().map(|open| open.entry.clone());
+        let selection = self.session.selection;
+        let status = self.status.clone();
+        self.task(
+            "Refreshing workspace after Git...",
+            move || {
+                let mut session = Session::default();
+                session.connect(&workspace.root)?;
+                if let Some(entry) = entry
+                    && workspace.root.join(&entry.path).try_exists()?
+                {
+                    session.install_document(workspace.open_document(entry)?)?;
+                    session.selection = selection;
+                    session.reconcile_selection();
+                }
+                Ok(session)
+            },
+            move |this, session, window, cx| {
+                this.session = session;
+                this.sync_suites(cx);
+                this.sync_editor(window, cx);
+                this.main_tab = 3;
+                this.status = status;
+                this.refresh_results(window, cx);
+            },
+            window,
+            cx,
+        );
     }
 }

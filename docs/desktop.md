@@ -102,6 +102,12 @@ revalidate repository identity and HEAD before acting. Cancelling a network
 operation cannot undo changes already accepted by the remote. Git must be
 installed on PATH. Git UI tests use isolated repositories and local bare remotes.
 
+Remote/upstream configuration is fingerprinted without retaining credentials in
+status messages; network actions reject a changed destination after confirmation.
+Changing branches or remotes invalidates the previous remote-check timestamp and
+any in-flight result. Pull reloads the editor from disk in the background and
+closes a document removed by the incoming commit while retaining the Git view.
+
 `./ci/desktop-smoke.ps1 -GitFlows` runs the native acceptance flow against local
 repositories only. It verifies initialization, tree and diff review, selected
 commits that preserve unrelated staging, push, automatic one-minute incoming

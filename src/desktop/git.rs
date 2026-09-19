@@ -78,10 +78,23 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    pub fn same_tracking_as(&self, other: &Self) -> bool {
+        self.repository == other.repository
+            && self.branch == other.branch
+            && self.detached == other.detached
+            && self.remote == other.remote
+            && self.merge_ref == other.merge_ref
+            && self.upstream == other.upstream
+            && self.remote_config == other.remote_config
+    }
+
     pub fn conflicts(&self) -> usize {
         self.changes.iter().filter(|change| change.conflict).count()
     }
     pub fn default_remote(&self) -> Option<&str> {
+        if self.remote.as_deref() == Some(".") {
+            return None;
+        }
         self.remote
             .as_deref()
             .filter(|remote| *remote != ".")

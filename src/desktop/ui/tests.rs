@@ -2711,7 +2711,7 @@ pub(super) fn editor(
     editor_at_size(cx, root, size(px(1280.), px(820.)))
 }
 
-fn editor_at_size(
+pub(super) fn editor_at_size(
     cx: &mut TestAppContext,
     root: &Path,
     dimensions: gpui_kit::Size<gpui_kit::Pixels>,

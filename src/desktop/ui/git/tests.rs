@@ -1,7 +1,7 @@
 use std::{path::Path, time::Duration};
 
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
-use gpui_kit::{AppContext, TestAppContext};
+use gpui_kit::{AppContext, Focusable, TestAppContext, px, size};
 
 use crate::desktop::git::{self as model, Cancellation};
 
@@ -108,12 +108,22 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        let message = view.read(cx).git.read(cx).message.clone();
+        window.click("git-commit-message", cx);
+        assert!(message.read(cx).focus_handle(cx).is_focused(window));
+        window.render_frame(cx);
+        window.input("reviewed change", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).git.read(cx).message.read(cx).value().as_ref() == "reviewed change"
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.git.update(cx, |panel, cx| {
                 assert!(panel.selection.contains("nested/review.txt"));
-                panel.message.update(cx, |input, cx| {
-                    input.set_value("reviewed change", window, cx)
-                });
+                assert_eq!(panel.message.read(cx).value().as_ref(), "reviewed change");
             });
             this.edit(
                 crate::desktop::session::Session::duplicate_selected,
@@ -207,11 +217,153 @@ fn incoming_conflict_and_remote_failure_indicators_remain_visible(cx: &mut TestA
                     submodule: false,
                 });
             panel.rebuild_tree();
-            assert!(panel.badge().contains("1 conflicts"));
+            assert!(panel.badge().contains("1 conflict"));
             cx.notify();
         });
         window.render_frame(cx);
         assert!(window.find("git-open-vscode").visible());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn tracking_changes_cancel_old_fetches_and_clear_stale_remote_status(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = view.read(cx).git.clone();
+        panel.update(cx, |panel, cx| {
+            let previous = model::Snapshot {
+                branch: "main".into(),
+                remote_config: "old".into(),
+                ..Default::default()
+            };
+            panel.install_snapshot(previous.clone(), window, cx);
+            panel.last_fetch = Some(std::time::Instant::now());
+            panel.last_fetch_attempt = Some(std::time::Instant::now());
+            panel.remote_error = Some("old remote error".into());
+            let cancellation = Cancellation::default();
+            panel.fetch = Some(cancellation.clone());
+            let generation = panel.remote_generation;
+            let current = model::Snapshot {
+                remote_config: "changed".into(),
+                ..previous
+            };
+            panel.install_snapshot(current, window, cx);
+            assert!(cancellation.is_cancelled());
+            assert!(
+                panel.fetch.is_none()
+                    && panel.last_fetch.is_none()
+                    && panel.last_fetch_attempt.is_none()
+                    && panel.remote_error.is_none()
+            );
+            assert_ne!(panel.remote_generation, generation);
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn pull_refresh_reloads_or_closes_the_current_document_without_leaving_git(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let file = directory.path().join("visual_tests/ui-test.tests.yaml");
+    std::fs::write(
+        &file,
+        "scenarios:\n- url: https://example.test/pulled\n  label: Pulled\n",
+    )
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.status = "Pull completed (fast-forward only)".into();
+            this.reload_after_git_pull(window, cx);
+        })
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        !view.read(cx).busy
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["label"],
+            "Pulled"
+        );
+        assert_eq!(view.read(cx).main_tab, 3);
+        assert_eq!(view.read(cx).status, "Pull completed (fast-forward only)");
+    })
+    .unwrap();
+    std::fs::remove_file(file).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| this.reload_after_git_pull(window, cx))
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        !view.read(cx).busy
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert!(view.read(cx).session.open.is_none());
+        assert_eq!(view.read(cx).main_tab, 3);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) =
+            super::super::tests::editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().into());
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            branch: "feature-with-a-long-name".repeat(4),
+                            ahead: 100_000,
+                            behind: 100_000,
+                            changes: (0..5000)
+                                .map(|index| model::Change {
+                                    path: format!(
+                                        "folder-{index:04}/file-with-a-long-name-{index}.txt"
+                                    ),
+                                    original_path: None,
+                                    index: '.',
+                                    worktree: 'M',
+                                    untracked: false,
+                                    conflict: false,
+                                    submodule: false,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.status = "Repository status refreshed".into();
+                });
+                this.select_view(3, window, cx);
+            });
+            window.render_frame(cx);
+            let badge = window.find("git-status").bounds();
+            assert!(badge.size.width <= px(180.));
+            let folder = window.find("open-workspace").bounds();
+            assert!(folder.origin.x + folder.size.width <= px(width - 95.));
+            assert!(window.find("git-commit-message").visible());
+            assert!(
+                window.try_find(("git-file", 4999_usize)).is_none(),
+                "offscreen tree rows must be virtualized"
+            );
+            assert_eq!(view.read(cx).git.read(cx).rows.len(), 10_000);
+        })
+        .unwrap();
+    }
 }

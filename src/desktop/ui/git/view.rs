@@ -146,7 +146,7 @@ impl GitPanel {
                             })
                             .size_3(),
                         )
-                        .child(div().min_w_0().truncate().child(label))
+                        .child(div().flex_1().min_w_0().text_left().truncate().child(label))
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.review(path.clone(), window, cx)
                         })),
@@ -186,7 +186,7 @@ impl GitPanel {
                     .accessibility_label(format!("Folder {}", visible_name(&path)))
                     .tooltip(visible_name(&path))
                     .child(Icon::new(gpui_kit::assets::IconName::Folder).size_3())
-                    .child(div().truncate().child(label))
+                    .child(div().flex_1().min_w_0().text_left().truncate().child(label))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         if !this.collapsed.remove(&path) {
                             this.collapsed.insert(path.clone());
@@ -303,12 +303,25 @@ impl GitPanel {
                             .child(format!("{} file(s) selected", self.selection.len())),
                     )
                     .child(
-                        div().id("git-commit-message").test_support().child(
-                            Textarea::new(&self.message)
-                                .aria_label("Git commit message")
-                                .h(px(80.))
-                                .disabled(disabled),
-                        ),
+                        div()
+                            .id("git-commit-message")
+                            .test_support()
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|this, _, window, cx| {
+                                    if !this.disabled && !this.active() {
+                                        window.focus(&this.message.read(cx).focus_handle(cx), cx);
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    }
+                                }),
+                            )
+                            .child(
+                                Textarea::new(&self.message)
+                                    .aria_label("Git commit message")
+                                    .h(px(80.))
+                                    .disabled(disabled),
+                            ),
                     )
                     .child(
                         Button::new("git-commit")
@@ -742,7 +755,8 @@ impl Render for GitPanel {
                         .role(Role::Status)
                         .aria_label(self.status.clone())
                         .test_support()
-                        .max_h(px(100.))
+                        .h(px(40.))
+                        .flex_shrink_0()
                         .overflow_y_scrollbar()
                         .border_t_1()
                         .border_color(cx.theme().border)
