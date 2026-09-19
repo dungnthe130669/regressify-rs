@@ -1,6 +1,6 @@
 //! Report browsing and image loading are isolated from editable test documents.
 
-use std::sync::Arc;
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use super::*;
 use crate::desktop::results::{Catalog, Outcome, ReportEntry};
@@ -38,6 +38,27 @@ struct LoadedImage {
     path: PathBuf,
 }
 
+#[derive(Default)]
+struct PointerGuides {
+    active: Cell<Option<usize>>,
+    bounds: [Cell<Option<Bounds<Pixels>>>; 3],
+}
+
+impl PointerGuides {
+    fn position(&self, index: usize, mouse: Point<Pixels>) -> Option<Point<Pixels>> {
+        let source = self.bounds.get(self.active.get()?)?.get()?;
+        let target = self.bounds.get(index)?.get()?;
+        if source.size.width <= px(0.) || source.size.height <= px(0.) || !source.contains(&mouse) {
+            return None;
+        }
+        Some(point(
+            target.origin.x + target.size.width * ((mouse.x - source.origin.x) / source.size.width),
+            target.origin.y
+                + target.size.height * ((mouse.y - source.origin.y) / source.size.height),
+        ))
+    }
+}
+
 pub(super) struct ResultsPanel {
     root: Option<PathBuf>,
     catalog: Catalog,
@@ -55,6 +76,8 @@ pub(super) struct ResultsPanel {
     focus: FocusHandle,
     previews: Vec<Preview>,
     preview_scrolls: [ScrollHandle; 3],
+    comparison_scroll: ScrollHandle,
+    pointer_guides: Rc<PointerGuides>,
     status: String,
     loading: bool,
     image_loading: bool,
@@ -158,6 +181,8 @@ impl ResultsPanel {
             focus: cx.focus_handle(),
             previews: Vec::new(),
             preview_scrolls: Default::default(),
+            comparison_scroll: ScrollHandle::default(),
+            pointer_guides: Rc::default(),
             status: "No reports loaded".into(),
             loading: false,
             image_loading: false,
@@ -306,6 +331,8 @@ impl ResultsPanel {
         if self.loading {
             return;
         }
+        self.comparison_scroll.set_offset(point(px(0.), px(0.)));
+        self.pointer_guides = Rc::default();
         self.previews.clear();
         self.image_loading = false;
         let Some(report) = self.selected_report().cloned() else {
@@ -642,6 +669,23 @@ impl ResultsPanel {
         list.into_any_element()
     }
 
+    fn preview_canvas_size(&self, index: usize) -> (usize, usize) {
+        let images = if self.image_mode == 3 && index < 2 {
+            &self.previews[..self.previews.len().min(2)]
+        } else {
+            self.previews
+                .get(index)
+                .map(std::slice::from_ref)
+                .unwrap_or_default()
+        };
+        images
+            .iter()
+            .filter_map(|preview| preview.result.as_ref().ok())
+            .fold((1, 1), |(width, height), image| {
+                (width.max(image.width), height.max(image.height))
+            })
+    }
+
     fn render_preview(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(preview) = self.previews.get(index) else {
             return div()
@@ -659,21 +703,79 @@ impl ResultsPanel {
         };
         let content = match &preview.result {
             Ok(image) => {
-                let display = div().id(("image-content", index)).test_support();
+                let (canvas_width, canvas_height) = self.preview_canvas_size(index);
+                let scroll = if self.image_mode == 3 && index < 2 {
+                    &self.comparison_scroll
+                } else {
+                    &self.preview_scrolls[index]
+                };
+                let display = div().id(("image-content", index)).test_support().relative();
                 let display = if self.fit {
                     display
                         .w_full()
-                        .aspect_ratio(image.width as f32 / image.height as f32)
+                        .aspect_ratio(canvas_width as f32 / canvas_height as f32)
                 } else {
                     display
-                        .w(px(image.width as f32 * self.zoom))
-                        .h(px(image.height as f32 * self.zoom))
+                        .w(px(canvas_width as f32 * self.zoom))
+                        .h(px(canvas_height as f32 * self.zoom))
                 }
                 .child(
                     img(image.image.clone())
-                        .size_full()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .w(relative(image.width as f32 / canvas_width as f32))
+                        .h(relative(image.height as f32 / canvas_height as f32))
                         .object_fit(ObjectFit::Contain),
-                );
+                )
+                .cursor(CursorStyle::Crosshair)
+                .on_mouse_move(cx.listener(move |this, _, _, cx| {
+                    this.pointer_guides.active.set(Some(index));
+                    cx.notify();
+                }))
+                .on_hover(cx.listener(move |this, hovered, _, cx| {
+                    if *hovered {
+                        this.pointer_guides.active.set(Some(index));
+                    } else if this.pointer_guides.active.get() == Some(index) {
+                        this.pointer_guides.active.set(None);
+                    }
+                    cx.notify();
+                }))
+                .child({
+                    let geometry = self.pointer_guides.clone();
+                    let guides = self.pointer_guides.clone();
+                    canvas(
+                        move |bounds, _, _| geometry.bounds[index].set(Some(bounds)),
+                        move |bounds, _, window, _| {
+                            let Some(pointer) = guides.position(index, window.mouse_position())
+                            else {
+                                return;
+                            };
+                            for (thickness, color) in
+                                [(3., rgba(0x000000b3)), (1., rgba(0xffffffff))]
+                            {
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(pointer.x - px(thickness / 2.), bounds.origin.y),
+                                        size(px(thickness), bounds.size.height),
+                                    ),
+                                    color,
+                                ));
+                                window.paint_quad(fill(
+                                    Bounds::new(
+                                        point(bounds.origin.x, pointer.y - px(thickness / 2.)),
+                                        size(bounds.size.width, px(thickness)),
+                                    ),
+                                    color,
+                                ));
+                            }
+                        },
+                    )
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full()
+                });
                 let path = image.path.clone();
                 div()
                     .flex()
@@ -721,10 +823,14 @@ impl ResultsPanel {
                             .min_h_0()
                             .relative()
                             .overflow_scroll()
-                            .track_scroll(&self.preview_scrolls[index])
+                            .map(|mut viewport| {
+                                viewport.style().allow_concurrent_scroll = Some(true);
+                                viewport
+                            })
+                            .track_scroll(scroll)
                             .bg(cx.theme().muted)
                             .child(display)
-                            .scrollbar(&self.preview_scrolls[index], scroll::ScrollbarAxis::Both),
+                            .scrollbar(scroll, scroll::ScrollbarAxis::Both),
                     )
                     .into_any_element()
             }
@@ -908,6 +1014,7 @@ impl ResultsPanel {
                     .selected_index(self.image_mode)
                     .on_click(cx.listener(|this, index, _, cx| {
                         this.image_mode = *index;
+                        this.pointer_guides.active.set(None);
                         cx.notify();
                     }))
                     .child(Tab::new().label("Reference"))
@@ -1061,6 +1168,41 @@ impl ResultsPanel {
             )
             .child(div().flex_1().min_h_0().child(previews))
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod pointer_tests {
+    use super::PointerGuides;
+    use gpui_kit::{Bounds, point, px, size};
+
+    #[test]
+    fn crosshairs_use_the_same_image_coordinate_after_scroll_and_scaling() {
+        let guides = PointerGuides::default();
+        guides.active.set(Some(0));
+        guides.bounds[0].set(Some(Bounds::new(
+            point(px(-100.), px(-200.)),
+            size(px(1000.), px(2000.)),
+        )));
+        guides.bounds[1].set(Some(Bounds::new(
+            point(px(600.), px(-200.)),
+            size(px(1000.), px(2000.)),
+        )));
+        assert_eq!(
+            guides.position(1, point(px(150.), px(300.))),
+            Some(point(px(850.), px(300.)))
+        );
+        guides.bounds[1].set(Some(Bounds::new(
+            point(px(600.), px(10.)),
+            size(px(500.), px(1000.)),
+        )));
+        assert_eq!(
+            guides.position(1, point(px(150.), px(300.))),
+            Some(point(px(725.), px(260.)))
+        );
+        assert!(guides.position(1, point(px(-101.), px(300.))).is_none());
+        guides.active.set(None);
+        assert!(guides.position(1, point(px(150.), px(300.))).is_none());
     }
 }
 

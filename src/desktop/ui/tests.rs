@@ -3581,6 +3581,104 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
 }
 
 #[gpui_kit::test]
+async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_sizes(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let suite = directory.path().join(".regressify/ui-test");
+    let run = suite.join("bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(suite.join("html_report")).unwrap();
+    std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+    for (path, width, height) in [
+        (suite.join("bitmaps_reference/home.png"), 1600, 2200),
+        (run.join("home.png"), 1280, 1800),
+    ] {
+        lodepng::encode32_file(
+            path,
+            &[30_u8, 150, 180, 255].repeat(width * height),
+            width,
+            height,
+        )
+        .unwrap();
+    }
+    let pair = serde_json::json!({"label": "Home", "reference": "../bitmaps_reference/home.png", "test": "../bitmaps_test/run-1/home.png"});
+    let report = serde_json::json!({"id": "ui-test", "tests": [
+        {"status": "fail", "pair": pair}, {"status": "fail", "pair": pair}
+    ]});
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("image-modes").click(3_usize, cx);
+        window.click("actual-size", cx);
+        let offset = |window: &gpui_kit::Window, index| {
+            window.find(("image-content", index)).bounds().origin
+                - window.find(("image-scroll", index)).bounds().origin
+        };
+        for index in [0_usize, 1] {
+            assert_eq!(
+                window.find(("image-content", index)).bounds().size,
+                size(px(1600.), px(2200.))
+            );
+        }
+        window.scroll(
+            ("image-scroll", 0_usize),
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-120.), px(-260.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+        assert!(offset(window, 0_usize).x < px(-100.) && offset(window, 0_usize).y < px(-200.));
+        window.scroll(
+            ("image-scroll", 1_usize),
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-90.), px(-170.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+        assert!(offset(window, 1_usize).x < px(-200.) && offset(window, 1_usize).y < px(-400.));
+        window.click("zoom-in", cx);
+        window.render_frame(cx);
+        assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+        window.click("fit-image", cx);
+        window.render_frame(cx);
+        assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+        assert_eq!(
+            window.find(("image-content", 0_usize)).bounds().size,
+            window.find(("image-content", 1_usize)).bounds().size
+        );
+        window.click("next-capture", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        for index in [0_usize, 1] {
+            let offset = window.find(("image-content", index)).bounds().origin
+                - window.find(("image-scroll", index)).bounds().origin;
+            assert_eq!(offset, gpui_kit::point(px(0.), px(0.)));
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join(".regressify");
