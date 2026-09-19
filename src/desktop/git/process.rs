@@ -47,6 +47,13 @@ fn drain(mut reader: impl Read, maximum: usize) -> std::io::Result<(Vec<u8>, boo
     Ok((output, truncated))
 }
 
+fn spawn_group(command: &mut Command) -> std::io::Result<command_group::GroupChild> {
+    let mut group = command.group();
+    #[cfg(windows)]
+    group.creation_flags(0x08000000);
+    group.spawn()
+}
+
 pub(super) fn run(
     root: &Path,
     args: impl IntoIterator<Item = impl AsRef<OsStr>>,
@@ -96,13 +103,7 @@ pub(super) fn run(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        command.creation_flags(0x08000000);
-    }
-    let mut child = command
-        .group_spawn()
+    let mut child = spawn_group(&mut command)
         .context("Cannot start Git; install Git and make it available on PATH")?;
     let stdout = child
         .inner()
@@ -186,6 +187,43 @@ fn redact(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn grouped_git_commands_do_not_create_a_console_window() {
+        if std::env::var_os("REGRESSIFY_GIT_NO_CONSOLE_FIXTURE").is_some() {
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn GetConsoleWindow() -> *mut std::ffi::c_void;
+            }
+            assert!(
+                unsafe { GetConsoleWindow() }.is_null(),
+                "Git process group unexpectedly created a console"
+            );
+            return;
+        }
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args([
+                "--exact",
+                "desktop::git::process::tests::grouped_git_commands_do_not_create_a_console_window",
+                "--nocapture",
+            ])
+            .env("REGRESSIFY_GIT_NO_CONSOLE_FIXTURE", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let output = spawn_group(&mut command)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn output_is_bounded_but_the_pipe_is_fully_drained() {
