@@ -450,7 +450,7 @@ impl RunHandle {
                                 let mut state = live
                                     .lock()
                                     .map_err(|_| anyhow!("Run progress is unavailable"))?;
-                                events.drain(|record| state.apply(record))?;
+                                events.drain_batch(|record| state.apply(record))?;
                             }
                             if let Some(status) = child.try_wait()? {
                                 if let Some(events) = &mut events {
@@ -915,6 +915,38 @@ mod tests {
                     .any(|line| line.stderr && line.text.contains("fixture stderr"))
             );
         }
+    }
+
+    #[test]
+    fn cancellation_yields_before_draining_a_progress_backlog() {
+        let mut events = tempfile::NamedTempFile::new().unwrap();
+        for elapsed_ms in 0..10_000 {
+            serde_json::to_writer(
+                &mut events,
+                &crate::progress::Record {
+                    version: 1,
+                    elapsed_ms,
+                    event: crate::progress::Event::Phase {
+                        name: "Capturing".into(),
+                    },
+                },
+            )
+            .unwrap();
+            events.write_all(b"\n").unwrap();
+        }
+        events.flush().unwrap();
+        let mut handle = RunHandle::spawn(fixture("wait"), None, Some(events), None).unwrap();
+        handle.cancel();
+        assert_eq!(
+            handle.worker.take().unwrap().join().unwrap(),
+            RunOutcome::Cancelled
+        );
+        let progress = handle.progress.lock().unwrap();
+        assert!(progress.finished);
+        assert!(
+            progress.revision() < 10_000,
+            "Cancellation must be checked before consuming the entire event backlog"
+        );
     }
 
     #[test]

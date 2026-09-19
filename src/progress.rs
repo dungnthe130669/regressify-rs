@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 
 const VERSION: u8 = 1;
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
+const EVENT_BATCH_BYTES: usize = 4 * MAX_EVENT_BYTES;
+const EVENT_BATCH_RECORDS: usize = 256;
 const MAX_SCENARIO_LOG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCENARIO_LOG_ENTRIES: usize = 4096;
 const MAX_SCENARIO_LOG_MESSAGE_BYTES: usize = 16 * 1024;
@@ -204,8 +206,21 @@ impl EventReader {
     }
 
     /// Regular-file EOF is temporary while the worker is still appending records.
-    pub fn drain(&mut self, mut receive: impl FnMut(Record)) -> Result<()> {
-        loop {
+    pub fn drain(&mut self, receive: impl FnMut(Record)) -> Result<()> {
+        self.drain_bounded(usize::MAX, usize::MAX, receive)
+    }
+
+    pub fn drain_batch(&mut self, receive: impl FnMut(Record)) -> Result<()> {
+        self.drain_bounded(EVENT_BATCH_BYTES, EVENT_BATCH_RECORDS, receive)
+    }
+
+    fn drain_bounded(
+        &mut self,
+        mut bytes: usize,
+        mut records: usize,
+        mut receive: impl FnMut(Record),
+    ) -> Result<()> {
+        while bytes > 0 && records > 0 {
             let available = self.input.fill_buf()?;
             if available.is_empty() {
                 return Ok(());
@@ -214,9 +229,11 @@ impl EventReader {
                 .iter()
                 .position(|byte| *byte == b'\n')
                 .map(|position| position + 1)
-                .unwrap_or(available.len());
+                .unwrap_or(available.len())
+                .min(bytes);
             self.pending.extend_from_slice(&available[..end]);
             self.input.consume(end);
+            bytes -= end;
             ensure!(
                 self.pending.len() <= MAX_EVENT_BYTES + 1,
                 "Progress record exceeds 1 MiB"
@@ -229,8 +246,10 @@ impl EventReader {
                 );
                 receive(record);
                 self.pending.clear();
+                records -= 1;
             }
         }
+        Ok(())
     }
 
     pub fn complete(&self) -> Result<()> {
@@ -1041,6 +1060,48 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    fn progress_reader_batches_preserve_order_and_partial_utf8() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        let mut source = Vec::new();
+        for index in 0..EVENT_BATCH_RECORDS + 3 {
+            let record = Record {
+                version: VERSION,
+                elapsed_ms: index as u64,
+                event: Event::Phase {
+                    name: "\u{754c}".repeat(3),
+                },
+            };
+            serde_json::to_writer(&mut source, &record).unwrap();
+            source.push(b'\n');
+        }
+        file.write_all(&source).unwrap();
+        file.flush().unwrap();
+        let split = source.iter().position(|byte| *byte == 0xe7).unwrap() + 1;
+        let mut reader = EventReader::open(file.path()).unwrap();
+        let mut received = Vec::new();
+        reader
+            .drain_bounded(split, usize::MAX, |record| received.push(record.elapsed_ms))
+            .unwrap();
+        assert!(received.is_empty());
+        assert!(reader.complete().is_err());
+        reader
+            .drain_batch(|record| received.push(record.elapsed_ms))
+            .unwrap();
+        assert_eq!(received.len(), EVENT_BATCH_RECORDS);
+        reader
+            .drain(|record| received.push(record.elapsed_ms))
+            .unwrap();
+        reader.complete().unwrap();
+        assert_eq!(
+            received,
+            (0..(EVENT_BATCH_RECORDS + 3) as u64).collect::<Vec<_>>()
+        );
+        reader
+            .drain_batch(|_| panic!("Completed records were replayed"))
+            .unwrap();
     }
 
     #[test]
