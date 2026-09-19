@@ -1,6 +1,10 @@
 //! Report browsing and image loading are isolated from editable test documents.
 
-use std::{cell::Cell, rc::Rc, sync::Arc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+    sync::Arc,
+};
 
 use super::*;
 use crate::desktop::results::{Catalog, Outcome, ReportEntry, ReportSelection};
@@ -31,6 +35,20 @@ struct LoadedImage {
     width: usize,
     height: usize,
     path: PathBuf,
+}
+
+#[derive(Default, Clone)]
+struct PreviewTexture(Rc<RefCell<Option<Arc<gpui_kit::RenderImage>>>>);
+
+impl PreviewTexture {
+    fn source(&self, image: Arc<Image>) -> gpui_kit::ImageSource {
+        let texture = self.clone();
+        gpui_kit::ImageSource::from(move |window: &mut Window, cx: &mut App| {
+            let rendered = image.clone().use_render_image(window, cx)?;
+            *texture.0.borrow_mut() = Some(rendered.clone());
+            Some(Ok(rendered))
+        })
+    }
 }
 
 #[derive(Default)]
@@ -109,6 +127,7 @@ pub(super) struct ResultsPanel {
     _subscription: Subscription,
     focus: FocusHandle,
     previews: Vec<Preview>,
+    preview_textures: [PreviewTexture; 3],
     image_task: Option<gpui_kit::Task<()>>,
     image_load_gate: Arc<futures::lock::Mutex<()>>,
     preview_scrolls: [ScrollHandle; 3],
@@ -229,7 +248,7 @@ impl ResultsPanel {
         self.capture = None;
         self.visible_captures.clear();
         self.page = 0;
-        self.reset_previews();
+        self.reset_previews(Some(window), cx);
         let outside_requested = self.preferred_reports.as_ref().is_some_and(|targets| {
             !self.suites.iter().any(|suite| {
                 suite.entry.path == entry.path
@@ -270,7 +289,7 @@ impl ResultsPanel {
         self.visible_captures.clear();
         self.filter = 0;
         self.page = 0;
-        self.reset_previews();
+        self.reset_previews(Some(window), cx);
         self.loading = false;
         self.status = "No reports loaded".into();
         self.search
@@ -279,6 +298,8 @@ impl ResultsPanel {
     }
 
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        cx.on_release(|this, cx| this.reset_previews(None, cx))
+            .detach();
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Filter captures"));
         let subscription =
             cx.subscribe_in(&search, window, |this: &mut Self, _, event, window, cx| {
@@ -310,6 +331,7 @@ impl ResultsPanel {
             _subscription: subscription,
             focus: cx.focus_handle(),
             previews: Vec::new(),
+            preview_textures: Default::default(),
             image_task: None,
             image_load_gate: Arc::default(),
             preview_scrolls: Default::default(),
@@ -337,7 +359,7 @@ impl ResultsPanel {
         self.root = Some(root.clone());
         self.loading = true;
         self.visible_captures.clear();
-        self.reset_previews();
+        self.reset_previews(Some(window), cx);
         self.status = "Loading reports...".into();
         let suites = self.suites.clone();
         let task = cx.background_executor().spawn(async move {
@@ -444,15 +466,25 @@ impl ResultsPanel {
             } else {
                 self.generation += 1;
                 self.capture = None;
-                self.reset_previews();
+                self.reset_previews(Some(window), cx);
             }
         }
         cx.notify();
     }
 
-    fn reset_previews(&mut self) {
+    fn reset_previews(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
         self.image_task = None;
         self.image_loading = false;
+        for preview in &self.previews {
+            if let Ok(image) = &preview.result {
+                image.image.clone().remove_asset(cx);
+            }
+        }
+        for texture in &self.preview_textures {
+            if let Some(image) = texture.0.borrow_mut().take() {
+                cx.drop_image(image, window.as_deref_mut());
+            }
+        }
         self.previews.clear();
         self.pointer_guides.active.set(None);
         for bounds in &self.pointer_guides.bounds {
@@ -481,7 +513,7 @@ impl ResultsPanel {
             ("Current", test.pair.test.clone()),
             ("Diff", test.pair.diff_image.clone()),
         ];
-        self.reset_previews();
+        self.reset_previews(Some(window), cx);
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
         for scroll in &self.preview_scrolls {
             scroll.set_offset(point(px(0.), px(0.)));
@@ -881,7 +913,7 @@ impl ResultsPanel {
                         .h(px(canvas_height as f32 * self.zoom))
                 }
                 .child(
-                    img(image.image.clone())
+                    img(self.preview_textures[index].source(image.image.clone()))
                         .absolute()
                         .top_0()
                         .left_0()
@@ -1584,6 +1616,88 @@ mod pointer_tests {
                 "Pointer movement within pane {index} must not invalidate Results or its navigation observers"
             );
         }
+        let released = cx
+            .update_window(handle.into(), |_, window, cx| {
+                let source = gpui_kit::ImageSource::from(
+                    results.read(cx).previews[1]
+                        .result
+                        .as_ref()
+                        .unwrap()
+                        .image
+                        .clone(),
+                );
+                let decoded = results.read(cx).preview_textures[1]
+                    .0
+                    .borrow()
+                    .as_ref()
+                    .map(std::sync::Arc::downgrade)
+                    .expect("Displayed image should be decoded");
+                assert!(
+                    source.is_asset_cached(cx),
+                    "Displayed images should have reached GPUI's decoder cache"
+                );
+                results.update(cx, |panel, cx| panel.clear(window, cx));
+                assert!(
+                    !source.is_asset_cached(cx),
+                    "Clearing previews must evict their decoded image assets"
+                );
+                assert!(
+                    results
+                        .read(cx)
+                        .preview_textures
+                        .iter()
+                        .all(|texture| texture.0.borrow().is_none())
+                );
+                window.render_frame(cx);
+                decoded
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            released.upgrade().is_none(),
+            "Decoded pixels must be freed after obsolete image frames are dropped"
+        );
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    fn released_results_evict_preview_assets(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext;
+        use std::sync::Arc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, _) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let encoded = Arc::new(gpui_kit::Image::from_bytes(
+            gpui_kit::ImageFormat::Png,
+            lodepng::encode32(&[30_u8, 150, 180, 255], 1, 1).unwrap(),
+        ));
+        let panel = cx
+            .update_window(handle.into(), |_, window, cx| {
+                let panel = cx.new(|cx| super::ResultsPanel::new(window, cx));
+                panel.update(cx, |panel, _| {
+                    panel.previews.push(super::Preview {
+                        label: "Current",
+                        result: Ok(super::LoadedImage {
+                            image: encoded.clone(),
+                            width: 1,
+                            height: 1,
+                            path: directory.path().join("fixture.png"),
+                        }),
+                    })
+                });
+                encoded.clone().get_render_image(window, cx);
+                assert!(encoded.is_asset_cached(cx));
+                panel
+            })
+            .unwrap();
+        drop(panel);
+        cx.run_until_parked();
+        cx.update(|cx| {
+            assert!(
+                !encoded.is_asset_cached(cx),
+                "Releasing Results must remove its preview assets"
+            )
+        });
     }
 }
 
