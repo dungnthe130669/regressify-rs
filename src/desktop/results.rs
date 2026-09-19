@@ -15,6 +15,7 @@ use super::workspace::{Entry, SuiteSummary};
 
 const MAX_REPORT_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_REPORTS: usize = 1000;
+const MAX_PREVIEW_IMAGE_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
@@ -393,15 +394,20 @@ impl ReportArtifacts {
         Ok(path)
     }
 
-    pub(crate) fn image(&self, output_root: &Path, relative: &str) -> Result<ImageInfo> {
+    fn image_path(&self, output_root: &Path, relative: &str) -> Result<PathBuf> {
         let path = self.artifact(output_root, relative)?;
         ensure!(
             path.extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("png")),
             "Only PNG report images are supported"
         );
+        Ok(path)
+    }
+
+    pub(crate) fn image(&self, output_root: &Path, relative: &str) -> Result<ImageInfo> {
+        let path = self.image_path(output_root, relative)?;
         ensure!(
-            fs::metadata(&path)?.len() <= 128 * 1024 * 1024,
+            fs::metadata(&path)?.len() <= MAX_PREVIEW_IMAGE_BYTES,
             "Image file exceeds the preview size limit"
         );
         let (width, height) = crate::helpers::png::read_bounded_png_dimensions(&path)?;
@@ -410,6 +416,37 @@ impl ReportArtifacts {
             width,
             height,
         })
+    }
+
+    #[cfg(any(feature = "gui", test))]
+    pub(crate) fn read_image(
+        &self,
+        output_root: &Path,
+        relative: &str,
+    ) -> Result<(ImageInfo, Vec<u8>)> {
+        let path = self.image_path(output_root, relative)?;
+        let file = fs::File::open(&path)?;
+        ensure!(
+            file.metadata()?.len() <= MAX_PREVIEW_IMAGE_BYTES,
+            "Image file exceeds the preview size limit"
+        );
+        let mut bytes = Vec::new();
+        file.take(MAX_PREVIEW_IMAGE_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_PREVIEW_IMAGE_BYTES,
+            "Image file exceeds the preview size limit"
+        );
+        let (width, height) =
+            crate::helpers::png::read_bounded_png_dimensions_from_reader(bytes.as_slice(), &path)?;
+        Ok((
+            ImageInfo {
+                path,
+                width,
+                height,
+            },
+            bytes,
+        ))
     }
 }
 
@@ -667,6 +704,54 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn preview_reads_validate_the_loaded_bytes_and_reject_oversized_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        let html = suite.join("html_report");
+        fs::create_dir_all(&html).unwrap();
+        let path = html.join("preview.png");
+        let artifacts = ReportArtifacts {
+            suite_directory: suite,
+        };
+        let bytes = lodepng::encode32(&[50_u8; 4 * 2 * 3], 2, 3).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let (image, loaded) = artifacts
+            .read_image(directory.path(), "preview.png")
+            .unwrap();
+        assert_eq!((image.width, image.height), (2, 3));
+        assert_eq!(loaded, bytes);
+        let mut oversized = bytes;
+        oversized[16..20].copy_from_slice(&100_001_u32.to_be_bytes());
+        fs::write(&path, oversized).unwrap();
+        assert!(
+            artifacts
+                .read_image(directory.path(), "preview.png")
+                .unwrap_err()
+                .to_string()
+                .contains("pixel limit")
+        );
+        fs::write(&path, b"invalid png").unwrap();
+        assert!(
+            artifacts
+                .read_image(directory.path(), "preview.png")
+                .is_err()
+        );
+        fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_len(MAX_PREVIEW_IMAGE_BYTES + 1)
+            .unwrap();
+        assert!(
+            artifacts
+                .read_image(directory.path(), "preview.png")
+                .unwrap_err()
+                .to_string()
+                .contains("preview size limit")
+        );
+    }
 
     fn suite() -> SuiteSummary {
         use super::super::{document::DocumentKind, workspace::ScenarioSummary};

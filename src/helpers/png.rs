@@ -8,10 +8,17 @@ pub(crate) const MAX_VISUAL_IMAGE_DECOMPRESSED_BYTES: usize = 256_100_000;
 
 /// Read and bound PNG IHDR dimensions before a decoder allocates image data.
 pub(crate) fn read_bounded_png_dimensions(path: &Path) -> Result<(usize, usize)> {
+    read_bounded_png_dimensions_from_reader(File::open(path)?, path)
+}
+
+pub(crate) fn read_bounded_png_dimensions_from_reader(
+    mut reader: impl Read,
+    path: &Path,
+) -> Result<(usize, usize)> {
     const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
     let mut header = [0_u8; 24];
-    let mut file = File::open(path)?;
-    file.read_exact(&mut header)
+    reader
+        .read_exact(&mut header)
         .map_err(|error| anyhow!("Failed to read PNG header '{}': {}", path.display(), error))?;
 
     if header[..8] != PNG_SIGNATURE {

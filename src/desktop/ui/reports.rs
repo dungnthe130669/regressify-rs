@@ -70,6 +70,8 @@ pub(super) struct ResultsPanel {
     _subscription: Subscription,
     focus: FocusHandle,
     previews: Vec<Preview>,
+    image_task: Option<gpui_kit::Task<()>>,
+    image_load_gate: Arc<futures::lock::Mutex<()>>,
     preview_scrolls: [ScrollHandle; 3],
     comparison_scroll: ScrollHandle,
     pointer_guides: Rc<PointerGuides>,
@@ -186,8 +188,7 @@ impl ResultsPanel {
         self.report = self.suite_report();
         self.capture = None;
         self.page = 0;
-        self.previews.clear();
-        self.image_loading = false;
+        self.reset_previews();
         let outside_requested = self.preferred_reports.as_ref().is_some_and(|targets| {
             !self.suites.iter().any(|suite| {
                 suite.entry.path == entry.path
@@ -227,9 +228,8 @@ impl ResultsPanel {
         self.capture = None;
         self.filter = 0;
         self.page = 0;
-        self.previews.clear();
+        self.reset_previews();
         self.loading = false;
-        self.image_loading = false;
         self.status = "No reports loaded".into();
         self.search
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -260,6 +260,8 @@ impl ResultsPanel {
             _subscription: subscription,
             focus: cx.focus_handle(),
             previews: Vec::new(),
+            image_task: None,
+            image_load_gate: Arc::default(),
             preview_scrolls: Default::default(),
             comparison_scroll: ScrollHandle::default(),
             pointer_guides: Rc::default(),
@@ -283,8 +285,7 @@ impl ResultsPanel {
         let generation = self.generation;
         self.root = Some(root.clone());
         self.loading = true;
-        self.image_loading = false;
-        self.previews.clear();
+        self.reset_previews();
         self.status = "Loading reports...".into();
         let suites = self.suites.clone();
         let requested_run = preferred_run.clone();
@@ -394,11 +395,17 @@ impl ResultsPanel {
             } else {
                 self.generation += 1;
                 self.capture = None;
-                self.previews.clear();
-                self.image_loading = false;
+                self.reset_previews();
             }
         }
         cx.notify();
+    }
+
+    fn reset_previews(&mut self) {
+        self.image_task = None;
+        self.image_loading = false;
+        self.previews.clear();
+        self.pointer_guides = Rc::default();
     }
 
     fn select_capture(&mut self, capture: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -416,14 +423,17 @@ impl ResultsPanel {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let artifacts = report.artifacts();
+        let artifacts = Arc::new(report.artifacts());
         let images = [
             ("Reference", test.pair.reference.clone()),
             ("Current", test.pair.test.clone()),
             ("Diff", test.pair.diff_image.clone()),
         ];
+        self.reset_previews();
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
-        self.pointer_guides = Rc::default();
+        for scroll in &self.preview_scrolls {
+            scroll.set_offset(point(px(0.), px(0.)));
+        }
         self.page = self
             .filtered(cx)
             .iter()
@@ -431,19 +441,22 @@ impl ResultsPanel {
             .unwrap_or(0)
             / PAGE_SIZE;
         self.capture = Some(capture);
-        self.previews.clear();
         self.image_loading = true;
         self.generation += 1;
         let generation = self.generation;
-        let task = cx.background_executor().spawn(async move {
-            images
-                .into_iter()
-                .map(|(label, path)| {
+        let load_gate = self.image_load_gate.clone();
+        self.image_task = Some(cx.spawn_in(window, async move |view, cx| {
+            let mut previews = Vec::with_capacity(images.len());
+            for (label, path) in images {
+                let root = root.clone();
+                let artifacts = artifacts.clone();
+                let gate = load_gate.clone();
+                let task = cx.background_executor().spawn(async move {
+                    let _permit = gate.lock().await;
                     let result = (|| -> Result<LoadedImage> {
                         let path =
                             path.ok_or_else(|| anyhow!("No {} image", label.to_lowercase()))?;
-                        let image = artifacts.image(&root, &path)?;
-                        let bytes = std::fs::read(&image.path)?;
+                        let (image, bytes) = artifacts.read_image(&root, &path)?;
                         Ok(LoadedImage {
                             image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
                             width: image.width,
@@ -453,11 +466,9 @@ impl ResultsPanel {
                     })()
                     .map_err(|error| format!("{error:#}"));
                     Preview { label, result }
-                })
-                .collect::<Vec<_>>()
-        });
-        cx.spawn_in(window, async move |view, cx| {
-            let previews = task.await;
+                });
+                previews.push(task.await);
+            }
             let _ = view.update_in(cx, |this, _, cx| {
                 if this.generation == generation {
                     this.previews = previews;
@@ -465,8 +476,7 @@ impl ResultsPanel {
                     cx.notify();
                 }
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
@@ -1305,6 +1315,77 @@ mod pointer_tests {
         assert!(guides.position(1, point(px(-101.), px(300.))).is_none());
         guides.active.set(None);
         assert!(guides.position(1, point(px(150.), px(300.))).is_none());
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn preview_loading_keeps_only_the_latest_queued_capture(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::{sync::Arc, time::Duration};
+
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        lodepng::encode32_file(run.join("capture.png"), &[30_u8, 150, 180, 255], 1, 1).unwrap();
+        let captures = (0..40).map(|index| serde_json::json!({
+            "status": "pass", "pair": {"label": format!("Capture {index}"), "test": "../bitmaps_test/run-1/capture.png"}
+        })).collect::<Vec<_>>();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": captures
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let results = cx.update(|cx| view.read(cx).results.clone());
+        let gate = cx.update(|cx| results.read(cx).image_load_gate.clone());
+        let permit = gate.lock().await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window
+                .try_find("capture-heading")
+                .is_some_and(|heading| heading.label() == Some("Capture 0"))
+        })
+        .await;
+        for index in 1..40 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                results.update(cx, |panel, cx| panel.select_capture(index, window, cx));
+            })
+            .unwrap();
+            cx.run_until_parked();
+            assert!(
+                Arc::strong_count(&gate) <= 4,
+                "Superseded image tasks must be dropped"
+            );
+        }
+        drop(permit);
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(window.find("capture-heading").label(), Some("Capture 39"));
+            results.update(cx, |panel, cx| panel.clear(window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(Arc::strong_count(&gate), 2);
+        cx.update(|cx| {
+            assert!(results.read(cx).image_task.is_none());
+            assert!(!results.read(cx).image_loading);
+            assert!(results.read(cx).previews.is_empty());
+        });
     }
 
     #[cfg(feature = "gui-tests")]
