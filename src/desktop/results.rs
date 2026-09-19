@@ -577,6 +577,36 @@ pub struct Catalog {
     pub warnings: Vec<String>,
 }
 
+#[derive(Clone, Copy)]
+pub enum ReportSelection<'a> {
+    All,
+    Latest,
+    Run(&'a str),
+    Exact(&'a [(String, String)]),
+}
+
+impl ReportSelection<'_> {
+    fn includes(self, path: &Path) -> bool {
+        let run = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        let suite = path
+            .ancestors()
+            .nth(3)
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str());
+        match self {
+            Self::All | Self::Latest => true,
+            Self::Run(requested) => run == Some(requested),
+            Self::Exact(targets) => targets.iter().any(|(suite_id, run_id)| {
+                run == Some(run_id.as_str())
+                    && suite.is_some_and(|suite| suite.eq_ignore_ascii_case(suite_id))
+            }),
+        }
+    }
+}
+
 impl Catalog {
     pub fn resolve_names(&mut self, suites: &[SuiteSummary]) {
         for report in &mut self.reports {
@@ -607,7 +637,11 @@ impl Catalog {
     }
 
     pub fn load(output_root: &Path) -> Result<Self> {
-        if !output_root.exists() {
+        Self::load_selected(output_root, ReportSelection::All)
+    }
+
+    pub fn load_selected(output_root: &Path, selection: ReportSelection<'_>) -> Result<Self> {
+        if !output_root.try_exists()? {
             return Ok(Self::default());
         }
         let root = output_root.canonicalize()?;
@@ -616,7 +650,11 @@ impl Catalog {
         let mut paths = Vec::new();
         for entry in WalkDir::new(&root).max_depth(5).follow_links(false) {
             match entry {
-                Ok(entry) if entry.file_type().is_file() && entry.file_name() == "report.json" => {
+                Ok(entry)
+                    if entry.file_type().is_file()
+                        && entry.file_name() == "report.json"
+                        && selection.includes(entry.path()) =>
+                {
                     paths.push((
                         entry
                             .metadata()?
@@ -630,14 +668,29 @@ impl Catalog {
             }
         }
         paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| right.1.cmp(&left.1)));
-        if paths.len() > MAX_REPORTS {
-            catalog
-                .warnings
-                .push(format!("Showing the newest {MAX_REPORTS} reports"));
-        }
-        for (modified, path) in paths.into_iter().take(MAX_REPORTS) {
+        let mut loaded_suites = std::collections::BTreeSet::new();
+        let mut remaining = MAX_REPORTS;
+        for (modified, path) in paths {
+            if matches!(selection, ReportSelection::Latest)
+                && path
+                    .ancestors()
+                    .nth(3)
+                    .is_some_and(|suite| loaded_suites.contains(suite))
+            {
+                continue;
+            }
+            if remaining == 0 {
+                catalog
+                    .warnings
+                    .push(format!("Showing the newest {MAX_REPORTS} reports"));
+                break;
+            }
+            remaining -= 1;
             match read_report(&root, &path, modified) {
-                Ok(report) => catalog.reports.push(report),
+                Ok(report) => {
+                    loaded_suites.insert(report.suite_directory.clone());
+                    catalog.reports.push(report);
+                }
                 Err(error) => catalog.warnings.push(format!(
                     "{}: {error:#}",
                     super::workspace::display_path(&path)
@@ -671,6 +724,10 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
         .parent()
         .ok_or_else(|| anyhow!("Missing suite output directory"))?
         .to_path_buf();
+    ensure!(
+        suite_directory.parent() == Some(root),
+        "Unexpected suite output directory"
+    );
     let mut source = String::new();
     fs::File::open(&canonical)?
         .take(MAX_REPORT_BYTES + 1)
@@ -683,6 +740,13 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
     ensure!(
         !report.id.trim().is_empty(),
         "Report is missing its suite ID"
+    );
+    ensure!(
+        suite_directory
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|suite| suite.eq_ignore_ascii_case(&report.id)),
+        "Report suite ID does not match its output directory"
     );
     let run_id = run_directory
         .file_name()
@@ -975,6 +1039,78 @@ mod tests {
                 .reports
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn requested_report_is_filtered_before_the_catalog_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let requested = fixture(directory.path(), "requested");
+        fs::File::options()
+            .write(true)
+            .open(requested.join("report.json"))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(SystemTime::UNIX_EPOCH))
+            .unwrap();
+        for index in 0..=MAX_REPORTS {
+            let run = directory
+                .path()
+                .join(format!("shop/bitmaps_test/newer-{index}"));
+            fs::create_dir_all(&run).unwrap();
+            fs::write(run.join("report.json"), b"unrelated malformed report").unwrap();
+        }
+        let unfiltered = Catalog::load(directory.path()).unwrap();
+        assert!(unfiltered.reports.is_empty());
+        assert_eq!(unfiltered.warnings.len(), MAX_REPORTS + 1);
+        let targets = [("shop".into(), "requested".into())];
+        for selection in [
+            ReportSelection::Run("requested"),
+            ReportSelection::Exact(&targets),
+        ] {
+            let catalog = Catalog::load_selected(directory.path(), selection).unwrap();
+            assert_eq!(catalog.reports.len(), 1);
+            assert_eq!(catalog.reports[0].run_id, "requested");
+            assert!(catalog.warnings.is_empty());
+        }
+    }
+
+    #[test]
+    fn latest_review_skips_older_reports_and_rejects_wrong_suite_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        for (run, seconds) in [
+            ("old-malformed", 1),
+            ("new-valid", 2),
+            ("newest-wrong-suite", 3),
+        ] {
+            let path = fixture(directory.path(), run).join("report.json");
+            if run == "old-malformed" {
+                fs::write(&path, b"must not be parsed").unwrap();
+            } else if run == "newest-wrong-suite" {
+                fs::write(&path, br#"{"id":"another-suite","tests":[]}"#).unwrap();
+            }
+            fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(
+                    fs::FileTimes::new().set_modified(
+                        SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(seconds),
+                    ),
+                )
+                .unwrap();
+        }
+        let catalog = Catalog::load_selected(directory.path(), ReportSelection::Latest).unwrap();
+        assert_eq!(catalog.reports.len(), 1);
+        assert_eq!(catalog.reports[0].run_id, "new-valid");
+        assert_eq!(catalog.reports[0].suite_name, "shop");
+        assert!(
+            !catalog.reports[0].report.tests[0]
+                .pair
+                .display
+                .title
+                .is_empty()
+        );
+        assert_eq!(catalog.warnings.len(), 1);
+        assert!(catalog.warnings[0].contains("does not match its output directory"));
     }
 
     #[test]

@@ -677,7 +677,10 @@ resetting selection, filters, images, or zoom.
 
 Pass, mismatch, engine/capture error, and unknown status are distinct. Unknown
 statuses never count as passes. Malformed reports warn without hiding valid
-reports. Discovery loads at most 1,000 reports, limited to 16 MiB each.
+reports. Reports whose suite ID disagrees with their output directory are
+rejected. Ordinary browsing reads only the newest valid report per suite;
+explicit run requests exclude unrelated reports before applying the discovery
+limit of 1,000 report reads, limited to 16 MiB each.
 
 Reference, Current, Diff, and Side by side display background-loaded PNGs.
 Fit width, zoom, actual-size reset (100%), and scrollbars support tall pages.

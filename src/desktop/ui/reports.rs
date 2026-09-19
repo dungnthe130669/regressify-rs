@@ -3,7 +3,7 @@
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use super::*;
-use crate::desktop::results::{Catalog, Outcome, ReportEntry};
+use crate::desktop::results::{Catalog, Outcome, ReportEntry, ReportSelection};
 
 const PAGE_SIZE: usize = 50;
 
@@ -323,7 +323,7 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let preferred_run = self.preferred_run.clone();
+        let requested_run = self.preferred_run.clone();
         let requested_reports = self.preferred_reports.clone();
         let previous = self
             .selected_report()
@@ -335,20 +335,16 @@ impl ResultsPanel {
         self.reset_previews();
         self.status = "Loading reports...".into();
         let suites = self.suites.clone();
-        let requested_run = preferred_run.clone();
         let task = cx.background_executor().spawn(async move {
-            let mut catalog = Catalog::load(&root)?;
+            let selection = if let Some(targets) = &requested_reports {
+                ReportSelection::Exact(targets)
+            } else if let Some(run) = &requested_run {
+                ReportSelection::Run(run)
+            } else {
+                ReportSelection::Latest
+            };
+            let mut catalog = Catalog::load_selected(&root, selection)?;
             catalog.resolve_names(&suites);
-            if let Some(run) = requested_run {
-                catalog.reports.retain(|report| report.run_id == run);
-            }
-            if let Some(targets) = requested_reports {
-                catalog.reports.retain(|report| {
-                    targets
-                        .iter()
-                        .any(|(suite, run)| suite == &report.report.id && run == &report.run_id)
-                });
-            }
             Ok::<_, anyhow::Error>(catalog)
         });
         cx.spawn_in(window, async move |view, cx| {
