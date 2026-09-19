@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use sha2::{Digest, Sha256};
 
 mod process;
 
@@ -68,6 +69,7 @@ pub struct Snapshot {
     pub remote: Option<String>,
     pub merge_ref: Option<String>,
     pub remotes: Vec<String>,
+    pub remote_config: String,
     pub ahead: usize,
     pub behind: usize,
     pub detached: bool,
@@ -155,6 +157,17 @@ pub fn status(workspace: &Path, cancellation: &Cancellation) -> Result<Snapshot>
         .lines()
         .map(str::to_string)
         .collect();
+    let remote_config = process::run(
+        &root,
+        ["config", "--null", "--get-regexp", "^(remote\\.|url\\.)"],
+        None,
+        cancellation,
+        Duration::from_secs(15),
+    )?;
+    if !remote_config.success && remote_config.code != Some(1) {
+        remote_config.ensure_success()?;
+    }
+    snapshot.remote_config = format!("{:x}", Sha256::digest(&remote_config.stdout));
     if !snapshot.detached && !snapshot.branch.is_empty() {
         snapshot.remote = config_value(
             &root,
@@ -355,6 +368,18 @@ impl Request {
                 && current.branch == self.expected.branch,
             "Git branch or HEAD changed; refresh and review before continuing"
         );
+        if matches!(
+            self.action,
+            Action::Pull | Action::Push | Action::AddOrigin { .. }
+        ) {
+            ensure!(
+                current.remote_config == self.expected.remote_config
+                    && current.remote == self.expected.remote
+                    && current.merge_ref == self.expected.merge_ref
+                    && current.upstream == self.expected.upstream,
+                "Git remote or upstream changed; refresh and confirm the destination again"
+            );
+        }
         match &self.action {
             Action::Initialize => unreachable!(),
             Action::Commit { paths, message } => {
@@ -815,6 +840,45 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("VS Code")
+        );
+    }
+
+    #[test]
+    fn network_requests_reject_remote_configuration_changes_without_exposing_urls() {
+        let root = repository();
+        fs::write(root.path().join("file.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        git(
+            root.path(),
+            &["remote", "add", "origin", "https://example.test/first.git"],
+        );
+        let request = Request {
+            workspace: root.path().into(),
+            expected: status(root.path(), &Cancellation::default()).unwrap(),
+            action: Action::Push,
+        };
+        git(
+            root.path(),
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://user:private@example.test/changed.git",
+            ],
+        );
+        let error = request
+            .execute(&Cancellation::default())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("remote or upstream changed"));
+        assert!(
+            !error.contains("private")
+                && !format!(
+                    "{:?}",
+                    status(root.path(), &Cancellation::default()).unwrap()
+                )
+                .contains("private")
         );
     }
 

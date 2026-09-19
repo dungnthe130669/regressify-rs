@@ -56,6 +56,23 @@ pub(super) fn run(
 ) -> Result<Output> {
     ensure!(!cancellation.is_cancelled(), "Git operation cancelled");
     let mut command = Command::new("git");
+    for key in [
+        "GIT_DIR",
+        "GIT_COMMON_DIR",
+        "GIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_PREFIX",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+    ] {
+        command.env_remove(key);
+    }
     command
         .current_dir(root)
         .args([
@@ -72,6 +89,8 @@ pub(super) fn run(
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GCM_INTERACTIVE", "Never")
+        .env("SSH_ASKPASS_REQUIRE", "never")
+        .env("GIT_SSH_VARIANT", "ssh")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_LITERAL_PATHSPECS", "1")
         .stdin(Stdio::piped())
@@ -162,4 +181,115 @@ fn redact(message: &str) -> String {
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn output_is_bounded_but_the_pipe_is_fully_drained() {
+        let mut input = std::io::Cursor::new(vec![b'a'; 100]);
+        let (bytes, truncated) = drain(&mut input, 10).unwrap();
+        assert_eq!(bytes.len(), 10);
+        assert!(truncated);
+        assert_eq!(input.position(), 100);
+        let message =
+            redact("fatal: https://user:private@example.test/repository?token=value failed");
+        assert!(!message.contains("private") && !message.contains("token=value"));
+    }
+
+    #[test]
+    fn timeout_and_cancellation_stop_git_process_groups() {
+        let directory = tempfile::tempdir().unwrap();
+        for cancelled in [false, true] {
+            let cancellation = Cancellation::default();
+            let trigger = cancellation.clone();
+            let thread = cancelled.then(|| {
+                thread::spawn(move || {
+                    thread::sleep(Duration::from_millis(100));
+                    trigger.cancel();
+                })
+            });
+            let started = Instant::now();
+            let result = run(
+                directory.path(),
+                ["-c", "alias.fixture-wait=!sleep 30", "fixture-wait"],
+                None,
+                &cancellation,
+                if cancelled {
+                    Duration::from_secs(5)
+                } else {
+                    Duration::from_millis(200)
+                },
+            );
+            if let Some(thread) = thread {
+                thread.join().unwrap();
+            }
+            let error = result
+                .err()
+                .expect("waiting Git process must be stopped")
+                .to_string();
+            assert!(
+                error.contains(if cancelled { "cancelled" } else { "timed out" }),
+                "{error}"
+            );
+            assert!(started.elapsed() < Duration::from_secs(5));
+        }
+    }
+
+    #[test]
+    fn repository_environment_cannot_redirect_commands() {
+        if let Some(root) = std::env::var_os("REGRESSIFY_GIT_ENV_FIXTURE") {
+            let root = Path::new(&root);
+            let output = run(
+                root,
+                ["rev-parse", "--show-toplevel"],
+                None,
+                &Cancellation::default(),
+                Duration::from_secs(5),
+            )
+            .unwrap();
+            output.ensure_success().unwrap();
+            assert_eq!(
+                std::path::PathBuf::from(output.text().unwrap().trim())
+                    .canonicalize()
+                    .unwrap(),
+                root.canonicalize().unwrap()
+            );
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        for directory in [root.path(), outside.path()] {
+            run(
+                directory,
+                ["init"],
+                None,
+                &Cancellation::default(),
+                Duration::from_secs(5),
+            )
+            .unwrap()
+            .ensure_success()
+            .unwrap();
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "desktop::git::process::tests::repository_environment_cannot_redirect_commands",
+                "--nocapture",
+            ])
+            .env("REGRESSIFY_GIT_ENV_FIXTURE", root.path())
+            .env("GIT_DIR", outside.path().join(".git"))
+            .env("GIT_WORK_TREE", outside.path())
+            .env("GIT_INDEX_FILE", outside.path().join("foreign-index"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(!outside.path().join("foreign-index").exists());
+    }
 }
