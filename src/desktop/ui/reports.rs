@@ -21,11 +21,6 @@ pub(super) struct ReportApproval {
     pub scenario_ids: Vec<String>,
 }
 
-#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
-struct SelectReport {
-    index: usize,
-}
-
 struct Preview {
     label: &'static str,
     result: std::result::Result<LoadedImage, String>,
@@ -63,12 +58,12 @@ pub(super) struct ResultsPanel {
     root: Option<PathBuf>,
     catalog: Catalog,
     suites: Vec<crate::desktop::workspace::SuiteSummary>,
-    report: usize,
+    active_suite: Option<PathBuf>,
+    report: Option<usize>,
     capture: Option<usize>,
     filter: usize,
     page: usize,
     image_mode: usize,
-    captures_hidden: bool,
     zoom: f32,
     fit: bool,
     search: Entity<InputState>,
@@ -89,6 +84,28 @@ pub(super) struct ResultsPanel {
 
 impl EventEmitter<ResultEvent> for ResultsPanel {}
 
+pub(super) struct CaptureList {
+    results: Entity<ResultsPanel>,
+    _subscription: Subscription,
+}
+
+impl CaptureList {
+    pub(super) fn new(results: Entity<ResultsPanel>, cx: &mut Context<Self>) -> Self {
+        let subscription = cx.observe(&results, |_, _, cx| cx.notify());
+        Self {
+            results,
+            _subscription: subscription,
+        }
+    }
+}
+
+impl Render for CaptureList {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.results
+            .update(cx, |panel, cx| panel.render_captures(cx))
+    }
+}
+
 impl ResultsPanel {
     pub(super) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         if self.disabled != disabled {
@@ -104,6 +121,7 @@ impl ResultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.active_suite = None;
         self.preferred_reports = None;
         self.preferred_run = (!run_id.is_empty()).then_some(run_id);
         self.filter = 0;
@@ -121,6 +139,16 @@ impl ResultsPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let matches = |suite: &&crate::desktop::workspace::SuiteSummary| {
+            targets.iter().any(|(id, _)| id == &suite.output_id)
+        };
+        self.active_suite = self
+            .suites
+            .iter()
+            .filter(matches)
+            .find(|suite| self.active_suite.as_ref() == Some(&suite.entry.path))
+            .or_else(|| self.suites.iter().find(matches))
+            .map(|suite| suite.entry.path.clone());
         self.preferred_reports = Some(targets);
         self.preferred_run = None;
         self.filter = 0;
@@ -132,7 +160,59 @@ impl ResultsPanel {
     }
 
     pub(super) fn set_suites(&mut self, suites: Vec<crate::desktop::workspace::SuiteSummary>) {
+        if !suites
+            .iter()
+            .any(|suite| self.active_suite.as_ref() == Some(&suite.entry.path))
+        {
+            self.active_suite = None;
+        }
         self.suites = suites;
+    }
+
+    pub(super) fn active_suite(&self) -> Option<&PathBuf> {
+        self.active_suite.as_ref()
+    }
+
+    pub(super) fn select_suite(
+        &mut self,
+        entry: &Entry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_suite.as_ref() == Some(&entry.path) {
+            return;
+        }
+        self.active_suite = Some(entry.path.clone());
+        self.report = self.suite_report();
+        self.capture = None;
+        self.page = 0;
+        self.previews.clear();
+        self.image_loading = false;
+        let outside_requested = self.preferred_reports.as_ref().is_some_and(|targets| {
+            !self.suites.iter().any(|suite| {
+                suite.entry.path == entry.path
+                    && targets.iter().any(|(id, _)| id == &suite.output_id)
+            })
+        }) || (self.preferred_run.is_some() && self.report.is_none());
+        if outside_requested && let Some(root) = self.root.clone() {
+            self.preferred_run = None;
+            self.preferred_reports = None;
+            self.refresh(root, window, cx);
+        } else if !self.loading {
+            self.generation += 1;
+            self.reconcile_capture(window, cx);
+        }
+        cx.notify();
+    }
+
+    fn suite_report(&self) -> Option<usize> {
+        let path = self.active_suite.as_ref()?;
+        self.catalog.reports.iter().position(|report| {
+            report
+                .source
+                .as_ref()
+                .is_some_and(|entry| &entry.path == path)
+        })
     }
 
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -142,11 +222,11 @@ impl ResultsPanel {
         self.preferred_reports = None;
         self.catalog = Catalog::default();
         self.suites.clear();
-        self.report = 0;
+        self.active_suite = None;
+        self.report = None;
         self.capture = None;
         self.filter = 0;
         self.page = 0;
-        self.captures_hidden = false;
         self.previews.clear();
         self.loading = false;
         self.image_loading = false;
@@ -168,12 +248,12 @@ impl ResultsPanel {
             root: None,
             catalog: Catalog::default(),
             suites: Vec::new(),
-            report: 0,
+            active_suite: None,
+            report: None,
             capture: None,
             filter: 0,
             page: 0,
             image_mode: 1,
-            captures_hidden: false,
             zoom: 1.0,
             fit: true,
             search,
@@ -194,8 +274,8 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let preferred_run = self.preferred_run.take();
-        let requested_reports = self.preferred_reports.take();
+        let preferred_run = self.preferred_run.clone();
+        let requested_reports = self.preferred_reports.clone();
         let previous = self
             .selected_report()
             .map(|report| (report.path.clone(), self.capture));
@@ -233,23 +313,12 @@ impl ResultsPanel {
                 match result {
                     Ok(catalog) => {
                         this.catalog = catalog;
-                        this.report = preferred_run
-                            .as_ref()
-                            .and_then(|run_id| {
-                                this.catalog
-                                    .reports
-                                    .iter()
-                                    .position(|report| &report.run_id == run_id)
-                            })
-                            .or_else(|| {
-                                previous.as_ref().and_then(|(path, _)| {
-                                    this.catalog
-                                        .reports
-                                        .iter()
-                                        .position(|report| &report.path == path)
-                                })
-                            })
-                            .unwrap_or(0);
+                        if this.active_suite.is_none() {
+                            this.active_suite = this.catalog.reports.iter().find_map(|report| {
+                                report.source.as_ref().map(|entry| entry.path.clone())
+                            });
+                        }
+                        this.report = this.suite_report();
                         this.capture = None;
                         this.page = 0;
                         this.status = format!(
@@ -297,7 +366,12 @@ impl ResultsPanel {
     }
 
     fn selected_report(&self) -> Option<&ReportEntry> {
-        self.catalog.reports.get(self.report)
+        self.catalog.reports.get(self.report?).filter(|report| {
+            report
+                .source
+                .as_ref()
+                .is_some_and(|entry| self.active_suite.as_ref() == Some(&entry.path))
+        })
     }
 
     /// Keep selection and pagination inside the current filter without reloading unchanged images.
@@ -506,6 +580,15 @@ impl ResultsPanel {
             .gap_1()
             .p_3()
             .size_full()
+            .min_w_0()
+            .min_h_0()
+            .child(
+                div()
+                    .text_sm()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .pb_2()
+                    .child("Captures"),
+            )
             .child(
                 Input::new(&self.search)
                     .id("capture-search")
@@ -534,16 +617,25 @@ impl ResultsPanel {
             .overflow_y_scrollbar()
             .gap_1();
         if filtered.is_empty() {
+            let message = if self.loading {
+                "Loading captures..."
+            } else if self.active_suite.is_none() {
+                "Select a test suite"
+            } else if self.selected_report().is_none() {
+                "No captures for this suite"
+            } else {
+                "No matching captures"
+            };
             rows = rows.child(
                 div()
                     .id("capture-empty")
                     .role(Role::Status)
-                    .aria_label("No matching captures")
+                    .aria_label(message)
                     .test_support()
                     .py_6()
                     .text_center()
                     .text_color(cx.theme().muted_foreground)
-                    .child("No matching captures"),
+                    .child(message),
             );
         }
         if let Some(report) = self.selected_report() {
@@ -817,19 +909,26 @@ impl ResultsPanel {
                     )
                     .child(
                         div()
-                            .id(("image-scroll", index))
-                            .test_support()
                             .flex_1()
                             .min_h_0()
                             .relative()
-                            .overflow_scroll()
-                            .map(|mut viewport| {
-                                viewport.style().allow_concurrent_scroll = Some(true);
-                                viewport
-                            })
-                            .track_scroll(scroll)
-                            .bg(cx.theme().muted)
-                            .child(display)
+                            .child(
+                                div()
+                                    .id(("image-scroll", index))
+                                    .role(Role::Group)
+                                    .aria_label(format!("{} image preview", preview.label))
+                                    .test_support()
+                                    .size_full()
+                                    .relative()
+                                    .overflow_scroll()
+                                    .map(|mut viewport| {
+                                        viewport.style().allow_concurrent_scroll = Some(true);
+                                        viewport
+                                    })
+                                    .track_scroll(scroll)
+                                    .bg(cx.theme().muted)
+                                    .child(display),
+                            )
                             .scrollbar(scroll, scroll::ScrollbarAxis::Both),
                     )
                     .into_any_element()
@@ -1204,6 +1303,88 @@ mod pointer_tests {
         guides.active.set(None);
         assert!(guides.position(1, point(px(150.), px(300.))).is_none());
     }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn crosshairs_follow_either_pane_and_clear_on_exit(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        lodepng::encode32_file(
+            run.join("capture.png"),
+            &[30_u8, 150, 180, 255].repeat(1200 * 1800),
+            1200,
+            1800,
+        )
+        .unwrap();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": [{"status": "pass", "pair": {
+                    "label": "Pointer fixture",
+                    "reference": "../bitmaps_test/run-1/capture.png",
+                    "test": "../bitmaps_test/run-1/capture.png"
+                }}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("image-modes").click(3_usize, cx);
+            window.click("actual-size", cx);
+            let results = view.read(cx).results.clone();
+            for index in [0_usize, 1] {
+                window.hover(("image-scroll", index), cx);
+                window.render_frame(cx);
+                let guides = results.read(cx).pointer_guides.clone();
+                assert_eq!(guides.active.get(), Some(index));
+                let mouse = window.mouse_position();
+                let source = guides.bounds[index].get().unwrap();
+                let target = guides.bounds[1 - index].get().unwrap();
+                assert_eq!(guides.position(index, mouse), Some(mouse));
+                assert_eq!(
+                    guides.position(1 - index, mouse),
+                    Some(mouse - source.origin + target.origin)
+                );
+                window.scroll(
+                    ("image-scroll", index),
+                    gpui_kit::ScrollDelta::Pixels(point(px(-90.), px(-140.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                assert_eq!(window.mouse_position(), mouse);
+                let source = guides.bounds[index].get().unwrap();
+                let target = guides.bounds[1 - index].get().unwrap();
+                assert_eq!(
+                    guides.position(1 - index, mouse),
+                    Some(mouse - source.origin + target.origin)
+                );
+            }
+            window.hover("actual-size", cx);
+            window.render_frame(cx);
+            let guides = results.read(cx).pointer_guides.clone();
+            assert_eq!(guides.active.get(), None);
+            assert!(guides.position(0, window.mouse_position()).is_none());
+            assert!(guides.position(1, window.mouse_position()).is_none());
+        })
+        .unwrap();
+    }
 }
 
 impl Render for ResultsPanel {
@@ -1212,13 +1393,6 @@ impl Render for ResultsPanel {
             .selected_report()
             .map(ReportEntry::label)
             .unwrap_or_else(|| "No reports".into());
-        let reports = self
-            .catalog
-            .reports
-            .iter()
-            .enumerate()
-            .map(|(index, report)| (index, report.label()))
-            .collect::<Vec<_>>();
         let counts = self
             .selected_report()
             .map(|report| report.counts())
@@ -1229,7 +1403,6 @@ impl Render for ResultsPanel {
                 )
             })
             .unwrap_or_default();
-        let focus = self.focus.clone();
         let approval = self
             .selected_report()
             .filter(|report| {
@@ -1255,38 +1428,14 @@ impl Render for ResultsPanel {
                         .collect(),
                 })
             });
-        let comparison = self.render_comparison(cx);
-        let layout = if self.captures_hidden {
-            comparison
-        } else {
-            h_resizable("result-layout")
-                .child(
-                    resizable_panel()
-                        .size(px(270.))
-                        .size_range(px(200.)..px(440.))
-                        .child(self.render_captures(cx)),
-                )
-                .child(resizable_panel().child(comparison))
-                .into_any_element()
-        };
         div()
             .id("results-panel")
+            .test_support()
             .track_focus(&self.focus)
             .flex()
             .flex_col()
             .size_full()
             .min_w_0()
-            .on_action(cx.listener(|this, action: &SelectReport, window, cx| {
-                if action.index < this.catalog.reports.len() {
-                    this.report = action.index;
-                    this.generation += 1;
-                    this.capture = None;
-                    this.previews.clear();
-                    this.image_loading = false;
-                    this.page = 0;
-                    this.reconcile_capture(window, cx);
-                }
-            }))
             .child(
                 div()
                     .flex()
@@ -1298,55 +1447,16 @@ impl Render for ResultsPanel {
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
-                        Button::new("expand-comparison")
-                            .ghost()
-                            .icon(if self.captures_hidden {
-                                gpui_kit::assets::IconName::Minimize2
-                            } else {
-                                gpui_kit::assets::IconName::Maximize2
-                            })
-                            .accessibility_label(if self.captures_hidden {
-                                "Restore capture list"
-                            } else {
-                                "Expand comparison"
-                            })
-                            .tooltip(if self.captures_hidden {
-                                "Restore capture list"
-                            } else {
-                                "Expand comparison"
-                            })
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.captures_hidden = !this.captures_hidden;
-                                window.focus(&this.focus, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("report-picker")
-                            .label(report_name)
-                            .tooltip(
-                                self.selected_report()
-                                    .map(|report| {
-                                        format!(
-                                            "Suite ID: {}\nRun ID: {}\n{}",
-                                            report.report.id,
-                                            report.run_id,
-                                            display_path(&report.path)
-                                        )
-                                    })
-                                    .unwrap_or_default(),
-                            )
-                            .disabled(self.loading || reports.is_empty())
-                            .dropdown_menu(move |menu, _, _| {
-                                let mut menu = menu.action_context(focus.clone()).scrollable(true);
-                                for (index, label) in &reports {
-                                    menu = menu.menu(
-                                        label.clone(),
-                                        Box::new(SelectReport { index: *index }),
-                                    );
-                                }
-                                menu
-                            }),
+                        div()
+                            .id("report-title")
+                            .role(Role::Status)
+                            .aria_label(report_name.clone())
+                            .test_support()
+                            .flex_1()
+                            .min_w(px(160.))
+                            .truncate()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(report_name),
                     )
                     .child(
                         Button::new("refresh-results")
@@ -1408,7 +1518,7 @@ impl Render for ResultsPanel {
                             .child(counts),
                     ),
             )
-            .child(div().flex_1().min_h_0().child(layout))
+            .child(div().flex_1().min_h_0().child(self.render_comparison(cx)))
             .children(self.catalog.warnings.first().map(|warning| {
                 div()
                     .px_4()

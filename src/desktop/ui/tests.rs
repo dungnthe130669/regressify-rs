@@ -1759,6 +1759,41 @@ async fn overview_opens_multiple_saved_reports_with_independent_run_ids(cx: &mut
             .is_some_and(|status| status.label() == Some("2 reports, 0 warnings"))
     })
     .await;
+    let newer = directory
+        .path()
+        .join(".regressify/second-suite/bitmaps_test/newer-run");
+    std::fs::create_dir_all(&newer).unwrap();
+    std::fs::write(newer.join("report.json"), serde_json::to_vec(&serde_json::json!({
+        "id": "second-suite", "tests": [{"status": "pass", "pair": {"label": "Newer unrequested capture"}}]
+    })).unwrap()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("refresh-results", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("results-status")
+            .is_some_and(|status| status.label() == Some("2 reports, 0 warnings"))
+    })
+    .await;
+    for (name, label) in [
+        ("second-suite", "second-suite / second-run"),
+        ("ui-test", "ui-test / first-run"),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let index = view
+                .read(cx)
+                .session
+                .entries
+                .iter()
+                .position(|entry| entry.suite_name().as_deref() == Some(name))
+                .unwrap();
+            window.click(("file", index), cx);
+            assert_eq!(window.find("report-title").label(), Some(label));
+            assert_eq!(view.read(cx).main_tab, 2);
+        })
+        .unwrap();
+    }
     cx.update(|cx| assert!(view.read(cx).runs.read(cx).manager.request.is_none()));
 }
 
@@ -3506,7 +3541,7 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        let report = window.find("report-picker");
+        let report = window.find("report-title");
         let label = report.label().unwrap_or_default();
         assert!(label.starts_with("ui-test / "), "{label}");
         assert!(!label.contains("desktop-"));
@@ -3581,6 +3616,141 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
 }
 
 #[gpui_kit::test]
+async fn results_suite_navigation_is_isolated_and_preserves_drafts_during_refresh(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1080.), px(720.)));
+    let (open_path, draft) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                for name in ["second-suite", "empty-suite"] {
+                    this.session
+                        .workspace
+                        .as_ref()
+                        .unwrap()
+                        .create_suite(name)
+                        .unwrap();
+                }
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+                let open = this.session.open.as_mut().unwrap();
+                let path = open.entry.path.clone();
+                let draft = format!("{}\n# Unsaved editor draft\n", open.document.source());
+                open.document.set_source(draft.clone()).unwrap();
+                this.sync_editor(window, cx);
+                (path, draft)
+            })
+        })
+        .unwrap();
+    for (suite, label) in [
+        ("ui-test", "Active capture"),
+        ("second-suite", "Second capture"),
+        ("unmatched-suite", "Unrelated capture"),
+    ] {
+        let run = directory
+            .path()
+            .join(".regressify")
+            .join(suite)
+            .join("bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": suite, "tests": [{"status": "pass", "pair": {"label": label}}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Active capture"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let second = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("second-suite"))
+            .unwrap();
+        window.click(("file", second), cx);
+        assert_eq!(view.read(cx).main_tab, 2);
+        assert_eq!(
+            window.find("capture-heading").label(),
+            Some("Second capture")
+        );
+        assert_eq!(
+            window.find(("capture", 0_usize)).label(),
+            Some("Passed Second capture")
+        );
+        assert!(window.try_find(("capture", 1_usize)).is_none());
+        assert!(window.try_find("report-picker").is_none());
+        assert!(window.try_find("scenario-pane").is_none());
+        let sidebar = window.find("workspace-navigation").bounds();
+        let captures = window.find("capture-list").bounds();
+        assert!(captures.left() >= sidebar.left() && captures.right() <= sidebar.right());
+        assert!(captures.top() >= window.find("suite-pane").bounds().bottom());
+        assert!(window.find("results-panel").bounds().left() >= sidebar.right());
+        let open = view.read(cx).session.open.as_ref().unwrap();
+        assert_eq!(open.entry.path, open_path);
+        assert_eq!(open.document.source(), draft);
+        assert!(view.read(cx).session.dirty());
+        window.click("refresh-results", cx);
+        let empty = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("empty-suite"))
+            .unwrap();
+        window.click(("file", empty), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("capture-empty")
+            .is_some_and(|empty| empty.label() == Some("No captures for this suite"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("capture-heading").label(), Some("Comparison"));
+        assert!(window.try_find(("capture", 0_usize)).is_none());
+        assert!(window.try_find(("image-details", 1_usize)).is_none());
+        window.click("approve-report", cx);
+        assert_eq!(view.read(cx).main_tab, 2);
+        let original = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.path == open_path)
+            .unwrap();
+        window.click(("file", original), cx);
+        assert_eq!(
+            window.find("capture-heading").label(),
+            Some("Active capture")
+        );
+        let open = view.read(cx).session.open.as_ref().unwrap();
+        assert_eq!(open.entry.path, open_path);
+        assert_eq!(open.document.source(), draft);
+        assert!(view.read(cx).session.dirty());
+        window.within("workbench-tabs").click(0_usize, cx);
+        assert!(window.try_find("capture-list").is_none());
+        assert!(window.try_find("scenario-pane").is_some());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_sizes(
     cx: &mut TestAppContext,
 ) {
@@ -3650,6 +3820,34 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
         window.render_frame(cx);
         assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
         assert!(offset(window, 1_usize).x < px(-200.) && offset(window, 1_usize).y < px(-400.));
+        for index in [0_usize, 1] {
+            window.scroll(
+                ("image-scroll", index),
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(20_000.), px(20_000.))),
+                cx,
+            );
+            let viewport = window.find(("image-scroll", index)).bounds();
+            let vertical = gpui_kit::point(viewport.right() - px(8.), viewport.top() + px(12.));
+            window.drag(vertical, vertical + gpui_kit::point(px(0.), px(70.)), cx);
+            window.render_frame(cx);
+            assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+            assert!(
+                offset(window, index).y < px(-10.),
+                "Vertical thumb in pane {index} must scroll"
+            );
+            let horizontal = gpui_kit::point(viewport.left() + px(12.), viewport.bottom() - px(8.));
+            window.drag(
+                horizontal,
+                horizontal + gpui_kit::point(px(60.), px(0.)),
+                cx,
+            );
+            window.render_frame(cx);
+            assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
+            assert!(
+                offset(window, index).x < px(-10.),
+                "Horizontal thumb in pane {index} must scroll"
+            );
+        }
         window.click("zoom-in", cx);
         window.render_frame(cx);
         assert_eq!(offset(window, 0_usize), offset(window, 1_usize));
@@ -3682,19 +3880,19 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
 async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join(".regressify");
-    let run = output.join("shop/bitmaps_test/run-1");
+    let run = output.join("ui-test/bitmaps_test/run-1");
     std::fs::create_dir_all(&run).unwrap();
-    std::fs::create_dir_all(output.join("shop/html_report")).unwrap();
-    std::fs::create_dir_all(output.join("shop/bitmaps_reference")).unwrap();
+    std::fs::create_dir_all(output.join("ui-test/html_report")).unwrap();
+    std::fs::create_dir_all(output.join("ui-test/bitmaps_reference")).unwrap();
     for path in [
         run.join("home.png"),
         run.join("home_diff.png"),
-        output.join("shop/bitmaps_reference/home.png"),
+        output.join("ui-test/bitmaps_reference/home.png"),
     ] {
         lodepng::encode32_file(path, &[0_u8, 128, 255, 255].repeat(1280 * 720), 1280, 720).unwrap();
     }
     let pair = serde_json::json!({"label": "Home", "reference": "../bitmaps_reference/home.png", "test": "../bitmaps_test/run-1/home.png", "diffImage": "../bitmaps_test/run-1/home_diff.png"});
-    let report = serde_json::json!({"id": "shop", "tests": [
+    let report = serde_json::json!({"id": "ui-test", "tests": [
         {"status": "pass", "pair": pair},
         {"status": "fail", "pair": {"label": "Checkout", "engineErrorMsg": "Missing selector #pay"}},
         {"status": "pass", "pair": {"label": "Billing"}},
@@ -3740,13 +3938,16 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         window.within("image-modes").click(3_usize, cx);
         assert!(window.find(("image-details", 0_usize)).visible());
         assert!(window.find(("image-details", 1_usize)).visible());
-        window.click("expand-comparison", cx);
-        assert!(window.try_find("capture-list").is_none());
-        assert!(window.find(("image-details", 0_usize)).visible());
-        assert!(window.find(("image-details", 1_usize)).visible());
         assert_eq!(window.find("capture-heading").label(), Some("Home"));
-        window.click("expand-comparison", cx);
         assert!(window.find("capture-list").visible());
+        let navigator = window.find("workspace-navigation").bounds();
+        let captures = window.find("capture-list").bounds();
+        assert!(captures.left() >= navigator.left() && captures.right() <= navigator.right());
+        assert!(captures.top() >= window.find("suite-pane").bounds().bottom());
+        assert!(window.find("results-panel").bounds().left() >= navigator.right());
+        assert!(window.try_find("scenario-pane").is_none());
+        assert!(window.try_find("expand-comparison").is_none());
+        assert!(window.try_find("report-picker").is_none());
         window.within("result-filter").click(1_usize, cx);
         assert!(window.try_find(("capture", 0_usize)).is_none());
         assert_eq!(
@@ -3803,7 +4004,9 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
 #[gpui_kit::test]
 async fn result_navigation_keeps_the_selected_capture_page_visible(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
-    let run = directory.path().join(".regressify/shop/bitmaps_test/run-1");
+    let run = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/run-1");
     std::fs::create_dir_all(&run).unwrap();
     let captures = (0..52)
         .map(|index| {
@@ -3815,7 +4018,7 @@ async fn result_navigation_keeps_the_selected_capture_page_visible(cx: &mut Test
         .collect::<Vec<_>>();
     std::fs::write(
         run.join("report.json"),
-        serde_json::to_vec(&serde_json::json!({"id": "shop", "tests": captures})).unwrap(),
+        serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": captures})).unwrap(),
     )
     .unwrap();
     let (handle, _) = editor(cx, directory.path());

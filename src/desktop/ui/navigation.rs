@@ -62,24 +62,26 @@ impl Workbench {
             .size_full()
             .min_w_0()
             .bg(cx.theme().muted.opacity(0.4))
-            .child(
-                div().px_2().py_2().child(
-                    Button::new("workspace-overview")
-                        .ghost()
-                        .small()
-                        .w_full()
-                        .justify_start()
-                        .icon(gpui_kit::assets::IconName::LayoutDashboard)
-                        .accessibility_label("Overview")
-                        .child(div().flex_1().text_left().child("Overview"))
-                        .selected(self.overview && self.main_tab == 0)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.overview = true;
-                            this.main_tab = 0;
-                            cx.notify();
-                        })),
-                ),
-            );
+            .when(self.main_tab != 2, |navigation| {
+                navigation.child(
+                    div().px_2().py_2().child(
+                        Button::new("workspace-overview")
+                            .ghost()
+                            .small()
+                            .w_full()
+                            .justify_start()
+                            .icon(gpui_kit::assets::IconName::LayoutDashboard)
+                            .accessibility_label("Overview")
+                            .child(div().flex_1().text_left().child("Overview"))
+                            .selected(self.overview && self.main_tab == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.overview = true;
+                                this.main_tab = 0;
+                                cx.notify();
+                            })),
+                    ),
+                )
+            });
         if self.session.workspace.is_none() {
             navigation = navigation.child(
                 div()
@@ -122,14 +124,18 @@ impl Workbench {
                                 .size_range(px(150.)..px(800.))
                                 .child(self.render_suite_list(cx)),
                         )
-                        .child(
-                            resizable_panel()
-                                .size_range(px(120.)..px(1200.))
-                                .child(self.render_scenario_list(cx)),
-                        ),
+                        .child(resizable_panel().size_range(px(120.)..px(1200.)).child(
+                            if self.main_tab == 2 {
+                                self.captures.clone().into_any_element()
+                            } else {
+                                self.render_scenario_list(cx)
+                            },
+                        )),
                 ),
             )
-            .child(self.render_workspace_files(cx))
+            .when(self.main_tab != 2, |navigation| {
+                navigation.child(self.render_workspace_files(cx))
+            })
             .into_any_element()
     }
 
@@ -166,11 +172,16 @@ impl Workbench {
             .enumerate()
             .filter(|(_, entry)| entry.kind == DocumentKind::Suite)
         {
-            let current = self
+            let open = self
                 .session
                 .open
                 .as_ref()
                 .is_some_and(|open| open.entry.path == entry.path);
+            let current = if self.main_tab == 2 {
+                self.results.read(cx).active_suite() == Some(&entry.path)
+            } else {
+                open
+            };
             let suite = self
                 .session
                 .suites
@@ -179,7 +190,7 @@ impl Workbench {
             if self.selected_only && !suite.is_some_and(|suite| runs.selected(&suite.name)) {
                 continue;
             }
-            let matches = if current {
+            let matches = if open {
                 self.value["scenarios"]
                     .as_array()
                     .map(|scenarios| {
@@ -214,7 +225,7 @@ impl Workbench {
                 continue;
             }
             count += 1;
-            let scenario_count = if current {
+            let scenario_count = if open {
                 self.value["scenarios"].as_array().map_or(0, Vec::len)
             } else {
                 suite.map_or(0, |suite| suite.scenarios.len())
@@ -384,7 +395,13 @@ impl Workbench {
                             )
                             .disabled(self.busy)
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.open_location(entry.clone(), Selection::Root, window, cx)
+                                if this.main_tab == 2 {
+                                    this.results.update(cx, |panel, cx| {
+                                        panel.select_suite(&entry, window, cx);
+                                    });
+                                } else {
+                                    this.open_location(entry.clone(), Selection::Root, window, cx);
+                                }
                             })),
                     ),
             );

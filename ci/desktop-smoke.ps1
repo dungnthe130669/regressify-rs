@@ -15,7 +15,8 @@ param(
     [switch]$UpdateFlows,
     [switch]$DeploymentFlows,
     [switch]$TitlebarFlows,
-    [switch]$GitFlows
+    [switch]$GitFlows,
+    [switch]$ComparisonFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -489,6 +490,131 @@ public static class RegressifyInstanceWindow {
     Write-Output 'Multiple workspace/empty windows, duplicate activation, minimized restoration, draft preservation, and close/crash ownership release passed.'
 }
 
+function Test-ComparisonFlows {
+    function Write-ComparisonImage([string]$Path, [int]$Width, [int]$Height) {
+        $bitmap = [System.Drawing.Bitmap]::new($Width, $Height)
+        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+        try {
+            for ($row = 0; $row * 80 -lt $Height; $row++) {
+                for ($column = 0; $column * 80 -lt $Width; $column++) {
+                    $color = [System.Drawing.Color]::FromArgb(35 + ($column * 37) % 180, 35 + ($row * 43) % 180, 40 + (($row + $column) * 59) % 150)
+                    $brush = [System.Drawing.SolidBrush]::new($color)
+                    try { $graphics.FillRectangle($brush, $column * 80, $row * 80, 80, 80) } finally { $brush.Dispose() }
+                }
+            }
+            $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        } finally { $graphics.Dispose(); $bitmap.Dispose() }
+    }
+    function Move-ComparisonPointer([string]$Pane) {
+        $bounds = (Wait-Control "$Pane image preview").Current.BoundingRectangle
+        Focus-Fixture
+        $horizontal = [int]($bounds.Left + $bounds.Width * 0.43)
+        $vertical = [int]($bounds.Top + $bounds.Height * 0.41)
+        if (-not [RegressifySmokePointer]::SetPhysicalCursorPos($horizontal, $vertical)) { throw 'Cannot position the comparison pointer.' }
+        Wait-Control "$Pane image preview" | Out-Null
+        return @(($horizontal - $bounds.Left), ($vertical - $bounds.Top))
+    }
+    function Test-GuideLine($Bitmap, $Bounds, [double]$Horizontal, [double]$Vertical, [bool]$Across) {
+        for ($shift = -3; $shift -le 3; $shift++) {
+            $white = 0
+            $samples = 0
+            $length = if ($Across) { $Bounds.Width } else { $Bounds.Height }
+            for ($distance = 24; $distance -lt $length - 24; $distance += 23) {
+                $column = [int]($Bounds.Left + $(if ($Across) { $distance } else { $Horizontal + $shift }))
+                $row = [int]($Bounds.Top + $(if ($Across) { $Vertical + $shift } else { $distance }))
+                $color = $Bitmap.GetPixel($column, $row)
+                if ($color.R -ge 235 -and $color.G -ge 235 -and $color.B -ge 235) { $white++ }
+                $samples++
+            }
+            if ($samples -gt 0 -and $white / $samples -ge 0.8) { return $true }
+        }
+        return $false
+    }
+    function Assert-ComparisonPixels([string]$Name, [string]$Pane = 'Reference', [switch]$HideGuides) {
+        $pointer = Move-ComparisonPointer $Pane
+        $native = [RegressifySmokeNative+Rect]::new()
+        if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read comparison window bounds.' }
+        $bounds = @('Reference', 'Current') | ForEach-Object {
+            $preview = (Wait-Control "$_ image preview").Current.BoundingRectangle
+            [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
+        }
+        if ($HideGuides) {
+            $header = (Wait-Control 'Results').Current.BoundingRectangle
+            [RegressifySmokePointer]::SetPhysicalCursorPos([int]($header.Left + $header.Width / 2), [int]($header.Top + $header.Height / 2)) | Out-Null
+            Wait-Control 'Results' | Out-Null
+        }
+        Capture-Window $Name
+        $bitmap = [System.Drawing.Bitmap]::FromFile((Join-Path $artifacts "$Name.png"))
+        try {
+            foreach ($preview in $bounds) {
+                foreach ($across in @($false, $true)) {
+                    $visible = Test-GuideLine $bitmap $preview $pointer[0] $pointer[1] $across
+                    if ($visible -eq $HideGuides.IsPresent) { throw "Pointer guide visibility is incorrect in '$Name' (horizontal: $across)." }
+                }
+            }
+            $matches = 0
+            $signature = @()
+            foreach ($vertical in @(46, 146, 246)) {
+                foreach ($horizontal in @(55, 155, 255)) {
+                    $reference = $bitmap.GetPixel([int]($bounds[0].Left + $horizontal), [int]($bounds[0].Top + $vertical))
+                    $current = $bitmap.GetPixel([int]($bounds[1].Left + $horizontal), [int]($bounds[1].Top + $vertical))
+                    if ([Math]::Abs([int]$reference.R - $current.R) -le 8 -and [Math]::Abs([int]$reference.G - $current.G) -le 8 -and [Math]::Abs([int]$reference.B - $current.B) -le 8) { $matches++ }
+                    $signature += $reference.ToArgb()
+                }
+            }
+            if ($matches -lt 7) { throw "Comparison offsets differ in '$Name' ($matches/9 matching pixel samples)." }
+            $script:comparisonSignature = $signature -join ','
+        } finally { $bitmap.Dispose() }
+    }
+    function Send-ComparisonWheel([string]$Pane, [bool]$Horizontal) {
+        Move-ComparisonPointer $Pane | Out-Null
+        $flags = if ($Horizontal) { 0x1000 } else { 0x0800 }
+        $amount = if ($Horizontal) { 120 } else { -120 }
+        $data = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$amount), 0)
+        [RegressifySmokeNative]::mouse_event($flags, 0, 0, $data, [UIntPtr]::Zero)
+        Wait-Control "$Pane image preview" | Out-Null
+    }
+    Write-ComparisonImage (Join-Path $output 'bitmaps_reference/checkout.png') 1600 2200
+    Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout.png') 1280 1800
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Results'
+    Wait-Control 'Current 1280 x 1800' | Out-Null
+    Invoke-Control 'Side by side'
+    Wait-Control 'Reference 1600 x 2200' | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            Invoke-Control 'Next capture'
+            Wait-Control 'Missing selector #account' | Out-Null
+            Invoke-Control 'Previous capture'
+            Wait-Control 'Reference 1600 x 2200' | Out-Null
+            Wait-Control 'Current 1280 x 1800' | Out-Null
+            Invoke-Control 'Actual size (100%)'
+            $name = 'comparison-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]
+            Assert-ComparisonPixels "$name-initial"
+            foreach ($pane in @('Reference', 'Current')) {
+                foreach ($horizontal in @($false, $true)) {
+                    $before = $script:comparisonSignature
+                    Send-ComparisonWheel $pane $horizontal
+                    Assert-ComparisonPixels ("$name-" + $pane.ToLowerInvariant() + $(if ($horizontal) { '-horizontal' } else { '-vertical' })) $pane
+                    if ($before -eq $script:comparisonSignature) { throw "The $pane wheel did not move comparison pixels (horizontal: $horizontal)." }
+                }
+            }
+            Invoke-Control 'Fit width'
+            Assert-ComparisonPixels "$name-fit" 'Current'
+            Assert-ComparisonPixels "$name-no-guides" -HideGuides
+        }
+    }
+    Invoke-Control 'account.tests.json'
+    Wait-Control 'No captures for this suite' | Out-Null
+    if ($null -ne (Find-Control 'Current image preview') -or $null -ne (Find-Control 'Mismatch Checkout')) { throw 'An empty suite displayed another suite''s captures.' }
+    Capture-Window 'comparison-empty-suite'
+    Invoke-Control 'smoke.tests.json'
+    Wait-Control 'Current 1280 x 1800' | Out-Null
+    Write-Output 'Suite-scoped Results, two-axis linked scrolling, and painted crosshairs passed pixel checks from both panes in light/dark desktop and compact windows.'
+}
+
 function Test-ArtifactFlows {
     Invoke-Control 'account.tests.json'
     Invoke-Control 'Profile'
@@ -911,6 +1037,10 @@ try {
         Test-GitFlows
         return
     }
+    if ($ComparisonFlows) {
+        Test-ComparisonFlows
+        return
+    }
     if ($TitlebarFlows) {
         Test-TitlebarFlows
         return
@@ -1035,7 +1165,6 @@ try {
     Select-Theme 'Dark'
     Capture-Window 'side-by-side-dark'
     Select-Theme 'Light'
-    Invoke-Control 'Expand comparison'
     Invoke-Control 'Hide navigator'
     Wait-Control 'Preferences saved' | Out-Null
     Capture-Window 'comparison-focus'
@@ -1046,7 +1175,6 @@ try {
     Invoke-Control 'Fit width'
     Invoke-Control 'Show navigator'
     Wait-Control 'Preferences saved' | Out-Null
-    Invoke-Control 'Restore capture list'
     Invoke-Control 'Editor'
     Invoke-Control 'Fields'
     Wait-Control 'Checkout' | Out-Null

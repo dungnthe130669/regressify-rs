@@ -289,6 +289,10 @@ or action is edited. The lower pane lists only the open suite's scenarios, with
 labels and URLs; actions are edited in the scenario's action sequence rather
 than nested in the sidebar. Both panes scroll independently.
 
+In Results, the lower pane becomes Captures for the active suite. Selecting a
+suite there changes the report being reviewed without opening another editor
+document or disturbing an unsaved draft.
+
 Scenario checkboxes select execution scope independently of the scenario being
 edited. A suite checkbox shows a mixed state for partial selection; clicking it
 selects the whole suite, then clears it on the next click. The sidebar's play
@@ -298,8 +302,9 @@ scenario disables suite commands rather than reverting to an all-scenario run.
 
 Overflowing areas show persistent, draggable scrollbars in both themes, including
 navigation, settings, action sequences, activity, source/log editors, and result
-lists. Image previews have independent horizontal and vertical scrollbars when
-the selected zoom exceeds the available space.
+lists. Image previews have horizontal and vertical scrollbars when the selected
+zoom exceeds the available space. Side-by-side previews share both scroll offsets;
+scrolling or dragging a thumb in either pane moves both images together.
 
 Suite search matches paths and scenario labels, IDs, or URLs across the workspace,
 but displays matching suites only. Open a suite to see its scenarios below. The
@@ -627,6 +632,11 @@ tabs; live running/finished counts remain visible in the workspace navigator.
 
 ## Reviewing Results
 
+Results uses one left navigator with Test suites above Captures and one detail
+area on the right. Only the active suite's captures are shown. A suite without a
+report shows an empty capture list, never another suite's results. The report
+title is read-only; there is no separate report dropdown.
+
 Approve This Run promotes successful captures from the report being viewed,
 including historical runs, after an action-named confirmation. Its output folder,
 run ID, and suite output identity are pinned; if the suite output has changed,
@@ -644,7 +654,7 @@ unambiguously. Unresolved generated IDs fall back to the recorded page URL or an
 unnamed-scenario label. Raw capture IDs remain searchable and available in
 tooltips. Generated desktop run UUIDs are presented as report timestamps;
 timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
-unchanged, and the original run ID is available in the report-picker tooltip.
+unchanged.
 
 The comparison heading shows capture context and the allowed mismatch threshold
 beside the measured difference. Copy capture details includes the human label,
@@ -654,20 +664,29 @@ sidebar; it is unavailable when that association cannot be resolved safely.
 
 Results refreshes on opening and after commands finish using current output
 options. It loads each suite's `bitmaps_test/<run>/report.json`, newest first,
-retaining a selected report/capture on refresh when it still exists. Filter
+and shows the latest report for the active suite. Open Report pins its requested
+runs, including on refresh and while switching between their suites. Selecting a
+suite outside that request returns to latest-report browsing. A selected capture is
+retained when its report is unchanged. Filter
 All/Failed/Passed and search labels or errors. The preview follows the filtered
 selection and clears when nothing matches. Capture lists use 50-item pages.
 Previous/next controls traverse matching captures; double arrows jump directly
 to failures. Navigation automatically reveals the selected capture's page.
-Expand comparison hides the capture list without resetting selection, filters,
-images, or zoom. Combine it with the navigator toggle for a full-width preview.
+The navigator toggle hides both left panes for a full-width preview without
+resetting selection, filters, images, or zoom.
 
 Pass, mismatch, engine/capture error, and unknown status are distinct. Unknown
 statuses never count as passes. Malformed reports warn without hiding valid
 reports. Discovery loads at most 1,000 reports, limited to 16 MiB each.
 
 Reference, Current, Diff, and Side by side display background-loaded PNGs.
-Fit width, zoom, actual-size reset (100%), and scrollbars support tall pages. Image dimensions are bounded
+Fit width, zoom, actual-size reset (100%), and scrollbars support tall pages.
+Side-by-side images use a common canvas and scale, including when their dimensions
+differ. Both horizontal and vertical scrolling stay synchronized from either pane.
+Moving the pointer over an image draws horizontal and vertical guides in both
+panes at the same image coordinate. Guides disappear when the pointer leaves the
+images, and selecting another capture resets the shared scroll position.
+Image dimensions are bounded
 with the CLI's PNG helper before decoding. Missing images are recoverable errors.
 Paths resolve relative to `html_report` and must remain inside the output root.
 

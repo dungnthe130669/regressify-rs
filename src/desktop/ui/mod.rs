@@ -140,6 +140,7 @@ pub struct Workbench {
     modal: Entity<files::ModalState>,
     runs: Entity<runs::RunPanel>,
     results: Entity<reports::ResultsPanel>,
+    captures: Entity<reports::CaptureList>,
     main_tab: usize,
     overview: bool,
     scenario_search: Entity<InputState>,
@@ -268,6 +269,8 @@ impl Workbench {
                 }
             });
         let results = cx.new(|cx| reports::ResultsPanel::new(window, cx));
+        let captures = cx.new(|cx| reports::CaptureList::new(results.clone(), cx));
+        let results_observer = cx.observe(&results, |_, _, cx| cx.notify());
         let results_subscription =
             cx.subscribe_in(&results, window, |this, _, event, window, cx| match event {
                 reports::ResultEvent::OpenSuite(entry) => {
@@ -299,6 +302,7 @@ impl Workbench {
                 source_observer,
                 scenario_search_subscription,
                 results_subscription,
+                results_observer,
                 appearance_subscription,
                 git_subscription,
             ],
@@ -325,6 +329,7 @@ impl Workbench {
             modal: cx.new(|_| files::ModalState::default()),
             runs,
             results,
+            captures,
             main_tab: 0,
             overview: true,
             scenario_search,
@@ -581,9 +586,21 @@ impl Workbench {
 
     fn refresh_results(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let suites = self.session.suites.clone();
+        let active = self
+            .session
+            .open
+            .as_ref()
+            .filter(|open| open.entry.kind == DocumentKind::Suite)
+            .map(|open| open.entry.clone())
+            .or_else(|| suites.first().map(|suite| suite.entry.clone()));
         match self.runs.read(cx).output_root() {
             Ok(root) => self.results.update(cx, |panel, cx| {
                 panel.set_suites(suites);
+                if panel.active_suite().is_none()
+                    && let Some(entry) = active
+                {
+                    panel.select_suite(&entry, window, cx);
+                }
                 panel.refresh(root, window, cx);
             }),
             Err(error) => {
@@ -2381,6 +2398,13 @@ impl Workbench {
         self.main_tab = index;
         window.focus(&self.focus, cx);
         if changed && index == 2 {
+            if let Some(open) = &self.session.open
+                && open.entry.kind == DocumentKind::Suite
+            {
+                self.results.update(cx, |panel, cx| {
+                    panel.select_suite(&open.entry, window, cx);
+                });
+            }
             self.refresh_results(window, cx);
         }
         cx.notify();
