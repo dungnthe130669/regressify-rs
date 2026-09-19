@@ -402,22 +402,28 @@ impl ResultsPanel {
     }
 
     fn select_capture(&mut self, capture: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loading {
+        if self.loading
+            || (self.capture == Some(capture) && (self.image_loading || !self.previews.is_empty()))
+        {
             return;
         }
-        self.comparison_scroll.set_offset(point(px(0.), px(0.)));
-        self.pointer_guides = Rc::default();
-        self.previews.clear();
-        self.image_loading = false;
-        let Some(report) = self.selected_report().cloned() else {
+        let Some(report) = self.selected_report() else {
             return;
         };
-        let Some(test) = report.report.tests.get(capture).cloned() else {
+        let Some(test) = report.report.tests.get(capture) else {
             return;
         };
         let Some(root) = self.root.clone() else {
             return;
         };
+        let artifacts = report.artifacts();
+        let images = [
+            ("Reference", test.pair.reference.clone()),
+            ("Current", test.pair.test.clone()),
+            ("Diff", test.pair.diff_image.clone()),
+        ];
+        self.comparison_scroll.set_offset(point(px(0.), px(0.)));
+        self.pointer_guides = Rc::default();
         self.page = self
             .filtered(cx)
             .iter()
@@ -430,28 +436,25 @@ impl ResultsPanel {
         self.generation += 1;
         let generation = self.generation;
         let task = cx.background_executor().spawn(async move {
-            [
-                ("Reference", test.pair.reference),
-                ("Current", test.pair.test),
-                ("Diff", test.pair.diff_image),
-            ]
-            .into_iter()
-            .map(|(label, path)| {
-                let result = (|| -> Result<LoadedImage> {
-                    let path = path.ok_or_else(|| anyhow!("No {} image", label.to_lowercase()))?;
-                    let image = report.image(&root, &path)?;
-                    let bytes = std::fs::read(&image.path)?;
-                    Ok(LoadedImage {
-                        image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
-                        width: image.width,
-                        height: image.height,
-                        path: image.path,
-                    })
-                })()
-                .map_err(|error| format!("{error:#}"));
-                Preview { label, result }
-            })
-            .collect::<Vec<_>>()
+            images
+                .into_iter()
+                .map(|(label, path)| {
+                    let result = (|| -> Result<LoadedImage> {
+                        let path =
+                            path.ok_or_else(|| anyhow!("No {} image", label.to_lowercase()))?;
+                        let image = artifacts.image(&root, &path)?;
+                        let bytes = std::fs::read(&image.path)?;
+                        Ok(LoadedImage {
+                            image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
+                            width: image.width,
+                            height: image.height,
+                            path: image.path,
+                        })
+                    })()
+                    .map_err(|error| format!("{error:#}"));
+                    Preview { label, result }
+                })
+                .collect::<Vec<_>>()
         });
         cx.spawn_in(window, async move |view, cx| {
             let previews = task.await;
@@ -1376,6 +1379,20 @@ mod pointer_tests {
                     Some(mouse - source.origin + target.origin)
                 );
             }
+            let image = results.read(cx).previews[0]
+                .result
+                .as_ref()
+                .unwrap()
+                .image
+                .clone();
+            let offset = results.read(cx).comparison_scroll.offset();
+            window.click(("capture", 0_usize), cx);
+            assert!(std::sync::Arc::ptr_eq(
+                &image,
+                &results.read(cx).previews[0].result.as_ref().unwrap().image
+            ));
+            assert_eq!(results.read(cx).comparison_scroll.offset(), offset);
+            assert!(!results.read(cx).image_loading);
             window.hover("actual-size", cx);
             window.render_frame(cx);
             let guides = results.read(cx).pointer_guides.clone();

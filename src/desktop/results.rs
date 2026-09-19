@@ -350,6 +350,30 @@ impl ReportEntry {
     }
 
     pub fn artifact(&self, output_root: &Path, relative: &str) -> Result<PathBuf> {
+        self.artifacts().artifact(output_root, relative)
+    }
+
+    pub fn image(&self, output_root: &Path, relative: &str) -> Result<ImageInfo> {
+        self.artifacts().image(output_root, relative)
+    }
+
+    pub fn html_report(&self, output_root: &Path) -> Result<PathBuf> {
+        self.artifact(output_root, "index.html")
+    }
+
+    pub(crate) fn artifacts(&self) -> ReportArtifacts {
+        ReportArtifacts {
+            suite_directory: self.suite_directory.clone(),
+        }
+    }
+}
+
+pub(crate) struct ReportArtifacts {
+    suite_directory: PathBuf,
+}
+
+impl ReportArtifacts {
+    fn artifact(&self, output_root: &Path, relative: &str) -> Result<PathBuf> {
         let relative = relative.replace('\\', "/");
         ensure!(
             !relative.is_empty() && !relative.contains(':') && !relative.starts_with('/'),
@@ -369,7 +393,7 @@ impl ReportEntry {
         Ok(path)
     }
 
-    pub fn image(&self, output_root: &Path, relative: &str) -> Result<ImageInfo> {
+    pub(crate) fn image(&self, output_root: &Path, relative: &str) -> Result<ImageInfo> {
         let path = self.artifact(output_root, relative)?;
         ensure!(
             path.extension()
@@ -386,10 +410,6 @@ impl ReportEntry {
             width,
             height,
         })
-    }
-
-    pub fn html_report(&self, output_root: &Path) -> Result<PathBuf> {
-        self.artifact(output_root, "index.html")
     }
 }
 
