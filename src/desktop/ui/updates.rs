@@ -40,6 +40,7 @@ impl Workbench {
         Button::new("software-updates")
             .ghost()
             .xsmall()
+            .when(available, |button| button.primary())
             .icon(if available {
                 gpui_kit::assets::IconName::Download
             } else {
@@ -49,6 +50,84 @@ impl Workbench {
             .tooltip(label)
             .disabled(self.busy)
             .on_click(cx.listener(|this, _, window, cx| this.open_updates(window, cx)))
+    }
+
+    pub(super) fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let update = self.updates.read(cx);
+        let version = update
+            .prepared
+            .as_ref()
+            .map(PreparedUpdate::version)
+            .or_else(|| update.available.as_ref().map(|release| release.version))?;
+        let prepared = update.prepared.is_some();
+        let title = if prepared {
+            format!("Regressify {version} is ready to install")
+        } else {
+            format!("New version available: Regressify {version}")
+        };
+        let detail = if update.working {
+            update.message.clone()
+        } else {
+            format!("Installed version: {CURRENT_VERSION}")
+        };
+        Some(
+            div()
+                .id("update-banner")
+                .role(Role::Status)
+                .aria_label(format!("{title}. {detail}"))
+                .test_support()
+                .flex()
+                .items_center()
+                .gap_3()
+                .w_full()
+                .min_h(px(64.))
+                .flex_shrink_0()
+                .px_4()
+                .py_3()
+                .bg(cx.theme().primary)
+                .text_color(cx.theme().primary_foreground)
+                .child(
+                    Icon::new(gpui_kit::assets::IconName::Download)
+                        .size_5()
+                        .flex_shrink_0(),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap_1()
+                        .child(
+                            div()
+                                .id("update-banner-title")
+                                .test_support()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child(title),
+                        )
+                        .child(div().text_xs().child(detail)),
+                )
+                .child(
+                    Button::new("update-banner-action")
+                        .small()
+                        .flex_shrink_0()
+                        .icon(if prepared {
+                            gpui_kit::assets::IconName::RotateCw
+                        } else {
+                            gpui_kit::assets::IconName::Download
+                        })
+                        .label(if update.working {
+                            "View progress"
+                        } else if prepared {
+                            "Install update"
+                        } else {
+                            "Update now"
+                        })
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| this.open_updates(window, cx))),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn open_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -268,5 +347,139 @@ impl Workbench {
             }
         }
         cx.quit();
+    }
+}
+
+#[cfg(all(test, feature = "gui-tests"))]
+mod tests {
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, TestAppContext, px, size};
+
+    use super::UpdateFeed;
+    use crate::desktop::ui::{
+        design,
+        tests::{editor, editor_at_size, settle_dialog},
+    };
+    use crate::desktop::updates::Release;
+
+    fn available_release() -> Release {
+        UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(
+                &serde_json::json!({
+                    "version": "9999.9999.9999.9999",
+                    "installer": "https://drive.tuyen.blog/downloads/regressify/Regressify-Desktop-Setup-9999.9999.9999.9999-x64.exe",
+                    "sha256": "a".repeat(64),
+                    "size": 1,
+                })
+                .to_string(),
+            )
+            .unwrap()
+    }
+
+    #[gpui_kit::test]
+    async fn update_banner_opens_the_dialog_and_preserves_the_draft(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.updates.update(cx, |state, cx| {
+                    state.available = Some(available_release());
+                    cx.notify();
+                });
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("duplicate-item", cx);
+            window.click("update-banner-action", cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(window.find("update-download").visible());
+            assert!(view.read(cx).unsaved());
+            assert!(!view.read(cx).updates.read(cx).working);
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+            window.click("update-close", cx);
+            window.render_frame(cx);
+            assert!(window.find("update-banner").visible());
+            view.update(cx, |this, cx| {
+                this.updates.update(cx, |state, cx| {
+                    state.working = true;
+                    state.message = "Downloading and verifying the update...".into();
+                    cx.notify();
+                });
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.find("update-banner").visible());
+            window.click("update-banner-action", cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(window.find("update-status").visible());
+            window.click("update-download", cx);
+            assert!(view.read(cx).updates.read(cx).working);
+            assert!(view.read(cx).unsaved());
+            assert!(!view.read(cx).updates.read(cx).install_on_close);
+            window.click("update-close", cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn update_banner_stays_visible_across_views_themes_and_sizes(cx: &mut TestAppContext) {
+        for (width, height) in [(1000., 640.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("update-banner").is_none());
+                view.update(cx, |this, cx| {
+                    this.updates.update(cx, |state, cx| {
+                        state.available = Some(available_release());
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                for dark in [false, true] {
+                    design::apply_theme(dark, Some(window), cx);
+                    for main_tab in 0..4 {
+                        view.update(cx, |this, cx| {
+                            this.main_tab = main_tab;
+                            cx.notify();
+                        });
+                        window.render_frame(cx);
+                        assert!(window.find("update-banner").visible());
+                        assert!(window.find("update-banner-action").visible());
+                        let banner = window.find("update-banner").bounds();
+                        let title = window.find("update-banner-title").bounds();
+                        let action = window.find("update-banner-action").bounds();
+                        assert_eq!(banner.size.width, px(width));
+                        assert!(banner.origin.y >= px(38.));
+                        assert!(banner.size.height >= px(64.));
+                        assert!(banner.size.height <= px(100.));
+                        assert!(title.origin.x + title.size.width <= action.origin.x);
+                        assert!(action.origin.x + action.size.width <= px(width));
+                        assert!(action.origin.y >= banner.origin.y);
+                        assert!(
+                            action.origin.y + action.size.height
+                                <= banner.origin.y + banner.size.height
+                        );
+                    }
+                }
+                view.update(cx, |this, cx| {
+                    this.updates.update(cx, |state, cx| {
+                        state.available = None;
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(window.try_find("update-banner").is_none());
+            })
+            .unwrap();
+        }
     }
 }

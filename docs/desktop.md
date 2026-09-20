@@ -38,9 +38,16 @@ in `%LOCALAPPDATA%\Programs\Regressify Desktop`, creates a Start-menu shortcut,
 and registers an uninstaller. Workspaces and desktop preferences are preserved
 by updates and uninstall. The release executable links the MSVC runtime statically.
 
-Official Windows builds check for updates once at startup. The header's Software
-updates button shows the installed version and supports manual checks. Select
-Download update, then Install and restart. Downloads must match the manifest's
+Official Windows builds check for updates once at startup. When a newer version
+is available, a high-contrast banner stays visible below the title bar in every
+view, showing the new and installed versions with an Update now button. The
+header's Software updates button is also highlighted. Closing the update dialog
+does not dismiss the banner; it shows download activity and changes to Install
+update when the download is verified and ready.
+
+Select Update now to open the update dialog, then Download update and Install
+and restart. The header's Software updates button also supports manual checks.
+Downloads must match the manifest's
 size and SHA-256, and are checked again before execution. Only newer numeric
 versions and this app's immutable HTTPS installer URLs are accepted. A missing
 manifest (404) means no release is published; network failures remain visible in

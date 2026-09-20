@@ -2528,6 +2528,7 @@ impl Render for Workbench {
             }))
             .font_family(cx.theme().font_family.clone())
             .child(self.render_header(cx))
+            .children(self.render_update_banner(cx))
             .child(div().flex_1().min_h_0().child(layout))
             .child(
                 div()

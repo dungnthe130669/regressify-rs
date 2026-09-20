@@ -2717,7 +2717,7 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
     .unwrap();
 }
 
-async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+pub(super) async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));
     cx.update_window(handle.into(), |_, window, cx| window.render_frame(cx))
