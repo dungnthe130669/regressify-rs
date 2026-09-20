@@ -54,9 +54,10 @@ manifest (404) means no release is published; network failures remain visible in
 the dialog and do not interrupt editing.
 
 Installation requires active runs to finish and uses the usual Save/Discard/Cancel
-guard for a draft. The installer never forcibly closes other windows or workers;
-close them normally when prompted. New app launches are blocked during setup.
-After installation the initiating workspace reopens. Older installers cannot
+guard for a draft. No open workspace or document is required. The installer never
+forcibly closes other windows or workers; close them normally when prompted. New
+app launches are blocked during setup. After installation the initiating workspace
+reopens, if one was open. Older installers cannot
 downgrade an installed version. Unconfigured development builds and non-Windows
 builds do not contact the update service.
 

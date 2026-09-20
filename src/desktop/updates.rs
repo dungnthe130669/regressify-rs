@@ -220,6 +220,16 @@ pub struct PreparedUpdate {
 }
 
 impl PreparedUpdate {
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub(crate) fn missing_installer_for_test(release: Release) -> Result<Self> {
+        let directory = tempfile::tempdir()?;
+        Ok(Self {
+            installer: directory.path().join(installer_name(release.version)),
+            directory: Some(directory),
+            release,
+        })
+    }
+
     pub fn download(release: Release, cache: &Path) -> Result<Self> {
         fs::create_dir_all(cache).context("Cannot create the update cache")?;
         let directory = tempfile::Builder::new()

@@ -294,7 +294,9 @@ impl Workbench {
         if self.busy || self.runs.read(cx).running() || self.updates.read(cx).prepared.is_none() {
             return;
         }
-        if let Err(error) = self.flush_drafts(window, cx) {
+        if self.session.open.is_some()
+            && let Err(error) = self.flush_drafts(window, cx)
+        {
             self.status = format!("Cannot install update: {error:#}");
             self.updates.update(cx, |state, cx| {
                 state.message = format!("Cannot install update: {error:#}");
@@ -352,10 +354,12 @@ impl Workbench {
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
-    use gpui_kit::test::TestWindowExt;
+    use std::time::Duration;
+
+    use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext, px, size};
 
-    use super::UpdateFeed;
+    use super::{PreparedUpdate, UpdateFeed};
     use crate::desktop::ui::{
         design,
         tests::{editor, editor_at_size, settle_dialog},
@@ -375,6 +379,93 @@ mod tests {
                 .to_string(),
             )
             .unwrap()
+    }
+
+    #[gpui_kit::test]
+    async fn update_install_does_not_require_an_open_document_or_workspace(
+        cx: &mut TestAppContext,
+    ) {
+        for workspace_open in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = editor(cx, directory.path());
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    if workspace_open {
+                        this.session.open = None;
+                        this.sync_editor(window, cx);
+                    } else {
+                        this.close_workspace(window, cx);
+                    }
+                    this.updates.update(cx, |state, cx| {
+                        state.prepared = Some(
+                            PreparedUpdate::missing_installer_for_test(available_release())
+                                .unwrap(),
+                        );
+                        cx.notify();
+                    });
+                    this.open_updates(window, cx);
+                });
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+                !view.read(cx).preferences_saving
+            })
+            .await;
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert_eq!(view.read(cx).session.workspace.is_some(), workspace_open);
+                assert!(view.read(cx).session.open.is_none());
+                assert!(!view.read(cx).unsaved());
+                assert!(window.find("update-install").visible());
+                window.click("update-install", cx);
+                let state = view.read(cx).updates.read(cx);
+                assert!(
+                    state.message.starts_with("Cannot start installer:"),
+                    "{}",
+                    state.message
+                );
+                assert!(state.prepared.is_some());
+                assert!(!state.install_on_close);
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn update_install_flushes_pending_edits_and_preserves_the_cancel_guard(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.updates.update(cx, |state, cx| {
+                    state.prepared = Some(
+                        PreparedUpdate::missing_installer_for_test(available_release()).unwrap(),
+                    );
+                    cx.notify();
+                });
+                this.tab = 1;
+                let draft = format!("{}\n# Pending update draft\n", this.source.read(cx).value());
+                this.source
+                    .update(cx, |state, cx| state.set_value(draft.clone(), window, cx));
+                this.request_update_install(window, cx);
+                assert_eq!(this.session.open.as_ref().unwrap().document.source(), draft);
+            });
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(window.find("guard-save").visible());
+            assert!(window.find("guard-discard").visible());
+            window.click("guard-cancel", cx);
+            assert!(view.read(cx).unsaved());
+            let state = view.read(cx).updates.read(cx);
+            assert!(state.prepared.is_some());
+            assert!(!state.install_on_close);
+            assert!(!state.message.contains("Cannot start installer:"));
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
