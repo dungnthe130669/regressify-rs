@@ -30,7 +30,7 @@ fn deploy_missing_token_fails_before_snapshot_modifies_output() {
                 target: DeployTarget {
                     id: "test".into(),
                     name: "Test".into(),
-                    token_env: format!("REGRESSIFY_MISSING_{}", uuid::Uuid::new_v4().simple()),
+                    credential_id: None,
                     environment: String::new(),
                 },
                 suite_ids: vec!["shop".into()],
@@ -42,11 +42,94 @@ fn deploy_missing_token_fails_before_snapshot_modifies_output() {
     };
     let result = invoke(executable, &request);
     assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("is not set"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("No saved deployment token"));
     assert_eq!(
         std::fs::read_to_string(output.join("index.html")).unwrap(),
         "untouched summary"
     );
+}
+
+#[cfg(windows)]
+#[test]
+fn deploy_worker_reads_machine_local_credentials_without_exposing_tokens() {
+    use regressify::desktop::deployment::{
+        DeployTarget, DeployTargets, DeploymentJob, credentials::DeploymentCredential,
+    };
+    use windows_sys::Win32::Security::Credentials::{
+        CRED_PERSIST_LOCAL_MACHINE, CRED_TYPE_GENERIC, CREDENTIALW, CredFree, CredReadW,
+    };
+
+    struct Cleanup(DeploymentCredential);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            self.0.delete().expect("Remove synthetic test credential");
+        }
+    }
+
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let root = tempfile::tempdir().unwrap();
+    let credential_id = uuid::Uuid::new_v4().to_string();
+    let credential = Cleanup(DeploymentCredential::new(root.path(), &credential_id).unwrap());
+    let token = format!("synthetic-invalid-token-{}", uuid::Uuid::new_v4());
+    credential.0.write(&token).unwrap();
+    assert_eq!(credential.0.read().unwrap().as_str(), token);
+
+    let settings_path = DeployTargets::path(root.path()).unwrap();
+    let workspace_key = settings_path.file_stem().unwrap().to_str().unwrap();
+    let target_name = format!("{workspace_key}:{credential_id}.Regressify Desktop Deployment")
+        .encode_utf16()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let mut stored: *mut CREDENTIALW = std::ptr::null_mut();
+    assert_ne!(
+        unsafe { CredReadW(target_name.as_ptr(), CRED_TYPE_GENERIC, 0, &mut stored) },
+        0
+    );
+    let persistence = unsafe { (*stored).Persist };
+    unsafe { CredFree(stored.cast()) };
+    assert_eq!(persistence, CRED_PERSIST_LOCAL_MACHINE);
+
+    let output = root.path().join(".regressify");
+    std::fs::create_dir_all(&output).unwrap();
+    std::fs::write(output.join("index.html"), "untouched summary").unwrap();
+    let events = root.path().join("events.jsonl");
+    std::fs::write(&events, []).unwrap();
+    let request = RunRequest {
+        root: root.path().into(),
+        command: RunCommand::Deploy,
+        options: RunOptions {
+            suites: vec!["shop".into()],
+            deployment: Some(DeploymentJob {
+                target: DeployTarget {
+                    id: "test".into(),
+                    name: "Test".into(),
+                    credential_id: Some(credential_id),
+                    environment: String::new(),
+                },
+                suite_ids: vec!["shop".into()],
+                catalog_ids: vec!["shop".into()],
+                partial_confirmed: false,
+            }),
+            ..Default::default()
+        },
+    };
+    assert!(!serde_json::to_string(&request).unwrap().contains(&token));
+    let result = invoke_with_events(executable, &request, Some(&events));
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("Invalid Azure deployment token format"),
+        "Unexpected worker error: {}",
+        String::from_utf8_lossy(&result.stderr).replace(&token, "[REDACTED]")
+    );
+    assert!(!String::from_utf8_lossy(&result.stderr).contains(&token));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains(&token));
+    assert!(!std::fs::read_to_string(events).unwrap().contains(&token));
+    assert_eq!(
+        std::fs::read_to_string(output.join("index.html")).unwrap(),
+        "untouched summary"
+    );
+    credential.0.delete().unwrap();
+    assert!(credential.0.read_optional().unwrap().is_none());
 }
 
 fn invoke_with_events(

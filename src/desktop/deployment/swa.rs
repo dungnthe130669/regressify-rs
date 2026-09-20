@@ -171,6 +171,10 @@ fn token_endpoint(token: &str) -> Result<(Url, u32)> {
     ))
 }
 
+pub fn validate_token(token: &str) -> Result<()> {
+    token_endpoint(token).map(|_| ())
+}
+
 impl SwaClient {
     pub fn new(token: &str) -> Result<Self> {
         let (endpoint, slice) = token_endpoint(token)?;
@@ -583,7 +587,7 @@ mod tests {
         let target = DeployTarget {
             id: "test".into(),
             name: "Test".into(),
-            token_env: "TEST_SWA_TOKEN".into(),
+            credential_id: None,
             environment: "preview".into(),
         };
         assert_eq!(
@@ -747,7 +751,7 @@ mod tests {
             let target = DeployTarget {
                 id: "qa".into(),
                 name: "QA".into(),
-                token_env: "QA_TOKEN".into(),
+                credential_id: None,
                 environment: String::new(),
             };
             let error = client

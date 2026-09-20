@@ -3,6 +3,13 @@ use crate::desktop::{
     deployment::{DeployTarget, DeployTargets, DeploymentJob},
     runner::RunCommand,
 };
+use zeroize::Zeroizing;
+
+enum TargetChange {
+    Save(DeployTarget, Zeroizing<String>),
+    Remove(String),
+    Select,
+}
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 pub(super) struct ChooseDeployTarget {
@@ -45,12 +52,22 @@ impl DeploymentPanel {
             saving: false,
             status: String::new(),
             name: cx.new(|cx| InputState::new(window, cx).placeholder("QA reports")),
-            token: cx.new(|cx| {
-                InputState::new(window, cx).placeholder("AZURE_STATIC_WEB_APPS_API_TOKEN")
-            }),
+            token: Self::token_input(false, window, cx),
             environment: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Production (default)")),
         }
+    }
+
+    fn token_input(saved: bool, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
+        cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder(if saved {
+                    "Saved securely (unchanged)"
+                } else {
+                    "Deployment token"
+                })
+        })
     }
 
     fn selected(&self) -> Option<&DeployTarget> {
@@ -62,7 +79,9 @@ impl DeploymentPanel {
 
     fn can_deploy(&self) -> bool {
         self.intent.is_some()
-            && self.selected().is_some()
+            && self
+                .selected()
+                .is_some_and(|target| target.credential_id.is_some())
             && !self.editing
             && !self.removing
             && !self.saving
@@ -172,6 +191,7 @@ impl Workbench {
                     state.removing = false;
                     state.saving = false;
                     state.status.clear();
+                    state.token = DeploymentPanel::token_input(false, window, cx);
                     cx.notify();
                 });
                 this.status = "Deployment targets ready".into();
@@ -213,20 +233,19 @@ impl Workbench {
                     .child(div().flex().justify_end().gap_2()
                         .child(Button::new("deploy-remove-cancel").label("Keep target").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = false; cx.notify(); }))))
-                        .child(Button::new("deploy-remove-confirm").danger().label("Remove target").disabled(saving)
+                        .child(Button::new("deploy-remove-confirm").danger().label("Remove target").accessibility_label("Confirm remove target").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
             } else if editing {
-                for (label, id, input) in [("Target name", "deploy-name", &state.name), ("Deployment token environment variable", "deploy-token-env", &state.token), ("Azure environment", "deploy-environment", &state.environment)] {
-                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)));
+                for (label, id, input) in [("Target name", "deploy-name", &state.name), ("Deployment token", "deploy-token", &state.token), ("Azure environment", "deploy-environment", &state.environment)] {
+                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
+                        .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
                 }
                 body = body.child(div().flex().justify_end().gap_2()
-                    .child(Button::new("deploy-target-cancel").label("Cancel edit").disabled(saving).on_click(window.listener_for(&view, |this, _, _, cx| {
-                        this.deployment.update(cx, |state, cx| { state.editing = false; state.status.clear(); cx.notify(); });
-                    })))
+                    .child(Button::new("deploy-target-cancel").label("Cancel edit").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx))))
                     .child(Button::new("deploy-target-save").primary().icon(gpui_kit::assets::IconName::Save).label("Save target").disabled(saving)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.save_deploy_target(window, cx)))));
             } else {
-                body = body.child(div().text_sm().child(selected.map(|target| format!("{} | Token: {}", if target.environment.is_empty() { "Production" } else { &target.environment }, target.token_env)).unwrap_or_default()));
+                body = body.child(div().text_sm().child(selected.map(|target| format!("{} | {}", if target.environment.is_empty() { "Production" } else { &target.environment }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()));
                 body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
                 body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
                     .children(state.intent.iter().flat_map(|intent| intent.suite_names.iter()).map(|name| div().truncate().child(name.clone()))));
@@ -242,10 +261,14 @@ impl Workbench {
                 }
                 body = body.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Publication: full latest reports for the selected suites."));
             }
-            if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).text_color(cx.theme().danger).child(state.status.clone())); }
+            if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             dialog.title("Deploy reports").keyboard(!saving).close_button(!saving).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
+                .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx)))
                 .footer(div().flex().justify_end().gap_2()
-                    .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(|_, window, cx| window.close_dialog(cx)))
+                    .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| {
+                        this.cancel_deploy_edit(window, cx);
+                        window.close_dialog(cx);
+                    })))
                     .child(Button::new("deploy-confirm").primary().icon(gpui_kit::assets::IconName::CloudUpload).label("Deploy")
                         .accessibility_label("Deploy selected reports")
                         .disabled(!state.can_deploy()).on_click(window.listener_for(&view, |this, _, window, cx| this.begin_deployment(window, cx)))))
@@ -275,6 +298,15 @@ impl Workbench {
         });
     }
 
+    fn cancel_deploy_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.deployment.update(cx, |state, cx| {
+            state.editing = false;
+            state.status.clear();
+            state.token = DeploymentPanel::token_input(false, window, cx);
+            cx.notify();
+        });
+    }
+
     fn edit_deploy_target(&mut self, existing: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.deployment.update(cx, |state, cx| {
             if state.saving {
@@ -294,16 +326,13 @@ impl Workbench {
                     cx,
                 )
             });
-            state.token.update(cx, |input, cx| {
-                input.set_value(
-                    target
-                        .as_ref()
-                        .map(|target| target.token_env.clone())
-                        .unwrap_or_default(),
-                    window,
-                    cx,
-                )
-            });
+            state.token = DeploymentPanel::token_input(
+                target
+                    .as_ref()
+                    .is_some_and(|target| target.credential_id.is_some()),
+                window,
+                cx,
+            );
             state.environment.update(cx, |input, cx| {
                 input.set_value(
                     target
@@ -329,7 +358,7 @@ impl Workbench {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: state.name.read(cx).value().trim().into(),
-            token_env: state.token.read(cx).value().trim().into(),
+            credential_id: None,
             environment: state.environment.read(cx).value().trim().into(),
         };
         if let Err(error) = target.validate() {
@@ -339,11 +368,8 @@ impl Workbench {
             });
             return;
         }
-        let mut settings = state.settings.clone();
-        settings.targets.retain(|previous| previous.id != target.id);
-        settings.selected = Some(target.id.clone());
-        settings.targets.push(target);
-        self.persist_deploy_targets(settings, None, window, cx);
+        let token = Zeroizing::new(state.token.read(cx).value().trim().to_owned());
+        self.persist_deploy_targets(TargetChange::Save(target, token), None, window, cx);
     }
 
     fn remove_deploy_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -354,30 +380,36 @@ impl Workbench {
         let Some(target) = state.selected().cloned() else {
             return;
         };
-        let mut settings = state.settings.clone();
-        settings.targets.retain(|item| item.id != target.id);
-        settings.selected = settings.targets.first().map(|target| target.id.clone());
-        self.persist_deploy_targets(settings, None, window, cx);
+        self.persist_deploy_targets(TargetChange::Remove(target.id), None, window, cx);
     }
 
     fn persist_deploy_targets(
         &mut self,
-        settings: DeployTargets,
+        change: TargetChange,
         pending: Option<runs::RunIntent>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(path) = self.deployment.read(cx).path.clone() else {
+        let state = self.deployment.read(cx);
+        let (Some(path), Some(root)) = (state.path.clone(), state.root.clone()) else {
             return;
         };
+        let mut settings = state.settings.clone();
         self.busy = true;
         self.sync_modal(cx);
         self.deployment.update(cx, |state, cx| {
             state.saving = true;
+            state.token = DeploymentPanel::token_input(false, window, cx);
             cx.notify();
         });
         let task = cx.background_executor().spawn(async move {
-            settings.save(&path)?;
+            match change {
+                TargetChange::Save(target, token) => {
+                    settings.save_target(&root, &path, target, &token)?
+                }
+                TargetChange::Remove(id) => settings.remove_target(&root, &path, &id)?,
+                TargetChange::Select => settings.save(&path)?,
+            }
             Ok::<_, anyhow::Error>(settings)
         });
         cx.spawn_in(window, async move |view, cx| {
@@ -424,7 +456,6 @@ impl Workbench {
         {
             return;
         }
-        let settings = state.settings.clone();
         let result = (|| -> Result<runs::RunIntent> {
             let mut intent = state
                 .intent
@@ -449,7 +480,7 @@ impl Workbench {
         })();
         match result {
             Ok(intent) => {
-                self.persist_deploy_targets(settings, Some(intent), window, cx);
+                self.persist_deploy_targets(TargetChange::Select, Some(intent), window, cx);
             }
             Err(error) => self.deployment.update(cx, |state, cx| {
                 state.status = format!("{error:#}");
@@ -467,10 +498,9 @@ mod tests {
     use std::time::Duration;
 
     #[gpui_kit::test]
-    async fn deployment_targets_can_be_added_edited_and_removed_without_secrets(
-        cx: &mut TestAppContext,
-    ) {
+    async fn deployment_targets_use_masked_input_and_secure_storage(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();
+        let token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
         let (handle, view) = super::super::tests::editor(cx, root.path());
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |this, cx| this.open_deployment(window, cx));
@@ -486,8 +516,10 @@ mod tests {
             window.render_frame(cx);
             window.click("deploy-name", cx);
             window.input("QA reports", cx);
-            window.click("deploy-token-env", cx);
-            window.input("QA_SWA_TOKEN", cx);
+            window.click("deploy-token", cx);
+            window.input(&token, cx);
+            window.render_frame(cx);
+            assert!(window.find("deploy-token").value().is_none());
             window.click("deploy-environment", cx);
             window.input("preview", cx);
             window.click("deploy-target-save", cx);
@@ -501,6 +533,15 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("deploy-target-edit", cx);
             window.render_frame(cx);
+            assert!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
             window.click("deploy-name", cx);
             window.press("ctrl-a", cx);
             window.input("QA preview", cx);
@@ -515,7 +556,16 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             let state = view.read(cx).deployment.read(cx);
             let settings = DeployTargets::load(state.path.as_ref().unwrap()).unwrap();
-            assert_eq!(settings.targets[0].token_env, "QA_SWA_TOKEN");
+            assert_eq!(
+                settings.targets[0].token(root.path()).unwrap().as_str(),
+                token
+            );
+            assert!(
+                !std::fs::read_to_string(state.path.as_ref().unwrap())
+                    .unwrap()
+                    .contains(&token)
+            );
+            assert!(state.token.read(cx).value().is_empty());
             window.click("deploy-target-remove", cx);
             window.render_frame(cx);
             assert_eq!(view.read(cx).deployment.read(cx).settings.targets.len(), 1);
@@ -545,6 +595,46 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    async fn deployment_token_drafts_are_cleared_on_cancel_close_and_escape(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        for dismissal in ["cancel", "close", "escape"] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| this.open_deployment(window, cx));
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("deploy-target-add").is_some()
+            })
+            .await;
+            super::super::tests::settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("deploy-target-add", cx);
+                window.render_frame(cx);
+                window.click("deploy-token", cx);
+                window.input("synthetic-unsaved-token", cx);
+                window.render_frame(cx);
+                assert!(window.find("deploy-token").value().is_none());
+                match dismissal {
+                    "cancel" => window.click("deploy-target-cancel", cx),
+                    "close" => window.click("deploy-close", cx),
+                    _ => window.press("escape", cx),
+                }
+                let state = view.read(cx).deployment.read(cx);
+                assert!(state.token.read(cx).value().is_empty());
+                assert!(state.settings.targets.is_empty());
+                assert!(!state.editing);
+                if dismissal == "cancel" {
+                    window.click("deploy-close", cx);
+                }
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
     async fn deploy_dialog_requires_selection_confirmation_and_preserves_unsaved_guard(
         cx: &mut TestAppContext,
     ) {
@@ -569,7 +659,7 @@ mod tests {
                         targets: vec![DeployTarget {
                             id: "qa".into(),
                             name: "QA".into(),
-                            token_env: "TEST_TOKEN".into(),
+                            credential_id: Some(uuid::Uuid::new_v4().to_string()),
                             environment: String::new(),
                         }],
                     };

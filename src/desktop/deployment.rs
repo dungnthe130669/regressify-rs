@@ -9,16 +9,45 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub mod credentials;
 pub mod swa;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeployTarget {
     pub id: String,
     pub name: String,
-    pub token_env: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_id: Option<String>,
     #[serde(default)]
     pub environment: String,
+}
+
+impl<'de> Deserialize<'de> for DeployTarget {
+    fn deserialize<Deserializer>(deserializer: Deserializer) -> Result<Self, Deserializer::Error>
+    where
+        Deserializer: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct Fields {
+            id: String,
+            name: String,
+            #[serde(default)]
+            credential_id: Option<String>,
+            #[serde(default)]
+            environment: String,
+            #[serde(default, rename = "tokenEnv")]
+            _legacy_token_env: Option<String>,
+        }
+        let fields = Fields::deserialize(deserializer)?;
+        Ok(Self {
+            id: fields.id,
+            name: fields.name,
+            credential_id: fields.credential_id,
+            environment: fields.environment,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
@@ -74,16 +103,10 @@ impl DeployTarget {
             "Target name must contain 1-100 characters"
         );
         ensure!(
-            !self.token_env.is_empty()
-                && self.token_env.len() <= 128
-                && self
-                    .token_env
-                    .bytes()
-                    .enumerate()
-                    .all(|(index, byte)| byte.is_ascii_alphabetic()
-                        || byte == b'_'
-                        || index > 0 && byte.is_ascii_digit()),
-            "Token environment variable must be a valid environment variable name"
+            self.credential_id
+                .as_ref()
+                .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok()),
+            "Invalid deployment credential ID"
         );
         ensure!(
             self.environment.is_empty()
@@ -97,17 +120,13 @@ impl DeployTarget {
         Ok(())
     }
 
-    pub fn token(&self) -> Result<String> {
+    pub fn token(&self, root: &Path) -> Result<zeroize::Zeroizing<String>> {
         self.validate()?;
-        std::env::var(&self.token_env)
-            .ok()
-            .filter(|token| !token.trim().is_empty())
-            .with_context(|| {
-                format!(
-                    "Deployment token environment variable '{}' is not set",
-                    self.token_env
-                )
-            })
+        let id = self
+            .credential_id
+            .as_deref()
+            .context("No saved deployment token. Edit the target and enter its deployment token")?;
+        credentials::DeploymentCredential::new(root, id)?.read()
     }
 }
 
@@ -126,12 +145,7 @@ impl DeployTargets {
     }
 
     pub fn path_in(root: &Path, preferences: &Path) -> Result<PathBuf> {
-        let root = root.canonicalize()?;
-        let mut identity = super::workspace::display_path(&root);
-        if cfg!(windows) {
-            identity.make_ascii_lowercase();
-        }
-        let key = format!("{:x}", Sha256::digest(identity.as_bytes()));
+        let key = workspace_key(root)?;
         Ok(preferences
             .parent()
             .context("Preferences directory unavailable")?
@@ -162,6 +176,101 @@ impl DeployTargets {
         crate::helpers::write_file_atomically(path, &serde_json::to_vec_pretty(self)?)
     }
 
+    pub fn save_target(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        mut target: DeployTarget,
+        token: &str,
+    ) -> Result<()> {
+        let token = token.trim();
+        let existing_id = self
+            .targets
+            .iter()
+            .find(|previous| previous.id == target.id)
+            .and_then(|previous| previous.credential_id.clone());
+        ensure!(
+            !token.is_empty() || existing_id.is_some(),
+            "Enter a deployment token"
+        );
+        if !token.is_empty() {
+            swa::validate_token(token)?;
+        }
+        let credential_id = existing_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        target.credential_id = Some(credential_id.clone());
+        let mut next = self.clone();
+        next.targets.retain(|previous| previous.id != target.id);
+        next.selected = Some(target.id.clone());
+        next.targets.push(target);
+        next.validate()?;
+        let credential = credentials::DeploymentCredential::new(root, &credential_id)?;
+        let previous = if existing_id.is_some() {
+            credential.read_optional()?
+        } else {
+            None
+        };
+        ensure!(
+            !token.is_empty() || previous.is_some(),
+            "No saved deployment token. Enter the deployment token again"
+        );
+        if !token.is_empty() {
+            credential.write(token)?;
+        }
+        if let Err(error) = next.save(path) {
+            if !token.is_empty() {
+                match previous.as_deref() {
+                    Some(previous) => credential.write(previous),
+                    None => credential.delete(),
+                }
+                .context(
+                    "Cannot restore the secure credential after saving target settings failed",
+                )?;
+            }
+            return Err(error).context("Cannot save deployment target settings");
+        }
+        *self = next;
+        Ok(())
+    }
+
+    pub fn remove_target(&mut self, root: &Path, path: &Path, id: &str) -> Result<()> {
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.id == id)
+            .context("Deployment target no longer exists")?;
+        let credential = target
+            .credential_id
+            .as_deref()
+            .map(|id| credentials::DeploymentCredential::new(root, id))
+            .transpose()?;
+        let previous = credential
+            .as_ref()
+            .map(|credential| credential.read_optional())
+            .transpose()?
+            .flatten();
+        let mut next = self.clone();
+        next.targets.retain(|target| target.id != id);
+        if next.selected.as_deref() == Some(id) {
+            next.selected = next.targets.first().map(|target| target.id.clone());
+        }
+        next.validate()?;
+        if let Some(credential) = &credential {
+            credential.delete()?;
+        }
+        if let Err(error) = next.save(path) {
+            if let (Some(credential), Some(previous)) = (&credential, &previous) {
+                credential.write(previous).context(
+                    "Cannot restore the secure credential after removing target settings failed",
+                )?;
+            }
+            return Err(error).context("Cannot remove deployment target settings");
+        }
+        *self = next;
+        Ok(())
+    }
+
     fn validate(&self) -> Result<()> {
         ensure!(
             self.targets.len() <= 50,
@@ -169,11 +278,19 @@ impl DeployTargets {
         );
         let mut ids = BTreeSet::new();
         let mut names = BTreeSet::new();
+        let mut credentials = BTreeSet::new();
         for target in &self.targets {
             target.validate()?;
             ensure!(
                 ids.insert(&target.id) && names.insert(target.name.trim().to_lowercase()),
                 "Deployment target names and IDs must be unique"
+            );
+            ensure!(
+                target
+                    .credential_id
+                    .as_ref()
+                    .is_none_or(|id| credentials.insert(id)),
+                "Each deployment target must have its own saved credential"
             );
         }
         ensure!(
@@ -182,6 +299,15 @@ impl DeployTargets {
         );
         Ok(())
     }
+}
+
+fn workspace_key(root: &Path) -> Result<String> {
+    let root = root.canonicalize()?;
+    let mut identity = super::workspace::display_path(&root);
+    if cfg!(windows) {
+        identity.make_ascii_lowercase();
+    }
+    Ok(format!("{:x}", Sha256::digest(identity.as_bytes())))
 }
 
 fn bounded_read(file: fs::File, limit: usize, label: &str) -> Result<Vec<u8>> {
@@ -375,7 +501,7 @@ mod tests {
             target: DeployTarget {
                 id: "qa".into(),
                 name: "QA".into(),
-                token_env: "QA_TOKEN".into(),
+                credential_id: None,
                 environment: String::new(),
             },
             suite_ids: Vec::new(),
@@ -400,7 +526,7 @@ mod tests {
         let target = DeployTarget {
             id: "one".into(),
             name: "QA reports".into(),
-            token_env: "QA_SWA_TOKEN".into(),
+            credential_id: None,
             environment: String::new(),
         };
         let settings = DeployTargets {
@@ -420,6 +546,96 @@ mod tests {
             DeployTargets::path(directory.path()).unwrap(),
             DeployTargets::path(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
         );
+    }
+
+    #[test]
+    fn legacy_targets_keep_metadata_but_require_a_secure_token() {
+        let target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id": "qa", "name": "QA", "tokenEnv": "QA_SWA_TOKEN", "environment": "preview"
+        }))
+        .unwrap();
+        assert_eq!(target.environment, "preview");
+        assert!(target.credential_id.is_none());
+        assert!(!serde_json::to_string(&target).unwrap().contains("tokenEnv"));
+        assert!(
+            target
+                .token(Path::new("."))
+                .unwrap_err()
+                .to_string()
+                .contains("enter its deployment token")
+        );
+    }
+
+    #[test]
+    fn target_tokens_are_securely_saved_preserved_replaced_and_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("targets.json");
+        let target = DeployTarget {
+            id: "qa".into(),
+            name: "QA reports".into(),
+            credential_id: None,
+            environment: String::new(),
+        };
+        let token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
+        let replacement = format!("{}-{}000", "c".repeat(64), "d".repeat(36));
+        let mut settings = DeployTargets::default();
+        assert!(
+            settings
+                .save_target(root.path(), &path, target.clone(), "")
+                .is_err()
+        );
+        assert!(
+            settings
+                .save_target(root.path(), &path, target.clone(), "invalid")
+                .is_err()
+        );
+        assert!(!path.exists());
+        settings
+            .save_target(root.path(), &path, target, &token)
+            .unwrap();
+        let saved = DeployTargets::load(&path).unwrap().targets.remove(0);
+        let credential = credentials::DeploymentCredential::new(
+            root.path(),
+            saved.credential_id.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved.token(root.path()).unwrap().as_str(), token);
+        assert!(saved.token(config.path()).is_err());
+        assert!(!fs::read_to_string(&path).unwrap().contains(&token));
+        assert!(!format!("{saved:?}").contains(&token));
+        let mut aliased = settings.clone();
+        let mut duplicate = saved.clone();
+        duplicate.id = "other".into();
+        duplicate.name = "Other target".into();
+        aliased.targets.push(duplicate);
+        assert!(aliased.save(&path).is_err());
+        let mut renamed = saved.clone();
+        renamed.name = "Renamed QA".into();
+        settings
+            .save_target(root.path(), &path, renamed.clone(), "")
+            .unwrap();
+        assert_eq!(settings.targets[0].name, "Renamed QA");
+        assert_eq!(saved.token(root.path()).unwrap().as_str(), token);
+        assert!(
+            settings
+                .save_target(root.path(), config.path(), renamed.clone(), &replacement)
+                .is_err()
+        );
+        assert_eq!(saved.token(root.path()).unwrap().as_str(), token);
+        settings
+            .save_target(root.path(), &path, renamed, &replacement)
+            .unwrap();
+        assert_eq!(saved.token(root.path()).unwrap().as_str(), replacement);
+        assert!(
+            settings
+                .remove_target(root.path(), config.path(), "qa")
+                .is_err()
+        );
+        assert_eq!(saved.token(root.path()).unwrap().as_str(), replacement);
+        settings.remove_target(root.path(), &path, "qa").unwrap();
+        assert!(DeployTargets::load(&path).unwrap().targets.is_empty());
+        assert!(credential.read_optional().unwrap().is_none());
     }
 
     #[test]

@@ -129,12 +129,28 @@ remote. No real project commits or remote pushes are made by these tests.
 The header's Deploy command publishes selected suites to Azure Static Web Apps.
 Use Deployment targets to add, edit, or remove multiple targets for the current
 workspace. Choose the target in the deployment dialog each time. A target has a
-name, a deployment-token environment variable, and an optional Azure named
-environment (blank means production). Define the environment variable before
-launching the desktop app. Token values are never saved in project files or
-target settings, passed on the command line, or included in deployment logs.
-Target settings are stored in the per-user application configuration, keyed by
-the canonical workspace path; removing a target does not delete the Azure app.
+name, a deployment token, and an optional Azure named environment (blank means
+production). Paste the Azure Static Web Apps deployment token directly into the
+masked Deployment token field and select Save target. No environment variable
+or app restart is needed. When editing a target, leave that field blank to keep
+the saved token, or paste a replacement token to rotate it. Saved tokens are
+never displayed in the editor; cancelling or closing clears newly entered text.
+
+Tokens are stored in the operating system's secure credential store, outside the
+repository: Windows Credential Manager (current user, this machine only), macOS
+Keychain, or a Linux Secret Service such as GNOME Keyring or KWallet. Linux needs
+an available, unlocked Secret Service. A locked or unavailable store produces an
+error, never a plaintext fallback. Credentials are scoped to the canonical
+workspace path and target, so moving a workspace or changing computers requires
+entering the token again.
+
+Target settings contain only credential references in the per-user application
+configuration. Token values are never saved in project files or settings JSON,
+passed in worker requests or command-line arguments, or included in deployment
+logs. Removing a target also removes its saved token, but does not delete the
+Azure app. Targets created with the old environment-variable setting retain
+their names and Azure environments; edit each target and enter its token once
+to enable deployment.
 
 At least one suite must be selected. When only a subset is selected, the dialog
 lists it and requires explicit confirmation that excluding the other suites is
@@ -167,9 +183,11 @@ requires a configured target and is not performed by the test suite.
 Native Windows deployment/layout verification uses
 `./ci/desktop-smoke.ps1 -SkipBuild -DeploymentFlows` after building the GUI. It
 creates isolated target settings, exercises target persistence and subset
-confirmation, captures compact light/dark layouts, and verifies missing-token
-failure without contacting Azure. It refuses a locked session before changing
-preferences and cleans up only its own fixture settings and processes.
+confirmation, checks masked token entry and machine-local credential persistence
+across edits and restarts, and verifies credential deletion. It captures compact
+light/dark layouts and verifies missing-token failure without contacting Azure.
+It refuses a locked session before changing preferences and cleans up only its
+own fixture credentials, settings, and processes.
 
 ## Appearance and Commands
 

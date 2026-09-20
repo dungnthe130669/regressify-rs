@@ -781,22 +781,103 @@ function Test-ScenarioFlows {
     Write-Output 'Scenario-only capture, attributed live logs, scoped approval/comparison, and sibling baseline checks passed.'
 }
 
+function Get-FixtureDeploymentSettingsPath {
+    $identity = $workspace.Replace('\', '/').ToLowerInvariant()
+    $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+    Join-Path (Split-Path -Parent $settingsPath) ('deployments/' + $hash + '.json')
+}
+
+function Get-FixtureCredentialName([string]$Id) {
+    $hash = [System.IO.Path]::GetFileNameWithoutExtension((Get-FixtureDeploymentSettingsPath))
+    "${hash}:${Id}.Regressify Desktop Deployment"
+}
+
+if ($DeploymentFlows -and -not ('RegressifySmokeCredentials' -as [type])) {
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeCredentials {
+    [StructLayout(LayoutKind.Sequential)]
+    struct Credential {
+        public uint Flags, Type;
+        public IntPtr TargetName, Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist, AttributeCount;
+        public IntPtr Attributes, TargetAlias, UserName;
+    }
+    [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool Read(string target, uint type, uint flags, out IntPtr credential);
+    [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern bool Delete(string target, uint type, uint flags);
+    [DllImport("advapi32.dll")]
+    static extern void CredFree(IntPtr credential);
+    public static bool ExistsLocally(string target) {
+        IntPtr pointer;
+        if (!Read(target, 1, 0, out pointer)) {
+            int error = Marshal.GetLastWin32Error();
+            if (error == 1168) return false;
+            throw new Win32Exception(error);
+        }
+        try {
+            if (Marshal.PtrToStructure<Credential>(pointer).Persist != 2)
+                throw new Exception("Fixture credential must be machine-local.");
+            return true;
+        } finally { CredFree(pointer); }
+    }
+    public static void Remove(string target) {
+        if (Delete(target, 1, 0)) return;
+        int error = Marshal.GetLastWin32Error();
+        if (error != 1168) throw new Win32Exception(error);
+    }
+}
+'@
+}
+
 function Test-DeploymentFlows {
     if (Test-ControlInvokable 'Deploy') { throw 'Deploy must be disabled without selected suites.' }
     Invoke-Control 'Deployment targets'
     Wait-Control 'No deployment targets' | Out-Null
     Capture-Window 'deploy-no-selection'
     Invoke-Control 'Add target'
-    Invoke-Control 'Target name' -Pointer
-    Send-FixtureText 'QA preview'
-    Invoke-Control 'Deployment token environment variable' -Pointer
-    $missingToken = 'REGRESSIFY_SMOKE_MISSING_' + [guid]::NewGuid().ToString('N')
-    Send-FixtureText $missingToken
-    Invoke-Control 'Azure environment' -Pointer
-    Send-FixtureText 'preview'
+    Write-FixtureControlText 'Target name' 'QA preview'
+    Invoke-Control 'Save target'
+    Wait-Control 'Enter a deployment token' | Out-Null
+    Invoke-Control 'Deployment token' -Pointer
+    Wait-Control 'Deployment token' | Out-Null
+    $syntheticToken = ('a' * 64) + '-' + ('b' * 36) + '000'
+    Send-FixtureText $syntheticToken
+    $tokenInput = Wait-Control 'Deployment token'
+    if (-not $tokenInput.Current.IsPassword) { throw 'Deployment token must be a protected password field.' }
+    $valuePattern = $null
+    if ($tokenInput.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$valuePattern)) {
+        if (([System.Windows.Automation.ValuePattern]$valuePattern).Current.Value -eq $syntheticToken) { throw 'The token is exposed through accessibility.' }
+    }
+    Write-FixtureControlText 'Azure environment' 'preview'
     Capture-Window 'deploy-target-editor'
     Invoke-Control 'Save target'
     Wait-Control 'QA preview' | Out-Null
+    $targetSettingsPath = Get-FixtureDeploymentSettingsPath
+    $targetSettings = Get-Content -LiteralPath $targetSettingsPath -Raw
+    if ($targetSettings.Contains($syntheticToken) -or $targetSettings.Contains('tokenEnv')) { throw 'Target settings must contain only a secure credential reference.' }
+    $credentialId = ($targetSettings | ConvertFrom-Json).targets[0].credentialId
+    $credentialName = Get-FixtureCredentialName $credentialId
+    if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'The target token was not saved to the machine-local credential store.' }
+    Invoke-Control 'Edit target'
+    Write-FixtureControlText 'Target name' 'QA reports'
+    Invoke-Control 'Save target'
+    Wait-Control 'QA reports' | Out-Null
+    if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Editing a target must preserve its saved token.' }
+    Invoke-Control 'Close'
+    $script:process.CloseMainWindow() | Out-Null
+    if (-not $script:process.WaitForExit(10000)) { throw 'Deployment fixture did not close normally.' }
+    Start-Fixture
+    Invoke-Control 'Deployment targets'
+    Wait-Control 'QA reports' | Out-Null
+    if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'The saved token did not survive an app restart.' }
+    Capture-Window 'deploy-target-restored'
     Invoke-Control 'Close'
     Invoke-Control 'Select suite smoke'
     Invoke-Control 'Deploy'
@@ -814,26 +895,31 @@ function Test-DeploymentFlows {
     }
     Invoke-Control 'Yes, deploy only these 1 of 2 suites'
     if (-not (Test-ControlInvokable 'Deploy selected reports')) { throw 'Confirmed deployment must be invokable.' }
+    [RegressifySmokeCredentials]::Remove($credentialName)
     Invoke-Control 'Deploy selected reports'
     Wait-Control 'Command failed' | Out-Null
     Invoke-Control 'View Log'
-    Wait-SourceText $missingToken 'Run log'
+    Wait-SourceText 'No saved deployment token' 'Run log'
     Capture-Window 'deploy-missing-token'
     Invoke-Control 'Deployment targets'
-    Wait-Control 'QA preview' | Out-Null
+    Wait-Control 'QA reports' | Out-Null
+    Invoke-Control 'Edit target'
+    Invoke-Control 'Deployment token' -Pointer
+    Wait-Control 'Deployment token' | Out-Null
+    Send-FixtureText $syntheticToken
+    Invoke-Control 'Save target'
+    Wait-Control 'QA reports' | Out-Null
+    Wait-WindowState { $null -eq (Find-Control 'Save target') -and [RegressifySmokeCredentials]::ExistsLocally($credentialName) } 'A missing credential must be replaceable.'
     Invoke-Control 'Remove target'
     Wait-Control 'Keep target' | Out-Null
     Capture-Window 'deploy-remove-confirmation'
     Invoke-Control 'Keep target'
+    Invoke-Control 'Remove target'
+    Invoke-Control 'Confirm remove target'
+    Wait-Control 'No deployment targets' | Out-Null
+    if ([RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Removing a target must delete its saved credential.' }
     Invoke-Control 'Close'
-    $script:process.CloseMainWindow() | Out-Null
-    if (-not $script:process.WaitForExit(10000)) { throw 'Deployment fixture did not close normally.' }
-    Start-Fixture
-    Invoke-Control 'Deployment targets'
-    Wait-Control 'QA preview' | Out-Null
-    Capture-Window 'deploy-target-restored'
-    Invoke-Control 'Close'
-    Write-Output 'Deployment target persistence, subset confirmation, safe token failure, and compact titlebar layouts passed without contacting Azure.'
+    Write-Output 'Masked token entry, machine-local storage, restart/edit persistence, credential deletion, subset confirmation, and safe missing-token failure passed without contacting Azure.'
 }
 
 function Wait-WindowState([scriptblock]$Match, [string]$Failure) {
@@ -1386,10 +1472,14 @@ try {
         }
         Write-Output 'Original desktop preferences restored.'
         if ($DeploymentFlows -and -not $KeepOpen) {
-            $identity = $workspace.Replace('\', '/').ToLowerInvariant()
-            $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
-            $targetSettings = Join-Path (Split-Path -Parent $settingsPath) ('deployments/' + $hash + '.json')
-            if (Test-Path -LiteralPath $targetSettings) { Remove-Item -LiteralPath $targetSettings }
+            $targetSettings = Get-FixtureDeploymentSettingsPath
+            if (Test-Path -LiteralPath $targetSettings) {
+                $targets = (Get-Content -LiteralPath $targetSettings -Raw | ConvertFrom-Json).targets
+                foreach ($target in $targets) {
+                    if ($target.credentialId) { [RegressifySmokeCredentials]::Remove((Get-FixtureCredentialName $target.credentialId)) }
+                }
+                Remove-Item -LiteralPath $targetSettings
+            }
         }
     }
 }
