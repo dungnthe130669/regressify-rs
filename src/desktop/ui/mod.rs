@@ -2500,6 +2500,7 @@ impl Render for Workbench {
             )
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::choose_deploy_target))
+            .on_action(cx.listener(Self::choose_deploy_provider))
             .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)

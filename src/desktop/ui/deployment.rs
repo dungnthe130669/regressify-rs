@@ -1,6 +1,6 @@
 use super::*;
 use crate::desktop::{
-    deployment::{DeployTarget, DeployTargets, DeploymentJob},
+    deployment::{DeployTarget, DeployTargets, DeploymentJob, DeploymentProvider},
     runner::RunCommand,
 };
 use zeroize::Zeroizing;
@@ -14,6 +14,11 @@ enum TargetChange {
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 pub(super) struct ChooseDeployTarget {
     id: String,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct ChooseDeployProvider {
+    provider: DeploymentProvider,
 }
 
 pub(super) struct DeploymentPanel {
@@ -33,6 +38,8 @@ pub(super) struct DeploymentPanel {
     name: Entity<InputState>,
     token: Entity<InputState>,
     environment: Entity<InputState>,
+    provider: DeploymentProvider,
+    site_id: Entity<InputState>,
 }
 
 impl DeploymentPanel {
@@ -55,6 +62,9 @@ impl DeploymentPanel {
             token: Self::token_input(false, window, cx),
             environment: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Production (default)")),
+            provider: DeploymentProvider::AzureSwa,
+            site_id: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Project ID from Netlify")),
         }
     }
 
@@ -213,7 +223,8 @@ impl Workbench {
             let editing = state.editing;
             let saving = state.saving;
             let mut body = div().flex().flex_col().gap_3().min_w_0()
-                .child(div().text_sm().text_color(cx.theme().muted_foreground).child("Azure Static Web Apps"))
+                .when(!editing && selected.is_some(), |body| body.child(div().text_sm().text_color(cx.theme().muted_foreground)
+                    .child(selected.map(|target| target.provider.label()).unwrap_or_default())))
                 .child(div().flex().items_center().gap_2()
                     .child(Button::new("deploy-target-menu").flex_1().min_w_0().label(selected.map(|target| target.name.clone()).unwrap_or_else(|| "No deployment targets".into()))
                         .icon(gpui_kit::assets::IconName::ChevronDown).disabled(editing || saving || state.removing || targets.is_empty())
@@ -229,14 +240,29 @@ impl Workbench {
                     .child(Button::new("deploy-target-remove").ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove target").accessibility_label("Remove target").disabled(selected.is_none() || saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = true; cx.notify(); })))));
             if state.removing {
-                body = body.child(format!("Remove target '{}'? The Azure app will not be deleted.", selected.map(|target| target.name.as_str()).unwrap_or_default()))
+                body = body.child(format!("Remove target '{}'? The hosted site will not be deleted.", selected.map(|target| target.name.as_str()).unwrap_or_default()))
                     .child(div().flex().justify_end().gap_2()
                         .child(Button::new("deploy-remove-cancel").label("Keep target").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = false; cx.notify(); }))))
                         .child(Button::new("deploy-remove-confirm").danger().label("Remove target").accessibility_label("Confirm remove target").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
             } else if editing {
-                for (label, id, input) in [("Target name", "deploy-name", &state.name), ("Deployment token", "deploy-token", &state.token), ("Azure environment", "deploy-environment", &state.environment)] {
+                body = body.child(div().flex().flex_col().gap_1().child("Provider")
+                    .child(Button::new("deploy-provider").small().label(state.provider.label())
+                        .accessibility_label("Deployment provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
+                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
+                            let mut menu = menu.action_context(focus.clone());
+                            for provider in [DeploymentProvider::AzureSwa, DeploymentProvider::Netlify] {
+                                menu = menu.menu(provider.label(), Box::new(ChooseDeployProvider { provider }));
+                            }
+                            menu
+                        }})));
+                let destination = match state.provider {
+                    DeploymentProvider::AzureSwa => ("Azure environment", "deploy-environment", &state.environment),
+                    DeploymentProvider::Netlify => ("Netlify Site ID", "deploy-site-id", &state.site_id),
+                };
+                let token_label = if state.provider == DeploymentProvider::Netlify { "Personal access token" } else { "Deployment token" };
+                for (label, id, input) in [("Target name", "deploy-name", &state.name), (token_label, "deploy-token", &state.token), destination] {
                     body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
                         .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
                 }
@@ -245,7 +271,10 @@ impl Workbench {
                     .child(Button::new("deploy-target-save").primary().icon(gpui_kit::assets::IconName::Save).label("Save target").disabled(saving)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.save_deploy_target(window, cx)))));
             } else {
-                body = body.child(div().text_sm().child(selected.map(|target| format!("{} | {}", if target.environment.is_empty() { "Production" } else { &target.environment }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()));
+                body = body.child(div().text_sm().child(selected.map(|target| format!("{} | {}", match target.provider {
+                    DeploymentProvider::AzureSwa => if target.environment.is_empty() { "Production".into() } else { target.environment.clone() },
+                    DeploymentProvider::Netlify => format!("Production | {}", target.site_id),
+                }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()));
                 body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
                 body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
                     .children(state.intent.iter().flat_map(|intent| intent.suite_names.iter()).map(|name| div().truncate().child(name.clone()))));
@@ -298,6 +327,31 @@ impl Workbench {
         });
     }
 
+    pub(super) fn choose_deploy_provider(
+        &mut self,
+        action: &ChooseDeployProvider,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.deployment.update(cx, |state, cx| {
+            if state.saving || !state.editing || state.provider == action.provider {
+                return;
+            }
+            state.provider = action.provider;
+            let saved = state
+                .settings
+                .targets
+                .iter()
+                .find(|target| Some(&target.id) == state.editing_id.as_ref())
+                .is_some_and(|target| {
+                    target.provider == state.provider && target.credential_id.is_some()
+                });
+            state.token = DeploymentPanel::token_input(saved, window, cx);
+            state.status.clear();
+            cx.notify();
+        });
+    }
+
     fn cancel_deploy_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.deployment.update(cx, |state, cx| {
             state.editing = false;
@@ -314,6 +368,10 @@ impl Workbench {
             }
             let target = existing.then(|| state.selected().cloned()).flatten();
             state.editing_id = target.as_ref().map(|target| target.id.clone());
+            state.provider = target
+                .as_ref()
+                .map(|target| target.provider)
+                .unwrap_or_default();
             state.editing = true;
             state.status.clear();
             state.name.update(cx, |input, cx| {
@@ -343,6 +401,16 @@ impl Workbench {
                     cx,
                 )
             });
+            state.site_id.update(cx, |input, cx| {
+                input.set_value(
+                    target
+                        .as_ref()
+                        .map(|target| target.site_id.clone())
+                        .unwrap_or_default(),
+                    window,
+                    cx,
+                );
+            });
             cx.notify();
         });
     }
@@ -359,7 +427,17 @@ impl Workbench {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: state.name.read(cx).value().trim().into(),
             credential_id: None,
-            environment: state.environment.read(cx).value().trim().into(),
+            environment: if state.provider == DeploymentProvider::AzureSwa {
+                state.environment.read(cx).value().trim().into()
+            } else {
+                String::new()
+            },
+            provider: state.provider,
+            site_id: if state.provider == DeploymentProvider::Netlify {
+                state.site_id.read(cx).value().trim().into()
+            } else {
+                String::new()
+            },
         };
         if let Err(error) = target.validate() {
             self.deployment.update(cx, |state, cx| {
@@ -492,7 +570,7 @@ impl Workbench {
 
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
-    use crate::desktop::deployment::{DeployTarget, DeployTargets};
+    use crate::desktop::deployment::{DeployTarget, DeployTargets, DeploymentProvider};
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use std::time::Duration;
@@ -595,6 +673,128 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    async fn netlify_target_fields_and_tokens_stay_provider_scoped(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let site_id = uuid::Uuid::new_v4().to_string();
+        let (handle, view) = super::super::tests::editor_at_size(
+            cx,
+            root.path(),
+            gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(640.)),
+        );
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx))
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("deploy-target-add", cx);
+            view.update(cx, |this, cx| {
+                this.choose_deploy_provider(
+                    &super::ChooseDeployProvider {
+                        provider: DeploymentProvider::Netlify,
+                    },
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-environment").is_none());
+            assert!(window.find("deploy-site-id").visible());
+            window.click("deploy-name", cx);
+            window.input("Netlify QA", cx);
+            window.click("deploy-site-id", cx);
+            window.input(&site_id, cx);
+            window.click("deploy-token", cx);
+            window.input("synthetic-netlify-token", cx);
+            window.render_frame(cx);
+            assert!(window.find("deploy-token").value().is_none());
+            for dark in [false, true] {
+                super::super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                let close = window.find("deploy-close").bounds();
+                assert!(close.origin.y + close.size.height <= gpui_kit::px(640.));
+            }
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            !state.saving && state.settings.targets.len() == 1
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            let target = &state.settings.targets[0];
+            assert_eq!(target.provider, DeploymentProvider::Netlify);
+            assert_eq!(target.site_id, site_id);
+            assert!(target.environment.is_empty());
+            assert_eq!(
+                target.token(root.path()).unwrap().as_str(),
+                "synthetic-netlify-token"
+            );
+            window.click("deploy-target-edit", cx);
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("deploy-site-id").value(),
+                Some(site_id.as_str())
+            );
+            window.click("deploy-token", cx);
+            window.input("unsaved-netlify-token", cx);
+            view.update(cx, |this, cx| {
+                this.choose_deploy_provider(
+                    &super::ChooseDeployProvider {
+                        provider: DeploymentProvider::AzureSwa,
+                    },
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-site-id").is_none());
+            assert!(window.find("deploy-environment").visible());
+            assert!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .deployment
+                .read(cx)
+                .status
+                .contains("when changing providers")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            assert_eq!(
+                state.settings.targets[0].provider,
+                DeploymentProvider::Netlify
+            );
+            assert_eq!(
+                state.settings.targets[0]
+                    .token(root.path())
+                    .unwrap()
+                    .as_str(),
+                "synthetic-netlify-token"
+            );
+            window.click("deploy-target-cancel", cx);
+            window.click("deploy-close", cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     async fn deployment_token_drafts_are_cleared_on_cancel_close_and_escape(
         cx: &mut TestAppContext,
     ) {
@@ -661,6 +861,8 @@ mod tests {
                             name: "QA".into(),
                             credential_id: Some(uuid::Uuid::new_v4().to_string()),
                             environment: String::new(),
+                            provider: Default::default(),
+                            site_id: String::new(),
                         }],
                     };
                     state.catalog_ids =

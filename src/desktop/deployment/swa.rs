@@ -1,8 +1,4 @@
-use std::{
-    io::{Seek, SeekFrom},
-    path::Path,
-    time::Duration,
-};
+use std::{io::SeekFrom, path::Path, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -13,95 +9,9 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::DeployTarget;
+use super::{DeployTarget, DeploymentProvider, package::Package, phase};
 
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
-const MAX_PACKAGE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-
-struct Package {
-    file: tempfile::NamedTempFile,
-    bytes: u64,
-    files: u64,
-    maximum_file: u64,
-}
-
-impl Package {
-    fn create(root: &Path) -> Result<Self> {
-        ensure!(
-            root.join("index.html").is_file(),
-            "Deployment requires index.html"
-        );
-        let mut file = tempfile::NamedTempFile::new_in(
-            root.parent()
-                .context("Deployment staging directory has no parent")?,
-        )?;
-        let mut archive = zip::ZipWriter::new(file.as_file_mut());
-        let mut bytes = 0;
-        let mut files = 0;
-        let mut maximum_file = 0;
-        for entry in walkdir::WalkDir::new(root)
-            .follow_links(false)
-            .sort_by_file_name()
-        {
-            let entry = entry?;
-            ensure!(
-                !entry.file_type().is_symlink(),
-                "Deployment package cannot contain symlinks"
-            );
-            if !entry.file_type().is_file() {
-                continue;
-            }
-            let length = entry.metadata()?.len();
-            bytes += length;
-            files += 1;
-            maximum_file = maximum_file.max(length);
-            ensure!(
-                bytes <= 10 * MAX_PACKAGE_BYTES && files <= 100_000,
-                "Deployment content exceeds packaging limits"
-            );
-            let name = entry
-                .path()
-                .strip_prefix(root)?
-                .to_str()
-                .context("Deployment paths must be UTF-8")?
-                .replace('\\', "/");
-            let compressed = entry
-                .path()
-                .extension()
-                .and_then(|value| value.to_str())
-                .is_some_and(|extension| {
-                    matches!(
-                        extension.to_ascii_lowercase().as_str(),
-                        "png" | "jpg" | "jpeg" | "webp" | "woff" | "woff2" | "zip" | "gz" | "br"
-                    )
-                });
-            let options =
-                zip::write::SimpleFileOptions::default().compression_method(if compressed {
-                    zip::CompressionMethod::Stored
-                } else {
-                    zip::CompressionMethod::Deflated
-                });
-            archive.start_file(name, options)?;
-            let copied = std::io::copy(&mut std::fs::File::open(entry.path())?, &mut archive)?;
-            ensure!(
-                copied == length,
-                "Deployment content changed during packaging"
-            );
-        }
-        archive.finish()?;
-        ensure!(
-            file.as_file().metadata()?.len() <= MAX_PACKAGE_BYTES,
-            "Compressed deployment package exceeds 2 GiB"
-        );
-        file.as_file_mut().seek(SeekFrom::Start(0))?;
-        Ok(Self {
-            file,
-            bytes,
-            files,
-            maximum_file,
-        })
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -380,6 +290,10 @@ impl SwaClient {
 
     pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
         target.validate()?;
+        ensure!(
+            target.provider == DeploymentProvider::AzureSwa,
+            "Azure client requires an Azure target"
+        );
         let operation = async {
             phase("Validating Azure deployment target");
             let info = self.api("validateapitoken", None).await?;
@@ -395,7 +309,7 @@ impl SwaClient {
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
             let package =
-                tokio::task::spawn_blocking(move || Package::create(&directory)).await??;
+                tokio::task::spawn_blocking(move || Package::create(&directory, 100_000)).await??;
             let mut request = json!({
                 "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
                     "pullRequestId": null, "pullRequestTitle": null, "headBranch": null, "baseBranch": null,
@@ -464,11 +378,6 @@ impl SwaClient {
     }
 }
 
-fn phase(name: &str) {
-    eprintln!("{name}");
-    crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -514,7 +423,7 @@ mod tests {
     fn packaging_tracks_files_and_writes_a_readable_zip() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("index.html"), "report").unwrap();
-        let package = Package::create(root.path()).unwrap();
+        let package = Package::create(root.path(), 100_000).unwrap();
         assert_eq!(package.bytes, 6);
         assert_eq!(package.files, 1);
         let mut archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
@@ -589,6 +498,8 @@ mod tests {
             name: "Test".into(),
             credential_id: None,
             environment: "preview".into(),
+            provider: Default::default(),
+            site_id: String::new(),
         };
         assert_eq!(
             client.deploy(root.path(), &target).await?,
@@ -667,7 +578,7 @@ mod tests {
         })?;
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("index.html"), "report")?;
-        let package = Package::create(root.path())?;
+        let package = Package::create(root.path(), 100_000)?;
         let mut client = SwaClient::new(&token())?;
         client.block_bytes = 64;
         client
@@ -753,6 +664,8 @@ mod tests {
                 name: "QA".into(),
                 credential_id: None,
                 environment: String::new(),
+                provider: Default::default(),
+                site_id: String::new(),
             };
             let error = client
                 .deploy(root.path(), &target)

@@ -10,7 +10,43 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub mod credentials;
+pub mod netlify;
+mod package;
 pub mod swa;
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "camelCase")]
+pub enum DeploymentProvider {
+    #[default]
+    AzureSwa,
+    Netlify,
+}
+
+impl DeploymentProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::AzureSwa => "Azure Static Web Apps",
+            Self::Netlify => "Netlify",
+        }
+    }
+
+    pub fn validate_token(self, token: &str) -> Result<()> {
+        match self {
+            Self::AzureSwa => swa::validate_token(token),
+            Self::Netlify => {
+                ensure!(
+                    !token.is_empty()
+                        && token.len() <= 1024
+                        && token.bytes().all(|byte| byte.is_ascii_graphic()),
+                    "Enter a valid Netlify personal access token"
+                );
+                Ok(())
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -21,6 +57,10 @@ pub struct DeployTarget {
     pub credential_id: Option<String>,
     #[serde(default)]
     pub environment: String,
+    #[serde(default)]
+    pub provider: DeploymentProvider,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub site_id: String,
 }
 
 impl<'de> Deserialize<'de> for DeployTarget {
@@ -37,6 +77,10 @@ impl<'de> Deserialize<'de> for DeployTarget {
             credential_id: Option<String>,
             #[serde(default)]
             environment: String,
+            #[serde(default)]
+            provider: DeploymentProvider,
+            #[serde(default)]
+            site_id: String,
             #[serde(default, rename = "tokenEnv")]
             _legacy_token_env: Option<String>,
         }
@@ -46,6 +90,8 @@ impl<'de> Deserialize<'de> for DeployTarget {
             name: fields.name,
             credential_id: fields.credential_id,
             environment: fields.environment,
+            provider: fields.provider,
+            site_id: fields.site_id,
         })
     }
 }
@@ -108,15 +154,33 @@ impl DeployTarget {
                 .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok()),
             "Invalid deployment credential ID"
         );
-        ensure!(
-            self.environment.is_empty()
-                || self.environment.len() <= 16
-                    && self
-                        .environment
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
-            "Azure environment must contain at most 16 letters, digits, or hyphens; leave blank for production"
-        );
+        match self.provider {
+            DeploymentProvider::AzureSwa => {
+                ensure!(
+                    self.site_id.is_empty(),
+                    "Azure targets do not use a Netlify Site ID"
+                );
+                ensure!(
+                    self.environment.is_empty()
+                        || self.environment.len() <= 16
+                            && self
+                                .environment
+                                .bytes()
+                                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-'),
+                    "Azure environment must contain at most 16 letters, digits, or hyphens; leave blank for production"
+                );
+            }
+            DeploymentProvider::Netlify => {
+                ensure!(
+                    self.environment.is_empty(),
+                    "Netlify targets do not use an Azure environment"
+                );
+                ensure!(
+                    self.site_id.len() == 36 && uuid::Uuid::parse_str(&self.site_id).is_ok(),
+                    "Enter the Netlify Site ID (Project ID) from project configuration"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -184,20 +248,27 @@ impl DeployTargets {
         token: &str,
     ) -> Result<()> {
         let token = token.trim();
-        let existing_id = self
+        let existing = self
             .targets
             .iter()
-            .find(|previous| previous.id == target.id)
-            .and_then(|previous| previous.credential_id.clone());
+            .find(|previous| previous.id == target.id);
+        let existing_id = existing.and_then(|previous| previous.credential_id.clone());
+        let provider_changed =
+            existing.is_some_and(|previous| previous.provider != target.provider);
+        ensure!(
+            !token.is_empty() || !provider_changed,
+            "Enter a new deployment token when changing providers"
+        );
         ensure!(
             !token.is_empty() || existing_id.is_some(),
             "Enter a deployment token"
         );
         if !token.is_empty() {
-            swa::validate_token(token)?;
+            target.provider.validate_token(token)?;
         }
         let credential_id = existing_id
             .clone()
+            .filter(|_| !provider_changed)
             .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
         target.credential_id = Some(credential_id.clone());
         let mut next = self.clone();
@@ -206,11 +277,21 @@ impl DeployTargets {
         next.targets.push(target);
         next.validate()?;
         let credential = credentials::DeploymentCredential::new(root, &credential_id)?;
-        let previous = if existing_id.is_some() {
+        let previous = if existing_id.is_some() && !provider_changed {
             credential.read_optional()?
         } else {
             None
         };
+        let retired = existing_id
+            .as_deref()
+            .filter(|_| provider_changed)
+            .map(|id| credentials::DeploymentCredential::new(root, id))
+            .transpose()?;
+        let retired_token = retired
+            .as_ref()
+            .map(|credential| credential.read_optional())
+            .transpose()?
+            .flatten();
         ensure!(
             !token.is_empty() || previous.is_some(),
             "No saved deployment token. Enter the deployment token again"
@@ -218,7 +299,18 @@ impl DeployTargets {
         if !token.is_empty() {
             credential.write(token)?;
         }
-        if let Err(error) = next.save(path) {
+        let saved = (|| -> Result<()> {
+            if let Some(retired) = &retired {
+                retired.delete()?;
+            }
+            next.save(path)
+        })();
+        if let Err(error) = saved {
+            if let (Some(retired), Some(retired_token)) = (&retired, &retired_token) {
+                retired
+                    .write(retired_token)
+                    .context("Cannot restore the previous provider's credential")?;
+            }
             if !token.is_empty() {
                 match previous.as_deref() {
                     Some(previous) => credential.write(previous),
@@ -299,6 +391,33 @@ impl DeployTargets {
         );
         Ok(())
     }
+}
+
+pub enum DeploymentClient {
+    Azure(swa::SwaClient),
+    Netlify(netlify::NetlifyClient),
+}
+
+impl DeploymentClient {
+    pub fn new(target: &DeployTarget, token: &str) -> Result<Self> {
+        target.validate()?;
+        match target.provider {
+            DeploymentProvider::AzureSwa => Ok(Self::Azure(swa::SwaClient::new(token)?)),
+            DeploymentProvider::Netlify => Ok(Self::Netlify(netlify::NetlifyClient::new(token)?)),
+        }
+    }
+
+    pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+        match self {
+            Self::Azure(client) => client.deploy(root, target).await,
+            Self::Netlify(client) => client.deploy(root, target).await,
+        }
+    }
+}
+
+fn phase(name: &str) {
+    eprintln!("{name}");
+    crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
 }
 
 fn workspace_key(root: &Path) -> Result<String> {
@@ -503,6 +622,8 @@ mod tests {
                 name: "QA".into(),
                 credential_id: None,
                 environment: String::new(),
+                provider: DeploymentProvider::AzureSwa,
+                site_id: String::new(),
             },
             suite_ids: Vec::new(),
             catalog_ids: vec!["one".into(), "two".into()],
@@ -528,6 +649,8 @@ mod tests {
             name: "QA reports".into(),
             credential_id: None,
             environment: String::new(),
+            provider: DeploymentProvider::AzureSwa,
+            site_id: String::new(),
         };
         let settings = DeployTargets {
             targets: vec![target.clone()],
@@ -555,6 +678,8 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(target.environment, "preview");
+        assert_eq!(target.provider, DeploymentProvider::AzureSwa);
+        assert!(target.site_id.is_empty());
         assert!(target.credential_id.is_none());
         assert!(!serde_json::to_string(&target).unwrap().contains("tokenEnv"));
         assert!(
@@ -576,6 +701,8 @@ mod tests {
             name: "QA reports".into(),
             credential_id: None,
             environment: String::new(),
+            provider: DeploymentProvider::AzureSwa,
+            site_id: String::new(),
         };
         let token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
         let replacement = format!("{}-{}000", "c".repeat(64), "d".repeat(36));
@@ -636,6 +763,96 @@ mod tests {
         settings.remove_target(root.path(), &path, "qa").unwrap();
         assert!(DeployTargets::load(&path).unwrap().targets.is_empty());
         assert!(credential.read_optional().unwrap().is_none());
+    }
+
+    #[test]
+    fn netlify_targets_validate_provider_fields_and_require_new_credentials_on_switch() {
+        let root = tempfile::tempdir().unwrap();
+        let config = tempfile::tempdir().unwrap();
+        let path = config.path().join("targets.json");
+        let mut target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id": "qa", "name": "QA", "provider": "netlify", "siteId": uuid::Uuid::new_v4().to_string()
+        })).unwrap();
+        assert!(target.validate().is_ok());
+        let encoded = serde_json::to_string(&target).unwrap();
+        assert_eq!(
+            serde_json::from_str::<DeployTarget>(&encoded).unwrap(),
+            target
+        );
+        for invalid in ["", "../other", "https://example.com", "invalid"] {
+            let mut invalid_target = target.clone();
+            invalid_target.site_id = invalid.into();
+            assert!(invalid_target.validate().is_err());
+        }
+        target.environment = "preview".into();
+        assert!(target.validate().is_err());
+        target.environment.clear();
+        let mut settings = DeployTargets::default();
+        settings
+            .save_target(
+                root.path(),
+                &path,
+                target.clone(),
+                "synthetic-netlify-token",
+            )
+            .unwrap();
+        assert_eq!(
+            settings.targets[0].token(root.path()).unwrap().as_str(),
+            "synthetic-netlify-token"
+        );
+        target.provider = DeploymentProvider::AzureSwa;
+        target.site_id.clear();
+        assert!(
+            settings
+                .save_target(root.path(), &path, target.clone(), "")
+                .is_err()
+        );
+        assert_eq!(settings.targets[0].provider, DeploymentProvider::Netlify);
+        let previous_target = settings.targets[0].clone();
+        let azure_token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
+        assert!(
+            settings
+                .save_target(root.path(), config.path(), target.clone(), &azure_token)
+                .is_err()
+        );
+        assert_eq!(
+            previous_target.token(root.path()).unwrap().as_str(),
+            "synthetic-netlify-token"
+        );
+        settings
+            .save_target(root.path(), &path, target.clone(), &azure_token)
+            .unwrap();
+        assert_ne!(
+            previous_target.credential_id,
+            settings.targets[0].credential_id
+        );
+        assert!(previous_target.token(root.path()).is_err());
+        target.provider = DeploymentProvider::Netlify;
+        target.site_id = uuid::Uuid::new_v4().to_string();
+        assert!(
+            settings
+                .save_target(root.path(), &path, target, "")
+                .is_err()
+        );
+        assert_eq!(
+            settings.targets[0].token(root.path()).unwrap().as_str(),
+            azure_token
+        );
+        settings.remove_target(root.path(), &path, "qa").unwrap();
+        for invalid in [
+            "",
+            "token\nAuthorization: extra",
+            "token with spaces",
+            "\u{00e9}",
+        ] {
+            assert!(DeploymentProvider::Netlify.validate_token(invalid).is_err());
+        }
+        assert!(
+            serde_json::from_value::<DeployTarget>(serde_json::json!({
+                "id": "qa", "name": "QA", "provider": "unknown"
+            }))
+            .is_err()
+        );
     }
 
     #[test]

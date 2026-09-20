@@ -919,7 +919,85 @@ function Test-DeploymentFlows {
     Wait-Control 'No deployment targets' | Out-Null
     if ([RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Removing a target must delete its saved credential.' }
     Invoke-Control 'Close'
-    Write-Output 'Masked token entry, machine-local storage, restart/edit persistence, credential deletion, subset confirmation, and safe missing-token failure passed without contacting Azure.'
+    Invoke-Control 'Deployment targets'
+    Invoke-Control 'Add target'
+    Invoke-Control 'Deployment provider' -Pointer
+    Wait-Control 'Netlify' | Out-Null
+    Capture-Window 'deploy-provider-menu'
+    Invoke-Control 'Netlify'
+    Wait-Control 'Netlify Site ID' | Out-Null
+    if ($null -ne (Find-Control 'Azure environment')) { throw 'Netlify must not expose Azure-only settings.' }
+    Write-FixtureControlText 'Target name' 'Netlify QA'
+    Invoke-Control 'Save target'
+    Wait-Control 'Enter the Netlify Site ID (Project ID) from project configuration' | Out-Null
+    $netlifySiteId = [guid]::NewGuid().ToString('D')
+    Write-FixtureControlText 'Netlify Site ID' $netlifySiteId
+    Invoke-Control 'Personal access token' -Pointer
+    Wait-Control 'Personal access token' | Out-Null
+    $netlifyToken = 'synthetic-netlify-token-' + [guid]::NewGuid().ToString('N')
+    Send-FixtureText $netlifyToken
+    $tokenInput = Wait-Control 'Personal access token'
+    if (-not $tokenInput.Current.IsPassword) { throw 'Netlify tokens must be protected password fields.' }
+    Capture-Window 'deploy-netlify-editor'
+    Invoke-Control 'Save target'
+    Wait-Control 'Netlify QA' | Out-Null
+    $targetSettings = Get-Content -LiteralPath $targetSettingsPath -Raw
+    $target = ($targetSettings | ConvertFrom-Json).targets[0]
+    if ($target.provider -ne 'netlify' -or $target.siteId -ne $netlifySiteId -or $targetSettings.Contains($netlifyToken)) { throw 'Netlify settings must persist their provider and Site ID without the token.' }
+    $credentialName = Get-FixtureCredentialName $target.credentialId
+    if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Netlify token was not saved securely.' }
+    Invoke-Control 'Edit target'
+    Invoke-Control 'Deployment provider' -Pointer
+    Invoke-Control 'Azure Static Web Apps'
+    Wait-Control 'Azure environment' | Out-Null
+    Invoke-Control 'Save target'
+    Wait-Control 'Enter a new deployment token when changing providers' | Out-Null
+    Invoke-Control 'Cancel edit'
+    Invoke-Control 'Close'
+    $script:process.CloseMainWindow() | Out-Null
+    if (-not $script:process.WaitForExit(10000)) { throw 'Netlify fixture did not close normally.' }
+    Start-Fixture
+    Invoke-Control 'Deployment targets'
+    Wait-Control 'Netlify QA' | Out-Null
+    if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Netlify token did not survive restart.' }
+    Capture-Window 'deploy-netlify-restored'
+    Invoke-Control 'Close'
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+        Invoke-Control 'Deployment targets'
+        Invoke-Control 'Edit target'
+        Wait-Control 'Netlify Site ID' | Out-Null
+        if ((Read-ControlText 'Netlify Site ID') -ne $netlifySiteId) { throw 'Saved Netlify Site ID was not restored.' }
+        Capture-Window ('deploy-netlify-' + $theme.ToLowerInvariant())
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+        Capture-Window ('deploy-netlify-' + $theme.ToLowerInvariant() + '-compact')
+        Invoke-Control 'Cancel edit'
+        Invoke-Control 'Close'
+    }
+    [RegressifySmokeCredentials]::Remove($credentialName)
+    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'Deploy'
+    Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+    Invoke-Control 'Yes, deploy only these 1 of 2 suites'
+    Invoke-Control 'Deploy selected reports'
+    Wait-Control 'Command failed' | Out-Null
+    Invoke-Control 'View Log'
+    Wait-SourceText 'No saved deployment token' 'Run log'
+    Capture-Window 'deploy-netlify-missing-token'
+    Invoke-Control 'Deployment targets'
+    Invoke-Control 'Edit target'
+    Invoke-Control 'Personal access token' -Pointer
+    Wait-Control 'Personal access token' | Out-Null
+    Send-FixtureText $netlifyToken
+    Invoke-Control 'Save target'
+    Wait-WindowState { $null -eq (Find-Control 'Save target') -and [RegressifySmokeCredentials]::ExistsLocally($credentialName) } 'Netlify token replacement did not finish.'
+    Invoke-Control 'Remove target'
+    Invoke-Control 'Confirm remove target'
+    Wait-Control 'No deployment targets' | Out-Null
+    if ([RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Netlify credential was not removed with its target.' }
+    Invoke-Control 'Close'
+    Write-Output 'Azure and Netlify provider selection, masked credentials, machine-local storage, restart persistence, credential deletion, subset guards, and safe missing-token failures passed without remote deployment.'
 }
 
 function Wait-WindowState([scriptblock]$Match, [string]$Failure) {

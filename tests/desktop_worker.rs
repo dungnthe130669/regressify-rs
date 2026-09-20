@@ -32,6 +32,8 @@ fn deploy_missing_token_fails_before_snapshot_modifies_output() {
                     name: "Test".into(),
                     credential_id: None,
                     environment: String::new(),
+                    provider: Default::default(),
+                    site_id: String::new(),
                 },
                 suite_ids: vec!["shop".into()],
                 catalog_ids: vec!["shop".into()],
@@ -105,6 +107,8 @@ fn deploy_worker_reads_machine_local_credentials_without_exposing_tokens() {
                     name: "Test".into(),
                     credential_id: Some(credential_id),
                     environment: String::new(),
+                    provider: Default::default(),
+                    site_id: String::new(),
                 },
                 suite_ids: vec!["shop".into()],
                 catalog_ids: vec!["shop".into()],
@@ -124,6 +128,28 @@ fn deploy_worker_reads_machine_local_credentials_without_exposing_tokens() {
     assert!(!String::from_utf8_lossy(&result.stderr).contains(&token));
     assert!(!String::from_utf8_lossy(&result.stdout).contains(&token));
     assert!(!std::fs::read_to_string(events).unwrap().contains(&token));
+    assert_eq!(
+        std::fs::read_to_string(output.join("index.html")).unwrap(),
+        "untouched summary"
+    );
+    let netlify_token = format!("synthetic invalid Netlify token {}", uuid::Uuid::new_v4());
+    credential.0.write(&netlify_token).unwrap();
+    let mut netlify_request = request;
+    let target = &mut netlify_request.options.deployment.as_mut().unwrap().target;
+    target.provider = regressify::desktop::deployment::DeploymentProvider::Netlify;
+    target.site_id = uuid::Uuid::new_v4().to_string();
+    let result = invoke(executable, &netlify_request);
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("valid Netlify personal access token")
+    );
+    assert!(!String::from_utf8_lossy(&result.stderr).contains(&netlify_token));
+    assert!(!String::from_utf8_lossy(&result.stdout).contains(&netlify_token));
+    assert!(
+        !serde_json::to_string(&netlify_request)
+            .unwrap()
+            .contains(&netlify_token)
+    );
     assert_eq!(
         std::fs::read_to_string(output.join("index.html")).unwrap(),
         "untouched summary"

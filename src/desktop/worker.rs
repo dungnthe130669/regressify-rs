@@ -65,7 +65,8 @@ pub fn run_stdio() -> Result<()> {
                     );
                     Some((
                         job,
-                        super::deployment::swa::SwaClient::new(
+                        super::deployment::DeploymentClient::new(
+                            &job.target,
                             &job.target.token(&request.run.root)?,
                         )?,
                     ))

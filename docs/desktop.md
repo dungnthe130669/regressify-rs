@@ -126,15 +126,32 @@ remote. No real project commits or remote pushes are made by these tests.
 
 ## Deploy Reports
 
-The header's Deploy command publishes selected suites to Azure Static Web Apps.
+The header's Deploy command publishes selected suites to Azure Static Web Apps
+or Netlify.
 Use Deployment targets to add, edit, or remove multiple targets for the current
 workspace. Choose the target in the deployment dialog each time. A target has a
-name, a deployment token, and an optional Azure named environment (blank means
-production). Paste the Azure Static Web Apps deployment token directly into the
-masked Deployment token field and select Save target. No environment variable
+name, a provider, and a securely saved token. Azure targets also have an optional
+named environment (blank means production); Netlify targets have a Site ID.
+Paste the provider's token directly into its masked token field and select
+Save target. No environment variable
 or app restart is needed. When editing a target, leave that field blank to keep
 the saved token, or paste a replacement token to rotate it. Saved tokens are
 never displayed in the editor; cancelling or closing clears newly entered text.
+Changing providers clears the token draft and requires a new token before saving.
+Existing targets without a provider setting continue to use Azure.
+
+For **Azure Static Web Apps**, choose that provider and enter the app's deployment
+token. The Azure environment field remains optional.
+
+For **Netlify**, create a dedicated Netlify project/site first, choose Netlify
+as the provider, and enter its Site ID and a Netlify personal access token.
+Netlify now labels the Site ID **Project ID**, under Project configuration >
+General > Project details > Project information. Generate the token under your
+Netlify user settings > Applications > Personal access tokens; it must have
+access to the project's team, including SSO authorization when required.
+The app publishes to the existing site's production deployment, replacing its
+contents with the selected reports. It does not create or delete Netlify sites,
+change domains, run builds, or require the Netlify CLI.
 
 Tokens are stored in the operating system's secure credential store, outside the
 repository: Windows Credential Manager (current user, this machine only), macOS
@@ -148,7 +165,7 @@ Target settings contain only credential references in the per-user application
 configuration. Token values are never saved in project files or settings JSON,
 passed in worker requests or command-line arguments, or included in deployment
 logs. Removing a target also removes its saved token, but does not delete the
-Azure app. Targets created with the old environment-variable setting retain
+hosted site. Targets created with the old environment-variable setting retain
 their names and Azure environments; edit each target and enter its token once
 to enable deployment.
 
@@ -163,7 +180,7 @@ suites, stages only their reports and referenced images, and then publishes.
 Unselected suites, old unreferenced runs, persisted authentication state, source
 YAML, and unrelated files are not uploaded. Symlinked or escaping artifact paths
 are rejected. No external Azure, npm, or Tuyen CLI installation is required.
-The protocol follows Tuyen CLI's SWA deploy handshake: validate token, request
+Azure uses Tuyen CLI's SWA deploy handshake: validate token, request
 upload URLs, upload Azure blob blocks, update status, and poll until completion.
 Transient network failures retry within bounds; the entire deployment has a
 30-minute deadline. ZIP packaging is disk-backed, preserves already-compressed
@@ -171,6 +188,17 @@ images without recompressing them, and uploads at most four 4 MiB blocks at once
 Missing current/diff images fail deployment rather than publishing broken links;
 missing references remain valid report failures. Non-Standard plans reject security-sensitive `auth` and
 `networking` configuration rather than letting Azure silently discard it.
+
+Netlify verifies site access, streams a disk-backed ZIP to its HTTPS deploy API,
+and waits for the deploy to become ready. ZIPs are limited to 25,000 files and
+2 GiB. Read/poll requests retry transient errors within bounds; deployment
+creation is not automatically retried because a failed response may still have
+created a deploy. Check Netlify's deploy history before retrying a failed upload.
+Locked production deploys and Git-only production restrictions are reported
+before upload. Azure authentication, network restrictions, and restricted role
+rules are rejected instead of silently publishing unprotected reports on Netlify.
+Configure access protection in Netlify itself for private reports. Both providers
+retain the 30-minute deadline and keep tokens out of URLs and logs.
 
 The last selected target is remembered per workspace, and removing a target
 requires confirmation. Deploy and target management are also available from the
@@ -184,8 +212,10 @@ Native Windows deployment/layout verification uses
 `./ci/desktop-smoke.ps1 -SkipBuild -DeploymentFlows` after building the GUI. It
 creates isolated target settings, exercises target persistence and subset
 confirmation, checks masked token entry and machine-local credential persistence
-across edits and restarts, and verifies credential deletion. It captures compact
-light/dark layouts and verifies missing-token failure without contacting Azure.
+across edits and restarts, and verifies credential deletion for Azure and Netlify.
+It checks provider switching and Netlify Site ID persistence, captures desktop
+and compact light/dark layouts, and verifies missing-token failures without
+contacting either provider.
 It refuses a locked session before changing preferences and cleans up only its
 own fixture credentials, settings, and processes.
 
