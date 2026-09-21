@@ -172,11 +172,51 @@ impl GitPanel {
                 );
         } else {
             let collapsed = self.collapsed.contains(&path);
+            let prefix = format!("{path}/");
+            let allowed = self
+                .snapshot
+                .as_ref()
+                .expect("tree requires snapshot")
+                .changes
+                .iter()
+                .filter(|change| {
+                    change.path.starts_with(&prefix) && !change.conflict && !change.submodule
+                })
+                .map(|change| change.path.clone())
+                .collect::<Vec<_>>();
+            let selected = allowed
+                .iter()
+                .filter(|path| self.selection.contains(*path))
+                .count();
+            let panel = cx.entity();
+            element = element.child(
+                design::selection_checkbox(
+                    SharedString::from(format!("git-select-folder:{path}")),
+                    !allowed.is_empty() && selected == allowed.len(),
+                    selected > 0 && selected < allowed.len(),
+                    self.disabled || self.active() || self.error.is_some() || allowed.is_empty(),
+                    cx,
+                )
+                .accessibility_label(format!("Select folder {}", visible_name(&path)))
+                .on_change(move |state, _, _, cx| {
+                    panel.update(cx, |this, cx| {
+                        if state == gpui_kit::base::CheckboxState::Checked {
+                            this.selection.extend(allowed.iter().cloned());
+                        } else {
+                            for path in &allowed {
+                                this.selection.remove(path);
+                            }
+                        }
+                        cx.notify();
+                    })
+                }),
+            );
             element = element.child(
                 Button::new(SharedString::from(format!("git-folder:{path}")))
                     .ghost()
                     .xsmall()
-                    .w_full()
+                    .flex_1()
+                    .min_w_0()
                     .justify_start()
                     .icon(if collapsed {
                         IconName::ChevronRight
@@ -222,6 +262,10 @@ impl GitPanel {
         let blocked = self.snapshot.as_ref().is_none_or(|snapshot| {
             snapshot.conflicts() > 0 || snapshot.operation.is_some() || snapshot.detached
         });
+        let discard_blocked = self
+            .snapshot
+            .as_ref()
+            .is_none_or(|snapshot| snapshot.conflicts() > 0 || snapshot.operation.is_some());
         div()
             .size_full()
             .flex()
@@ -324,23 +368,50 @@ impl GitPanel {
                             ),
                     )
                     .child(
-                        Button::new("git-commit")
-                            .small()
-                            .primary()
-                            .icon(gpui_kit::assets::IconName::GitCommitHorizontal)
-                            .label("Commit selected files")
-                            .disabled(
-                                disabled || blocked || message_empty || self.selection.is_empty(),
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .gap_2()
+                            .child(
+                                Button::new("git-commit")
+                                    .small()
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::GitCommitHorizontal)
+                                    .label("Commit selected files")
+                                    .disabled(
+                                        disabled
+                                            || blocked
+                                            || message_empty
+                                            || self.selection.is_empty(),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request(
+                                            model::Action::Commit {
+                                                paths: this.selection.iter().cloned().collect(),
+                                                message: this.message.read(cx).value().to_string(),
+                                            },
+                                            cx,
+                                        );
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.request(
-                                    model::Action::Commit {
-                                        paths: this.selection.iter().cloned().collect(),
-                                        message: this.message.read(cx).value().to_string(),
-                                    },
-                                    cx,
-                                );
-                            })),
+                            .child(
+                                Button::new("git-discard")
+                                    .small()
+                                    .danger()
+                                    .icon(gpui_kit::assets::IconName::Trash)
+                                    .label("Discard selected files")
+                                    .disabled(
+                                        disabled || discard_blocked || self.selection.is_empty(),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request(
+                                            model::Action::Discard {
+                                                paths: this.selection.iter().cloned().collect(),
+                                            },
+                                            cx,
+                                        );
+                                    })),
+                            ),
                     ),
             )
             .into_any_element()

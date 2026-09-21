@@ -44,6 +44,7 @@ async fn untracked_workspace_can_initialize_through_guarded_git_ui(cx: &mut Test
         window.try_find("git-operation-confirm").is_some()
     })
     .await;
+    super::super::tests::settle_dialog(cx, handle).await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.click("git-operation-confirm", cx)
     })
@@ -73,12 +74,14 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = super::super::tests::editor(cx, directory.path());
     git(directory.path(), &["init", "-b", "main"]);
-    std::fs::create_dir_all(directory.path().join("nested")).unwrap();
+    std::fs::create_dir_all(directory.path().join("nested/child")).unwrap();
     std::fs::write(
         directory.path().join("nested/review.txt"),
         "review this change\n",
     )
     .unwrap();
+    std::fs::write(directory.path().join("nested/child/review.txt"), "child\n").unwrap();
+    std::fs::write(directory.path().join("nested-other.txt"), "leave alone\n").unwrap();
     let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
     let index = snapshot
         .changes
@@ -97,6 +100,30 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
         assert!(window.find("git-folder:nested").visible());
         window.click(("git-file", index), cx);
         window.click(("git-select", index), cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).git.read(cx).selection.len(), 1);
+        window.click("git-folder:nested", cx);
+        window.render_frame(cx);
+        assert!(window.try_find(("git-file", index)).is_none());
+        window.click("git-select-folder:nested", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("git-select-folder:nested").checked(),
+            Some(true)
+        );
+        let selection = &view.read(cx).git.read(cx).selection;
+        assert_eq!(selection.len(), 2);
+        assert!(selection.contains("nested/review.txt"));
+        assert!(selection.contains("nested/child/review.txt"));
+        assert!(!selection.contains("nested-other.txt"));
+        window.click("git-select-folder:nested", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("git-select-folder:nested").checked(),
+            Some(false)
+        );
+        assert!(view.read(cx).git.read(cx).selection.is_empty());
+        window.click("git-select-folder:nested", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
@@ -131,18 +158,28 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
                 cx,
             );
         });
-        window.render_frame(cx);
-        window.click("git-commit", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window.try_find("guard-cancel").is_some()
-    })
-    .await;
+    for action in ["git-commit", "git-discard"] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(action, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("guard-cancel").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("guard-cancel", cx);
+            assert!(view.read(cx).unsaved());
+            assert!(!view.read(cx).git.read(cx).active());
+        })
+        .unwrap();
+        super::super::tests::settle_dialog(cx, handle).await;
+    }
     cx.update_window(handle.into(), |_, window, cx| {
-        window.click("guard-cancel", cx);
-        assert!(view.read(cx).unsaved());
-        assert!(!view.read(cx).git.read(cx).active());
         let panel = view.read(cx).git.clone();
         panel.update(cx, |panel, cx| {
             let mut snapshot = panel.snapshot.clone().unwrap();
@@ -155,6 +192,190 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
                     && panel.diff_text.is_empty()
             );
         });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_state(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    std::fs::create_dir_all(directory.path().join("nested/child")).unwrap();
+    std::fs::create_dir(directory.path().join("blocked")).unwrap();
+    for path in [
+        "nested/file.txt",
+        "nested/child/file.txt",
+        "nested/conflict.txt",
+        "nested/submodule",
+        "blocked/submodule",
+    ] {
+        std::fs::write(directory.path().join(path), "change\n").unwrap();
+    }
+    let mut snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    for change in &mut snapshot.changes {
+        change.conflict = change.path.ends_with("conflict.txt");
+        change.submodule = change.path.ends_with("submodule");
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().canonicalize().unwrap());
+                panel.install_snapshot(snapshot, window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+        window.render_frame(cx);
+        window.click("git-select-folder:nested", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("git-select-folder:nested").checked(),
+            Some(true)
+        );
+        let expected = [
+            "nested/child/file.txt".to_string(),
+            "nested/file.txt".to_string(),
+        ]
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        window.click("git-select-folder:blocked", cx);
+        assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        view.read(cx).git.clone().update(cx, |panel, cx| {
+            panel.set_disabled(true, cx);
+        });
+        window.render_frame(cx);
+        window.click("git-select-folder:nested", cx);
+        assert_eq!(view.read(cx).git.read(cx).selection, expected);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn discard_selected_folder_requires_confirmation_and_reloads_the_open_document(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    for (key, value) in [
+        ("user.name", "Git UI fixture"),
+        ("user.email", "fixture@example.test"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "disabled-hooks"),
+        ("core.autocrlf", "false"),
+    ] {
+        git(directory.path(), &["config", key, value]);
+    }
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-m", "initial"]);
+    let file = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let original = std::fs::read_to_string(&file).unwrap();
+    let original_value: serde_json::Value = serde_yaml::from_str(&original).unwrap();
+    let changed = "scenarios:\n- url: https://example.test/changed\n  label: Changed\n";
+    std::fs::write(&file, changed).unwrap();
+    let added = directory.path().join("visual_tests/new.tests.yaml");
+    std::fs::write(&added, changed).unwrap();
+    git(directory.path(), &["add", "visual_tests/new.tests.yaml"]);
+    std::fs::write(directory.path().join("keep.txt"), "unselected\n").unwrap();
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let document = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .open_document(this.session.open.as_ref().unwrap().entry.clone())
+                .unwrap();
+            this.session.install_document(document).unwrap();
+            this.sync_editor(window, cx);
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["label"],
+                "Changed"
+            );
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().canonicalize().unwrap());
+                panel.install_snapshot(snapshot, window, cx);
+                panel.message.update(cx, |message, cx| {
+                    message.set_value("Keep this commit message", window, cx);
+                });
+            });
+            this.select_view(3, window, cx);
+        });
+        window.render_frame(cx);
+        window.click("git-select-folder:visual_tests", cx);
+        window.render_frame(cx);
+        assert_eq!(view.read(cx).git.read(cx).selection.len(), 2);
+        window.click("git-discard", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("git-operation-confirm").is_some()
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("git-confirm-files").visible());
+        assert_eq!(
+            window.find("git-operation-confirm").label(),
+            Some("Discard selected files")
+        );
+        assert!(!view.read(cx).git.read(cx).active());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), changed);
+        assert!(added.exists());
+        window.click("git-operation-cancel", cx);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), changed);
+        assert!(added.exists());
+        assert_eq!(view.read(cx).git.read(cx).selection.len(), 2);
+    })
+    .unwrap();
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("git-discard", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("git-operation-confirm").is_some()
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-operation-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
+        let workbench = view.read(cx);
+        !workbench.busy && workbench.status.starts_with("Discarded changes")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), original);
+        assert!(!added.exists());
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join("keep.txt")).unwrap(),
+            "unselected\n"
+        );
+        let workbench = view.read(cx);
+        assert_eq!(
+            workbench.session.value().unwrap()["scenarios"],
+            original_value["scenarios"]
+        );
+        assert_eq!(workbench.main_tab, 3);
+        let panel = workbench.git.read(cx);
+        assert!(panel.selection.is_empty());
+        assert_eq!(panel.snapshot.as_ref().unwrap().changes.len(), 1);
+        assert_eq!(
+            panel.message.read(cx).value().as_ref(),
+            "Keep this commit message"
+        );
+        workbench
+            .git
+            .clone()
+            .update(cx, |panel, _| panel.cancel_all());
     })
     .unwrap();
 }
@@ -278,7 +499,7 @@ async fn pull_refresh_reloads_or_closes_the_current_document_without_leaving_git
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.status = "Pull completed (fast-forward only)".into();
-            this.reload_after_git_pull(window, cx);
+            this.reload_after_git_operation(window, cx);
         })
     })
     .unwrap();
@@ -297,7 +518,7 @@ async fn pull_refresh_reloads_or_closes_the_current_document_without_leaving_git
     .unwrap();
     std::fs::remove_file(file).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
-        view.update(cx, |this, cx| this.reload_after_git_pull(window, cx))
+        view.update(cx, |this, cx| this.reload_after_git_operation(window, cx))
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
@@ -358,6 +579,17 @@ fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContex
             let folder = window.find("open-workspace").bounds();
             assert!(folder.origin.x + folder.size.width <= px(width - 95.));
             assert!(window.find("git-commit-message").visible());
+            let commit = window.find("git-commit").bounds();
+            let discard = window.find("git-discard").bounds();
+            assert!(window.find("git-commit").visible());
+            assert!(window.find("git-discard").visible());
+            assert!(discard.origin.x + discard.size.width <= px(width));
+            assert!(discard.origin.y + discard.size.height <= px(height));
+            assert!(
+                discard.origin.y >= commit.origin.y + commit.size.height
+                    || discard.origin.x >= commit.origin.x + commit.size.width,
+                "Git actions must not overlap"
+            );
             assert!(
                 window.try_find(("git-file", 4999_usize)).is_none(),
                 "offscreen tree rows must be virtualized"

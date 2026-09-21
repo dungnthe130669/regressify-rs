@@ -336,6 +336,7 @@ fn bounded_diff(text: &str) -> String {
 pub enum Action {
     Initialize,
     Commit { paths: Vec<String>, message: String },
+    Discard { paths: Vec<String> },
     Pull,
     Push,
     AddOrigin { url: String },
@@ -346,6 +347,7 @@ impl Action {
         match self {
             Self::Initialize => "Initialize repository",
             Self::Commit { .. } => "Commit selected files",
+            Self::Discard { .. } => "Discard selected files",
             Self::Pull => "Pull",
             Self::Push => "Push",
             Self::AddOrigin { .. } => "Add origin",
@@ -477,6 +479,123 @@ impl Request {
                 output.ensure_success()?;
                 Ok(format!("Committed {} selected file(s)", paths.len()))
             }
+            Action::Discard { paths } => {
+                ensure!(
+                    current.operation.is_none() && current.conflicts() == 0,
+                    "Resolve the current Git operation in VS Code before discarding here"
+                );
+                ensure!(!paths.is_empty(), "Select at least one changed file");
+                let selected = paths
+                    .iter()
+                    .cloned()
+                    .collect::<std::collections::BTreeSet<_>>();
+                let mut tracked = std::collections::BTreeSet::new();
+                let mut untracked = std::collections::BTreeSet::new();
+                for path in &selected {
+                    let changes = current
+                        .changes
+                        .iter()
+                        .filter(|change| &change.path == path)
+                        .collect::<Vec<_>>();
+                    let expected = self
+                        .expected
+                        .changes
+                        .iter()
+                        .filter(|change| &change.path == path)
+                        .collect::<Vec<_>>();
+                    ensure!(
+                        !changes.is_empty() && changes == expected,
+                        "Selected file '{path}' changed Git status; refresh and review before discarding"
+                    );
+                    for change in changes {
+                        ensure!(
+                            !change.submodule,
+                            "Use VS Code to discard submodule changes"
+                        );
+                        if change.untracked {
+                            untracked.insert(path.clone());
+                        } else {
+                            tracked.insert(path.clone());
+                        }
+                        if (change.index == 'R' || change.worktree == 'R')
+                            && let Some(original) = &change.original_path
+                        {
+                            let original_file = discard_file_path(&repository.root, original)?;
+                            ensure!(
+                                selected.contains(original)
+                                    || (!original_file.try_exists()?
+                                        && !original_file.is_symlink()),
+                                "Discarding '{path}' would overwrite unselected file '{original}'; select both files or use VS Code"
+                            );
+                            tracked.insert(original.clone());
+                        }
+                    }
+                }
+                for path in tracked.iter().chain(untracked.iter()) {
+                    discard_file_path(&repository.root, path)?;
+                }
+                for path in &tracked {
+                    let prefix = format!("{path}/");
+                    ensure!(
+                        current.changes.iter().all(|change| {
+                            !change.path.starts_with(&prefix) || selected.contains(&change.path)
+                        }),
+                        "Discarding '{path}' would affect unselected files below it; select those files or use VS Code"
+                    );
+                }
+                for path in &tracked {
+                    untracked.remove(path);
+                }
+                if !tracked.is_empty() {
+                    let mut input = Vec::new();
+                    for path in &tracked {
+                        input.extend_from_slice(path.as_bytes());
+                        input.push(0);
+                    }
+                    let args = if current.head.is_some() {
+                        vec![
+                            "restore",
+                            "--source=HEAD",
+                            "--staged",
+                            "--worktree",
+                            "--pathspec-from-file=-",
+                            "--pathspec-file-nul",
+                        ]
+                    } else {
+                        untracked.extend(tracked);
+                        vec![
+                            "rm",
+                            "--cached",
+                            "--force",
+                            "--pathspec-from-file=-",
+                            "--pathspec-file-nul",
+                        ]
+                    };
+                    process::run(
+                        &repository.root,
+                        args,
+                        Some(input),
+                        cancellation,
+                        Duration::from_secs(30),
+                    )?
+                    .ensure_success()?;
+                }
+                for path in untracked {
+                    ensure!(!cancellation.is_cancelled(), "Git operation cancelled");
+                    let file = discard_file_path(&repository.root, &path)?;
+                    match std::fs::remove_file(file) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(error).with_context(|| format!("Cannot discard '{path}'"));
+                        }
+                    }
+                }
+                Ok(format!(
+                    "Discarded changes in {} selected file(s)",
+                    selected.len()
+                ))
+            }
             Action::Pull => {
                 ensure!(
                     current.operation.is_none() && current.conflicts() == 0,
@@ -604,6 +723,43 @@ impl Request {
     }
 }
 
+fn discard_file_path(root: &Path, path: &str) -> Result<PathBuf> {
+    let relative = Path::new(path);
+    ensure!(
+        !path.is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_))),
+        "Invalid selected Git path '{path}'"
+    );
+    let mut parent = root.to_path_buf();
+    if let Some(ancestors) = relative.parent() {
+        for component in ancestors.components() {
+            parent.push(component);
+            match parent.symlink_metadata() {
+                Ok(metadata) => ensure!(
+                    metadata.is_dir() && !metadata.file_type().is_symlink(),
+                    "Parent of '{path}' is not a regular directory; review in VS Code"
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("Cannot inspect '{path}'"));
+                }
+            }
+        }
+    }
+    let file = root.join(relative);
+    match file.symlink_metadata() {
+        Ok(metadata) => ensure!(
+            !metadata.is_dir(),
+            "Selected path '{path}' is a directory; select its individual changed files or use VS Code"
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).with_context(|| format!("Cannot inspect '{path}'")),
+    }
+    Ok(file)
+}
+
 fn command(
     root: &Path,
     args: impl IntoIterator<Item = impl AsRef<std::ffi::OsStr>>,
@@ -706,6 +862,7 @@ mod tests {
             &["config", "user.email", "fixture@example.test"],
         );
         git(directory.path(), &["config", "commit.gpgsign", "false"]);
+        git(directory.path(), &["config", "core.autocrlf", "false"]);
         git(
             directory.path(),
             &["config", "core.hooksPath", "disabled-hooks"],
@@ -755,6 +912,237 @@ mod tests {
         assert_eq!(snapshot.changes.len(), 1);
         assert_eq!(snapshot.changes[0].path, "staged.txt");
         assert_eq!(snapshot.changes[0].index, 'M');
+    }
+
+    #[test]
+    fn selected_discard_restores_tracked_files_and_preserves_unselected_changes() {
+        let root = repository();
+        let originals = [
+            "chosen.txt",
+            "staged.txt",
+            "old.txt",
+            "deleted.txt",
+            "cached-deleted.txt",
+            "replaced.txt",
+        ];
+        for file in originals {
+            fs::write(root.path().join(file), format!("initial {file}\n")).unwrap();
+        }
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        let head = git(root.path(), &["rev-parse", "HEAD"]);
+        for file in ["chosen.txt", "staged.txt"] {
+            fs::write(root.path().join(file), "staged contents\n").unwrap();
+            git(root.path(), &["add", file]);
+            fs::write(root.path().join(file), "working contents\n").unwrap();
+        }
+        git(root.path(), &["mv", "old.txt", "renamed [file].txt"]);
+        fs::remove_file(root.path().join("deleted.txt")).unwrap();
+        git(root.path(), &["rm", "cached-deleted.txt"]);
+        git(root.path(), &["rm", "--cached", "replaced.txt"]);
+        fs::write(root.path().join("replaced.txt"), "replacement\n").unwrap();
+        fs::write(root.path().join("added [file].txt"), "staged addition\n").unwrap();
+        git(root.path(), &["add", "added [file].txt"]);
+        fs::create_dir(root.path().join("nested")).unwrap();
+        fs::write(root.path().join("nested/-new.txt"), "untracked\n").unwrap();
+        fs::write(root.path().join("nested/keep.txt"), "keep\n").unwrap();
+        execute(
+            root.path(),
+            Action::Discard {
+                paths: vec![
+                    "chosen.txt".into(),
+                    "renamed [file].txt".into(),
+                    "deleted.txt".into(),
+                    "cached-deleted.txt".into(),
+                    "replaced.txt".into(),
+                    "added [file].txt".into(),
+                    "nested/-new.txt".into(),
+                ],
+            },
+        )
+        .unwrap();
+        for file in originals.into_iter().filter(|file| *file != "staged.txt") {
+            assert_eq!(
+                fs::read_to_string(root.path().join(file)).unwrap(),
+                format!("initial {file}\n")
+            );
+        }
+        for file in ["renamed [file].txt", "added [file].txt", "nested/-new.txt"] {
+            assert!(!root.path().join(file).exists());
+        }
+        assert_eq!(git(root.path(), &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            git(root.path(), &["show", ":staged.txt"]),
+            "staged contents\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("staged.txt")).unwrap(),
+            "working contents\n"
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("nested/keep.txt")).unwrap(),
+            "keep\n"
+        );
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.changes.len(), 2);
+    }
+
+    #[test]
+    fn selected_discard_works_before_the_first_commit() {
+        let root = repository();
+        for file in ["added.txt", "new.txt", "keep-staged.txt", "keep-new.txt"] {
+            fs::write(root.path().join(file), file).unwrap();
+        }
+        git(root.path(), &["add", "added.txt", "keep-staged.txt"]);
+        execute(
+            root.path(),
+            Action::Discard {
+                paths: vec!["added.txt".into(), "new.txt".into()],
+            },
+        )
+        .unwrap();
+        assert!(!root.path().join("added.txt").exists());
+        assert!(!root.path().join("new.txt").exists());
+        assert_eq!(
+            git(root.path(), &["show", ":keep-staged.txt"]),
+            "keep-staged.txt"
+        );
+        assert!(root.path().join("keep-new.txt").exists());
+        assert_eq!(
+            status(root.path(), &Cancellation::default())
+                .unwrap()
+                .changes
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn selected_discard_rejects_stale_requests_and_directory_replacements_before_mutation() {
+        let root = repository();
+        fs::write(root.path().join("file.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(root.path().join("file.txt"), "changed\n").unwrap();
+        fs::write(root.path().join("new.txt"), "keep\n").unwrap();
+        let request = Request {
+            workspace: root.path().into(),
+            expected: status(root.path(), &Cancellation::default()).unwrap(),
+            action: Action::Discard {
+                paths: vec!["new.txt".into(), "file.txt".into()],
+            },
+        };
+        git(root.path(), &["add", "file.txt"]);
+        assert!(
+            request
+                .execute(&Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("changed Git status")
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(root.path().join("new.txt").exists());
+        fs::remove_file(root.path().join("file.txt")).unwrap();
+        fs::create_dir(root.path().join("file.txt")).unwrap();
+        fs::write(root.path().join("file.txt/keep.txt"), "keep\n").unwrap();
+        assert!(
+            execute(root.path(), request.action.clone())
+                .unwrap_err()
+                .to_string()
+                .contains("is a directory")
+        );
+        assert!(root.path().join("file.txt/keep.txt").exists());
+        assert!(root.path().join("new.txt").exists());
+        assert_eq!(git(root.path(), &["show", ":file.txt"]), "changed\n");
+        for paths in [vec![], vec!["new.txt".into(), "../outside.txt".into()]] {
+            assert!(execute(root.path(), Action::Discard { paths }).is_err());
+            assert!(root.path().join("new.txt").exists());
+        }
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        assert!(
+            request
+                .execute(&cancellation)
+                .unwrap_err()
+                .to_string()
+                .contains("cancelled")
+        );
+        assert!(root.path().join("new.txt").exists());
+    }
+
+    #[test]
+    fn selected_discard_rejects_pathspecs_covering_unselected_staged_descendants() {
+        let root = repository();
+        fs::write(root.path().join("replaced.txt"), "original file\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::remove_file(root.path().join("replaced.txt")).unwrap();
+        fs::create_dir(root.path().join("replaced.txt")).unwrap();
+        let child = root.path().join("replaced.txt/keep.txt");
+        fs::write(&child, "unselected staged contents\n").unwrap();
+        git(root.path(), &["add", "-A"]);
+        fs::remove_file(child).unwrap();
+        fs::remove_dir(root.path().join("replaced.txt")).unwrap();
+        let error = execute(
+            root.path(),
+            Action::Discard {
+                paths: vec!["replaced.txt".into()],
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unselected files below it"));
+        assert_eq!(
+            git(root.path(), &["show", ":replaced.txt/keep.txt"]),
+            "unselected staged contents\n"
+        );
+        assert!(!root.path().join("replaced.txt").exists());
+    }
+
+    #[test]
+    fn selected_discard_does_not_overwrite_an_unselected_rename_source() {
+        let root = repository();
+        fs::write(root.path().join("old.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        git(root.path(), &["mv", "old.txt", "renamed.txt"]);
+        fs::write(root.path().join("old.txt"), "unselected replacement\n").unwrap();
+        assert!(
+            execute(
+                root.path(),
+                Action::Discard {
+                    paths: vec!["renamed.txt".into()]
+                },
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unselected file")
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("old.txt")).unwrap(),
+            "unselected replacement\n"
+        );
+        assert!(root.path().join("renamed.txt").exists());
+        execute(
+            root.path(),
+            Action::Discard {
+                paths: vec!["renamed.txt".into(), "old.txt".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("old.txt")).unwrap(),
+            "initial\n"
+        );
+        assert!(!root.path().join("renamed.txt").exists());
+        assert!(
+            status(root.path(), &Cancellation::default())
+                .unwrap()
+                .changes
+                .is_empty()
+        );
     }
 
     #[test]

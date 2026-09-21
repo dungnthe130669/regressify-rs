@@ -141,13 +141,26 @@ the app; authentication failures can be handled in VS Code.
 
 Changed files appear as a collapsible, virtualized folder tree. Select a file to
 review its staged and unstaged changes; binary files are identified by Git.
-Choose files with the checkboxes, enter a commit message, and confirm the commit.
+Choose files or folders with the checkboxes. A folder checkbox selects all of its
+eligible changed files recursively, including files in collapsed subfolders, and
+shows a partial state when only some are selected. Conflicts and submodules are
+excluded from selection. Enter a commit message and confirm the commit.
 The current contents of selected files are committed, including selected
 renames/deletions and untracked files. Unselected staged files remain staged and
 are not included. A failed commit may leave the selected files staged, as in
 normal Git; no changes are discarded. Git hooks and signing configuration remain
 in effect. Submodule commits and in-progress merge/rebase commits are delegated
 to VS Code. Filenames are passed literally using NUL-delimited pathspecs.
+
+Discard selected files is available beside Commit selected files and does not
+require a commit message. Its confirmation lists the selected files and warns
+that discarding cannot be undone. Tracked files lose both staged and unstaged
+changes and are restored to the last commit, including selected deletions and
+renames. New files, whether staged or untracked, are permanently deleted;
+unselected changes and unrelated staged files remain untouched. Folder selection
+does not include unchanged or ignored files. Discard refuses conflicts,
+in-progress Git operations, submodules, directory replacements, and renames that
+would overwrite an unselected file. Changed Git status requires another review.
 
 Untracked workspaces display Not tracked and offer Initialize Git; initialization
 does not stage files. Add origin accepts a credential-free HTTPS/SSH URL or local
@@ -159,18 +172,21 @@ merge/rebase resolution; refresh afterward. This avoids embedding a second merge
 editor or silently resolving conflicts. VS Code must be installed and registered
 for its `vscode://` URL handler.
 
-Commit, pull, push, initialization, and remote setup use explicit confirmation
-and the editor's unsaved-draft guard. Mutating operations block workspace edits
-until completion and offer Stop; other Git work runs off the UI thread. Requests
+Commit, discard, pull, push, initialization, and remote setup use explicit
+confirmation and the editor's unsaved-draft guard. Mutating operations block
+workspace edits until completion and offer Stop; other Git work runs off the UI
+thread. Requests
 revalidate repository identity and HEAD before acting. Cancelling a network
-operation cannot undo changes already accepted by the remote. Git must be
-installed on PATH. Git UI tests use isolated repositories and local bare remotes.
+operation cannot undo changes already accepted by the remote; stopping discard
+cannot undo changes already discarded. Git must be installed on PATH. Git UI
+tests use isolated repositories and local bare remotes.
 
 Remote/upstream configuration is fingerprinted without retaining credentials in
 status messages; network actions reject a changed destination after confirmation.
 Changing branches or remotes invalidates the previous remote-check timestamp and
-any in-flight result. Pull reloads the editor from disk in the background and
-closes a document removed by the incoming commit while retaining the Git view.
+any in-flight result. Pull and discard reload the editor from disk in the
+background and close a document removed by the operation while retaining the
+Git view. Discard retains the draft commit message.
 
 `./ci/desktop-smoke.ps1 -GitFlows` runs the native acceptance flow against local
 repositories only. It verifies initialization, tree and diff review, selected

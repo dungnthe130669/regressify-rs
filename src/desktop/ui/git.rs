@@ -543,6 +543,10 @@ impl Workbench {
                 paths.len(),
                 request.expected.branch
             ),
+            model::Action::Discard { paths } => format!(
+                "Discard all staged and unstaged changes in {} selected file(s)? Tracked files will be restored to the last commit. New files, including staged additions, will be permanently deleted. This cannot be undone.",
+                paths.len()
+            ),
             model::Action::Pull => format!(
                 "Pull '{}' from {}? Only a fast-forward is allowed; local files must be clean.",
                 request.expected.branch,
@@ -568,21 +572,21 @@ impl Workbench {
                 .title(request.action.label())
                 .child(detail.clone())
                 .when(
-                    matches!(request.action, model::Action::Commit { .. }),
+                    matches!(
+                        request.action,
+                        model::Action::Commit { .. } | model::Action::Discard { .. }
+                    ),
                     |dialog| {
                         let paths = match &request.action {
-                            model::Action::Commit { paths, .. } => paths.clone(),
+                            model::Action::Commit { paths, .. }
+                            | model::Action::Discard { paths } => paths.clone(),
                             _ => Vec::new(),
                         };
-                        dialog.child(
-                            div()
-                                .id("git-confirm-files")
-                                .max_h(px(140.))
-                                .overflow_y_scrollbar()
-                                .children(
-                                    paths.into_iter().map(|path| div().text_sm().child(path)),
-                                ),
-                        )
+                        dialog.child(div().id("git-confirm-files").test_support().child(
+                            div().max_h(px(140.)).overflow_y_scrollbar().children(
+                                paths.into_iter().map(|path| div().text_sm().child(path)),
+                            ),
+                        ))
                     },
                 )
                 .footer(
@@ -601,6 +605,10 @@ impl Workbench {
                         .child(
                             Button::new("git-operation-confirm")
                                 .primary()
+                                .when(
+                                    matches!(request.action, model::Action::Discard { .. }),
+                                    |button| button.danger(),
+                                )
                                 .label(request.action.label())
                                 .on_click(window.listener_for(
                                     &view,
@@ -660,8 +668,15 @@ impl Workbench {
                         Ok(snapshot) => panel.install_snapshot(snapshot, window, cx),
                         Err(error) => panel.error = Some(format!("{error:#}")),
                     }
-                    if success && matches!(action, model::Action::Commit { .. }) {
+                    if success
+                        && matches!(
+                            action,
+                            model::Action::Commit { .. } | model::Action::Discard { .. }
+                        )
+                    {
                         panel.selection.clear();
+                    }
+                    if success && matches!(action, model::Action::Commit { .. }) {
                         panel
                             .message
                             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -675,8 +690,8 @@ impl Workbench {
                     cx.notify();
                 });
                 this.sync_modal(cx);
-                if matches!(action, model::Action::Pull) {
-                    this.reload_after_git_pull(window, cx);
+                if matches!(action, model::Action::Pull | model::Action::Discard { .. }) {
+                    this.reload_after_git_operation(window, cx);
                 }
                 cx.notify();
             });
@@ -685,7 +700,7 @@ impl Workbench {
         cx.notify();
     }
 
-    fn reload_after_git_pull(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reload_after_git_operation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.session.workspace.clone() else {
             return;
         };
