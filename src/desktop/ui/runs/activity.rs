@@ -52,6 +52,14 @@ impl RunPanel {
     }
 
     pub(super) fn render_activity(&self, cx: &mut Context<Self>) -> AnyElement {
+        if let Some(request) = self
+            .manager
+            .request
+            .as_ref()
+            .filter(|request| request.command == RunCommand::Deploy)
+        {
+            return self.render_deployment_activity(request, cx);
+        }
         let progress = &self.manager.progress;
         let counts = progress.counts(None);
         let comparisons = progress.comparison_counts(None);
@@ -78,247 +86,223 @@ impl RunPanel {
             progress.elapsed_ms
         };
         let selected_scenarios = self.selected_scenario_count();
-        let mut content = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .p_3()
-            .w_full()
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .justify_between()
-                    .gap_3()
-                    .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap_1()
-                            .children(self.manager.request.as_ref().map(|request| {
-                                let label = format!(
-                                    "{}: {}",
-                                    if self.running() {
-                                        "Running"
-                                    } else {
-                                        "Last run"
-                                    },
-                                    request.command.action_label()
-                                );
-                                div()
-                                    .id("run-command-context")
-                                    .role(Role::Status)
-                                    .aria_label(label.clone())
-                                    .test_support()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(label)
-                            }))
-                            .child(
-                                div()
-                                    .id("run-outcome-heading")
-                                    .role(Role::Status)
-                                    .aria_label(self.outcome_heading())
-                                    .test_support()
-                                    .text_base()
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(match &self.manager.outcome {
-                                        Some(RunOutcome::Failed(_)) => cx.theme().danger,
-                                        Some(RunOutcome::Cancelled) => cx.theme().warning,
-                                        Some(_) if counts.failed > 0 => cx.theme().danger,
-                                        _ => cx.theme().foreground,
-                                    })
-                                    .child(self.outcome_heading()),
+        let mut content =
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .p_3()
+                .w_full()
+                .child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .justify_between()
+                        .gap_3()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .children(self.manager.request.as_ref().map(|request| {
+                                    let label = format!(
+                                        "{}: {}",
+                                        if self.running() {
+                                            "Running"
+                                        } else {
+                                            "Last run"
+                                        },
+                                        request.command.action_label()
+                                    );
+                                    div()
+                                        .id("run-command-context")
+                                        .role(Role::Status)
+                                        .aria_label(label.clone())
+                                        .test_support()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(label)
+                                }))
+                                .child(
+                                    div()
+                                        .id("run-outcome-heading")
+                                        .role(Role::Status)
+                                        .aria_label(self.outcome_heading())
+                                        .test_support()
+                                        .text_base()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(match &self.manager.outcome {
+                                            Some(RunOutcome::Failed(_)) => cx.theme().danger,
+                                            Some(RunOutcome::Cancelled) => cx.theme().warning,
+                                            Some(_) if counts.failed > 0 => cx.theme().danger,
+                                            _ => cx.theme().foreground,
+                                        })
+                                        .child(self.outcome_heading()),
+                                )
+                                .child(
+                                    div()
+                                        .id("live-phase")
+                                        .role(Role::Status)
+                                        .aria_label(phase.to_string())
+                                        .test_support()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(phase.to_string()),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .child(format!(
+                                    "{:02}:{:02}",
+                                    elapsed / 60_000,
+                                    elapsed / 1000 % 60
+                                )),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .gap_2()
+                        .when(!has_run && !self.selection.is_empty(), |row| {
+                            row.child(
+                                Button::new("activity-select-suites")
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::ListChecks)
+                                    .label("Select suites")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tab = 1;
+                                        cx.notify();
+                                    })),
                             )
-                            .child(
-                                div()
-                                    .id("live-phase")
-                                    .role(Role::Status)
-                                    .aria_label(phase.to_string())
-                                    .test_support()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(phase.to_string()),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_family(cx.theme().mono_font_family.clone())
-                            .child(format!(
-                                "{:02}:{:02}",
-                                elapsed / 60_000,
-                                elapsed / 1000 % 60
-                            )),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .when(!has_run && !self.selection.is_empty(), |row| {
-                        row.child(
-                            Button::new("activity-select-suites")
-                                .small()
-                                .icon(gpui_kit::assets::IconName::ListChecks)
-                                .label("Select suites")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.tab = 1;
+                        })
+                        .when(has_run, |row| {
+                            row.child(
+                                Button::new("activity-view-log")
+                                    .ghost()
+                                    .small()
+                                    .icon(gpui_kit::assets::IconName::Terminal)
+                                    .label("View Log")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.show_all_logs(window, cx)
+                                    })),
+                            )
+                        })
+                        .when(
+                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                                && (counts.captured > 0
+                                    || self.manager.request.as_ref().is_some_and(|request| {
+                                        request.command == RunCommand::Approve
+                                    })),
+                            |row| {
+                                row.child(
+                                    Button::new("activity-compare-run")
+                                        .small()
+                                        .icon(gpui_kit::assets::IconName::Images)
+                                        .label("Compare This Run")
+                                        .disabled(self.disabled)
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.compare_completed_run(false, cx)
+                                        })),
+                                )
+                            },
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .border_y_1()
+                        .border_color(cx.theme().border)
+                        .py_2()
+                        .gap_4()
+                        .child(self.metric(
+                            "total",
+                            if comparisons.total > 0 {
+                                "Screenshot comparisons"
+                            } else {
+                                "Scenarios / viewports"
+                            },
+                            if has_run {
+                                results.total
+                            } else {
+                                selected_scenarios
+                            },
+                            cx.theme().foreground,
+                        ))
+                        .child(self.metric("active", "Running", counts.running, cx.theme().primary))
+                        .child(self.metric("passed", "Passed", results.passed, cx.theme().success))
+                        .child(self.metric("failed", "Failed", results.failed, cx.theme().danger)),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .child(format!(
+                                    "{} / {} scenario jobs finished",
+                                    counts.complete(),
+                                    counts.total
+                                ))
+                                .child(format!(
+                                    "{} queued  |  {} captured  |  {} cancelled",
+                                    counts.queued, counts.captured, counts.cancelled
+                                )),
+                        )
+                        .child(
+                            div()
+                                .h(px(5.))
+                                .w_full()
+                                .bg(cx.theme().muted)
+                                .rounded_sm()
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .w(relative(counts.fraction()))
+                                        .bg(if counts.failed > 0 {
+                                            cx.theme().danger
+                                        } else if counts.cancelled > 0 {
+                                            cx.theme().warning
+                                        } else if counts.captured > 0 && counts.passed == 0 {
+                                            cx.theme().info
+                                        } else {
+                                            cx.theme().primary
+                                        })
+                                        .rounded_sm(),
+                                ),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap_3()
+                        .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
+                            "Suite activity"
+                        } else {
+                            "Selected suites"
+                        }))
+                        .child(
+                            Checkbox::new("activity-failed-only")
+                                .label("Failures only")
+                                .checked(self.failed_only)
+                                .disabled(!has_run)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    this.failed_only = *checked;
                                     cx.notify();
                                 })),
-                        )
-                    })
-                    .when(has_run, |row| {
-                        row.child(
-                            Button::new("activity-view-log")
-                                .ghost()
-                                .small()
-                                .icon(gpui_kit::assets::IconName::Terminal)
-                                .label("View Log")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_all_logs(window, cx)
-                                })),
-                        )
-                    })
-                    .when_some(
-                        progress.deployment.as_ref().filter(|_| {
-                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
-                        }),
-                        |row, deployment| {
-                            let url = deployment.url.clone();
-                            row.child(
-                                Button::new("deployment-open-site")
-                                    .small()
-                                    .primary()
-                                    .icon(gpui_kit::assets::IconName::ExternalLink)
-                                    .label("Open Site")
-                                    .tooltip(format!("{}: {}", deployment.target, deployment.url))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        if let Err(error) = open::that_detached(&url) {
-                                            this.status =
-                                                format!("Cannot open deployed site: {error}");
-                                            cx.notify();
-                                        }
-                                    })),
-                            )
-                        },
-                    )
-                    .when(
-                        matches!(self.manager.outcome, Some(RunOutcome::Completed))
-                            && (counts.captured > 0
-                                || self
-                                    .manager
-                                    .request
-                                    .as_ref()
-                                    .is_some_and(|request| request.command == RunCommand::Approve)),
-                        |row| {
-                            row.child(
-                                Button::new("activity-compare-run")
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Images)
-                                    .label("Compare This Run")
-                                    .disabled(self.disabled)
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.compare_completed_run(false, cx)
-                                    })),
-                            )
-                        },
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .border_y_1()
-                    .border_color(cx.theme().border)
-                    .py_2()
-                    .gap_4()
-                    .child(self.metric(
-                        "total",
-                        if comparisons.total > 0 {
-                            "Screenshot comparisons"
-                        } else {
-                            "Scenarios / viewports"
-                        },
-                        if has_run {
-                            results.total
-                        } else {
-                            selected_scenarios
-                        },
-                        cx.theme().foreground,
-                    ))
-                    .child(self.metric("active", "Running", counts.running, cx.theme().primary))
-                    .child(self.metric("passed", "Passed", results.passed, cx.theme().success))
-                    .child(self.metric("failed", "Failed", results.failed, cx.theme().danger)),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!(
-                                "{} / {} scenario jobs finished",
-                                counts.complete(),
-                                counts.total
-                            ))
-                            .child(format!(
-                                "{} queued  |  {} captured  |  {} cancelled",
-                                counts.queued, counts.captured, counts.cancelled
-                            )),
-                    )
-                    .child(
-                        div()
-                            .h(px(5.))
-                            .w_full()
-                            .bg(cx.theme().muted)
-                            .rounded_sm()
-                            .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(counts.fraction()))
-                                    .bg(if counts.failed > 0 {
-                                        cx.theme().danger
-                                    } else if counts.cancelled > 0 {
-                                        cx.theme().warning
-                                    } else if counts.captured > 0 && counts.passed == 0 {
-                                        cx.theme().info
-                                    } else {
-                                        cx.theme().primary
-                                    })
-                                    .rounded_sm(),
-                            ),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap_3()
-                    .child(div().font_weight(FontWeight::MEDIUM).child(if has_run {
-                        "Suite activity"
-                    } else {
-                        "Selected suites"
-                    }))
-                    .child(
-                        Checkbox::new("activity-failed-only")
-                            .label("Failures only")
-                            .checked(self.failed_only)
-                            .disabled(!has_run)
-                            .on_change(cx.listener(|this, checked, _, cx| {
-                                this.failed_only = *checked;
-                                cx.notify();
-                            })),
-                    ),
-            );
+                        ),
+                );
         if let Some(error) = &progress.error {
             content = content.child(
                 div()
@@ -562,6 +546,221 @@ impl RunPanel {
             .into_any_element()
     }
 
+    fn render_deployment_activity(
+        &self,
+        request: &RunRequest,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let progress = &self.manager.progress;
+        let (heading, color, icon) = match &self.manager.outcome {
+            None => ("Deploying reports", cx.theme().primary, None),
+            Some(RunOutcome::Completed) => (
+                "Deployment complete",
+                cx.theme().success,
+                Some(gpui_kit::assets::IconName::CircleCheck),
+            ),
+            Some(RunOutcome::Failed(_)) => (
+                "Deployment failed",
+                cx.theme().danger,
+                Some(gpui_kit::assets::IconName::CircleX),
+            ),
+            Some(RunOutcome::Cancelled) => (
+                "Deployment stopped",
+                cx.theme().warning,
+                Some(gpui_kit::assets::IconName::Square),
+            ),
+        };
+        let phase = if progress.phase.is_empty() {
+            "Preparing selected reports"
+        } else {
+            &progress.phase
+        };
+        let elapsed = if self.manager.outcome.is_none() {
+            self.started
+                .map(|started| started.elapsed().as_millis() as u64)
+                .unwrap_or(progress.elapsed_ms)
+        } else {
+            progress.elapsed_ms
+        };
+        let error = progress.error.as_deref().or(match &self.manager.outcome {
+            Some(RunOutcome::Failed(error)) => Some(error.as_str()),
+            _ => None,
+        });
+        div()
+            .id("activity-scroll")
+            .size_full()
+            .overflow_y_scrollbar()
+            .child(
+                div()
+                    .id("deployment-progress")
+                    .role(Role::Group)
+                    .aria_label("Report deployment")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .p_4()
+                    .w_full()
+                    .min_w_0()
+                    .bg(color.opacity(0.08))
+                    .border_b_1()
+                    .border_color(color.opacity(0.35))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .size_8()
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(match icon {
+                                        Some(icon) => Icon::new(icon)
+                                            .size_6()
+                                            .text_color(color)
+                                            .into_any_element(),
+                                        None => div()
+                                            .id("deployment-spinner")
+                                            .test_support()
+                                            .child(
+                                                spinner::Spinner::new()
+                                                    .with_size(px(24.))
+                                                    .color(color),
+                                            )
+                                            .into_any_element(),
+                                    }),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .child(
+                                        div()
+                                            .id("run-outcome-heading")
+                                            .role(Role::Status)
+                                            .aria_label(heading)
+                                            .test_support()
+                                            .text_base()
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(color)
+                                            .child(heading),
+                                    )
+                                    .child(
+                                        div()
+                                            .id("live-phase")
+                                            .role(Role::Status)
+                                            .aria_label(phase.to_string())
+                                            .test_support()
+                                            .text_sm()
+                                            .truncate()
+                                            .child(phase.to_string()),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("deployment-elapsed")
+                                    .test_support()
+                                    .flex_shrink_0()
+                                    .text_sm()
+                                    .font_family(cx.theme().mono_font_family.clone())
+                                    .child(format!(
+                                        "{:02}:{:02}",
+                                        elapsed / 60_000,
+                                        elapsed / 1000 % 60
+                                    )),
+                            ),
+                    )
+                    .when_some(request.options.deployment.as_ref(), |body, job| {
+                        let destination = format!(
+                            "{} | {} | {} | {} {}",
+                            job.target.name,
+                            job.target.provider.label(),
+                            if job.target.environment.is_empty() {
+                                "Production"
+                            } else {
+                                &job.target.environment
+                            },
+                            job.suite_ids.len(),
+                            if job.suite_ids.len() == 1 {
+                                "suite"
+                            } else {
+                                "suites"
+                            },
+                        );
+                        body.child(
+                            div()
+                                .id("deployment-destination")
+                                .role(Role::Status)
+                                .aria_label(destination.clone())
+                                .test_support()
+                                .text_sm()
+                                .truncate()
+                                .child(destination),
+                        )
+                    }),
+            )
+            .when_some(error, |body, error| {
+                body.child(
+                    div()
+                        .id("deployment-error")
+                        .role(Role::Status)
+                        .aria_label(error.to_string())
+                        .test_support()
+                        .px_4()
+                        .py_3()
+                        .text_color(cx.theme().danger)
+                        .child(error.to_string()),
+                )
+            })
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_2()
+                    .p_4()
+                    .child(
+                        Button::new("activity-view-log")
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Terminal)
+                            .label("View Log")
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.show_all_logs(window, cx)),
+                            ),
+                    )
+                    .when_some(
+                        progress.deployment.as_ref().filter(|_| {
+                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
+                        }),
+                        |row, deployment| {
+                            let url = deployment.url.clone();
+                            row.child(
+                                Button::new("deployment-open-site")
+                                    .small()
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::ExternalLink)
+                                    .label("Open Site")
+                                    .tooltip(format!("{}: {}", deployment.target, deployment.url))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if let Err(error) = open::that_detached(&url) {
+                                            this.status =
+                                                format!("Cannot open deployed site: {error}");
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                        },
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn metric(
         &self,
         id: &'static str,
@@ -661,5 +860,213 @@ fn suite_status(counts: Counts, finished: bool) -> Status {
         Status::Passed
     } else {
         Status::Captured
+    }
+}
+
+#[cfg(all(test, feature = "gui-tests"))]
+mod tests {
+    use crate::desktop::deployment::{DeployTarget, DeploymentJob, DeploymentProvider};
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    use crate::progress::{Event, Record};
+    use gpui_kit::test::TestWindowExt;
+    use gpui_kit::{AppContext, TestAppContext, px, size};
+
+    fn deployment_request(root: &std::path::Path) -> RunRequest {
+        RunRequest {
+            root: root.to_path_buf(),
+            command: RunCommand::Deploy,
+            options: RunOptions {
+                deployment: Some(DeploymentJob {
+                    target: DeployTarget {
+                        id: "qa".into(),
+                        name: "QA reports".into(),
+                        provider: DeploymentProvider::AzureSwa,
+                        credential_id: None,
+                        environment: "preview".into(),
+                        site_id: String::new(),
+                    },
+                    suite_ids: vec!["ui-test".into()],
+                    catalog_ids: vec!["ui-test".into()],
+                    partial_confirmed: false,
+                }),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[gpui_kit::test]
+    fn deployment_activity_shows_phases_and_outcomes(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::super::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 1;
+                this.runs.update(cx, |panel, cx| {
+                    panel.manager.request = Some(deployment_request(directory.path()));
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 1200,
+                        event: Event::Phase {
+                            name: "Uploading selected reports".into(),
+                        },
+                    });
+                    cx.notify();
+                });
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deployment-progress").is_some());
+            assert_eq!(
+                window.find("run-outcome-heading").label(),
+                Some("Deploying reports")
+            );
+            assert_eq!(
+                window.find("live-phase").label(),
+                Some("Uploading selected reports")
+            );
+            assert!(window.try_find("metric-total").is_none());
+            assert!(window.try_find("deployment-open-site").is_none());
+            assert!(window.find("deployment-spinner").visible());
+            assert!(
+                window
+                    .find("deployment-destination")
+                    .label()
+                    .unwrap()
+                    .contains("QA reports")
+            );
+
+            for phase in [
+                "Validating Azure deployment target",
+                "Packaging selected reports",
+                "Uploading selected reports",
+                "Waiting for Azure deployment",
+                "Validating Netlify deployment target",
+                "Packaging selected reports for Netlify",
+                "Waiting for Netlify deployment",
+            ] {
+                view.update(cx, |this, cx| {
+                    this.runs.update(cx, |panel, cx| {
+                        panel.manager.progress.apply(Record {
+                            version: 1,
+                            elapsed_ms: 1800,
+                            event: Event::Phase { name: phase.into() },
+                        });
+                        cx.notify();
+                    });
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("live-phase").label(), Some(phase));
+                assert!(window.find("deployment-spinner").visible());
+            }
+            window.click("activity-view-log", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("run-log-heading").label(), Some("All run logs"));
+            window.click("log-activity", cx);
+            window.render_frame(cx);
+            assert!(window.find("deployment-progress").visible());
+
+            for (outcome, heading) in [
+                (RunOutcome::Completed, "Deployment complete"),
+                (
+                    RunOutcome::Failed("Upload unavailable".into()),
+                    "Deployment failed",
+                ),
+                (RunOutcome::Cancelled, "Deployment stopped"),
+            ] {
+                view.update(cx, |this, cx| {
+                    this.runs.update(cx, |panel, cx| {
+                        panel.manager.progress.apply(Record {
+                            version: 1,
+                            elapsed_ms: 2400,
+                            event: Event::Deployed {
+                                target: "QA reports".into(),
+                                url: "https://reports.example.com".into(),
+                            },
+                        });
+                        panel.manager.outcome = Some(outcome.clone());
+                        cx.notify();
+                    });
+                });
+                window.render_frame(cx);
+                assert_eq!(window.find("run-outcome-heading").label(), Some(heading));
+                assert!(window.try_find("deployment-spinner").is_none());
+                if let RunOutcome::Failed(error) = &outcome {
+                    assert_eq!(
+                        window.find("deployment-error").label(),
+                        Some(error.as_str())
+                    );
+                }
+                assert_eq!(
+                    window.try_find("deployment-open-site").is_some(),
+                    matches!(outcome, RunOutcome::Completed)
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn deployment_activity_fits_compact_and_wide_windows(cx: &mut TestAppContext) {
+        for (width, height) in [(1080., 720.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = super::super::super::tests::editor_at_size(
+                cx,
+                directory.path(),
+                size(px(width), px(height)),
+            );
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.main_tab = 1;
+                    this.runs.update(cx, |panel, cx| {
+                        let mut request = deployment_request(directory.path());
+                        let job = request.options.deployment.as_mut().unwrap();
+                        job.target.name = "Long deployment destination ".repeat(4);
+                        job.target.provider = DeploymentProvider::Netlify;
+                        job.target.environment.clear();
+                        panel.manager.request = Some(request);
+                        panel.manager.progress.phase =
+                            format!("Uploading selected reports {}", "details".repeat(40));
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                for dark in [false, true] {
+                    super::super::super::design::apply_theme(dark, Some(window), cx);
+                    window.render_frame(cx);
+                    let band = window.find("deployment-progress").bounds();
+                    assert!(band.size.width > px(400.));
+                    assert!(band.origin.x + band.size.width <= px(width));
+                    assert!(band.origin.y + band.size.height <= px(height));
+                    for id in [
+                        "deployment-spinner",
+                        "run-outcome-heading",
+                        "live-phase",
+                        "deployment-destination",
+                        "deployment-elapsed",
+                    ] {
+                        let bounds = window.find(id).bounds();
+                        assert!(bounds.size.width > px(0.), "{id}");
+                        assert!(bounds.size.height > px(0.), "{id}");
+                        assert!(bounds.origin.x >= band.origin.x, "{id}");
+                        assert!(
+                            bounds.origin.x + bounds.size.width <= band.origin.x + band.size.width,
+                            "{id}"
+                        );
+                        assert!(
+                            bounds.origin.y + bounds.size.height
+                                <= band.origin.y + band.size.height,
+                            "{id}"
+                        );
+                    }
+                    let phase = window.find("live-phase").bounds();
+                    let elapsed = window.find("deployment-elapsed").bounds();
+                    assert!(phase.origin.x + phase.size.width <= elapsed.origin.x);
+                    let log = window.find("activity-view-log").bounds();
+                    assert!(log.origin.y >= band.origin.y + band.size.height);
+                    assert!(log.origin.y + log.size.height <= px(height));
+                }
+            })
+            .unwrap();
+        }
     }
 }

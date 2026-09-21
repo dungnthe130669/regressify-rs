@@ -296,6 +296,7 @@ impl Workbench {
                 body = body.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Publication: full latest reports for the selected suites."));
             }
             if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
+            let starting = saving && !editing && !state.removing;
             dialog.title("Deploy reports").keyboard(!saving).close_button(!saving).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
                 .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx)))
                 .footer(div().flex().justify_end().gap_2()
@@ -303,8 +304,9 @@ impl Workbench {
                         this.cancel_deploy_edit(window, cx);
                         window.close_dialog(cx);
                     })))
-                    .child(Button::new("deploy-confirm").primary().icon(gpui_kit::assets::IconName::CloudUpload).label("Deploy")
-                        .accessibility_label("Deploy selected reports")
+                    .child(Button::new("deploy-confirm").primary().min_w(px(120.)).icon(gpui_kit::assets::IconName::CloudUpload).loading(starting)
+                        .label(if starting { "Starting..." } else { "Deploy" })
+                        .accessibility_label(if starting { "Starting deployment" } else { "Deploy selected reports" })
                         .when(selected.is_some_and(|target| target.credential_id.is_none()), |button| button.tooltip("Deployment token required"))
                         .disabled(!state.can_deploy()).on_click(window.listener_for(&view, |this, _, window, cx| this.begin_deployment(window, cx)))))
         });
@@ -919,6 +921,27 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("deploy-add-token").is_none());
+            view.update(cx, |this, cx| {
+                this.deployment.update(cx, |state, cx| {
+                    state.saving = true;
+                    cx.notify();
+                });
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("deploy-confirm").label(),
+                Some("Starting deployment")
+            );
+            window.click("deploy-confirm", cx);
+            assert!(!view.read(cx).runs.read(cx).running());
+            assert!(!view.read(cx).deployment.read(cx).can_deploy());
+            view.update(cx, |this, cx| {
+                this.deployment.update(cx, |state, cx| {
+                    state.saving = false;
+                    cx.notify();
+                });
+            });
+            window.render_frame(cx);
             window.click("deploy-confirm", cx);
         })
         .unwrap();

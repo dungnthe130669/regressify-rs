@@ -153,6 +153,19 @@ preserving the other attributes. Optional `secure` and
 `httpOnly` values must be booleans; `sameSite` is `Strict`, `Lax`, or `None`.
 `SameSite: None` requires `secure: true`.
 
+The combined UTF-8 byte length of each cookie's `name` and `value` must not
+exceed Chromium's 4,096-byte limit. Values must not contain CR, LF, or NUL
+characters. A YAML `|` or `>` block normally adds a trailing newline; use a
+quoted single-line value or `|-` containing one line instead. These errors
+are reported before browser launch, with the file, cookie, and reason but
+without the cookie value.
+
+For chunked authentication cookies such as `.AspNetCore.Cookies`, export
+the base cookie and every numbered chunk (`.AspNetCore.CookiesC1`,
+`.AspNetCore.CookiesC2`, etc.) as separate entries exactly as stored in the
+browser. Re-export an oversized cookie; do not concatenate, truncate, or
+manually split its value. Regressify does not modify authentication values.
+
 ```yaml
 - name: session
   value: example-token

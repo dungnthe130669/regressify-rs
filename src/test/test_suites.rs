@@ -2115,6 +2115,53 @@ mod tests {
     }
 
     #[test]
+    fn cookie_file_size_and_value_errors_are_reported_during_preflight() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let output_dir = workspace_root.path().join(".regressify");
+        let cookie_path = workspace_root.path().join("common/_cookies.yaml");
+        std::fs::create_dir_all(cookie_path.parent().unwrap()).unwrap();
+        let parsed = vec![(input(), Arc::new(suite(vec![scenario("home", None)])))];
+        let name = ".AspNetCore.CookiesC1";
+
+        for (value, expected_error) in [
+            ("x".repeat(4096 - name.len()), None),
+            ("x".repeat(7746), Some("4096-byte cookie limit")),
+            ("private-test-token\n".to_string(), Some("single-line")),
+        ] {
+            let cookies = serde_json::json!([
+                {"name": "session", "value": "valid", "domain": "example.com"},
+                {"name": name, "value": value, "domain": "example.com"}
+            ]);
+            std::fs::write(&cookie_path, serde_yaml::to_string(&cookies).unwrap()).unwrap();
+
+            for configured_path in [None, Some("common/_cookies.yaml".to_string())] {
+                let workspace = config::WorkspaceConfig {
+                    cookie_path: configured_path,
+                    ..Default::default()
+                };
+                let result = validate_external_capture_files_in(
+                    workspace_root.path(),
+                    &output_dir,
+                    &workspace,
+                    &parsed,
+                );
+
+                if let Some(expected_error) = expected_error {
+                    let error = format!("{:#}", result.unwrap_err());
+                    assert!(error.contains("_cookies.yaml"));
+                    assert!(error.contains("cookie 1"));
+                    assert!(error.contains(name));
+                    assert!(error.contains(expected_error));
+                    assert!(!error.contains(&value));
+                } else {
+                    assert!(result.is_ok());
+                }
+                assert!(!output_dir.exists());
+            }
+        }
+    }
+
+    #[test]
     fn configured_persisted_states_are_validated_before_browser_launch() {
         let workspace_root = tempfile::tempdir().unwrap();
         let output_dir = workspace_root.path().join(".regressify");

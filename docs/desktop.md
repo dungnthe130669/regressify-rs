@@ -218,7 +218,12 @@ not restrict access to them.
 
 The last selected target is remembered per workspace, and removing a target
 requires confirmation. Deploy and target management are also available from the
-command palette. Progress, the deployed site URL, and Open Site appear in Runs.
+command palette. Deploy immediately shows a loading state, then opens Runs >
+Activity with a highlighted deployment band, animated spinner, target, current
+stage, and elapsed time. Deployment activity replaces scenario counters with
+deployment-specific feedback. Completion, failure, and cancellation have distinct
+status icons and colors; View Log remains available, and successful deployments
+offer Open Site.
 Stop cancels the local worker
 process tree; it cannot undo a deployment already accepted by Azure. Deployment
 transport is covered by local mock-server tests; a live Azure smoke deployment

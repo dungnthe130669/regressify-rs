@@ -897,7 +897,16 @@ function Test-DeploymentFlows {
     if (-not (Test-ControlInvokable 'Deploy selected reports')) { throw 'Confirmed deployment must be invokable.' }
     [RegressifySmokeCredentials]::Remove($credentialName)
     Invoke-Control 'Deploy selected reports'
-    Wait-Control 'Command failed' | Out-Null
+    Wait-Control 'Deployment failed' | Out-Null
+    Wait-Control 'Report deployment' | Out-Null
+    if ($null -ne (Find-Control 'Scenarios / viewports: 0')) { throw 'Deployment activity must not show scenario counters.' }
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+        Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant())
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+        Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant() + '-compact')
+    }
     Invoke-Control 'View Log'
     Wait-SourceText 'No saved deployment token' 'Run log'
     Capture-Window 'deploy-missing-token'
@@ -981,7 +990,9 @@ function Test-DeploymentFlows {
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
     Invoke-Control 'Yes, deploy only these 1 of 2 suites'
     Invoke-Control 'Deploy selected reports'
-    Wait-Control 'Command failed' | Out-Null
+    Wait-Control 'Deployment failed' | Out-Null
+    Wait-Control 'Report deployment' | Out-Null
+    Capture-Window 'deploy-netlify-outcome'
     Invoke-Control 'View Log'
     Wait-SourceText 'No saved deployment token' 'Run log'
     Capture-Window 'deploy-netlify-missing-token'

@@ -527,19 +527,31 @@ pub(crate) fn validate_cookie_value(cookie: &serde_json::Value, context: &str) -
     let cookie = cookie
         .as_object()
         .ok_or_else(|| anyhow!("{} must be an object", context))?;
-    if cookie
+    let name = cookie
         .get("name")
         .and_then(|value| value.as_str())
-        .is_none_or(str::is_empty)
-    {
-        anyhow::bail!("{} requires a non-empty name", context);
-    }
-    if cookie
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| anyhow!("{} requires a non-empty name", context))?;
+    let context = format!("{} ({:?})", context, name);
+    let value = cookie
         .get("value")
         .and_then(|value| value.as_str())
-        .is_none()
-    {
-        anyhow::bail!("{} requires a string value", context);
+        .ok_or_else(|| anyhow!("{} requires a string value", context))?;
+    const MAX_COOKIE_NAME_VALUE_BYTES: usize = 4096;
+    let size = name.len().saturating_add(value.len());
+    if size > MAX_COOKIE_NAME_VALUE_BYTES {
+        anyhow::bail!(
+            "{} name + value is {} bytes, exceeding Chromium's {}-byte cookie limit; re-export this cookie from the browser. Keep chunked authentication cookies as separate entries; do not concatenate or truncate their values",
+            context,
+            size,
+            MAX_COOKIE_NAME_VALUE_BYTES
+        );
+    }
+    if value.contains(['\r', '\n', '\0']) {
+        anyhow::bail!(
+            "{} field 'value' must be a single-line string without CR, LF, or NUL characters; use a quoted value or YAML '|-' to avoid a trailing newline. Cookie values are not modified automatically",
+            context
+        );
     }
 
     let has_url = cookie
@@ -1524,6 +1536,74 @@ mod tests {
                 .to_string()
                 .contains("requires secure: true")
         );
+    }
+
+    #[test]
+    fn cookie_validation_rejects_yaml_value_line_breaks_without_exposing_values() {
+        for indicator in ["|", ">"] {
+            let yaml = format!(
+                "name: .AspNetCore.CookiesC1\ndomain: example.com\nvalue: {indicator}\n  private-test-token\n"
+            );
+            let cookie: serde_json::Value = serde_yaml::from_str(&yaml).unwrap();
+            let error = validate_cookie_value(&cookie, "cookiePath 'cookies.yaml' cookie 0")
+                .expect_err("YAML block scalars retain a trailing newline")
+                .to_string();
+
+            assert!(error.contains("cookiePath 'cookies.yaml' cookie 0"));
+            assert!(error.contains(".AspNetCore.CookiesC1"));
+            assert!(error.contains("field 'value'"));
+            assert!(error.contains("single-line"));
+            assert!(!error.contains("private-test-token"));
+        }
+    }
+
+    #[test]
+    fn cookie_validation_enforces_chromium_name_and_value_byte_limit() {
+        let name = ".AspNetCore.CookiesC1";
+        for (value, valid) in [
+            ("x".repeat(4096 - name.len()), true),
+            ("x".repeat(4097 - name.len()), false),
+            ("x".repeat(7746), false),
+            ("\u{e9}".repeat((4096 - name.len()) / 2), true),
+            ("\u{e9}".repeat((4096 - name.len()) / 2 + 1), false),
+        ] {
+            let cookie = serde_json::json!({
+                "name": name,
+                "value": value,
+                "domain": "example.com"
+            });
+            let result = validate_cookie_value(&cookie, "cookiePath 'cookies.yaml' cookie 1");
+
+            if valid {
+                assert!(result.is_ok());
+            } else {
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("cookiePath 'cookies.yaml' cookie 1"));
+                assert!(error.contains(name));
+                assert!(error.contains(&format!("{} bytes", name.len() + value.len())));
+                assert!(error.contains("4096-byte cookie limit"));
+                assert!(error.contains("re-export"));
+                assert!(!error.contains(&value));
+            }
+        }
+
+        let oversized_name = serde_json::json!({
+            "name": "x".repeat(4097),
+            "value": "",
+            "domain": "example.com"
+        });
+        assert!(validate_cookie_value(&oversized_name, "cookie").is_err());
+    }
+
+    #[test]
+    fn cookie_validation_accepts_yaml_values_without_line_breaks() {
+        for value in ["'private-test-token'", "|-\n  private-test-token", "''"] {
+            let yaml =
+                format!("name: .AspNetCore.CookiesC1\ndomain: example.com\nvalue: {value}\n");
+            let cookie: serde_json::Value = serde_yaml::from_str(&yaml).unwrap();
+
+            assert!(validate_cookie_value(&cookie, "cookie").is_ok());
+        }
     }
 
     #[test]
