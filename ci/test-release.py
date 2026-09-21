@@ -118,6 +118,19 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("if CheckForMutexes(", installer)
         self.assertNotIn("[UninstallDelete]", installer)
 
+    def test_windows_installer_foreground_handoff_is_smoke_tested(self):
+        step = next(step for step in WORKFLOW["jobs"]["release"]["steps"]
+                    if step.get("name") == "Build Windows installer")
+        self.assertIn("-SmokeTest", step["run"])
+        installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
+        self.assertIn("procedure CurStepChanged(CurStep: TSetupStep);", installer)
+        self.assertIn("(CurStep = ssInstall) and WizardForm.Visible", installer)
+        self.assertIn("WizardForm.BringToFront;", installer)
+        self.assertIn("SetForegroundWindow(WizardForm.Handle)", installer)
+        smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("Fully silent installation attempted foreground activation.", smoke)
+        self.assertIn("Visible update did not request foreground activation after the app closed.", smoke)
+
     def test_tuyen_upload_arguments_and_failures(self):
         shell = shutil.which("pwsh")
         self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")

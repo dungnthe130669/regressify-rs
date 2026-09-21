@@ -55,6 +55,21 @@ Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\RegressifyDeskt
 Filename: "{app}\regressify-desktop.exe"; Parameters: "{code:LaunchParameters}"; Flags: nowait runasoriginaluser; Check: ShouldLaunch
 
 [Code]
+function SetForegroundWindow(Window: HWND): BOOL;
+  external 'SetForegroundWindow@user32.dll stdcall';
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if (CurStep = ssInstall) and WizardForm.Visible then
+  begin
+    WizardForm.BringToFront;
+    if SetForegroundWindow(WizardForm.Handle) then
+      Log('Installer brought to foreground after running-app checks.')
+    else
+      Log('Windows denied installer foreground activation.');
+  end;
+end;
+
 function ShouldLaunch(): Boolean;
 begin
   Result := ExpandConstant('{param:NORELAUNCH|0}') <> '1';

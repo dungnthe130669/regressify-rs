@@ -63,7 +63,10 @@ manifest (404) means no release is published; network failures remain visible in
 the dialog and do not interrupt editing.
 
 Installation requires active runs to finish and uses the usual Save/Discard/Cancel
-guard for a draft. No open workspace or document is required. The installer never
+guard for a draft. No open workspace or document is required. After the initiating
+app instance closes and the running-app checks pass, the installer requests
+foreground focus for its progress window. Fully silent installs remain hidden.
+The installer never
 forcibly closes other windows or workers; close them normally when prompted. New
 app launches are blocked during setup. After installation the initiating workspace
 reopens, if one was open. Older installers cannot
@@ -330,9 +333,12 @@ versions cannot be overwritten, including with a different rebuild of the same
 tag. CI retains the installer as an Actions artifact before publishing.
 
 The installer is compiled with Inno Setup 6. Release CI verifies static-runtime
-dependencies and exercises installation, reinstallation, active-process blocking,
-downgrade rejection, shortcuts, folder context menus and uninstall cleanup before
-upload. Local packaging of a desktop build whose executable version matches `0.2.0.0`:
+dependencies and exercises installation, visible-update foreground requests,
+fully silent setup, active-process blocking, downgrade rejection, shortcuts,
+folder context menus and uninstall cleanup before upload. Windows may deny
+foreground activation on a noninteractive runner; the smoke test reports that
+as a warning while still requiring the activation request. Local packaging of a
+desktop build whose executable version matches `0.2.0.0`:
 
 ```powershell
 ./ci/build-desktop-installer.ps1 -Version 0.2.0.0 -BinaryDirectory target/debug -Compiler 'C:/Tools/Inno Setup 6/ISCC.exe' -SmokeTest

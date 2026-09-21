@@ -93,8 +93,11 @@ if ($SmokeTest) {
         }
     }
     try {
-        $result = Invoke-InstallerFixture $installer ($arguments + ('/LOG="' + (Join-Path $fixture 'install.log') + '"'))
+        $installLog = Join-Path $fixture 'install.log'
+        $foregroundPattern = 'Installer brought to foreground after running-app checks\.|Windows denied installer foreground activation\.'
+        $result = Invoke-InstallerFixture $installer ($arguments + ('/LOG="' + $installLog + '"'))
         if ($result -ne 0) { throw "Fresh installation failed ($result). See $fixture." }
+        if ((Get-Content -LiteralPath $installLog -Raw) -match $foregroundPattern) { throw 'Fully silent installation attempted foreground activation.' }
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'Installed executable differs from the built payload.' }
         Assert-InstallerShellIntegration
         $sentinel = Join-Path $destination 'user-workspace.txt'
@@ -117,7 +120,14 @@ if ($SmokeTest) {
         try {
             if ((Invoke-InstallerFixture $installer $arguments) -eq 0) { throw 'Installer ignored the running application mutex.' }
         } finally { $running.Dispose() }
-        if ((Invoke-InstallerFixture $installer $arguments) -ne 0) { throw 'Reinstallation failed.' }
+        $foregroundLog = Join-Path $fixture 'foreground.log'
+        $updateArguments = @($arguments | Where-Object { $_ -ne '/VERYSILENT' }) + @('/SILENT', ('/LOG="' + $foregroundLog + '"'))
+        if ((Invoke-InstallerFixture $installer $updateArguments) -ne 0) { throw 'Visible update reinstallation failed.' }
+        $foregroundResult = Get-Content -LiteralPath $foregroundLog -Raw
+        if ($foregroundResult -notmatch $foregroundPattern) { throw 'Visible update did not request foreground activation after the app closed.' }
+        if ($foregroundResult -match 'Windows denied installer foreground activation\.') {
+            Write-Warning 'Windows denied foreground activation on this runner; the visible update requested it.'
+        }
         Assert-InstallerShellIntegration
         if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Reinstallation removed user data.' }
         $parts = @($Version.Split('.') | ForEach-Object { [int]$_ })
@@ -134,7 +144,7 @@ if ($SmokeTest) {
             }
         }
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'An unsuccessful installation changed the executable.' }
-        Write-Output 'Fresh install, reinstallation, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
+        Write-Output 'Fresh install, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
     } finally {
         if (Test-Path -LiteralPath $uninstaller) {
             $result = Invoke-InstallerFixture $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
