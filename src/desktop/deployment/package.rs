@@ -28,6 +28,7 @@ impl Package {
         let mut bytes = 0;
         let mut files = 0;
         let mut maximum_file = 0;
+        let mut last_update = std::time::Instant::now();
         for entry in walkdir::WalkDir::new(root)
             .follow_links(false)
             .sort_by_file_name()
@@ -80,12 +81,24 @@ impl Package {
                 copied == length,
                 "Deployment content changed during packaging"
             );
+            if files == 1 || files.is_multiple_of(50) || last_update.elapsed().as_secs() >= 1 {
+                super::phase(&format!(
+                    "Packaged {files} report files ({:.2} MiB uncompressed)",
+                    bytes as f64 / (1024.0 * 1024.0)
+                ));
+                last_update = std::time::Instant::now();
+            }
         }
         archive.finish()?;
         ensure!(
             file.as_file().metadata()?.len() <= MAX_PACKAGE_BYTES,
             "Compressed deployment package exceeds 2 GiB"
         );
+        super::phase(&format!(
+            "Package ready: {files} files, {:.2} MiB content, {:.2} MiB ZIP to upload",
+            bytes as f64 / (1024.0 * 1024.0),
+            file.as_file().metadata()?.len() as f64 / (1024.0 * 1024.0)
+        ));
         file.as_file_mut().seek(SeekFrom::Start(0))?;
         Ok(Self {
             file,

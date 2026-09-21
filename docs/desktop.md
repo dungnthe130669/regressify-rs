@@ -60,7 +60,22 @@ Downloads must match the manifest's
 size and SHA-256, and are checked again before execution. Only newer numeric
 versions and this app's immutable HTTPS installer URLs are accepted. A missing
 manifest (404) means no release is published; network failures remain visible in
-the dialog and do not interrupt editing.
+the dialog and banner and do not interrupt editing.
+
+Download status distinguishes connecting, receiving data, SHA-256 verification,
+and saving the verified installer to disk. During transfer it shows received and
+total MiB, percentage, average speed, and elapsed seconds. After five seconds
+without data it also shows the inactivity time. Connecting or receiving no data
+for 30 seconds fails with an explanation and retry guidance; the entire download
+has a separate 15-minute limit. HTTP errors, incomplete transfers, checksum
+failures, and disk-write failures identify the failed step.
+
+Cancel download stops the attempt without installing anything. Failed and
+cancelled attempts discard their partial installer and offer Retry download;
+there is no automatic retry or installation. Closing only the dialog lets the
+download continue. Errors remain visible in the banner, and Copy details in the
+dialog copies the diagnostic message for troubleshooting. A ready installer
+still requires an explicit Install and restart.
 
 Installation requires active runs to finish and uses the usual Save/Discard/Cancel
 guard for a draft. No open workspace or document is required. After the initiating
@@ -202,6 +217,28 @@ Missing current/diff images fail deployment rather than publishing broken links;
 missing references remain valid report failures. Non-Standard plans reject security-sensitive `auth` and
 `networking` configuration rather than letting Azure silently discard it.
 
+Azure token validation also detects the app's actual Free or Standard tier.
+Deployment budgets are 250 MiB for Free and 500 MiB for Standard per environment
+(Azure labels these limits in MB), measured from all uncompressed report files,
+not the ZIP size. An unrecognized tier is logged and conservatively uses the Free
+budget. Reports already within budget are uploaded without image changes.
+
+Oversized Azure reports are optimized only in a separate OS-temporary directory.
+Local screenshots, references, report metadata, and files used by future
+comparisons are never overwritten. Lossless PNG recompression comes first. If
+more savings are needed, perceptual palette reduction tries progressively lower
+quality floors for passed comparisons (99 down to 50), then failed Reference/Test
+images (99 down to 80). Larger images are tried first at each quality level;
+processing stops when the report fits, with a higher-quality search for the last
+image when possible. Every attempt starts from the original, and replacements
+are kept only if smaller. Dimensions, transparency support, PNG paths, and test
+results remain intact; failed diff images and error placeholders stay lossless.
+The deployment log reports the budget, savings, reduced images, and skipped
+images. If the report cannot fit within these safeguards, deployment stops before
+upload with sizes and recovery steps. Choose fewer suites or a larger plan;
+Azure may also reject a fitting report if other environments exhaust total app
+storage. Optimization shares the deployment deadline and does not affect Netlify.
+
 Netlify verifies site access, streams a disk-backed ZIP to its HTTPS deploy API,
 and waits for the deploy to become ready. ZIPs are limited to 25,000 files and
 2 GiB. Read/poll requests retry transient errors within bounds; deployment
@@ -212,6 +249,13 @@ before upload. Azure authentication, network restrictions, and restricted role
 rules are rejected instead of silently publishing unprotected reports on Netlify.
 Configure access protection in Netlify itself for private reports. Both providers
 retain the 30-minute deadline and keep tokens out of URLs and logs.
+
+Provider failures include available structured error details, HTTP status,
+request/deployment identifiers, and recovery guidance for access, storage,
+billing, throttling, and provider outages. This includes Azure's `errorMessage`
+and `errorDetails` and Netlify's `error_message`. Details are bounded and
+credential/signed-URL redacted; unparseable responses fall back to status-specific
+guidance. The full error is shown in deployment Activity and View Log.
 
 Both providers send `X-Robots-Tag: noindex,nofollow,nocache,nosnippet,noarchive`
 for all report URLs. Snapshots include a Netlify `_headers` file matching the SWA
@@ -227,10 +271,22 @@ stage, and elapsed time. Deployment activity replaces scenario counters with
 deployment-specific feedback. Completion, failure, and cancellation have distinct
 status icons and colors; View Log remains available, and successful deployments
 offer Open Site.
+Activity also shows the 12 most recent nonempty worker log lines, bounded for
+responsive rendering; View Log retains the full bounded run log. Staging and
+packaging report file/byte counts, optimization reports actual savings, and
+uploads report bytes sent (Netlify) or acknowledged (Azure). Azure block commits,
+retry reasons/delays, and each provider polling state are logged. A five-second
+heartbeat continues during long asynchronous operations, without claiming
+unmeasured completion percentages or provider acceptance.
 Stop cancels the local worker
 process tree; it cannot undo a deployment already accepted by Azure. Deployment
 transport is covered by local mock-server tests; a live Azure smoke deployment
 requires a configured target and is not performed by the test suite.
+
+Optional non-publishing API checks use `AZURE_STATIC_WEB_APPS_API_TOKEN`,
+`NETLIFY_PAT`, and `NETLIFY_SITE_ID` from the process environment:
+`cargo test --locked --features desktop --lib live_deployment_ -- --ignored --nocapture --test-threads=1`.
+These tests validate the Azure tier and Netlify site access without creating a deploy.
 
 Native Windows deployment/layout verification uses
 `./ci/desktop-smoke.ps1 -SkipBuild -DeploymentFlows` after building the GUI. It

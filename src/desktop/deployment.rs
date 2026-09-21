@@ -9,7 +9,9 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod budget;
 pub mod credentials;
+mod diagnostics;
 pub mod netlify;
 mod package;
 pub mod swa;
@@ -420,6 +422,33 @@ fn phase(name: &str) {
     crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
 }
 
+pub(super) async fn with_heartbeat<Work: std::future::Future>(
+    label: &str,
+    work: Work,
+) -> Work::Output {
+    monitor(work, std::time::Duration::from_secs(5), |elapsed| {
+        eprintln!("{label}: still working ({}s elapsed)", elapsed.as_secs());
+    })
+    .await
+}
+
+async fn monitor<Work: std::future::Future>(
+    work: Work,
+    interval: std::time::Duration,
+    mut notify: impl FnMut(std::time::Duration),
+) -> Work::Output {
+    let started = tokio::time::Instant::now();
+    let mut timer = tokio::time::interval_at(started + interval, interval);
+    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(work);
+    loop {
+        tokio::select! {
+            output = &mut work => return output,
+            _ = timer.tick() => notify(started.elapsed()),
+        }
+    }
+}
+
 pub(super) fn workspace_key(root: &Path) -> Result<String> {
     let root = root.canonicalize()?;
     let mut identity = super::workspace::display_path(&root);
@@ -496,6 +525,45 @@ fn artifact_source(
     Ok(Some(source))
 }
 
+fn read_report_configuration(path: &Path) -> Result<serde_json::Value> {
+    let text = String::from_utf8(bounded_read(
+        fs::File::open(path)?,
+        16 * 1024 * 1024,
+        "Report configuration",
+    )?)?;
+    let data = text
+        .trim()
+        .strip_prefix("report(")
+        .and_then(|value| value.strip_suffix(");"))
+        .context("Invalid report configuration")?;
+    serde_json::from_str(data).context("Invalid report configuration JSON")
+}
+
+fn report_image_relative(suite: &str, key: &str, image: &str) -> Result<PathBuf> {
+    let image = image
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .replace('\\', "/");
+    let image = image
+        .strip_prefix("../")
+        .context("Report image must be suite-relative")?;
+    ensure!(
+        image.starts_with(if key == "reference" {
+            "bitmaps_reference/"
+        } else {
+            "bitmaps_test/"
+        }) && Path::new(image)
+            .extension()
+            .is_some_and(|extension| extension == "png")
+            && Path::new(image)
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
+        "Report image is outside capture folders"
+    );
+    Ok(Path::new(suite).join(image))
+}
+
 pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) -> Result<()> {
     ensure!(
         !suite_ids.is_empty(),
@@ -509,7 +577,10 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "Deployment staging directory must be new"
     );
     fs::create_dir_all(destination)?;
+    phase("Staging selected report dependencies");
     let mut copied = BTreeSet::new();
+    let mut copied_bytes = 0_u64;
+    let mut last_update = std::time::Instant::now();
     let mut copy = |relative: &Path, missing_reference: bool| -> Result<()> {
         let Some(source) = artifact_source(&output, relative, missing_reference)? else {
             return Ok(());
@@ -519,7 +590,18 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         }
         let target = destination.join(relative);
         fs::create_dir_all(target.parent().context("Staging path has no parent")?)?;
-        fs::copy(source, target)?;
+        copied_bytes += fs::copy(source, target)?;
+        if copied.len() == 1
+            || copied.len().is_multiple_of(50)
+            || last_update.elapsed().as_secs() >= 1
+        {
+            phase(&format!(
+                "Staged {} report files ({:.2} MiB)",
+                copied.len(),
+                copied_bytes as f64 / (1024.0 * 1024.0)
+            ));
+            last_update = std::time::Instant::now();
+        }
         Ok(())
     };
     for name in [
@@ -559,17 +641,7 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         let report = Path::new(suite).join("html_report");
         copy(&report.join("index.html"), false)?;
         copy(&report.join("config.js"), false)?;
-        let text = String::from_utf8(bounded_read(
-            fs::File::open(destination.join(&report).join("config.js"))?,
-            16 * 1024 * 1024,
-            "Report configuration",
-        )?)?;
-        let data = text
-            .trim()
-            .strip_prefix("report(")
-            .and_then(|value| value.strip_suffix(");"))
-            .context("Invalid report configuration")?;
-        let data: serde_json::Value = serde_json::from_str(data)?;
+        let data = read_report_configuration(&destination.join(&report).join("config.js"))?;
         ensure!(
             data["id"].as_str() == Some(suite),
             "Report suite identity changed"
@@ -584,36 +656,43 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
             );
             for key in ["reference", "test", "diffImage"] {
                 if let Some(image) = test["pair"][key].as_str().filter(|value| !value.is_empty()) {
-                    let image = image
-                        .split('?')
-                        .next()
-                        .unwrap_or_default()
-                        .replace('\\', "/");
-                    let image = image
-                        .strip_prefix("../")
-                        .context("Report image must be suite-relative")?;
-                    ensure!(
-                        image.starts_with(if key == "reference" {
-                            "bitmaps_reference/"
-                        } else {
-                            "bitmaps_test/"
-                        }) && Path::new(image)
-                            .extension()
-                            .is_some_and(|extension| extension == "png"),
-                        "Report image is outside capture folders"
-                    );
-                    let relative = Path::new(suite).join(image);
+                    let relative = report_image_relative(suite, key, image)?;
                     copy(&relative, key == "reference")?;
                 }
             }
         }
     }
+    phase(&format!(
+        "Staging complete: {} files for {} suites",
+        copied.len(),
+        selected.len()
+    ));
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn heartbeat_reports_waiting_and_preserves_results() {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let mut sender = Some(sender);
+        let mut updates = 0;
+        let output = monitor(receiver, std::time::Duration::from_millis(1), |_| {
+            updates += 1;
+            if let Some(sender) = sender.take() {
+                sender.send("finished").unwrap();
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(output, "finished");
+        assert!(updates >= 1);
+        let error =
+            with_heartbeat("Test deployment", async { Err::<(), _>("provider detail") }).await;
+        assert_eq!(error, Err("provider detail"));
+    }
 
     #[test]
     fn deployment_requires_nonempty_selection_and_explicit_subset_confirmation() {

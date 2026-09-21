@@ -965,7 +965,25 @@ public static class RegressifySmokeCredentials {
 '@
 }
 
+function Clear-DeploymentFixtureSelection {
+    Wait-Control 'Select suite smoke' | Out-Null
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+    $names = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        ForEach-Object { $_.Current.Name } | Where-Object { $_ -like 'Select suite *' } | Sort-Object -Unique
+    foreach ($name in $names) {
+        $control = Wait-Control $name
+        $pattern = $null
+        if (-not $control.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
+            throw "Fixture suite checkbox does not expose its selection: $name"
+        }
+        if (([System.Windows.Automation.TogglePattern]$pattern).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
+            Invoke-Control $name
+        }
+    }
+}
+
 function Test-DeploymentFlows {
+    Clear-DeploymentFixtureSelection
     if (Test-ControlInvokable 'Deploy') { throw 'Deploy must be disabled without selected suites.' }
     Invoke-Control 'Deployment targets'
     Wait-Control 'No deployment targets' | Out-Null
@@ -1008,6 +1026,7 @@ function Test-DeploymentFlows {
     if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'The saved token did not survive an app restart.' }
     Capture-Window 'deploy-target-restored'
     Invoke-Control 'Close'
+    Clear-DeploymentFixtureSelection
     Invoke-Control 'Select suite smoke'
     Invoke-Control 'Deploy'
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
@@ -1028,6 +1047,7 @@ function Test-DeploymentFlows {
     Invoke-Control 'Deploy selected reports'
     Wait-Control 'Deployment failed' | Out-Null
     Wait-Control 'Report deployment' | Out-Null
+    Wait-Control 'Deployment log' | Out-Null
     if ($null -ne (Find-Control 'Scenarios / viewports: 0')) { throw 'Deployment activity must not show scenario counters.' }
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
@@ -1114,6 +1134,7 @@ function Test-DeploymentFlows {
         Invoke-Control 'Close'
     }
     [RegressifySmokeCredentials]::Remove($credentialName)
+    Clear-DeploymentFixtureSelection
     Invoke-Control 'Select suite smoke'
     Invoke-Control 'Deploy'
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
@@ -1121,6 +1142,7 @@ function Test-DeploymentFlows {
     Invoke-Control 'Deploy selected reports'
     Wait-Control 'Deployment failed' | Out-Null
     Wait-Control 'Report deployment' | Out-Null
+    Wait-Control 'Deployment log' | Out-Null
     Capture-Window 'deploy-netlify-outcome'
     Invoke-Control 'View Log'
     Wait-SourceText 'No saved deployment token' 'Run log'

@@ -609,6 +609,8 @@ impl RunPanel {
             Some(RunOutcome::Failed(error)) => Some(error.as_str()),
             _ => None,
         });
+        let recent_logs = deployment_log_tail(&self.manager.logs);
+        let log_count = recent_logs.len();
         div()
             .id("activity-scroll")
             .size_full()
@@ -781,6 +783,57 @@ impl RunPanel {
                         },
                     ),
             )
+            .when(!recent_logs.is_empty(), |body| {
+                body.child(
+                    div()
+                        .id("deployment-live-log")
+                        .role(Role::Group)
+                        .aria_label("Deployment log")
+                        .test_support()
+                        .w_full()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .px_4()
+                        .py_3()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .child("Deployment log"),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .text_xs()
+                                .font_family(cx.theme().mono_font_family.clone())
+                                .children(recent_logs.into_iter().enumerate().map(
+                                    |(index, line)| {
+                                        div()
+                                            .id(SharedString::from(if index + 1 == log_count {
+                                                "deployment-log-latest".to_string()
+                                            } else {
+                                                format!("deployment-log-line-{index}")
+                                            }))
+                                            .role(Role::ListItem)
+                                            .aria_label(line.clone())
+                                            .test_support()
+                                            .w_full()
+                                            .min_w_0()
+                                            .truncate()
+                                            .child(line)
+                                    },
+                                )),
+                        ),
+                )
+            })
             .into_any_element()
     }
 
@@ -870,6 +923,27 @@ impl RunPanel {
     }
 }
 
+fn deployment_log_tail(
+    logs: &std::collections::VecDeque<crate::desktop::runner::LogLine>,
+) -> Vec<String> {
+    let mut lines = logs
+        .iter()
+        .rev()
+        .flat_map(|entry| entry.text.lines().rev())
+        .filter(|line| !line.trim().is_empty())
+        .take(12)
+        .map(|line| {
+            let mut text = line.chars().take(512).collect::<String>();
+            if line.chars().nth(512).is_some() {
+                text.push_str("...");
+            }
+            text
+        })
+        .collect::<Vec<_>>();
+    lines.reverse();
+    lines
+}
+
 fn suite_status(counts: Counts, finished: bool) -> Status {
     if counts.running > 0 {
         Status::Running
@@ -889,7 +963,7 @@ fn suite_status(counts: Counts, finished: bool) -> Status {
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
     use crate::desktop::deployment::{DeployTarget, DeploymentJob, DeploymentProvider};
-    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    use crate::desktop::runner::{LogLine, RunCommand, RunOptions, RunOutcome, RunRequest};
     use crate::progress::{Event, Record};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{AppContext, TestAppContext, px, size};
@@ -917,6 +991,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn deployment_log_tail_keeps_recent_messages_in_order_and_bounds_rendering() {
+        let logs = (0..30)
+            .map(|index| LogLine {
+                stderr: true,
+                text: format!("\nStep {index}\n"),
+            })
+            .chain([LogLine {
+                stderr: true,
+                text: "x".repeat(10_000),
+            }])
+            .collect();
+        let lines = super::deployment_log_tail(&logs);
+        assert_eq!(lines.len(), 12);
+        assert_eq!(lines[0], "Step 19");
+        assert_eq!(lines[10], "Step 29");
+        assert_eq!(lines[11].len(), 515);
+        assert!(lines[11].ends_with("..."));
+    }
+
     #[gpui_kit::test]
     fn deployment_activity_shows_phases_and_outcomes(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
@@ -926,6 +1020,10 @@ mod tests {
                 this.main_tab = 1;
                 this.runs.update(cx, |panel, cx| {
                     panel.manager.request = Some(deployment_request(directory.path()));
+                    panel.manager.logs.push_back(LogLine {
+                        stderr: true,
+                        text: "Azure tier: Free; storage budget 250 MiB\n".into(),
+                    });
                     panel.manager.progress.apply(Record {
                         version: 1,
                         elapsed_ms: 1200,
@@ -939,6 +1037,11 @@ mod tests {
             });
             window.render_frame(cx);
             assert!(window.try_find("deployment-progress").is_some());
+            assert!(window.find("deployment-live-log").visible());
+            assert_eq!(
+                window.find("deployment-log-latest").label(),
+                Some("Azure tier: Free; storage budget 250 MiB")
+            );
             assert_eq!(
                 window.find("run-outcome-heading").label(),
                 Some("Deploying reports")
@@ -974,11 +1077,16 @@ mod tests {
                             elapsed_ms: 1800,
                             event: Event::Phase { name: phase.into() },
                         });
+                        panel.manager.logs.push_back(LogLine {
+                            stderr: true,
+                            text: format!("{phase}\n"),
+                        });
                         cx.notify();
                     });
                 });
                 window.render_frame(cx);
                 assert_eq!(window.find("live-phase").label(), Some(phase));
+                assert_eq!(window.find("deployment-log-latest").label(), Some(phase));
                 assert!(window.find("deployment-spinner").visible());
             }
             window.click("activity-view-log", cx);
@@ -1049,6 +1157,10 @@ mod tests {
                         panel.manager.request = Some(request);
                         panel.manager.progress.phase =
                             format!("Uploading selected reports {}", "details".repeat(40));
+                        panel.manager.logs.extend((0..30).map(|index| LogLine {
+                            stderr: true,
+                            text: format!("Upload step {index}: {}\n", "details ".repeat(100)),
+                        }));
                         cx.notify();
                     });
                     cx.notify();
@@ -1087,6 +1199,23 @@ mod tests {
                     let log = window.find("activity-view-log").bounds();
                     assert!(log.origin.y >= band.origin.y + band.size.height);
                     assert!(log.origin.y + log.size.height <= px(height));
+                    let live_log = window.find("deployment-live-log").bounds();
+                    assert!(live_log.origin.y >= log.origin.y + log.size.height);
+                    assert!(live_log.origin.y + live_log.size.height <= px(height));
+                    assert!(live_log.origin.x >= band.origin.x);
+                    assert!(
+                        live_log.origin.x + live_log.size.width <= band.origin.x + band.size.width
+                    );
+                    let latest = window.find("deployment-log-latest").bounds();
+                    assert!(latest.origin.x >= live_log.origin.x);
+                    assert!(
+                        latest.origin.x + latest.size.width
+                            <= live_log.origin.x + live_log.size.width
+                    );
+                    assert!(
+                        latest.origin.y + latest.size.height
+                            <= live_log.origin.y + live_log.size.height
+                    );
                 }
             })
             .unwrap();

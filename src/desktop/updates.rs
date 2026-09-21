@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     str::FromStr,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail, ensure};
@@ -21,6 +21,8 @@ pub const CURRENT_VERSION: &str = match option_env!("REGRESSIFY_DESKTOP_VERSION"
 const BASE_URL: &str = "https://drive.tuyen.blog";
 const MAX_MANIFEST_SIZE: u64 = 16 * 1024;
 const MAX_INSTALLER_SIZE: u64 = 1024 * 1024 * 1024;
+const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Version([u16; 4]);
@@ -213,6 +215,118 @@ fn client(timeout: Duration) -> Result<Client> {
         .context("Cannot create the update client")
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DownloadPhase {
+    Connecting,
+    Downloading,
+    Verifying,
+    Saving,
+}
+
+#[derive(Clone, Debug)]
+pub struct DownloadProgress {
+    pub phase: DownloadPhase,
+    pub received: u64,
+    pub total: u64,
+    started: Instant,
+    last_data: Instant,
+}
+
+impl DownloadProgress {
+    pub fn message(&self) -> String {
+        let elapsed = self.started.elapsed();
+        match self.phase {
+            DownloadPhase::Connecting => format!(
+                "Connecting to update server... {}s elapsed (30s response limit)",
+                elapsed.as_secs()
+            ),
+            DownloadPhase::Downloading => {
+                let mib = 1024. * 1024.;
+                let rate = self.received as f64 / elapsed.as_secs_f64().max(0.001) / mib;
+                let mut message = format!(
+                    "Downloading: {:.1} / {:.1} MiB ({}%) | {:.1} MiB/s average | {}s elapsed",
+                    self.received as f64 / mib,
+                    self.total as f64 / mib,
+                    self.received.saturating_mul(100) / self.total.max(1),
+                    rate,
+                    elapsed.as_secs()
+                );
+                let idle = self.last_data.elapsed().as_secs();
+                if idle >= 5 {
+                    message.push_str(&format!(" | No data for {idle}s (30s inactivity limit)"));
+                }
+                message
+            }
+            DownloadPhase::Verifying => {
+                format!(
+                    "Verifying installer SHA-256... {}s elapsed",
+                    elapsed.as_secs()
+                )
+            }
+            DownloadPhase::Saving => format!(
+                "Saving verified installer to disk... {}s elapsed",
+                elapsed.as_secs()
+            ),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct DownloadControl {
+    progress: tokio::sync::watch::Sender<DownloadProgress>,
+    cancelled: tokio::sync::watch::Sender<bool>,
+}
+
+impl DownloadControl {
+    pub fn new(release: &Release) -> Self {
+        let now = Instant::now();
+        let (progress, _) = tokio::sync::watch::channel(DownloadProgress {
+            phase: DownloadPhase::Connecting,
+            received: 0,
+            total: release.size,
+            started: now,
+            last_data: now,
+        });
+        let (cancelled, _) = tokio::sync::watch::channel(false);
+        Self {
+            progress,
+            cancelled,
+        }
+    }
+
+    pub fn progress(&self) -> DownloadProgress {
+        self.progress.borrow().clone()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.cancelled.borrow()
+    }
+
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub(crate) fn set_progress_for_test(&self, phase: DownloadPhase, received: u64) {
+        self.update(phase, received);
+    }
+
+    fn update(&self, phase: DownloadPhase, received: u64) {
+        self.progress.send_modify(|progress| {
+            if progress.received != received || progress.phase != phase {
+                progress.last_data = Instant::now();
+            }
+            progress.phase = phase;
+            progress.received = received;
+        });
+    }
+
+    async fn wait_cancelled(&self) {
+        let mut cancelled = self.cancelled.subscribe();
+        let _ = cancelled.wait_for(|cancelled| *cancelled).await;
+    }
+}
+
 pub struct PreparedUpdate {
     directory: Option<TempDir>,
     installer: PathBuf,
@@ -231,38 +345,139 @@ impl PreparedUpdate {
     }
 
     pub fn download(release: Release, cache: &Path) -> Result<Self> {
-        fs::create_dir_all(cache).context("Cannot create the update cache")?;
-        let directory = tempfile::Builder::new()
-            .prefix("regressify-update-")
-            .tempdir_in(cache)?;
-        let installer = directory.path().join(installer_name(release.version));
-        let response = client(Duration::from_secs(15 * 60))?
-            .get(release.installer.clone())
-            .send()
-            .context("Cannot download the installer")?
-            .error_for_status()
-            .context("Installer download failed")?;
-        ensure!(
-            response.status().is_success(),
-            "Installer download was redirected"
-        );
-        if let Some(length) = response.content_length() {
+        let control = DownloadControl::new(&release);
+        Self::download_with_control(release, cache, control)
+    }
+
+    pub fn download_with_control(
+        release: Release,
+        cache: &Path,
+        control: DownloadControl,
+    ) -> Result<Self> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("Cannot start the update downloader")?
+            .block_on(async {
+                let client = reqwest::Client::builder()
+                    .https_only(true)
+                    .redirect(Policy::none())
+                    .connect_timeout(Duration::from_secs(10))
+                    .user_agent(concat!("Regressify-Desktop/", env!("CARGO_PKG_VERSION")))
+                    .build()
+                    .context("Cannot create the update client")?;
+                Self::download_with_client(
+                    release,
+                    cache,
+                    &control,
+                    client,
+                    DOWNLOAD_IDLE_TIMEOUT,
+                    DOWNLOAD_TIMEOUT,
+                )
+                .await
+            })
+    }
+
+    async fn download_with_client(
+        release: Release,
+        cache: &Path,
+        control: &DownloadControl,
+        client: reqwest::Client,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Result<Self> {
+        let download = async {
+            fs::create_dir_all(cache).context("Cannot create the update cache")?;
+            let directory = tempfile::Builder::new()
+                .prefix("regressify-update-")
+                .tempdir_in(cache)
+                .context("Cannot create the temporary installer directory")?;
+            let installer = directory.path().join(installer_name(release.version));
+            let mut response = tokio::time::timeout(
+                idle_timeout,
+                client.get(release.installer.clone()).send(),
+            )
+            .await
+            .with_context(|| format!(
+                "Update server did not respond within {} seconds. Check your connection, VPN or proxy, then retry",
+                idle_timeout.as_secs_f64()
+            ))?
+            .context("Cannot connect to the update server; check your connection, VPN or proxy, then retry")?;
             ensure!(
-                length == release.size,
-                "Installer Content-Length does not match the manifest"
+                !response.status().is_redirection(),
+                "Installer download was redirected (HTTP {}); update was not installed",
+                response.status()
             );
+            ensure!(
+                response.status().is_success(),
+                "Update server returned HTTP {} for the installer; try checking for updates again",
+                response.status()
+            );
+            if let Some(length) = response.content_length() {
+                ensure!(
+                    length == release.size,
+                    "Installer Content-Length is {length} bytes but the manifest declares {} bytes; check for updates again",
+                    release.size
+                );
+            }
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&installer)
+                .context(
+                    "Cannot save the installer; check free disk space and update-cache permissions",
+                )?;
+            let mut digest = Sha256::new();
+            let mut received = 0u64;
+            control.update(DownloadPhase::Downloading, received);
+            loop {
+                let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+                    .await
+                    .with_context(|| format!(
+                        "Download stalled: no data received for {} seconds ({received} of {} bytes). Check your connection, VPN or proxy, then retry",
+                        idle_timeout.as_secs_f64(),
+                        release.size
+                    ))?
+                    .with_context(|| format!(
+                        "Installer transfer failed after {received} of {} bytes; check your connection and retry",
+                        release.size
+                    ))?;
+                let Some(chunk) = chunk else {
+                    break;
+                };
+                received += chunk.len() as u64;
+                ensure!(
+                    received <= release.size,
+                    "Installer exceeds its declared size"
+                );
+                output.write_all(&chunk).context(
+                    "Cannot save the installer; check free disk space and update-cache permissions",
+                )?;
+                digest.update(&chunk);
+                control.update(DownloadPhase::Downloading, received);
+            }
+            control.update(DownloadPhase::Verifying, received);
+            verify_digest(received, digest, &release)?;
+            control.update(DownloadPhase::Saving, received);
+            output.sync_all()
+                .context("Cannot finish saving the verified installer; check free disk space and update-cache permissions")?;
+            Ok(Self {
+                directory: Some(directory),
+                installer,
+                release,
+            })
+        };
+        tokio::select! {
+            biased;
+            _ = control.wait_cancelled() => bail!("Download cancelled. No update was installed"),
+            result = tokio::time::timeout(total_timeout, download) => result.with_context(|| {
+                let progress = control.progress();
+                format!(
+                    "Update download exceeded its {}-second limit ({} of {} bytes). Check your connection and retry",
+                    total_timeout.as_secs_f64(), progress.received, progress.total
+                )
+            })?,
         }
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&installer)?;
-        verify_payload(response, &mut output, &release)?;
-        output.sync_all()?;
-        Ok(Self {
-            directory: Some(directory),
-            installer,
-            release,
-        })
     }
 
     pub fn version(&self) -> Version {
@@ -303,16 +518,31 @@ fn verify_payload(mut input: impl Read, mut output: impl Write, release: &Releas
     let mut total = 0u64;
     let mut buffer = [0; 64 * 1024];
     loop {
-        let count = input.read(&mut buffer)?;
+        let count = input.read(&mut buffer).with_context(|| {
+            format!(
+                "Installer read failed after {total} of {} bytes",
+                release.size
+            )
+        })?;
         if count == 0 {
             break;
         }
         total += count as u64;
         ensure!(total <= release.size, "Installer exceeds its declared size");
         digest.update(&buffer[..count]);
-        output.write_all(&buffer[..count])?;
+        output.write_all(&buffer[..count]).context(
+            "Cannot save the installer; check free disk space and update-cache permissions",
+        )?;
     }
-    ensure!(total == release.size, "Installer download is incomplete");
+    verify_digest(total, digest, release)
+}
+
+fn verify_digest(total: u64, digest: Sha256, release: &Release) -> Result<()> {
+    ensure!(
+        total == release.size,
+        "Installer download is incomplete: received {total} of {} bytes",
+        release.size
+    );
     if format!("{:x}", digest.finalize()) != release.sha256 {
         bail!("Installer SHA-256 does not match the manifest; update was not installed");
     }
@@ -417,10 +647,13 @@ mod windows {
 
 #[cfg(test)]
 mod tests {
-    use super::{PreparedUpdate, UpdateCheck, UpdateFeed, Version, installer_name, verify_payload};
+    use super::{
+        DownloadControl, DownloadPhase, PreparedUpdate, UpdateCheck, UpdateFeed, Version,
+        installer_name, verify_payload,
+    };
     use reqwest::StatusCode;
     use sha2::{Digest, Sha256};
-    use std::fs;
+    use std::{fs, time::Duration};
 
     fn manifest(payload: &[u8]) -> String {
         format!(
@@ -548,6 +781,276 @@ mod tests {
         ] {
             assert!(verify_payload(invalid, std::io::sink(), &release).is_err());
         }
+    }
+
+    #[test]
+    fn payload_io_errors_identify_the_failed_stage_and_received_bytes() {
+        use std::io::{self, Read, Write};
+
+        struct FailedIo;
+
+        impl Read for FailedIo {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "connection stalled",
+                ))
+            }
+        }
+
+        impl Write for FailedIo {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::Error::other("disk is full"))
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let payload = b"installer";
+        let release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(payload))
+            .unwrap();
+        let error =
+            verify_payload(b"ins".as_slice().chain(FailedIo), io::sink(), &release).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("after 3 of 9 bytes"), "{message}");
+        assert!(message.contains("connection stalled"), "{message}");
+        let error = verify_payload(payload.as_slice(), FailedIo, &release).unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("Cannot save the installer"), "{message}");
+        assert!(message.contains("disk is full"), "{message}");
+    }
+
+    async fn download_server(
+        response: &str,
+    ) -> (
+        reqwest::Url,
+        tokio::task::JoinHandle<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/installer", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let response = response.to_owned();
+        let (started, request_received) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(stream.read_u8().await.unwrap());
+                assert!(request.len() < 16 * 1024);
+            }
+            stream.write_all(response.as_bytes()).await.unwrap();
+            let _ = started.send(());
+            futures::future::pending::<()>().await;
+        });
+        (url, server, request_received)
+    }
+
+    #[tokio::test]
+    async fn stalled_headers_and_body_time_out_and_remove_partial_downloads() {
+        for (response, received, expected_error) in [
+            ("", 0, "Update server did not respond"),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\nins",
+                3,
+                "Download stalled",
+            ),
+        ] {
+            let (url, server, _) = download_server(response).await;
+            let mut release = UpdateFeed::new("regressify")
+                .unwrap()
+                .parse_manifest(&manifest(b"installer"))
+                .unwrap();
+            release.installer = url;
+            let control = DownloadControl::new(&release);
+            let cache = tempfile::tempdir().unwrap();
+            let result = PreparedUpdate::download_with_client(
+                release,
+                cache.path(),
+                &control,
+                reqwest::Client::new(),
+                Duration::from_millis(200),
+                Duration::from_secs(3),
+            )
+            .await;
+            server.abort();
+            let error = format!("{:#}", result.err().expect("stalled download must fail"));
+            assert!(error.contains(expected_error), "{error}");
+            assert!(error.contains("retry"), "{error}");
+            assert_eq!(control.progress().received, received);
+            assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+            if received > 0 {
+                assert!(error.contains("3 of 9 bytes"), "{error}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancellation_interrupts_waiting_for_the_server_and_cleans_up() {
+        let (url, server, started) = download_server("").await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let control = DownloadControl::new(&release);
+        let cache = tempfile::tempdir().unwrap();
+        let download = PreparedUpdate::download_with_client(
+            release,
+            cache.path(),
+            &control,
+            reqwest::Client::new(),
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+        );
+        let cancel = async {
+            started.await.unwrap();
+            control.cancel();
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(3), async {
+            tokio::join!(download, cancel)
+        })
+        .await
+        .expect("cancellation must not wait for the network timeout");
+        server.abort();
+        let error = format!("{:#}", result.err().expect("cancelled download must fail"));
+        assert!(error.contains("Download cancelled"), "{error}");
+        assert!(control.is_cancelled());
+        assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn streamed_installer_still_requires_success_size_and_sha256() {
+        for (response, expected) in [
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller",
+                None,
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstalled",
+                Some("SHA-256"),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nins",
+                Some("Content-Length"),
+            ),
+            (
+                "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n",
+                Some("HTTP 503"),
+            ),
+            (
+                "HTTP/1.1 302 Found\r\nLocation: https://example.com/\r\nContent-Length: 0\r\n\r\n",
+                Some("redirected"),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nins\r\n0\r\n\r\n",
+                Some("incomplete"),
+            ),
+            (
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nA\r\ninstallers\r\n0\r\n\r\n",
+                Some("exceeds"),
+            ),
+        ] {
+            let (url, server, _) = download_server(response).await;
+            let mut release = UpdateFeed::new("regressify")
+                .unwrap()
+                .parse_manifest(&manifest(b"installer"))
+                .unwrap();
+            release.installer = url;
+            let control = DownloadControl::new(&release);
+            let cache = tempfile::tempdir().unwrap();
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap();
+            let result = PreparedUpdate::download_with_client(
+                release,
+                cache.path(),
+                &control,
+                client,
+                Duration::from_secs(2),
+                Duration::from_secs(3),
+            )
+            .await;
+            server.abort();
+            match expected {
+                Some(expected) => {
+                    let error = format!("{:#}", result.err().expect("invalid download must fail"));
+                    assert!(error.contains(expected), "{error}");
+                }
+                None => {
+                    let prepared = result.unwrap();
+                    assert_eq!(fs::read(&prepared.installer).unwrap(), b"installer");
+                    assert_eq!(control.progress().received, 9);
+                    assert_eq!(control.progress().phase, DownloadPhase::Saving);
+                }
+            }
+            assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn total_deadline_is_independent_of_the_inactivity_limit() {
+        let (url, server, _) = download_server("").await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let control = DownloadControl::new(&release);
+        let cache = tempfile::tempdir().unwrap();
+        let result = PreparedUpdate::download_with_client(
+            release,
+            cache.path(),
+            &control,
+            reqwest::Client::new(),
+            Duration::from_secs(3),
+            Duration::from_millis(100),
+        )
+        .await;
+        server.abort();
+        let error = format!(
+            "{:#}",
+            result.err().expect("total deadline must be enforced")
+        );
+        assert!(error.contains("exceeded its 0.1-second limit"), "{error}");
+        assert!(error.contains("0 of 9 bytes"), "{error}");
+        assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn progress_distinguishes_network_inactivity_verification_and_disk_saving() {
+        let release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        let control = DownloadControl::new(&release);
+        assert!(control.progress().message().contains("Connecting"));
+        control.update(DownloadPhase::Downloading, 3);
+        let mut progress = control.progress();
+        progress.started -= Duration::from_secs(12);
+        progress.last_data -= Duration::from_secs(8);
+        let message = progress.message();
+        assert!(message.contains("33%"), "{message}");
+        assert!(message.contains("MiB/s"), "{message}");
+        assert!(message.contains("12s elapsed"), "{message}");
+        assert!(message.contains("No data for 8s"), "{message}");
+        control.update(DownloadPhase::Verifying, 9);
+        assert!(control.progress().message().contains("SHA-256"));
+        control.update(DownloadPhase::Saving, 9);
+        assert!(
+            control
+                .progress()
+                .message()
+                .contains("Saving verified installer to disk")
+        );
     }
 
     #[test]

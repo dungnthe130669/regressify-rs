@@ -8,7 +8,7 @@ use reqwest::{
 };
 use serde::{Deserialize, de::DeserializeOwned};
 
-use super::{DeployTarget, DeploymentProvider, package::Package, phase};
+use super::{DeployTarget, DeploymentProvider, diagnostics, package::Package, phase};
 
 #[derive(Deserialize)]
 struct Site {
@@ -30,6 +30,10 @@ struct Deploy {
     ssl_url: Option<String>,
     deploy_ssl_url: Option<String>,
     draft: Option<bool>,
+    #[serde(default)]
+    error_message: serde_json::Value,
+    #[serde(default)]
+    error: serde_json::Value,
 }
 
 pub struct NetlifyClient {
@@ -79,23 +83,35 @@ impl NetlifyClient {
                 Ok(response) if response.status().is_success() => return read_json(response).await,
                 Ok(response) => {
                     let status = response.status();
-                    if !status.is_server_error() && !matches!(status.as_u16(), 408 | 429) {
-                        return Err(http_error(status));
-                    }
                     retry_after = response
                         .headers()
                         .get("Retry-After")
                         .and_then(|value| value.to_str().ok())
                         .and_then(|value| value.parse::<u64>().ok())
                         .map(|seconds| Duration::from_secs(seconds.min(60)));
-                    http_error(status)
+                    let error = diagnostics::http_error(
+                        response,
+                        DeploymentProvider::Netlify,
+                        &self.authorization,
+                    )
+                    .await;
+                    if !status.is_server_error() && !matches!(status.as_u16(), 408 | 429) {
+                        return Err(error);
+                    }
+                    error
                 }
                 Err(_) => anyhow!("Cannot reach Netlify; check your connection and try again"),
             };
             if attempt == 5 {
                 return Err(error);
             }
-            tokio::time::sleep(retry_after.unwrap_or(self.backoff * (1 << attempt))).await;
+            let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            phase(&format!(
+                "Netlify retry {}/6 in {:.1}s: {error}",
+                attempt + 2,
+                delay.as_secs_f64()
+            ));
+            tokio::time::sleep(delay).await;
         }
         bail!("Netlify request retry budget exhausted")
     }
@@ -134,17 +150,54 @@ impl NetlifyClient {
                 package.files
             ));
             let input = tokio::fs::File::open(package.file.path()).await?;
+            let length = package.file.as_file().metadata()?.len();
+            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let streamed = sent.clone();
+            let body = futures::stream::try_unfold(
+                (input, std::time::Instant::now()),
+                move |(mut input, mut last_update)| {
+                    let streamed = streamed.clone();
+                    async move {
+                        use tokio::io::AsyncReadExt;
+                        let mut buffer = vec![0; 64 * 1024];
+                        let count = input.read(&mut buffer).await?;
+                        if count == 0 {
+                            return Ok::<_, std::io::Error>(None);
+                        }
+                        buffer.truncate(count);
+                        let completed = streamed
+                            .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed)
+                            + count as u64;
+                        if completed == length || last_update.elapsed().as_secs() >= 1 {
+                            phase(&format!(
+                                "Netlify upload sent: {} of {} KiB ({:.1}%); awaiting provider acceptance",
+                                completed / 1024,
+                                length / 1024,
+                                completed as f64 * 100.0 / length as f64
+                            ));
+                            last_update = std::time::Instant::now();
+                        }
+                        Ok(Some((buffer, (input, last_update))))
+                    }
+                },
+            );
             let response = self.client.post(self.endpoint.join(&format!("{site_path}/deploys"))?)
                 .header(AUTHORIZATION, self.authorization.clone())
                 .header("Content-Type", "application/zip")
-                .header("Content-Length", package.file.as_file().metadata()?.len())
-                .body(reqwest::Body::from(input)).send().await
-                .map_err(|_| anyhow!("Netlify upload did not complete; check the site's deploy history before retrying"))?;
-            ensure!(
-                response.status().is_success(),
-                "{}; check the site's deploy history before retrying",
-                http_error(response.status())
-            );
+                .header("Content-Length", length)
+                .body(reqwest::Body::wrap_stream(body)).send().await
+                .map_err(|error| anyhow!("Netlify upload {} after sending {} of {} KiB; check the site's deploy history before retrying",
+                    if error.is_timeout() { "timed out" } else if error.is_connect() { "could not connect" } else { "did not complete" },
+                    sent.load(std::sync::atomic::Ordering::Relaxed) / 1024, length / 1024))?;
+            if !response.status().is_success() {
+                let error = diagnostics::http_error(
+                    response,
+                    DeploymentProvider::Netlify,
+                    &self.authorization,
+                )
+                .await;
+                bail!("{error}; check the site's deploy history before retrying");
+            }
             let mut deploy: Deploy = read_json(response).await?;
             ensure!(
                 !deploy.id.is_empty()
@@ -156,7 +209,11 @@ impl NetlifyClient {
                 "Netlify returned an invalid deployment ID"
             );
             let deploy_id = deploy.id.clone();
-            phase("Waiting for Netlify deployment");
+            phase(&format!(
+                "Netlify accepted upload; waiting for deployment {deploy_id}"
+            ));
+            let polling_started = std::time::Instant::now();
+            let mut polls = 0;
             loop {
                 ensure!(
                     deploy.id == deploy_id && deploy.site_id.eq_ignore_ascii_case(&target.site_id),
@@ -179,7 +236,14 @@ impl NetlifyClient {
                         return Ok(url);
                     }
                     "error" | "failed" | "canceled" | "cancelled" | "rejected" => {
-                        bail!("Netlify deployment failed; check the site's deploy history")
+                        let error = diagnostics::failure(
+                            DeploymentProvider::Netlify,
+                            "deployment",
+                            None,
+                            &serde_json::json!({"error_message": deploy.error_message, "error": deploy.error}),
+                            &self.authorization,
+                        );
+                        bail!("{error} Deployment ID: {deploy_id}");
                     }
                     "new" | "pending_review" | "accepted" | "enqueued" | "building"
                     | "uploading" | "uploaded" | "preparing" | "prepared" | "processing"
@@ -188,28 +252,27 @@ impl NetlifyClient {
                         "Netlify returned an unexpected deployment state; check the site's deploy history"
                     ),
                 }
+                polls += 1;
+                phase(&format!(
+                    "Netlify status: {}; poll {polls}, {}s waiting; next check in {:.1}s",
+                    deploy.state,
+                    polling_started.elapsed().as_secs(),
+                    self.poll_interval.as_secs_f64()
+                ));
                 tokio::time::sleep(self.poll_interval).await;
                 deploy = self
                     .get(&format!("{site_path}/deploys/{deploy_id}"))
                     .await?;
             }
         };
-        tokio::time::timeout(self.deadline, operation).await
-            .context("Netlify deployment exceeded its 30-minute deadline; check the site's deploy history")?
-    }
-}
-
-fn http_error(status: reqwest::StatusCode) -> anyhow::Error {
-    match status.as_u16() {
-        401 | 403 => anyhow!(
-            "Netlify access denied (HTTP {}); check the token and its access to this site",
-            status.as_u16()
-        ),
-        404 => {
-            anyhow!("Netlify site or deployment was not found; check the Site ID and token access")
-        }
-        429 => anyhow!("Netlify rate limit reached (HTTP 429); try again later"),
-        _ => anyhow!("Netlify request failed (HTTP {})", status.as_u16()),
+        tokio::time::timeout(
+            self.deadline,
+            super::with_heartbeat("Netlify deployment", operation),
+        )
+        .await
+        .context(
+            "Netlify deployment exceeded its 30-minute deadline; check the site's deploy history",
+        )?
     }
 }
 
@@ -304,6 +367,31 @@ mod tests {
         client.backoff = Duration::from_millis(1);
         client.poll_interval = Duration::from_millis(1);
         client
+    }
+
+    #[tokio::test]
+    #[ignore = "requires NETLIFY_PAT and NETLIFY_SITE_ID; validates site access without publishing"]
+    async fn live_deployment_netlify_preflight() -> Result<()> {
+        let token = zeroize::Zeroizing::new(
+            std::env::var("NETLIFY_PAT").context("Set NETLIFY_PAT for live validation")?,
+        );
+        let mut target = target();
+        target.site_id =
+            std::env::var("NETLIFY_SITE_ID").context("Set NETLIFY_SITE_ID for live validation")?;
+        target.validate()?;
+        let client = NetlifyClient::new(&token)?;
+        let site: Site = client.get(&format!("sites/{}", target.site_id)).await?;
+        ensure!(
+            site.id.eq_ignore_ascii_case(&target.site_id),
+            "Netlify returned a different site"
+        );
+        println!(
+            "Live Netlify validation succeeded: Git-only restriction {}, locked deployment {}; no deployment created",
+            site.prevent_non_git_prod_deploys == Some(true),
+            site.published_deploy
+                .is_some_and(|deploy| deploy.locked == Some(true))
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -403,8 +491,11 @@ mod tests {
             if request.method().as_str() == "POST" {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
-                let _ =
-                    request.respond(tiny_http::Response::from_string(TOKEN).with_status_code(503));
+                let _ = request.respond(tiny_http::Response::from_string(
+                    json!({"message":format!("Upload exceeds the project size limit; token={TOKEN}")}).to_string()
+                ).with_status_code(503).with_header(
+                    tiny_http::Header::from_bytes("x-nf-request-id", "request-123").unwrap()
+                ));
             } else {
                 let _ = request.respond(tiny_http::Response::from_string(
                     json!({"id":SITE_ID}).to_string(),
@@ -418,6 +509,12 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("HTTP 503"));
+        assert!(
+            error
+                .to_string()
+                .contains("Upload exceeds the project size limit")
+        );
+        assert!(error.to_string().contains("request-123"));
         assert!(!format!("{error:#}").contains(TOKEN));
         assert_eq!(uploads.load(Ordering::SeqCst), 1);
         Ok(())
@@ -432,6 +529,7 @@ mod tests {
             (302, TOKEN.to_string()),
             (200, TOKEN.to_string()),
             (200, "x".repeat(1024 * 1024 + 1)),
+            (413, "x".repeat(1024 * 1024 + 1)),
             (200, json!({"id":"wrong-site"}).to_string()),
             (
                 200,
@@ -495,7 +593,7 @@ mod tests {
                 } else {
                     std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
                     json!({"id":"deploy-123", "site_id": site_id,
-                        "state":state, "draft":draft, "error_message":TOKEN,
+                        "state":state, "draft":draft, "error_message":format!("Image processing failed; token={TOKEN}"),
                         "ssl_url":"https://qa-reports.netlify.app/"})
                 };
                 let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
@@ -509,6 +607,10 @@ mod tests {
             let error = client.deploy(root.path(), &target()).await.unwrap_err();
             assert!(!format!("{error:#}").contains(TOKEN));
             assert!(error.to_string().contains(expected));
+            if matches!(state, "error" | "rejected") {
+                assert!(error.to_string().contains("Image processing failed"));
+                assert!(error.to_string().contains("deploy-123"));
+            }
         }
         Ok(())
     }

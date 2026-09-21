@@ -73,7 +73,15 @@ pub fn run_stdio() -> Result<()> {
                 } else {
                     None
                 };
-                crate::application::execute(cli).await?;
+                if deployment.is_some() {
+                    super::deployment::with_heartbeat(
+                        "Generating selected report snapshots",
+                        crate::application::execute(cli),
+                    )
+                    .await?;
+                } else {
+                    crate::application::execute(cli).await?;
+                }
                 if let Some((job, client)) = deployment {
                     let directory = request
                         .scratch_directory
@@ -81,7 +89,15 @@ pub fn run_stdio() -> Result<()> {
                         .context("Deployment staging directory is missing")?;
                     let output = request.run.options.output_directory(&request.run.root);
                     let staging = directory.join("report");
-                    super::deployment::stage_reports(&output, &job.suite_ids, &staging)?;
+                    let destination = staging.clone();
+                    let suites = job.suite_ids.clone();
+                    super::deployment::with_heartbeat(
+                        "Staging selected reports",
+                        tokio::task::spawn_blocking(move || {
+                            super::deployment::stage_reports(&output, &suites, &destination)
+                        }),
+                    )
+                    .await??;
                     let url = client.deploy(&staging, &job.target).await?;
                     crate::progress::emit(crate::progress::Event::Deployed {
                         target: job.target.name.clone(),

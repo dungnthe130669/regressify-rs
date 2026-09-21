@@ -9,7 +9,13 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{DeployTarget, DeploymentProvider, package::Package, phase};
+use super::{
+    DeployTarget, DeploymentProvider,
+    budget::{self, SwaTier},
+    diagnostics,
+    package::Package,
+    phase,
+};
 
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
 
@@ -19,6 +25,8 @@ struct Envelope {
     response: Option<Value>,
     is_success_status_code: bool,
     status_code: u16,
+    #[serde(default)]
+    error_message: Value,
 }
 
 pub struct SwaClient {
@@ -122,23 +130,25 @@ impl SwaClient {
                 Ok(response) if response.status().is_success() => return Ok(response),
                 Ok(response) => {
                     let status = response.status();
-                    ensure!(
-                        status.is_server_error()
-                            || status.as_u16() == 408
-                            || status.as_u16() == 429,
-                        "Azure request failed (HTTP {})",
-                        status.as_u16()
-                    );
                     retry_after = response
                         .headers()
                         .get("Retry-After")
                         .and_then(|value| value.to_str().ok())
                         .and_then(|value| value.parse::<u64>().ok())
                         .map(|seconds| Duration::from_secs(seconds.min(60)));
-                    anyhow!("Azure request failed (HTTP {})", status.as_u16())
+                    let error = diagnostics::http_error(
+                        response,
+                        DeploymentProvider::AzureSwa,
+                        &self.authorization,
+                    )
+                    .await;
+                    if !status.is_server_error() && !matches!(status.as_u16(), 408 | 429) {
+                        return Err(error);
+                    }
+                    error
                 }
                 Err(error) => anyhow!(
-                    "Azure request {}",
+                    "Azure request {}; check the connection, proxy, and Azure service status",
                     if error.is_timeout() {
                         "timed out"
                     } else {
@@ -149,7 +159,13 @@ impl SwaClient {
             if attempt == 5 {
                 return Err(error);
             }
-            tokio::time::sleep(retry_after.unwrap_or(self.backoff * (1 << attempt))).await;
+            let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            phase(&format!(
+                "Azure retry {}/6 in {:.1}s: {error}",
+                attempt + 2,
+                delay.as_secs_f64()
+            ));
+            tokio::time::sleep(delay).await;
         }
         bail!("Azure request retry budget exhausted")
     }
@@ -171,7 +187,8 @@ impl SwaClient {
                     None => request.header("Content-Length", 0),
                 }
             })
-            .await?;
+            .await
+            .map_err(|error| anyhow!("Azure {operation}: {error}"))?;
         let mut bytes = Vec::new();
         let mut stream = response.bytes_stream();
         use futures::StreamExt;
@@ -185,12 +202,15 @@ impl SwaClient {
         }
         let response: Envelope = serde_json::from_slice(&bytes)
             .map_err(|_| anyhow!("Invalid Azure response envelope"))?;
-        ensure!(
-            response.is_success_status_code,
-            "Azure {} failed (status {})",
-            operation,
-            response.status_code
-        );
+        if !response.is_success_status_code {
+            return Err(diagnostics::failure(
+                DeploymentProvider::AzureSwa,
+                operation,
+                Some(response.status_code),
+                &json!({"errorMessage": response.error_message, "response": response.response}),
+                &self.authorization,
+            ));
+        }
         Ok(response.response.unwrap_or(Value::Null))
     }
 
@@ -234,6 +254,11 @@ impl SwaClient {
                         vec![0; (length - offset).min(self.block_bytes as u64) as usize];
                     input.read_exact(&mut chunk).await?;
                     let count = chunk.len() as u64;
+                    eprintln!(
+                        "Azure upload: sending block {} of {total} ({} KiB)",
+                        index + 1,
+                        count / 1024
+                    );
                     let mut destination = url.clone();
                     if total > 1 {
                         destination
@@ -255,10 +280,12 @@ impl SwaClient {
                         }
                     })
                     .await?;
+                    let sent = completed.fetch_add(count, Ordering::Relaxed) + count;
                     phase(&format!(
-                        "Uploading report: {} of {} KiB",
-                        (completed.fetch_add(count, Ordering::Relaxed) + count) / 1024,
-                        length / 1024
+                        "Azure upload acknowledged: {} of {} KiB ({:.1}%)",
+                        sent / 1024,
+                        length / 1024,
+                        sent as f64 * 100.0 / length as f64
                     ));
                     Ok::<_, anyhow::Error>(())
                 }
@@ -267,6 +294,7 @@ impl SwaClient {
             .try_collect::<Vec<_>>()
             .await?;
         if total > 1 {
+            phase(&format!("Committing {total} Azure upload blocks"));
             let mut destination = url.clone();
             destination
                 .query_pairs_mut()
@@ -296,22 +324,33 @@ impl SwaClient {
             target.provider == DeploymentProvider::AzureSwa,
             "Azure client requires an Azure target"
         );
+        let deadline = std::time::Instant::now() + self.deadline;
         let operation = async {
             phase("Validating Azure deployment target");
             let info = self.api("validateapitoken", None).await?;
+            let tier = SwaTier::from_response(&info);
+            phase(&format!(
+                "Azure tier: {}; per-environment storage limit: {} MB",
+                tier.label(),
+                tier.limit() / (1024 * 1024)
+            ));
             let settings = root.join("staticwebapp.config.json");
             if settings.is_file() {
                 let data: Value = serde_json::from_slice(&std::fs::read(settings)?)?;
                 ensure!(
-                    info["sku"] == "Standard"
+                    tier == SwaTier::Standard
                         || data.get("auth").is_none() && data.get("networking").is_none(),
                     "This report's auth/networking configuration requires the Azure Standard SKU"
                 );
             }
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
-            let package =
-                tokio::task::spawn_blocking(move || Package::create(&directory, 100_000)).await??;
+            let package = tokio::task::spawn_blocking(move || {
+                let prepared = budget::prepare(&directory, tier.limit(), deadline)?;
+                let package = Package::create(prepared.path(), 100_000)?;
+                ensure!(package.bytes <= tier.limit(), "Report size changed during packaging and exceeds the Azure {} storage limit; retry deployment", tier.label());
+                Ok::<_, anyhow::Error>(package)
+            }).await??;
             let mut request = json!({
                 "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
                     "pullRequestId": null, "pullRequestTitle": null, "headBranch": null, "baseBranch": null,
@@ -326,6 +365,11 @@ impl SwaClient {
                     "shouldDeployToWebApp": false, "tenantId": "", "defaultHostname": null, "slice": self.slice},
                 "pollingInfo": null
             });
+            phase(&format!(
+                "Requesting Azure upload for {} files ({:.2} MiB content)",
+                package.files,
+                package.bytes as f64 / (1024.0 * 1024.0)
+            ));
             let response = self.api("request", Some(&request)).await?;
             ensure!(
                 target.environment.is_empty() || response["allowStagingEnvironments"] != false,
@@ -345,9 +389,13 @@ impl SwaClient {
             phase("Uploading selected reports");
             self.upload(&upload, &package).await?;
             request["uploadInfo"]["status"] = json!("Succeeded");
+            phase("Azure upload complete; submitting deployment for processing");
             self.api("updatestatus", Some(&request)).await?;
             phase("Waiting for Azure deployment");
+            let polling_started = std::time::Instant::now();
+            let mut polls = 0;
             loop {
+                polls += 1;
                 let result = self.api("checkstatus", Some(&json!(polling))).await?;
                 match result["deploymentStatus"].as_str() {
                     Some("Succeeded") => {
@@ -366,17 +414,48 @@ impl SwaClient {
                         phase(&format!("Deployed: {url}"));
                         return Ok(url.to_string());
                     }
-                    Some("Failed" | "Canceled" | "Cancelled") => bail!(
-                        "Azure deployment failed; check the Static Web App deployment history"
-                    ),
-                    Some(_) => tokio::time::sleep(self.poll_interval).await,
+                    Some("Failed" | "Canceled" | "Cancelled") => {
+                        let error = diagnostics::failure(
+                            DeploymentProvider::AzureSwa,
+                            "deployment",
+                            None,
+                            &result,
+                            &self.authorization,
+                        );
+                        bail!("{error} Correlation ID: {}", self.correlation);
+                    }
+                    Some(status) => {
+                        let status = if matches!(
+                            status,
+                            "InProgress"
+                                | "NotStarted"
+                                | "Pending"
+                                | "Running"
+                                | "Queued"
+                                | "Building"
+                                | "Deploying"
+                        ) {
+                            status
+                        } else {
+                            "Processing"
+                        };
+                        phase(&format!(
+                            "Azure status: {status}; poll {polls}, {}s waiting; next check in {:.1}s",
+                            polling_started.elapsed().as_secs(),
+                            self.poll_interval.as_secs_f64()
+                        ));
+                        tokio::time::sleep(self.poll_interval).await;
+                    }
                     None => bail!("Azure returned no deployment status"),
                 }
             }
         };
-        tokio::time::timeout(self.deadline, operation)
-            .await
-            .context("Azure deployment exceeded its 30-minute deadline")?
+        tokio::time::timeout(
+            self.deadline,
+            super::with_heartbeat("Azure deployment", operation),
+        )
+        .await
+        .context("Azure deployment exceeded its 30-minute deadline")?
     }
 }
 
@@ -390,6 +469,28 @@ mod tests {
 
     fn token() -> String {
         format!("{}-{}00f", "a".repeat(64), "b".repeat(36))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires AZURE_STATIC_WEB_APPS_API_TOKEN; validates the target without publishing"]
+    async fn live_deployment_azure_preflight() -> Result<()> {
+        let token = zeroize::Zeroizing::new(
+            std::env::var("AZURE_STATIC_WEB_APPS_API_TOKEN")
+                .context("Set AZURE_STATIC_WEB_APPS_API_TOKEN for live validation")?,
+        );
+        let client = SwaClient::new(&token)?;
+        let info = client.api("validateapitoken", None).await?;
+        let tier = SwaTier::from_response(&info);
+        ensure!(
+            tier != SwaTier::Unknown,
+            "Azure did not return a recognized Free/Standard SKU"
+        );
+        println!(
+            "Live Azure validation succeeded: tier {}, storage budget {} MiB; no deployment created",
+            tier.label(),
+            tier.limit() / (1024 * 1024)
+        );
+        Ok(())
     }
 
     #[test]
@@ -594,6 +695,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn azure_envelope_and_http_errors_preserve_the_provider_reason() -> Result<()> {
+        for status in [200, 413] {
+            let site = crate::test::browser_tests::Site::new(move |request| {
+                let _ = request.respond(tiny_http::Response::from_string(
+                    json!({"isSuccessStatusCode":false,"statusCode":400,"response":null,
+                        "errorMessage":format!("Content exceeds the 250 MB storage limit; token={} https://storage.blob.core.windows.net/app?sig=private", token())})
+                        .to_string(),
+                ).with_status_code(status));
+            })?;
+            let mut client = SwaClient::new(&token())?;
+            client.endpoint = Url::parse(&site.origin)?;
+            let error = client.api("request", None).await.unwrap_err().to_string();
+            assert!(error.contains("Content exceeds the 250 MB storage limit"));
+            assert!(error.contains(if status == 200 {
+                "HTTP 400"
+            } else {
+                "HTTP 413"
+            }));
+            assert!(error.contains("upgrade Free"));
+            assert!(!error.contains(&token()) && !error.contains("private"));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn multi_block_upload_commits_ordered_base64_ids_after_all_blocks() -> Result<()> {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
@@ -670,7 +796,9 @@ mod tests {
                 } else if request.url().starts_with("/api/upload/request") {
                     json!({"packageUris":{"app":format!("http://{host}/blob")}, "pollingInfo":{}})
                 } else if request.url().starts_with("/api/upload/checkstatus") {
-                    json!({"deploymentStatus":status, "errorDetails":"sensitive"})
+                    json!({"deploymentStatus":status,
+                        "errorDetails":format!("Report storage limit exceeded; token={} https://storage.blob.core.windows.net/app?sig=sensitive", token()),
+                        "unhealthyRegions":["eastus2"]})
                 } else {
                     Value::Null
                 };
@@ -703,6 +831,12 @@ mod tests {
                 .unwrap_err()
                 .to_string();
             assert!(!error.contains("sensitive"));
+            assert!(!error.contains(&token()));
+            if status == "Failed" {
+                assert!(error.contains("Report storage limit exceeded"));
+                assert!(error.contains("eastus2"));
+                assert!(error.contains(&client.correlation));
+            }
             assert!(error.contains(if status == "Failed" {
                 "failed"
             } else {
