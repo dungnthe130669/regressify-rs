@@ -1,6 +1,7 @@
 use super::*;
 use crate::desktop::updates::{
-    CURRENT_VERSION, DownloadControl, PreparedUpdate, Release, UpdateCheck, UpdateFeed,
+    CURRENT_VERSION, DownloadControl, PreparedUpdate, Release, RetryScheduled, SkippedUpdate,
+    UpdateCheck, UpdateFeed,
 };
 use futures::FutureExt;
 
@@ -12,7 +13,8 @@ pub(super) struct UpdatePanel {
     message: String,
     download: Option<DownloadControl>,
     failed: bool,
-    retry_download: bool,
+    retry: Option<RetryScheduled>,
+    retry_task: Option<Task<()>>,
     pub(super) install_on_close: bool,
 }
 
@@ -31,7 +33,8 @@ impl Default for UpdatePanel {
             prepared: None,
             download: None,
             failed: false,
-            retry_download: false,
+            retry: None,
+            retry_task: None,
             install_on_close: false,
         }
     }
@@ -42,7 +45,8 @@ impl UpdatePanel {
         let control = DownloadControl::new(release);
         self.working = true;
         self.failed = false;
-        self.retry_download = false;
+        self.retry = None;
+        self.retry_task = None;
         self.message = control.progress().message();
         self.download = Some(control.clone());
         control
@@ -67,18 +71,20 @@ impl UpdatePanel {
     fn complete_download(&mut self, result: Result<PreparedUpdate>) {
         self.working = false;
         self.failed = false;
-        self.retry_download = true;
+        self.available = None;
+        self.retry = None;
+        self.retry_task = None;
         if self
             .download
             .take()
             .is_some_and(|control| control.is_cancelled())
         {
-            self.message = "Download cancelled. No update was installed.".into();
+            self.message =
+                "Download paused. Preparation will resume the next time the app opens.".into();
             return;
         }
         self.message = match result {
             Ok(prepared) => {
-                self.retry_download = false;
                 let message = format!(
                     "Version {} is verified and ready to install",
                     prepared.version()
@@ -86,9 +92,16 @@ impl UpdatePanel {
                 self.prepared = Some(prepared);
                 message
             }
+            Err(error) if error.is::<SkippedUpdate>() => error.to_string(),
+            Err(error) if error.is::<RetryScheduled>() => {
+                self.retry = error.downcast_ref::<RetryScheduled>().copied();
+                error.to_string()
+            }
             Err(error) => {
                 self.failed = true;
-                format!("Update download failed: {error:#}. No update was installed.")
+                format!(
+                    "Update preparation paused: {error:#}. No update was installed. Preparation will resume the next time the app opens."
+                )
             }
         };
     }
@@ -105,9 +118,9 @@ impl Drop for UpdatePanel {
 impl Workbench {
     pub(super) fn render_update_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let update = self.updates.read(cx);
-        let available = update.available.is_some() || update.prepared.is_some();
+        let available = update.prepared.is_some();
         let label = if available {
-            "Update available"
+            "Update ready to install"
         } else {
             "Software updates"
         };
@@ -128,24 +141,9 @@ impl Workbench {
 
     pub(super) fn render_update_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let update = self.updates.read(cx);
-        let version = update
-            .prepared
-            .as_ref()
-            .map(PreparedUpdate::version)
-            .or_else(|| update.available.as_ref().map(|release| release.version))?;
-        let prepared = update.prepared.is_some();
-        let title = if update.failed {
-            format!("Update to Regressify {version} could not be completed")
-        } else if prepared {
-            format!("Regressify {version} is ready to install")
-        } else {
-            format!("New version available: Regressify {version}")
-        };
-        let detail = if update.working || update.failed || update.retry_download || prepared {
-            update.message.clone()
-        } else {
-            format!("Installed version: {CURRENT_VERSION}")
-        };
+        let version = update.prepared.as_ref()?.version();
+        let title = format!("Regressify {version} is ready to install");
+        let detail = update.message.clone();
         Some(
             div()
                 .id("update-banner")
@@ -163,13 +161,9 @@ impl Workbench {
                 .bg(cx.theme().primary)
                 .text_color(cx.theme().primary_foreground)
                 .child(
-                    Icon::new(if update.failed {
-                        gpui_kit::assets::IconName::CircleAlert
-                    } else {
-                        gpui_kit::assets::IconName::Download
-                    })
-                    .size_5()
-                    .flex_shrink_0(),
+                    Icon::new(gpui_kit::assets::IconName::Download)
+                        .size_5()
+                        .flex_shrink_0(),
                 )
                 .child(
                     div()
@@ -198,20 +192,8 @@ impl Workbench {
                     Button::new("update-banner-action")
                         .small()
                         .flex_shrink_0()
-                        .icon(if prepared {
-                            gpui_kit::assets::IconName::RotateCw
-                        } else {
-                            gpui_kit::assets::IconName::Download
-                        })
-                        .label(if update.working {
-                            "View progress"
-                        } else if update.failed || update.retry_download {
-                            "View details"
-                        } else if prepared {
-                            "Install update"
-                        } else {
-                            "Update now"
-                        })
+                        .icon(gpui_kit::assets::IconName::RotateCw)
+                        .label("Install update")
                         .disabled(self.busy)
                         .on_click(cx.listener(|this, _, window, cx| this.open_updates(window, cx))),
                 )
@@ -226,7 +208,6 @@ impl Workbench {
         window.open_dialog(cx, move |dialog, window, cx| {
             let state = updates.read(cx);
             let working = state.working;
-            let available = state.available.is_some();
             let prepared = state.prepared.is_some();
             dialog
                 .title("Software updates")
@@ -289,7 +270,7 @@ impl Workbench {
                             footer.child(
                                 Button::new("update-cancel-download")
                                     .icon(gpui_kit::assets::IconName::X)
-                                    .label("Cancel download")
+                                    .label("Pause download")
                                     .disabled(control.is_cancelled())
                                     .on_click(window.listener_for(&view, |this, _, _, cx| {
                                         this.updates.update(cx, |state, cx| {
@@ -307,27 +288,11 @@ impl Workbench {
                             Button::new("update-check")
                                 .icon(gpui_kit::assets::IconName::RefreshCw)
                                 .label("Check for updates")
-                                .disabled(state.feed.is_none() || working || prepared)
+                                .disabled(state.feed.is_none() || working)
                                 .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                    this.check_updates(window, cx);
+                                    this.start_update_check(true, window, cx);
                                 })),
                         )
-                        .when(available && !prepared, |footer| {
-                            footer.child(
-                                Button::new("update-download")
-                                    .primary()
-                                    .icon(gpui_kit::assets::IconName::Download)
-                                    .label(if state.retry_download {
-                                        "Retry download"
-                                    } else {
-                                        "Download update"
-                                    })
-                                    .disabled(working)
-                                    .on_click(window.listener_for(&view, |this, _, window, cx| {
-                                        this.download_update(window, cx);
-                                    })),
-                            )
-                        })
                         .when(prepared, |footer| {
                             footer.child(
                                 Button::new("update-install")
@@ -345,33 +310,50 @@ impl Workbench {
     }
 
     pub(super) fn check_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_update_check(false, window, cx);
+    }
+
+    fn start_update_check(&mut self, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.updates.read(cx);
-        if state.working || state.prepared.is_some() {
+        if state.working {
             return;
         }
         let Some(feed) = state.feed.clone() else {
             return;
         };
+        let cache = self
+            .preferences_path
+            .as_ref()
+            .map(|path| path.with_file_name("updates"));
         self.updates.update(cx, |state, cx| {
             state.working = true;
             state.failed = false;
+            state.available = None;
+            state.prepared = None;
+            state.retry = None;
+            state.retry_task = None;
             state.message = "Checking for updates...".into();
             cx.notify();
         });
-        let task = cx
-            .background_executor()
-            .spawn(async move { feed.check(CURRENT_VERSION.parse()?) });
+        let task = cx.background_executor().spawn(async move {
+            let cache = cache.ok_or_else(|| anyhow!("Cannot locate the update cache"))?;
+            if manual {
+                feed.check_manually(CURRENT_VERSION.parse()?, &cache)
+            } else {
+                feed.check_with_cache(CURRENT_VERSION.parse()?, &cache)
+            }
+        });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
-            let _ = view.update_in(cx, |this, _, cx| {
+            let _ = view.update_in(cx, |this, window, cx| {
+                let mut prepare = false;
                 this.updates.update(cx, |state, cx| {
                     state.working = false;
                     state.message = match result {
                         Ok(UpdateCheck::Available(release)) => {
-                            let message = format!("Version {} is available", release.version);
                             state.available = Some(release);
-                            state.retry_download = false;
-                            message
+                            prepare = true;
+                            "Preparing update...".into()
                         }
                         Ok(UpdateCheck::Current) => {
                             state.available = None;
@@ -381,6 +363,11 @@ impl Workbench {
                             state.available = None;
                             "No releases have been published yet".into()
                         }
+                        Err(error) if error.is::<SkippedUpdate>() => error.to_string(),
+                        Err(error) if error.is::<RetryScheduled>() => {
+                            state.retry = error.downcast_ref::<RetryScheduled>().copied();
+                            error.to_string()
+                        }
                         Err(error) => {
                             state.failed = true;
                             format!("Update check failed: {error:#}")
@@ -388,11 +375,33 @@ impl Workbench {
                     };
                     cx.notify();
                 });
+                if prepare {
+                    this.download_update(window, cx);
+                } else {
+                    this.schedule_update_retry(window, cx);
+                }
+                window.refresh();
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
+    }
+
+    fn schedule_update_retry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(retry) = self.updates.read(cx).retry else {
+            return;
+        };
+        let task = cx.spawn_in(window, async move |view, cx| {
+            cx.background_executor().timer(retry.delay()).await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                if this.updates.read(cx).retry == Some(retry) {
+                    this.check_updates(window, cx);
+                }
+            });
+        });
+        self.updates
+            .update(cx, |state, _| state.retry_task = Some(task));
     }
 
     fn download_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -446,6 +455,7 @@ impl Workbench {
                                 state.complete_download(result);
                                 cx.notify();
                             });
+                            this.schedule_update_retry(window, cx);
                             window.refresh();
                             cx.notify();
                         });
@@ -661,7 +671,9 @@ mod tests {
         cx.update_window(handle.into(), |_, window, cx| {
             view.update(cx, |this, cx| {
                 this.updates.update(cx, |state, cx| {
-                    state.available = Some(available_release());
+                    state.prepared = Some(
+                        PreparedUpdate::missing_installer_for_test(available_release()).unwrap(),
+                    );
                     cx.notify();
                 });
                 cx.notify();
@@ -673,34 +685,248 @@ mod tests {
         .unwrap();
         settle_dialog(cx, handle).await;
         cx.update_window(handle.into(), |_, window, cx| {
-            assert!(window.find("update-download").visible());
+            assert!(window.find("update-install").visible());
+            assert!(window.try_find("update-download").is_none());
             assert!(view.read(cx).unsaved());
             assert!(!view.read(cx).updates.read(cx).working);
             assert!(!view.read(cx).updates.read(cx).install_on_close);
             window.click("update-close", cx);
             window.render_frame(cx);
             assert!(window.find("update-banner").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn update_banner_is_hidden_until_preparation_succeeds(cx: &mut TestAppContext) {
+        use crate::desktop::updates::{DownloadPhase, SkippedUpdate};
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            let control = view.update(cx, |this, cx| {
+                this.updates.update(cx, |state, cx| {
+                    let release = available_release();
+                    state.available = Some(release.clone());
+                    let control = state.begin_download(&release);
+                    cx.notify();
+                    control
+                })
+            });
+            for phase in [
+                DownloadPhase::Connecting,
+                DownloadPhase::Downloading,
+                DownloadPhase::Verifying,
+                DownloadPhase::Saving,
+            ] {
+                control.set_progress_for_test(phase, 100 * 1024 * 1024);
+                view.update(cx, |this, cx| {
+                    this.updates.update(cx, |state, cx| {
+                        state.refresh_download();
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(window.try_find("update-banner").is_none());
+                assert!(window.try_find("update-install").is_none());
+            }
+            for error in [
+                anyhow::anyhow!("HTTP 503"),
+                SkippedUpdate {
+                    version: available_release().version,
+                }
+                .into(),
+            ] {
+                view.update(cx, |this, cx| {
+                    this.updates.update(cx, |state, cx| {
+                        state.complete_download(Err(error));
+                        assert!(state.available.is_none());
+                        assert!(state.prepared.is_none());
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                assert!(window.try_find("update-banner").is_none());
+            }
             view.update(cx, |this, cx| {
                 this.updates.update(cx, |state, cx| {
-                    state.working = true;
-                    state.message = "Downloading and verifying the update...".into();
+                    state.complete_download(Ok(PreparedUpdate::missing_installer_for_test(
+                        available_release(),
+                    )
+                    .unwrap()));
                     cx.notify();
                 });
                 cx.notify();
             });
             window.render_frame(cx);
             assert!(window.find("update-banner").visible());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn checking_automatically_prepares_a_cached_release_before_announcing_it(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        PreparedUpdate::cache_for_test(available_release(), &directory.path().join("updates"))
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.preferences_path = Some(directory.path().join("preferences.json"));
+                this.updates.update(cx, |state, _| {
+                    state.feed = Some(UpdateFeed::offline_for_test("regressify").unwrap());
+                });
+                this.check_updates(window, cx);
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("update-banner").is_none());
+            assert!(view.read(cx).updates.read(cx).working);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let state = view.read(cx).updates.read(cx);
+            assert!(!state.working);
+            assert!(!state.failed);
+            assert!(state.message.contains("verified and ready"));
+            assert!(window.find("update-banner").visible());
             window.click("update-banner-action", cx);
         })
         .unwrap();
         settle_dialog(cx, handle).await;
         cx.update_window(handle.into(), |_, window, cx| {
-            assert!(window.find("update-status").visible());
-            window.click("update-download", cx);
+            assert!(window.find("update-install").visible());
+            assert!(window.try_find("update-download").is_none());
+            window.click("update-check", cx);
             assert!(view.read(cx).updates.read(cx).working);
-            assert!(view.read(cx).unsaved());
-            assert!(!view.read(cx).updates.read(cx).install_on_close);
-            window.click("update-close", cx);
+            assert!(view.read(cx).updates.read(cx).prepared.is_none());
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+    }
+
+    #[gpui_kit::test]
+    async fn manual_checks_reset_waiting_and_exhausted_retries(cx: &mut TestAppContext) {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        for failures in [1, 4] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = editor(cx, directory.path());
+            let cache = directory.path().join("updates");
+            PreparedUpdate::cache_for_test(available_release(), &cache).unwrap();
+            let state_path = cache.join("state.json");
+            let mut saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            saved["hash_failures"] = failures.into();
+            saved["next_retry_at"] = (SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 7200)
+                .into();
+            if failures == 4 {
+                saved["skipped_version"] = available_release().version.to_string().into();
+            }
+            fs::write(&state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.preferences_path = Some(directory.path().join("preferences.json"));
+                    this.updates.update(cx, |state, _| {
+                        state.feed = Some(UpdateFeed::offline_for_test("regressify").unwrap());
+                    });
+                    this.check_updates(window, cx);
+                });
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+                !view.read(cx).updates.read(cx).working
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                let state = view.read(cx).updates.read(cx);
+                assert!(state.prepared.is_none());
+                assert!(!state.failed);
+                assert_eq!(state.retry_task.is_some(), failures == 1);
+                window.render_frame(cx);
+                assert!(window.try_find("update-banner").is_none());
+                window.click("software-updates", cx);
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("update-check", cx);
+                let state = view.read(cx).updates.read(cx);
+                assert!(state.working);
+                assert!(state.retry.is_none());
+                assert!(state.retry_task.is_none());
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+                view.read(cx).updates.read(cx).prepared.is_some()
+            })
+            .await;
+            let saved: serde_json::Value =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            assert_eq!(saved["hash_failures"], 0);
+            assert!(saved["next_retry_at"].is_null());
+            assert!(saved["skipped_version"].is_null());
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert!(view.read(cx).updates.read(cx).retry_task.is_none());
+                window.click("update-close", cx);
+                window.render_frame(cx);
+                assert!(window.find("update-banner").visible());
+            })
+            .unwrap();
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn scheduled_retry_automatically_prepares_the_release_when_due(cx: &mut TestAppContext) {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        PreparedUpdate::cache_for_test(available_release(), &directory.path().join("updates"))
+            .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.preferences_path = Some(directory.path().join("preferences.json"));
+                this.updates.update(cx, |state, _| {
+                    state.feed = Some(UpdateFeed::offline_for_test("regressify").unwrap());
+                    state.complete_download(Err(crate::desktop::updates::RetryScheduled {
+                        version: available_release().version,
+                        retry_at: 0,
+                    }
+                    .into()));
+                });
+                this.schedule_update_retry(window, cx);
+            });
+            assert!(view.read(cx).updates.read(cx).prepared.is_none());
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).updates.read(cx);
+            assert!(state.retry_task.is_none());
+            assert!(state.retry.is_none());
+            assert!(!state.failed);
+            window.render_frame(cx);
+            assert!(window.find("update-banner").visible());
         })
         .unwrap();
     }
@@ -768,8 +994,8 @@ mod tests {
         }
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.find("update-banner-detail").visible());
-            window.click("update-banner-action", cx);
+            assert!(window.try_find("update-banner").is_none());
+            window.click("software-updates", cx);
         })
         .unwrap();
         settle_dialog(cx, handle).await;
@@ -792,7 +1018,7 @@ mod tests {
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
             let state = view.read(cx).updates.read(cx);
-            assert!(state.message.contains("Download cancelled"));
+            assert!(state.message.contains("Download paused"));
             assert!(!state.failed);
             assert!(state.prepared.is_none());
             assert!(!state.install_on_close);
@@ -802,7 +1028,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    async fn update_download_cancel_retry_and_errors_preserve_the_draft(cx: &mut TestAppContext) {
+    async fn update_download_pause_check_and_errors_preserve_the_draft(cx: &mut TestAppContext) {
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) = editor(cx, directory.path());
         let control = cx
@@ -813,6 +1039,7 @@ mod tests {
                     this.preferences_path = None;
                     let release = available_release();
                     let control = this.updates.update(cx, |state, cx| {
+                        state.feed = Some(UpdateFeed::new("regressify").unwrap());
                         state.available = Some(release.clone());
                         let control = state.begin_download(&release);
                         cx.notify();
@@ -847,7 +1074,7 @@ mod tests {
                 this.updates.update(cx, |state, cx| {
                     state.complete_download(Err(anyhow::anyhow!("cancelled")));
                     assert!(!state.failed);
-                    assert!(state.retry_download);
+                    assert!(state.available.is_none());
                     assert!(state.download.is_none());
                     cx.notify();
                 });
@@ -855,7 +1082,8 @@ mod tests {
             });
             window.render_frame(cx);
             assert!(window.try_find("update-cancel-download").is_none());
-            window.click("update-download", cx);
+            assert!(window.try_find("update-download").is_none());
+            window.click("update-check", cx);
             assert!(view.read(cx).updates.read(cx).working);
             assert!(!view.read(cx).updates.read(cx).failed);
         })
@@ -868,14 +1096,12 @@ mod tests {
             window.render_frame(cx);
             let state = view.read(cx).updates.read(cx);
             assert!(state.failed);
-            assert!(state.retry_download);
             assert!(state.message.contains("Cannot locate the update cache"));
-            assert!(state.message.contains("No update was installed"));
             assert!(state.prepared.is_none());
             assert!(window.find("update-copy-details").visible());
             window.click("update-close", cx);
             window.render_frame(cx);
-            assert!(window.find("update-banner-detail").visible());
+            assert!(window.try_find("update-banner").is_none());
             assert!(view.read(cx).unsaved());
             assert!(!view.read(cx).updates.read(cx).install_on_close);
         })
@@ -907,17 +1133,11 @@ mod tests {
                 }).unwrap();
                 settle_dialog(cx, handle).await;
                 cx.update_window(handle.into(), |_, window, cx| {
-                    let banner = window.find("update-banner").bounds();
-                    let detail = window.find("update-banner-detail").bounds();
-                    let action = window.find("update-banner-action").bounds();
-                    assert!(detail.origin.x + detail.size.width <= action.origin.x);
-                    assert!(
-                        detail.origin.y + detail.size.height
-                            <= banner.origin.y + banner.size.height
-                    );
+                    assert!(window.try_find("update-banner").is_none());
+                    assert!(window.try_find("update-install").is_none());
                     for id in [
                         "update-status",
-                        "update-download",
+                        "update-check",
                         "update-copy-details",
                         "update-close",
                     ] {
@@ -943,7 +1163,10 @@ mod tests {
                 assert!(window.try_find("update-banner").is_none());
                 view.update(cx, |this, cx| {
                     this.updates.update(cx, |state, cx| {
-                        state.available = Some(available_release());
+                        state.prepared = Some(
+                            PreparedUpdate::missing_installer_for_test(available_release())
+                                .unwrap(),
+                        );
                         cx.notify();
                     });
                     cx.notify();
@@ -976,7 +1199,7 @@ mod tests {
                 }
                 view.update(cx, |this, cx| {
                     this.updates.update(cx, |state, cx| {
-                        state.available = None;
+                        state.prepared = None;
                         cx.notify();
                     });
                     cx.notify();

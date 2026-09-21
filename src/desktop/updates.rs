@@ -2,17 +2,16 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     str::FromStr,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail, ensure};
 use reqwest::{StatusCode, Url, blocking::Client, redirect::Policy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tempfile::TempDir;
 
 pub const CURRENT_VERSION: &str = match option_env!("REGRESSIFY_DESKTOP_VERSION") {
     Some(version) => version,
@@ -23,6 +22,8 @@ const MAX_MANIFEST_SIZE: u64 = 16 * 1024;
 const MAX_INSTALLER_SIZE: u64 = 1024 * 1024 * 1024;
 const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const MAX_HASH_RETRIES: u8 = 3;
+const HASH_RETRY_DELAY: Duration = Duration::from_secs(2 * 60 * 60);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Version([u16; 4]);
@@ -84,7 +85,7 @@ pub enum UpdateCheck {
     Available(Release),
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ManifestFields {
     version: String,
     installer: String,
@@ -92,7 +93,178 @@ struct ManifestFields {
     size: serde_json::Value,
 }
 
+impl From<&Release> for ManifestFields {
+    fn from(release: &Release) -> Self {
+        Self {
+            version: release.version.to_string(),
+            installer: release.installer.to_string(),
+            sha256: release.sha256.clone(),
+            size: release.size.into(),
+        }
+    }
+}
+
+#[derive(Default, Deserialize, Serialize)]
+struct UpdateState {
+    release: Option<ManifestFields>,
+    hash_failures: u8,
+    discard_payload: bool,
+    skipped_version: Option<String>,
+    #[serde(default)]
+    next_retry_at: Option<u64>,
+}
+
+impl UpdateState {
+    fn load(cache: &Path) -> Result<Self> {
+        match fs::File::open(cache.join("state.json")) {
+            Ok(file) => serde_json::from_reader(file.take(MAX_MANIFEST_SIZE * 2))
+                .context("Cannot read saved update state"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
+            Err(error) => Err(error).context("Cannot open saved update state"),
+        }
+    }
+
+    fn save(&self, cache: &Path) -> Result<()> {
+        let mut temporary = tempfile::NamedTempFile::new_in(cache)?;
+        serde_json::to_writer(&mut temporary, self)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(cache.join("state.json"))
+            .map_err(|error| error.error)
+            .context("Cannot save update state")?;
+        #[cfg(unix)]
+        fs::File::open(cache)?.sync_all()?;
+        Ok(())
+    }
+
+    fn skips(&self, version: Version) -> Result<bool> {
+        Ok(self
+            .skipped_version
+            .as_deref()
+            .map(str::parse::<Version>)
+            .transpose()?
+            .is_some_and(|skipped| version <= skipped))
+    }
+
+    fn select_release(&mut self, release: &Release, cache: &Path) -> Result<()> {
+        let previous = self
+            .release
+            .as_ref()
+            .map(|saved| saved.version.parse::<Version>())
+            .transpose()?;
+        ensure!(
+            previous.is_none_or(|version| version <= release.version),
+            "A newer update has replaced this release"
+        );
+        if previous != Some(release.version) {
+            self.hash_failures = 0;
+            self.discard_payload = false;
+            self.next_retry_at = None;
+        }
+        self.release = Some(ManifestFields::from(release));
+        self.save(cache)?;
+        discard_superseded_installers(cache, release.version)
+    }
+
+    fn ensure_retry_due(&self, version: Version, now: u64) -> Result<()> {
+        if self.skips(version)? {
+            return Err(SkippedUpdate { version }.into());
+        }
+        if let Some(retry_at) = self.next_retry_at.filter(|retry_at| *retry_at > now) {
+            return Err(RetryScheduled { version, retry_at }.into());
+        }
+        Ok(())
+    }
+
+    fn reset_retries(&mut self) {
+        self.hash_failures = 0;
+        self.skipped_version = None;
+        self.next_retry_at = None;
+    }
+}
+
+fn lock_cache(cache: &Path) -> Result<fs::File> {
+    fs::create_dir_all(cache).context("Cannot create the update cache")?;
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(cache.join("update.lock"))?;
+    lock.try_lock()
+        .map_err(|error| anyhow::anyhow!("Update cache is in use or cannot be locked: {error}"))?;
+    Ok(lock)
+}
+
+#[derive(Debug)]
+struct ChecksumMismatch;
+
+impl fmt::Display for ChecksumMismatch {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .write_str("Installer SHA-256 does not match the manifest; update was not installed")
+    }
+}
+
+impl std::error::Error for ChecksumMismatch {}
+
+#[derive(Debug)]
+pub struct SkippedUpdate {
+    pub version: Version,
+}
+
+impl fmt::Display for SkippedUpdate {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "Version {} failed SHA-256 verification after the initial attempt and {MAX_HASH_RETRIES} retries; waiting for a newer version",
+            self.version
+        )
+    }
+}
+
+impl std::error::Error for SkippedUpdate {}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RetryScheduled {
+    pub version: Version,
+    pub retry_at: u64,
+}
+
+impl RetryScheduled {
+    pub fn delay(&self) -> Duration {
+        Duration::from_secs(self.retry_at.saturating_sub(unix_timestamp()))
+    }
+}
+
+impl fmt::Display for RetryScheduled {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "Version {} failed SHA-256 verification; retrying in {} minutes",
+            self.version,
+            self.delay().as_secs().div_ceil(60)
+        )
+    }
+}
+
+impl std::error::Error for RetryScheduled {}
+
+fn unix_timestamp() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 impl UpdateFeed {
+    #[cfg(test)]
+    pub(crate) fn offline_for_test(slug: &str) -> Result<Self> {
+        let mut feed = Self::new(slug)?;
+        feed.manifest_url = "http://127.0.0.1/latest.txt".parse()?;
+        Ok(feed)
+    }
+
     pub fn new(slug: &str) -> Result<Self> {
         ensure!(
             !slug.is_empty()
@@ -179,6 +351,52 @@ impl UpdateFeed {
             .send()
             .context("Cannot reach the update service")?;
         self.check_response(response.status(), response, current)
+    }
+
+    pub fn check_with_cache(&self, current: Version, cache: &Path) -> Result<UpdateCheck> {
+        self.reconcile_check(current, cache, self.check(current))
+    }
+
+    pub fn check_manually(&self, current: Version, cache: &Path) -> Result<UpdateCheck> {
+        {
+            let _lock = lock_cache(cache)?;
+            let mut state = UpdateState::load(cache)?;
+            state.reset_retries();
+            state.save(cache)?;
+        }
+        self.check_with_cache(current, cache)
+    }
+
+    fn reconcile_check(
+        &self,
+        current: Version,
+        cache: &Path,
+        result: Result<UpdateCheck>,
+    ) -> Result<UpdateCheck> {
+        let _lock = lock_cache(cache)?;
+        let mut state = UpdateState::load(cache)?;
+        let cached = state
+            .release
+            .as_ref()
+            .map(|fields| self.parse_manifest(&serde_json::to_string(fields)?))
+            .transpose()?
+            .filter(|release| release.version > current);
+        let result = match (result, cached) {
+            (Ok(UpdateCheck::Available(latest)), Some(cached)) => {
+                UpdateCheck::Available(if latest.version >= cached.version {
+                    latest
+                } else {
+                    cached
+                })
+            }
+            (_, Some(cached)) => UpdateCheck::Available(cached),
+            (result, None) => result?,
+        };
+        if let UpdateCheck::Available(release) = &result {
+            state.select_release(release, cache)?;
+            state.ensure_retry_due(release.version, unix_timestamp())?;
+        }
+        Ok(result)
     }
 
     fn check_response(
@@ -328,18 +546,73 @@ impl DownloadControl {
 }
 
 pub struct PreparedUpdate {
-    directory: Option<TempDir>,
     installer: PathBuf,
     release: Release,
 }
 
+fn cached_installer(release: &Release, cache: &Path) -> PathBuf {
+    cache
+        .join(format!("{}-{}", release.version, release.sha256))
+        .join(installer_name(release.version))
+}
+
+fn discard_superseded_installers(cache: &Path, latest: Version) -> Result<()> {
+    for entry in fs::read_dir(cache)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some((version, hash)) = name.to_str().and_then(|name| name.split_once('-')) else {
+            continue;
+        };
+        let Ok(version) = version.parse::<Version>() else {
+            continue;
+        };
+        if version < latest
+            && hash.len() == 64
+            && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && name.to_str() == Some(format!("{version}-{hash}").as_str())
+        {
+            fs::remove_dir_all(entry.path()).context("Cannot discard a superseded update")?;
+        }
+    }
+    Ok(())
+}
+
+fn discard_installer(release: &Release, cache: &Path) -> Result<()> {
+    let installer = cached_installer(release, cache);
+    for path in [&installer, &installer.with_extension("exe.part")] {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).context("Cannot discard an invalid installer"),
+        }
+    }
+    Ok(())
+}
+
 impl PreparedUpdate {
+    #[cfg(all(test, feature = "gui-tests"))]
+    pub(crate) fn cache_for_test(mut release: Release, cache: &Path) -> Result<()> {
+        let payload = b"installer";
+        release.sha256 = format!("{:x}", Sha256::digest(payload));
+        release.size = payload.len() as u64;
+        let installer = cached_installer(&release, cache);
+        fs::create_dir_all(installer.parent().context("Invalid cache path")?)?;
+        fs::write(installer.with_extension("exe.part"), payload)?;
+        UpdateState {
+            release: Some(ManifestFields::from(&release)),
+            ..UpdateState::default()
+        }
+        .save(cache)
+    }
+
     #[cfg(all(test, feature = "gui-tests"))]
     pub(crate) fn missing_installer_for_test(release: Release) -> Result<Self> {
         let directory = tempfile::tempdir()?;
         Ok(Self {
             installer: directory.path().join(installer_name(release.version)),
-            directory: Some(directory),
             release,
         })
     }
@@ -386,86 +659,188 @@ impl PreparedUpdate {
         idle_timeout: Duration,
         total_timeout: Duration,
     ) -> Result<Self> {
-        let download = async {
-            fs::create_dir_all(cache).context("Cannot create the update cache")?;
-            let directory = tempfile::Builder::new()
-                .prefix("regressify-update-")
-                .tempdir_in(cache)
-                .context("Cannot create the temporary installer directory")?;
-            let installer = directory.path().join(installer_name(release.version));
-            let mut response = tokio::time::timeout(
-                idle_timeout,
-                client.get(release.installer.clone()).send(),
-            )
-            .await
-            .with_context(|| format!(
-                "Update server did not respond within {} seconds. Check your connection, VPN or proxy, then retry",
-                idle_timeout.as_secs_f64()
-            ))?
-            .context("Cannot connect to the update server; check your connection, VPN or proxy, then retry")?;
-            ensure!(
-                !response.status().is_redirection(),
-                "Installer download was redirected (HTTP {}); update was not installed",
-                response.status()
-            );
-            ensure!(
-                response.status().is_success(),
-                "Update server returned HTTP {} for the installer; try checking for updates again",
-                response.status()
-            );
-            if let Some(length) = response.content_length() {
-                ensure!(
-                    length == release.size,
-                    "Installer Content-Length is {length} bytes but the manifest declares {} bytes; check for updates again",
-                    release.size
-                );
+        let _lock = lock_cache(cache)?;
+        let mut state = UpdateState::load(cache)?;
+        if state.skips(release.version)? {
+            return Err(SkippedUpdate {
+                version: release.version,
             }
+            .into());
+        }
+        state.select_release(&release, cache)?;
+        state.ensure_retry_due(release.version, unix_timestamp())?;
+        if state.discard_payload {
+            discard_installer(&release, cache)?;
+            state.discard_payload = false;
+            state.save(cache)?;
+        }
+        match Self::download_once(
+            release.clone(),
+            cache,
+            control,
+            &client,
+            idle_timeout,
+            total_timeout,
+        )
+        .await
+        {
+            Err(error) if error.is::<ChecksumMismatch>() => {
+                state.hash_failures = state.hash_failures.saturating_add(1);
+                state.discard_payload = true;
+                let retry: anyhow::Error = if state.hash_failures > MAX_HASH_RETRIES {
+                    state.skipped_version = Some(release.version.to_string());
+                    state.next_retry_at = None;
+                    SkippedUpdate {
+                        version: release.version,
+                    }
+                    .into()
+                } else {
+                    let delay = HASH_RETRY_DELAY.as_secs() * (1u64 << (state.hash_failures - 1));
+                    let retry_at = unix_timestamp().saturating_add(delay);
+                    state.next_retry_at = Some(retry_at);
+                    RetryScheduled {
+                        version: release.version,
+                        retry_at,
+                    }
+                    .into()
+                };
+                state.save(cache)?;
+                discard_installer(&release, cache)?;
+                state.discard_payload = false;
+                state.save(cache)?;
+                Err(retry)
+            }
+            Ok(prepared) => {
+                state.next_retry_at = None;
+                state.save(cache)?;
+                Ok(prepared)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn download_once(
+        release: Release,
+        cache: &Path,
+        control: &DownloadControl,
+        client: &reqwest::Client,
+        idle_timeout: Duration,
+        total_timeout: Duration,
+    ) -> Result<Self> {
+        let download = async {
+            let installer = cached_installer(&release, cache);
+            fs::create_dir_all(installer.parent().context("Invalid update cache path")?)
+                .context("Cannot create the update cache")?;
+            if installer.try_exists()? {
+                control.update(DownloadPhase::Verifying, release.size);
+                verify_payload(fs::File::open(&installer)?, std::io::sink(), &release)?;
+                control.update(DownloadPhase::Saving, release.size);
+                return Ok(Self { installer, release });
+            }
+            let partial = installer.with_extension("exe.part");
             let mut output = OpenOptions::new()
                 .write(true)
-                .create_new(true)
-                .open(&installer)
+                .create(true)
+                .truncate(false)
+                .open(&partial)
                 .context(
                     "Cannot save the installer; check free disk space and update-cache permissions",
                 )?;
-            let mut digest = Sha256::new();
-            let mut received = 0u64;
-            control.update(DownloadPhase::Downloading, received);
-            loop {
-                let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+            let mut received = output.metadata()?.len();
+            if received > release.size {
+                output.set_len(0)?;
+                received = 0;
+            }
+            if received < release.size {
+                control.update(DownloadPhase::Connecting, received);
+                let mut request = client
+                    .get(release.installer.clone())
+                    .header(reqwest::header::ACCEPT_ENCODING, "identity");
+                if received > 0 {
+                    request = request.header(reqwest::header::RANGE, format!("bytes={received}-"));
+                }
+                let mut response = tokio::time::timeout(idle_timeout, request.send())
                     .await
                     .with_context(|| format!(
-                        "Download stalled: no data received for {} seconds ({received} of {} bytes). Check your connection, VPN or proxy, then retry",
-                        idle_timeout.as_secs_f64(),
-                        release.size
+                        "Update server did not respond within {} seconds. Check your connection, VPN or proxy, then retry",
+                        idle_timeout.as_secs_f64()
                     ))?
-                    .with_context(|| format!(
-                        "Installer transfer failed after {received} of {} bytes; check your connection and retry",
-                        release.size
-                    ))?;
-                let Some(chunk) = chunk else {
-                    break;
-                };
-                received += chunk.len() as u64;
+                    .context("Cannot connect to the update server; check your connection, VPN or proxy, then retry")?;
                 ensure!(
-                    received <= release.size,
-                    "Installer exceeds its declared size"
+                    !response.status().is_redirection(),
+                    "Installer download was redirected (HTTP {}); update was not installed",
+                    response.status()
                 );
-                output.write_all(&chunk).context(
-                    "Cannot save the installer; check free disk space and update-cache permissions",
-                )?;
-                digest.update(&chunk);
+                ensure!(
+                    matches!(
+                        response.status(),
+                        StatusCode::OK | StatusCode::PARTIAL_CONTENT
+                    ),
+                    "Update server returned HTTP {} for the installer; try checking for updates again",
+                    response.status()
+                );
+                let offset = if response.status() == StatusCode::PARTIAL_CONTENT {
+                    let expected =
+                        format!("bytes {received}-{}/{}", release.size - 1, release.size);
+                    ensure!(
+                        response
+                            .headers()
+                            .get(reqwest::header::CONTENT_RANGE)
+                            .and_then(|value| value.to_str().ok())
+                            == Some(expected.as_str()),
+                        "Installer Content-Range does not match the requested bytes; retry later"
+                    );
+                    received
+                } else {
+                    0
+                };
+                if let Some(length) = response.content_length() {
+                    ensure!(
+                        length == release.size - offset,
+                        "Installer Content-Length is {length} bytes but {} bytes were expected; check for updates again",
+                        release.size - offset
+                    );
+                }
+                if offset == 0 {
+                    output.set_len(0)?;
+                }
+                output.seek(SeekFrom::Start(offset))?;
+                received = offset;
                 control.update(DownloadPhase::Downloading, received);
+                loop {
+                    let chunk = tokio::time::timeout(idle_timeout, response.chunk())
+                        .await
+                        .with_context(|| format!(
+                            "Download stalled: no data received for {} seconds ({received} of {} bytes). Check your connection, VPN or proxy, then retry",
+                            idle_timeout.as_secs_f64(),
+                            release.size
+                        ))?
+                        .with_context(|| format!(
+                            "Installer transfer failed after {received} of {} bytes; check your connection and retry",
+                            release.size
+                        ))?;
+                    let Some(chunk) = chunk else {
+                        break;
+                    };
+                    received += chunk.len() as u64;
+                    ensure!(
+                        received <= release.size,
+                        "Installer exceeds its declared size"
+                    );
+                    output.write_all(&chunk).context(
+                        "Cannot save the installer; check free disk space and update-cache permissions",
+                    )?;
+                    control.update(DownloadPhase::Downloading, received);
+                }
             }
-            control.update(DownloadPhase::Verifying, received);
-            verify_digest(received, digest, &release)?;
-            control.update(DownloadPhase::Saving, received);
             output.sync_all()
-                .context("Cannot finish saving the verified installer; check free disk space and update-cache permissions")?;
-            Ok(Self {
-                directory: Some(directory),
-                installer,
-                release,
-            })
+                .context("Cannot finish saving the installer; check free disk space and update-cache permissions")?;
+            drop(output);
+            control.update(DownloadPhase::Verifying, received);
+            verify_payload(fs::File::open(&partial)?, std::io::sink(), &release)?;
+            control.update(DownloadPhase::Saving, received);
+            fs::rename(&partial, &installer).context("Cannot save the verified installer")?;
+            Ok(Self { installer, release })
         };
         tokio::select! {
             biased;
@@ -506,9 +881,6 @@ impl PreparedUpdate {
         command
             .spawn()
             .context("Cannot start the update installer")?;
-        if let Some(directory) = self.directory.take() {
-            let _ = directory.keep();
-        }
         Ok(())
     }
 }
@@ -544,7 +916,7 @@ fn verify_digest(total: u64, digest: Sha256, release: &Release) -> Result<()> {
         release.size
     );
     if format!("{:x}", digest.finalize()) != release.sha256 {
-        bail!("Installer SHA-256 does not match the manifest; update was not installed");
+        return Err(ChecksumMismatch.into());
     }
     Ok(())
 }
@@ -648,8 +1020,9 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadControl, DownloadPhase, PreparedUpdate, UpdateCheck, UpdateFeed, Version,
-        installer_name, verify_payload,
+        DownloadControl, DownloadPhase, ManifestFields, PreparedUpdate, SkippedUpdate, UpdateCheck,
+        UpdateFeed, UpdateState, Version, cached_installer, installer_name, lock_cache,
+        verify_payload,
     };
     use reqwest::StatusCode;
     use sha2::{Digest, Sha256};
@@ -829,7 +1202,7 @@ mod tests {
     ) -> (
         reqwest::Url,
         tokio::task::JoinHandle<()>,
-        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Receiver<String>,
     ) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -847,14 +1220,14 @@ mod tests {
                 assert!(request.len() < 16 * 1024);
             }
             stream.write_all(response.as_bytes()).await.unwrap();
-            let _ = started.send(());
+            let _ = started.send(String::from_utf8(request).unwrap());
             futures::future::pending::<()>().await;
         });
         (url, server, request_received)
     }
 
     #[tokio::test]
-    async fn stalled_headers_and_body_time_out_and_remove_partial_downloads() {
+    async fn stalled_headers_and_body_time_out_and_keep_partial_downloads() {
         for (response, received, expected_error) in [
             ("", 0, "Update server did not respond"),
             (
@@ -871,6 +1244,7 @@ mod tests {
             release.installer = url;
             let control = DownloadControl::new(&release);
             let cache = tempfile::tempdir().unwrap();
+            let partial = cached_installer(&release, cache.path()).with_extension("exe.part");
             let result = PreparedUpdate::download_with_client(
                 release,
                 cache.path(),
@@ -885,7 +1259,8 @@ mod tests {
             assert!(error.contains(expected_error), "{error}");
             assert!(error.contains("retry"), "{error}");
             assert_eq!(control.progress().received, received);
-            assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+            assert_eq!(fs::metadata(partial).unwrap().len(), received);
+            assert_eq!(UpdateState::load(cache.path()).unwrap().hash_failures, 0);
             if received > 0 {
                 assert!(error.contains("3 of 9 bytes"), "{error}");
             }
@@ -893,7 +1268,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_interrupts_waiting_for_the_server_and_cleans_up() {
+    async fn cancellation_interrupts_waiting_for_the_server_and_keeps_partial_download() {
         let (url, server, started) = download_server("").await;
         let mut release = UpdateFeed::new("regressify")
             .unwrap()
@@ -902,6 +1277,7 @@ mod tests {
         release.installer = url;
         let control = DownloadControl::new(&release);
         let cache = tempfile::tempdir().unwrap();
+        let partial = cached_installer(&release, cache.path()).with_extension("exe.part");
         let download = PreparedUpdate::download_with_client(
             release,
             cache.path(),
@@ -923,7 +1299,7 @@ mod tests {
         let error = format!("{:#}", result.err().expect("cancelled download must fail"));
         assert!(error.contains("Download cancelled"), "{error}");
         assert!(control.is_cancelled());
-        assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+        assert_eq!(fs::metadata(partial).unwrap().len(), 0);
     }
 
     #[tokio::test]
@@ -932,10 +1308,6 @@ mod tests {
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller",
                 None,
-            ),
-            (
-                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstalled",
-                Some("SHA-256"),
             ),
             (
                 "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nins",
@@ -966,6 +1338,7 @@ mod tests {
             release.installer = url;
             let control = DownloadControl::new(&release);
             let cache = tempfile::tempdir().unwrap();
+            let installer = cached_installer(&release, cache.path());
             let client = reqwest::Client::builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .build()
@@ -984,15 +1357,546 @@ mod tests {
                 Some(expected) => {
                     let error = format!("{:#}", result.err().expect("invalid download must fail"));
                     assert!(error.contains(expected), "{error}");
+                    assert!(!installer.exists());
                 }
                 None => {
                     let prepared = result.unwrap();
                     assert_eq!(fs::read(&prepared.installer).unwrap(), b"installer");
                     assert_eq!(control.progress().received, 9);
                     assert_eq!(control.progress().phase, DownloadPhase::Saving);
+                    drop(prepared);
+                    assert_eq!(fs::read(&installer).unwrap(), b"installer");
                 }
             }
-            assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn partial_download_resumes_and_verified_installer_is_reused_offline() {
+        let (url, server, request) = download_server(
+            "HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 3-8/9\r\n\r\ntaller",
+        ).await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let cache = tempfile::tempdir().unwrap();
+        let installer = cached_installer(&release, cache.path());
+        fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        let partial = installer.with_extension("exe.part");
+        fs::write(&partial, b"ins").unwrap();
+        for _ in 0..2 {
+            let control = DownloadControl::new(&release);
+            let prepared = PreparedUpdate::download_with_client(
+                release.clone(),
+                cache.path(),
+                &control,
+                reqwest::Client::new(),
+                Duration::from_millis(200),
+                Duration::from_secs(3),
+            )
+            .await
+            .unwrap();
+            assert_eq!(fs::read(&prepared.installer).unwrap(), b"installer");
+            assert!(!partial.exists());
+            drop(prepared);
+            server.abort();
+        }
+        let request = request.await.unwrap().to_ascii_lowercase();
+        assert!(request.contains("range: bytes=3-"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn resume_restarts_when_ranges_are_ignored_and_rejects_wrong_ranges() {
+        for (response, success) in [
+            (
+                "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller",
+                true,
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\nContent-Range: bytes 2-7/9\r\n\r\ntaller",
+                false,
+            ),
+            (
+                "HTTP/1.1 206 Partial Content\r\nContent-Length: 6\r\n\r\ntaller",
+                false,
+            ),
+        ] {
+            let (url, server, _) = download_server(response).await;
+            let mut release = UpdateFeed::new("regressify")
+                .unwrap()
+                .parse_manifest(&manifest(b"installer"))
+                .unwrap();
+            release.installer = url;
+            let cache = tempfile::tempdir().unwrap();
+            let installer = cached_installer(&release, cache.path());
+            fs::create_dir_all(installer.parent().unwrap()).unwrap();
+            let partial = installer.with_extension("exe.part");
+            fs::write(&partial, b"ins").unwrap();
+            let result = PreparedUpdate::download_with_client(
+                release.clone(),
+                cache.path(),
+                &DownloadControl::new(&release),
+                reqwest::Client::new(),
+                Duration::from_millis(200),
+                Duration::from_secs(3),
+            )
+            .await;
+            server.abort();
+            if success {
+                assert_eq!(fs::read(result.unwrap().installer).unwrap(), b"installer");
+            } else {
+                assert!(result.err().unwrap().to_string().contains("Content-Range"));
+                assert_eq!(fs::read(partial).unwrap(), b"ins");
+            }
+        }
+    }
+
+    async fn download_sequence(
+        responses: &[&str],
+    ) -> (reqwest::Url, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/installer", listener.local_addr().unwrap())
+            .parse()
+            .unwrap();
+        let responses: Vec<_> = responses
+            .iter()
+            .map(|response| response.to_string())
+            .collect();
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for response in responses {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(stream.read_u8().await.unwrap());
+                    assert!(request.len() < 16 * 1024);
+                }
+                requests.push(String::from_utf8(request).unwrap());
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            }
+            requests
+        });
+        (url, server)
+    }
+
+    #[tokio::test]
+    async fn checksum_failure_schedules_a_fresh_download_and_releases_the_cache_lock() {
+        let (url, server) = download_sequence(&[
+            "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstalled",
+            "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller",
+        ])
+        .await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let cache = tempfile::tempdir().unwrap();
+        let error = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(3),
+        )
+        .await
+        .err()
+        .unwrap();
+        let scheduled = error.downcast_ref::<super::RetryScheduled>().unwrap();
+        assert!(scheduled.delay() <= super::HASH_RETRY_DELAY);
+        assert!(scheduled.delay() >= super::HASH_RETRY_DELAY - Duration::from_secs(2));
+        assert!(lock_cache(cache.path()).is_ok());
+        let error = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(3),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert_eq!(
+            error.downcast_ref::<super::RetryScheduled>().unwrap(),
+            scheduled
+        );
+        let mut state = UpdateState::load(cache.path()).unwrap();
+        state.next_retry_at = Some(0);
+        state.save(cache.path()).unwrap();
+        let prepared = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read(prepared.installer).unwrap(), b"installer");
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.to_ascii_lowercase().contains("range:"))
+        );
+        assert_eq!(UpdateState::load(cache.path()).unwrap().hash_failures, 1);
+        assert_eq!(UpdateState::load(cache.path()).unwrap().next_retry_at, None);
+    }
+
+    #[tokio::test]
+    async fn checksum_retries_persist_across_restarts_and_skip_until_a_newer_version() {
+        let wrong = "HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstalled";
+        let unavailable = "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n";
+        let (url, server) = download_sequence(&[
+            wrong,
+            unavailable,
+            wrong,
+            unavailable,
+            wrong,
+            unavailable,
+            wrong,
+        ])
+        .await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let cache = tempfile::tempdir().unwrap();
+        for failure in 1..=4 {
+            let before = super::unix_timestamp();
+            let error = PreparedUpdate::download_with_client(
+                release.clone(),
+                cache.path(),
+                &DownloadControl::new(&release),
+                reqwest::Client::new(),
+                Duration::from_millis(200),
+                Duration::from_secs(3),
+            )
+            .await
+            .err()
+            .expect("invalid update must not be prepared");
+            if failure < 4 {
+                let retry = error.downcast_ref::<super::RetryScheduled>().unwrap();
+                let delay = 2 * 60 * 60 * (1u64 << (failure - 1));
+                assert!(retry.retry_at >= before + delay);
+                assert!(retry.retry_at <= super::unix_timestamp() + delay);
+                let mut state = UpdateState::load(cache.path()).unwrap();
+                assert_eq!(state.next_retry_at, Some(retry.retry_at));
+                state.next_retry_at = Some(0);
+                state.save(cache.path()).unwrap();
+                let error = PreparedUpdate::download_with_client(
+                    release.clone(),
+                    cache.path(),
+                    &DownloadControl::new(&release),
+                    reqwest::Client::new(),
+                    Duration::from_millis(200),
+                    Duration::from_secs(3),
+                )
+                .await
+                .err()
+                .unwrap();
+                assert!(error.to_string().contains("HTTP 503"), "{error:#}");
+            } else {
+                assert!(error.is::<SkippedUpdate>(), "{error:#}");
+            }
+            assert_eq!(
+                UpdateState::load(cache.path()).unwrap().hash_failures,
+                failure
+            );
+        }
+        let requests = server.await.unwrap();
+        assert_eq!(requests.len(), 7);
+        assert!(
+            requests
+                .iter()
+                .all(|request| !request.to_ascii_lowercase().contains("range:"))
+        );
+        assert!(
+            !cached_installer(&release, cache.path())
+                .with_extension("exe.part")
+                .exists()
+        );
+        for version in ["1.9", "1.10"] {
+            let mut skipped = release.clone();
+            skipped.version = version.parse().unwrap();
+            skipped.sha256 = "a".repeat(64);
+            let error = PreparedUpdate::download_with_client(
+                skipped.clone(),
+                cache.path(),
+                &DownloadControl::new(&skipped),
+                reqwest::Client::new(),
+                Duration::from_millis(200),
+                Duration::from_secs(3),
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(error.is::<SkippedUpdate>(), "{error:#}");
+        }
+        let (url, server) =
+            download_sequence(&["HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller"]).await;
+        release.version = "1.11".parse().unwrap();
+        release.installer = url;
+        let prepared = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+        assert_eq!(prepared.version(), release.version);
+        assert_eq!(UpdateState::load(cache.path()).unwrap().hash_failures, 0);
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn interrupted_verification_resumes_from_saved_manifest_without_network() {
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let installer = cached_installer(&release, cache.path());
+        fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        fs::write(installer.with_extension("exe.part"), b"installer").unwrap();
+        UpdateState {
+            release: Some(ManifestFields::from(&release)),
+            ..UpdateState::default()
+        }
+        .save(cache.path())
+        .unwrap();
+        assert_eq!(
+            feed.reconcile_check(
+                "1".parse().unwrap(),
+                cache.path(),
+                Err(anyhow::anyhow!("Update service unavailable")),
+            )
+            .unwrap(),
+            UpdateCheck::Available(release.clone())
+        );
+        let prepared = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::builder()
+                .https_only(false)
+                .build()
+                .unwrap(),
+            Duration::from_millis(1),
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read(prepared.installer).unwrap(), b"installer");
+    }
+
+    #[tokio::test]
+    async fn interruption_after_recording_a_checksum_failure_does_not_count_it_twice() {
+        let (url, server) =
+            download_sequence(&["HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller"]).await;
+        let mut release = UpdateFeed::new("regressify")
+            .unwrap()
+            .parse_manifest(&manifest(b"installer"))
+            .unwrap();
+        release.installer = url;
+        let cache = tempfile::tempdir().unwrap();
+        let installer = cached_installer(&release, cache.path());
+        fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        fs::write(installer.with_extension("exe.part"), b"installed").unwrap();
+        UpdateState {
+            release: Some(ManifestFields::from(&release)),
+            hash_failures: 1,
+            discard_payload: true,
+            skipped_version: None,
+            next_retry_at: None,
+        }
+        .save(cache.path())
+        .unwrap();
+        PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(3),
+        )
+        .await
+        .unwrap();
+        assert_eq!(UpdateState::load(cache.path()).unwrap().hash_failures, 1);
+        assert_eq!(server.await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn update_cache_has_one_writer_and_revalidates_saved_manifest_urls() {
+        let cache = tempfile::tempdir().unwrap();
+        let lock = lock_cache(cache.path()).unwrap();
+        assert!(lock_cache(cache.path()).is_err());
+        drop(lock);
+        assert!(lock_cache(cache.path()).is_ok());
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let mut fields =
+            ManifestFields::from(&feed.parse_manifest(&manifest(b"installer")).unwrap());
+        fields.installer = "https://untrusted.example/installer.exe".into();
+        UpdateState {
+            release: Some(fields),
+            ..UpdateState::default()
+        }
+        .save(cache.path())
+        .unwrap();
+        let error = feed
+            .reconcile_check("1".parse().unwrap(), cache.path(), Ok(UpdateCheck::Current))
+            .unwrap_err();
+        assert!(error.to_string().contains("immutable HTTPS"), "{error:#}");
+    }
+
+    #[test]
+    fn newer_release_discards_partial_and_complete_older_installers() {
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let previous = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let latest = feed
+            .parse_manifest(&manifest(b"installer").replace("1.10.0.0", "1.11.0.0"))
+            .unwrap();
+        let older = feed
+            .parse_manifest(&manifest(b"installer").replace("1.10.0.0", "1.9.0.0"))
+            .unwrap();
+        let future = feed
+            .parse_manifest(&manifest(b"installer").replace("1.10.0.0", "1.12.0.0"))
+            .unwrap();
+        for release in [&older, &previous, &latest, &future] {
+            let installer = cached_installer(release, cache.path());
+            fs::create_dir_all(installer.parent().unwrap()).unwrap();
+            fs::write(installer.with_extension("exe.part"), b"ins").unwrap();
+            fs::write(&installer, b"installer").unwrap();
+        }
+        let unrelated = cache.path().join("1.0.0.0-not-an-installer-cache");
+        fs::create_dir_all(&unrelated).unwrap();
+        fs::write(unrelated.join("keep.txt"), b"keep").unwrap();
+        UpdateState {
+            release: Some(ManifestFields::from(&previous)),
+            hash_failures: 2,
+            next_retry_at: Some(u64::MAX),
+            ..UpdateState::default()
+        }
+        .save(cache.path())
+        .unwrap();
+        assert_eq!(
+            feed.reconcile_check(
+                "1".parse().unwrap(),
+                cache.path(),
+                Ok(UpdateCheck::Available(latest.clone())),
+            )
+            .unwrap(),
+            UpdateCheck::Available(latest.clone())
+        );
+        for release in [&older, &previous] {
+            assert!(
+                !cached_installer(release, cache.path())
+                    .parent()
+                    .unwrap()
+                    .exists()
+            );
+        }
+        for release in [&latest, &future] {
+            assert!(cached_installer(release, cache.path()).exists());
+        }
+        assert!(unrelated.join("keep.txt").exists());
+        let mut state = UpdateState::load(cache.path()).unwrap();
+        assert_eq!(
+            state.release.as_ref().unwrap().version,
+            latest.version.to_string()
+        );
+        assert_eq!(state.hash_failures, 0);
+        assert_eq!(state.next_retry_at, None);
+        assert!(state.select_release(&previous, cache.path()).is_err());
+    }
+
+    #[test]
+    fn manual_check_resets_backoff_and_exhausted_retry_budgets_even_offline() {
+        let feed = UpdateFeed::offline_for_test("regressify").unwrap();
+        let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        for failures in [1, 4] {
+            UpdateState {
+                release: Some(ManifestFields::from(&release)),
+                hash_failures: failures,
+                next_retry_at: Some(super::unix_timestamp() + 7200),
+                skipped_version: (failures == 4).then(|| release.version.to_string()),
+                ..UpdateState::default()
+            }
+            .save(cache.path())
+            .unwrap();
+            let error = feed
+                .check_with_cache("1".parse().unwrap(), cache.path())
+                .unwrap_err();
+            if failures == 4 {
+                assert!(error.is::<SkippedUpdate>(), "{error:#}");
+            } else {
+                assert!(error.is::<super::RetryScheduled>(), "{error:#}");
+            }
+            assert_eq!(
+                feed.check_manually("1".parse().unwrap(), cache.path())
+                    .unwrap(),
+                UpdateCheck::Available(release.clone())
+            );
+            let state = UpdateState::load(cache.path()).unwrap();
+            assert_eq!(state.hash_failures, 0);
+            assert_eq!(state.next_retry_at, None);
+            assert_eq!(state.skipped_version, None);
+        }
+    }
+
+    #[test]
+    fn existing_cache_state_without_a_retry_deadline_remains_readable() {
+        let state: UpdateState = serde_json::from_value(serde_json::json!({
+            "release": null, "hash_failures": 2, "discard_payload": false,
+            "skipped_version": null
+        }))
+        .unwrap();
+        assert_eq!(state.hash_failures, 2);
+        assert_eq!(state.next_retry_at, None);
+    }
+
+    #[test]
+    fn unavailable_or_stale_feed_does_not_discard_the_newest_cached_release() {
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let older = feed
+            .parse_manifest(&manifest(b"installer").replace("1.10.0.0", "1.9.0.0"))
+            .unwrap();
+        let cache = tempfile::tempdir().unwrap();
+        let installer = cached_installer(&release, cache.path());
+        fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        fs::write(&installer, b"installer").unwrap();
+        UpdateState {
+            release: Some(ManifestFields::from(&release)),
+            ..UpdateState::default()
+        }
+        .save(cache.path())
+        .unwrap();
+        for result in [
+            Err(anyhow::anyhow!("HTTP 503")),
+            Ok(UpdateCheck::Unpublished),
+            Ok(UpdateCheck::Current),
+            Ok(UpdateCheck::Available(older)),
+        ] {
+            assert_eq!(
+                feed.reconcile_check("1".parse().unwrap(), cache.path(), result)
+                    .unwrap(),
+                UpdateCheck::Available(release.clone())
+            );
+            assert_eq!(fs::read(&installer).unwrap(), b"installer");
         }
     }
 
@@ -1006,6 +1910,7 @@ mod tests {
         release.installer = url;
         let control = DownloadControl::new(&release);
         let cache = tempfile::tempdir().unwrap();
+        let partial = cached_installer(&release, cache.path()).with_extension("exe.part");
         let result = PreparedUpdate::download_with_client(
             release,
             cache.path(),
@@ -1022,7 +1927,7 @@ mod tests {
         );
         assert!(error.contains("exceeded its 0.1-second limit"), "{error}");
         assert!(error.contains("0 of 9 bytes"), "{error}");
-        assert_eq!(fs::read_dir(cache.path()).unwrap().count(), 0);
+        assert_eq!(fs::metadata(partial).unwrap().len(), 0);
     }
 
     #[test]
@@ -1054,7 +1959,7 @@ mod tests {
     }
 
     #[test]
-    fn abandoned_download_is_removed_and_tampering_blocks_launch() {
+    fn prepared_installer_is_retained_and_tampering_blocks_launch() {
         let payload = b"installer";
         let release = UpdateFeed::new("regressify")
             .unwrap()
@@ -1064,13 +1969,9 @@ mod tests {
         let path = directory.path().to_path_buf();
         let installer = path.join(installer_name(release.version));
         fs::write(&installer, b"installed").unwrap();
-        let mut update = PreparedUpdate {
-            directory: Some(directory),
-            installer,
-            release,
-        };
+        let mut update = PreparedUpdate { installer, release };
         assert!(update.launch(None).is_err());
         drop(update);
-        assert!(!path.exists());
+        assert!(path.exists());
     }
 }

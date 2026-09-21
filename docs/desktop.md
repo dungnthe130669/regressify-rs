@@ -47,35 +47,62 @@ and skips missing folders and duplicates. Windows removals are remembered until
 the workspace is explicitly reopened. Windows recent-item privacy settings and
 the available Jump List space determine whether these entries are shown.
 
-Official Windows builds check for updates once at startup. When a newer version
-is available, a high-contrast banner stays visible below the title bar in every
-view, showing the new and installed versions with an Update now button. The
-header's Software updates button is also highlighted. Closing the update dialog
-does not dismiss the banner; it shows download activity and changes to Install
-update when the download is verified and ready.
+Official Windows builds check for updates once at startup and automatically
+download and verify a newer release in the background. No upgrade banner,
+highlighted update button, or installation prompt appears until the entire
+installer is saved locally and matches the manifest's size and SHA-256. Network
+outages and failed preparation do not interrupt editing or announce an upgrade.
 
-Select Update now to open the update dialog, then Download update and Install
-and restart. The header's Software updates button also supports manual checks.
-Downloads must match the manifest's
-size and SHA-256, and are checked again before execution. Only newer numeric
-versions and this app's immutable HTTPS installer URLs are accepted. A missing
-manifest (404) means no release is published; network failures remain visible in
-the dialog and banner and do not interrupt editing.
+Once preparation succeeds, a banner stays visible below the title bar in every
+view with an Install update button, and the header's Software updates button is
+highlighted. Select Install update, then Install and restart. Installation uses
+the verified local installer without contacting the update service; its size and
+SHA-256 are checked again immediately before execution. Closing the dialog does
+not dismiss the ready banner or remove the installer. Only newer numeric versions
+and this app's immutable HTTPS installer URLs are accepted. A missing manifest
+(404) means no release is published.
 
-Download status distinguishes connecting, receiving data, SHA-256 verification,
+Release metadata, partial downloads, and checksum retry counts are retained in
+the `updates` directory alongside desktop preferences. Each startup, manual check,
+and scheduled retry checks the feed before using cached metadata, falling back to
+the newest cached release if the service is unavailable or returns an older
+version. Discovering a newer release discards older partial and complete cached
+installers before preparing the replacement. Unrelated cache files are left alone.
+Closing the app or losing
+power does not intentionally discard download progress: the next launch resumes
+from the saved bytes using HTTP range requests. If the server ignores ranges, the
+transfer restarts from byte zero. An interrupted verification rechecks the retained
+file, and an already downloaded installer can be verified and offered even while
+the update service is unavailable. Cached release URLs are validated again before
+use, and cache writes are locked across app instances.
+
+If SHA-256 verification fails, the invalid payload is discarded and downloaded
+again, with at most three retries after the initial attempt (four attempts total).
+Retries use exponential backoff: wait 2 hours after the first failure, 4 hours after
+the second, and 8 hours after the third. The failure count and next retry deadline
+survive restarts; reopening the app does not bypass the remaining wait. Scheduled
+retries run automatically while the app stays open, without holding the cache lock
+during the wait. If all attempts fail, automatic checks skip that version until a
+strictly newer release is published. Network interruptions do not consume checksum
+retries.
+
+Manual Check for updates resets the checksum retry count, clears any scheduled
+delay or skipped-version marker, and checks immediately. This is also available
+when an installer is already ready, so a newer release can replace it. Automatic
+startup checks and scheduled retries never reset the budget for the same version.
+
+The Software updates dialog supports manual checks and shows preparation status:
+connecting, receiving data, SHA-256 verification,
 and saving the verified installer to disk. During transfer it shows received and
 total MiB, percentage, average speed, and elapsed seconds. After five seconds
 without data it also shows the inactivity time. Connecting or receiving no data
-for 30 seconds fails with an explanation and retry guidance; the entire download
-has a separate 15-minute limit. HTTP errors, incomplete transfers, checksum
-failures, and disk-write failures identify the failed step.
-
-Cancel download stops the attempt without installing anything. Failed and
-cancelled attempts discard their partial installer and offer Retry download;
-there is no automatic retry or installation. Closing only the dialog lets the
-download continue. Errors remain visible in the banner, and Copy details in the
-dialog copies the diagnostic message for troubleshooting. A ready installer
-still requires an explicit Install and restart.
+for 30 seconds pauses the attempt; each download attempt has a separate 15-minute
+limit. HTTP errors, incomplete transfers, and disk-write failures retain the
+partial download for the next startup or manual Check for updates. Pause download
+also retains progress without installing anything. Closing only the dialog lets
+preparation continue. Diagnostics are shown only in the dialog, where Copy details
+copies the message for troubleshooting. A ready installer still requires an
+explicit Install and restart; there is no automatic installation.
 
 Installation requires active runs to finish and uses the usual Save/Discard/Cancel
 guard for a draft. No open workspace or document is required. After the initiating
@@ -85,7 +112,9 @@ The installer never
 forcibly closes other windows or workers; close them normally when prompted. New
 app launches are blocked during setup. After installation the initiating workspace
 reopens, if one was open. Older installers cannot
-downgrade an installed version. Unconfigured development builds and non-Windows
+downgrade an installed version. Local preparation removes the network dependency
+from installation, but disk errors, security software, or running app instances
+can still prevent setup from completing. Unconfigured development builds and non-Windows
 builds do not contact the update service.
 
 The public feed is `https://drive.tuyen.blog/downloads/<app-slug>/latest.txt`.
