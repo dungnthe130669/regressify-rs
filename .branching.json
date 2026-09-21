@@ -1,0 +1,17 @@
+{
+  "base": "master",
+  "release": [
+    {
+      "remote": "origin",
+      "branch": "release"
+    },
+    {
+      "remote": "zxz",
+      "branch": "master"
+    },
+    {
+      "remote": "zxz",
+      "branch": "release"
+    }
+  ]
+}
