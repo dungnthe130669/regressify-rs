@@ -13,15 +13,13 @@ use super::{DeployTarget, DeploymentProvider, package::Package, phase};
 #[derive(Deserialize)]
 struct Site {
     id: String,
-    #[serde(default)]
-    prevent_non_git_prod_deploys: bool,
+    prevent_non_git_prod_deploys: Option<bool>,
     published_deploy: Option<PublishedDeploy>,
 }
 
 #[derive(Deserialize)]
 struct PublishedDeploy {
-    #[serde(default)]
-    locked: bool,
+    locked: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -31,8 +29,7 @@ struct Deploy {
     state: String,
     ssl_url: Option<String>,
     deploy_ssl_url: Option<String>,
-    #[serde(default)]
-    draft: bool,
+    draft: Option<bool>,
 }
 
 pub struct NetlifyClient {
@@ -119,11 +116,13 @@ impl NetlifyClient {
                 "Netlify returned a different site"
             );
             ensure!(
-                !site.prevent_non_git_prod_deploys,
+                site.prevent_non_git_prod_deploys != Some(true),
                 "This Netlify site only allows production deploys from Git"
             );
             ensure!(
-                !site.published_deploy.is_some_and(|deploy| deploy.locked),
+                !site
+                    .published_deploy
+                    .is_some_and(|deploy| deploy.locked == Some(true)),
                 "Unlock the current Netlify deployment before publishing reports"
             );
             phase("Packaging selected reports for Netlify");
@@ -164,7 +163,7 @@ impl NetlifyClient {
                     "Netlify returned a different deployment"
                 );
                 ensure!(
-                    !deploy.draft,
+                    deploy.draft != Some(true),
                     "Netlify returned a draft instead of a production deployment"
                 );
                 match deploy.state.as_str() {
@@ -338,10 +337,12 @@ mod tests {
                     let _ = request.respond(tiny_http::Response::empty(503));
                     return;
                 }
-                json!({"id": SITE_ID})
+                json!({"id": SITE_ID, "prevent_non_git_prod_deploys": null,
+                    "published_deploy": {"locked": null}})
             } else {
                 json!({"id":"deploy-123", "site_id": SITE_ID,
                     "state": if method == "POST" { "processing" } else { "ready" },
+                    "draft": null,
                     "ssl_url": "https://qa-reports.netlify.app/"})
             };
             let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
@@ -408,15 +409,28 @@ mod tests {
             (403, TOKEN.to_string()),
             (404, TOKEN.to_string()),
             (302, TOKEN.to_string()),
+            (200, TOKEN.to_string()),
             (200, "x".repeat(1024 * 1024 + 1)),
             (200, json!({"id":"wrong-site"}).to_string()),
             (
                 200,
-                json!({"id":SITE_ID, "prevent_non_git_prod_deploys":true}).to_string(),
+                json!({"id":SITE_ID, "prevent_non_git_prod_deploys":true,
+                    "published_deploy":{"locked":null}})
+                .to_string(),
             ),
             (
                 200,
-                json!({"id":SITE_ID, "published_deploy":{"locked":true}}).to_string(),
+                json!({"id":SITE_ID, "prevent_non_git_prod_deploys":null,
+                    "published_deploy":{"locked":true}})
+                .to_string(),
+            ),
+            (
+                200,
+                json!({"id":SITE_ID, "prevent_non_git_prod_deploys":TOKEN}).to_string(),
+            ),
+            (
+                200,
+                json!({"id":SITE_ID, "published_deploy":{"locked":TOKEN}}).to_string(),
             ),
         ] {
             let calls = Arc::new(AtomicUsize::new(0));
@@ -433,6 +447,7 @@ mod tests {
                 let _ = request.respond(response);
             })?;
             let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "report")?;
             let error = client(&site.origin)
                 .deploy(root.path(), &target())
                 .await
@@ -445,14 +460,22 @@ mod tests {
 
     #[tokio::test]
     async fn polling_fails_for_terminal_states_changed_identity_and_deadlines() -> Result<()> {
-        for state in ["error", "rejected", "processing", "ready"] {
+        for (state, site_id, draft, expected) in [
+            ("error", SITE_ID, json!(false), "deployment failed"),
+            ("rejected", SITE_ID, json!(null), "deployment failed"),
+            ("processing", SITE_ID, json!(false), "deadline"),
+            ("ready", "wrong-site", json!(false), "different deployment"),
+            ("ready", SITE_ID, json!(true), "draft instead"),
+            ("ready", SITE_ID, json!(TOKEN), "Invalid Netlify response"),
+        ] {
             let site = crate::test::browser_tests::Site::new(move |mut request| {
                 let response = if request.url() == format!("/api/v1/sites/{SITE_ID}") {
                     json!({"id":SITE_ID})
                 } else {
                     std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
-                    json!({"id":"deploy-123", "site_id": if state == "ready" { "wrong-site" } else { SITE_ID },
-                        "state":state, "error_message":TOKEN, "ssl_url":"https://qa-reports.netlify.app/"})
+                    json!({"id":"deploy-123", "site_id": site_id,
+                        "state":state, "draft":draft, "error_message":TOKEN,
+                        "ssl_url":"https://qa-reports.netlify.app/"})
                 };
                 let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
             })?;
@@ -464,11 +487,6 @@ mod tests {
             }
             let error = client.deploy(root.path(), &target()).await.unwrap_err();
             assert!(!format!("{error:#}").contains(TOKEN));
-            let expected = match state {
-                "processing" => "deadline",
-                "ready" => "different deployment",
-                _ => "deployment failed",
-            };
             assert!(error.to_string().contains(expected));
         }
         Ok(())
