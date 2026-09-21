@@ -491,6 +491,15 @@ public static class RegressifyInstanceWindow {
 }
 
 function Test-ComparisonFlows {
+    if (-not ('RegressifySmokeZoomKeys' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeZoomKeys {
+    [DllImport("user32.dll")] public static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+}
+'@
+    }
     function Write-ComparisonImage([string]$Path, [int]$Width, [int]$Height) {
         $bitmap = [System.Drawing.Bitmap]::new($Width, $Height)
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
@@ -505,8 +514,15 @@ function Test-ComparisonFlows {
             $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
         } finally { $graphics.Dispose(); $bitmap.Dispose() }
     }
+    function Get-ComparisonBounds([string]$Pane) {
+        $preview = (Wait-Control "$Pane image preview").Current.BoundingRectangle
+        $canvas = (Wait-Control "$Pane image canvas").Current.BoundingRectangle
+        return [System.Drawing.RectangleF]::Intersect(
+            [System.Drawing.RectangleF]::new($preview.Left, $preview.Top, $preview.Width, $preview.Height),
+            [System.Drawing.RectangleF]::new($canvas.Left, $canvas.Top, $canvas.Width, $canvas.Height))
+    }
     function Move-ComparisonPointer([string]$Pane, [double]$HorizontalFraction = 0.43, [double]$VerticalFraction = 0.41) {
-        $bounds = (Wait-Control "$Pane image preview").Current.BoundingRectangle
+        $bounds = Get-ComparisonBounds $Pane
         Focus-Fixture
         $horizontal = [int]($bounds.Left + $bounds.Width * $HorizontalFraction)
         $vertical = [int]($bounds.Top + $bounds.Height * $VerticalFraction)
@@ -552,7 +568,7 @@ function Test-ComparisonFlows {
         $native = [RegressifySmokeNative+Rect]::new()
         if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read comparison window bounds.' }
         $bounds = @('Reference', 'Current') | ForEach-Object {
-            $preview = (Wait-Control "$_ image preview").Current.BoundingRectangle
+            $preview = Get-ComparisonBounds $_
             [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
         }
         if ($HideGuides) {
@@ -571,8 +587,10 @@ function Test-ComparisonFlows {
             }
             $matches = 0
             $signature = @()
-            foreach ($vertical in @(46, 146, 246)) {
-                foreach ($horizontal in @(55, 155, 255)) {
+            foreach ($verticalFraction in @(0.15, 0.35, 0.55)) {
+                foreach ($horizontalFraction in @(0.15, 0.35, 0.55)) {
+                    $vertical = [int]($bounds[0].Height * $verticalFraction)
+                    $horizontal = [int]($bounds[0].Width * $horizontalFraction)
                     $sample = Read-StableComparisonSample $bitmap $bounds $horizontal $vertical
                     $reference = $sample[0]
                     $current = $sample[1]
@@ -592,6 +610,41 @@ function Test-ComparisonFlows {
         [RegressifySmokeNative]::mouse_event($flags, 0, 0, $data, [UIntPtr]::Zero)
         Wait-Control "$Pane image preview" | Out-Null
     }
+    function Test-ComparisonGestures([string]$Name, [string]$Pane) {
+        foreach ($amount in @(120, -120)) {
+            $before = (Wait-Control "$Pane image canvas").Current.BoundingRectangle
+            $visible = Get-ComparisonBounds $Pane
+            $pointer = Move-ComparisonPointer $Pane
+            $horizontal = $visible.Left + $pointer[0]
+            $vertical = $visible.Top + $pointer[1]
+            $data = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$amount), 0)
+            [RegressifySmokeZoomKeys]::keybd_event(0x11, 0, 0, [UIntPtr]::Zero)
+            try {
+                [RegressifySmokeNative]::mouse_event(0x0800, 0, 0, $data, [UIntPtr]::Zero)
+                $after = (Wait-Control "$Pane image canvas").Current.BoundingRectangle
+            } finally { [RegressifySmokeZoomKeys]::keybd_event(0x11, 0, 2, [UIntPtr]::Zero) }
+            if (($amount -gt 0 -and $after.Width -le $before.Width) -or ($amount -lt 0 -and $after.Width -ge $before.Width)) {
+                throw "Ctrl+wheel did not zoom $Pane in '$Name'."
+            }
+            $anchoredX = $after.Left + ($horizontal - $before.Left) * ($after.Width / $before.Width)
+            $anchoredY = $after.Top + ($vertical - $before.Top) * ($after.Height / $before.Height)
+            if ([Math]::Abs($anchoredX - $horizontal) -gt 2 -or [Math]::Abs($anchoredY - $vertical) -gt 2) {
+                throw "Ctrl+wheel moved the pointer's image coordinate in '$Name'."
+            }
+        }
+        $before = (Wait-Control "$Pane image canvas").Current.BoundingRectangle
+        $visible = Get-ComparisonBounds $Pane
+        $pointer = Move-ComparisonPointer $Pane
+        [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+        try {
+            [RegressifySmokePointer]::SetPhysicalCursorPos([int]($visible.Left + $pointer[0] - 42), [int]($visible.Top + $pointer[1] - 54)) | Out-Null
+            $after = (Wait-Control "$Pane image canvas").Current.BoundingRectangle
+            if ([Math]::Abs($after.Left - $before.Left + 42) -gt 2 -or [Math]::Abs($after.Top - $before.Top + 54) -gt 2) {
+                throw "Left-drag did not pan the image in '$Name'."
+            }
+        } finally { [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+        Assert-ComparisonPixels "$Name-zoom-pan" $Pane
+    }
     Write-ComparisonImage (Join-Path $output 'bitmaps_reference/checkout.png') 1600 2200
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout.png') 1280 1800
     Invoke-Control 'smoke.tests.json'
@@ -609,6 +662,7 @@ function Test-ComparisonFlows {
             Wait-Control 'Reference 1600 x 2200' | Out-Null
             Wait-Control 'Current 1280 x 1800' | Out-Null
             Invoke-Control 'Actual size (100%)'
+            $actual = (Wait-Control 'Reference image canvas').Current.BoundingRectangle
             $name = 'comparison-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]
             Assert-ComparisonPixels "$name-initial"
             Assert-ComparisonPixels "$name-moved-guides" -HorizontalFraction 0.61 -VerticalFraction 0.54
@@ -620,7 +674,24 @@ function Test-ComparisonFlows {
                     if ($before -eq $script:comparisonSignature) { throw "The $pane wheel did not move comparison pixels (horizontal: $horizontal)." }
                 }
             }
-            Invoke-Control 'Fit width'
+            foreach ($pane in @('Reference', 'Current')) {
+                Test-ComparisonGestures ("$name-" + $pane.ToLowerInvariant()) $pane
+            }
+            Invoke-Control 'Fit area'
+            foreach ($pane in @('Reference', 'Current')) {
+                $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
+                $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
+                $scale = [Math]::Min(1.0, [Math]::Min($preview.Width / $actual.Width, $preview.Height / $actual.Height))
+                if ($canvas.Left -lt $preview.Left - 1 -or $canvas.Top -lt $preview.Top - 1 -or $canvas.Right -gt $preview.Right + 1 -or $canvas.Bottom -gt $preview.Bottom + 1) {
+                    throw "Fit area clipped the $pane image in '$name'."
+                }
+                if ([Math]::Abs($canvas.Width - $actual.Width * $scale) -gt 2 -or [Math]::Abs($canvas.Height - $actual.Height * $scale) -gt 2) {
+                    throw "Fit area used an incorrect scale for $pane in '$name': canvas=$canvas, actual=$actual, viewport=$preview, scale=$scale."
+                }
+                if ([Math]::Abs(($canvas.Left + $canvas.Width / 2) - ($preview.Left + $preview.Width / 2)) -gt 1) {
+                    throw "Fit area did not center the $pane image in '$name'."
+                }
+            }
             Assert-ComparisonPixels "$name-fit" 'Current'
             Assert-ComparisonPixels "$name-no-guides" -HideGuides
         }
@@ -631,7 +702,7 @@ function Test-ComparisonFlows {
     Capture-Window 'comparison-empty-suite'
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Current 1280 x 1800' | Out-Null
-    Write-Output 'Suite-scoped Results, two-axis linked scrolling, and painted crosshairs passed pixel checks from both panes in light/dark desktop and compact windows.'
+    Write-Output 'Centered fit-area Results, pointer-centered Ctrl+wheel zoom, drag panning, two-axis linked scrolling, and crosshairs passed native checks from both panes in light/dark desktop and compact windows.'
 }
 
 function Test-ArtifactFlows {
@@ -1394,7 +1465,7 @@ try {
     Capture-Window 'comparison-compact'
     Invoke-Control 'Actual size (100%)'
     Capture-Window 'comparison-actual-size'
-    Invoke-Control 'Fit width'
+    Invoke-Control 'Fit area'
     Invoke-Control 'Show navigator'
     Wait-Control 'Preferences saved' | Out-Null
     Invoke-Control 'Editor'

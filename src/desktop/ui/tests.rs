@@ -4017,6 +4017,15 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.within("image-modes").click(3_usize, cx);
+        for index in [0_usize, 1] {
+            let viewport = window.find(("image-scroll", index)).bounds();
+            let content = window.find(("image-content", index)).bounds();
+            assert!(content.right() <= viewport.right());
+            assert!(
+                content.bottom() <= viewport.bottom(),
+                "Fit area must display the entire image in pane {index}"
+            );
+        }
         window.click("actual-size", cx);
         let offset = |window: &gpui_kit::Window, index| {
             window.find(("image-content", index)).bounds().origin
@@ -4092,9 +4101,284 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         for index in [0_usize, 1] {
-            let offset = window.find(("image-content", index)).bounds().origin
-                - window.find(("image-scroll", index)).bounds().origin;
-            assert_eq!(offset, gpui_kit::point(px(0.), px(0.)));
+            let content = window.find(("image-content", index)).bounds();
+            let viewport = window.find(("image-scroll", index)).bounds();
+            assert!((content.center().x - viewport.center().x).abs() <= px(1.));
+            assert_eq!(content.top(), viewport.top());
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        let cases = [
+            ((96, 64), (64, 96)),
+            ((1600, 200), (1200, 300)),
+            ((300, 1600), (200, 1200)),
+        ];
+        let mut captures = Vec::new();
+        for (index, &(reference, current)) in cases.iter().enumerate() {
+            for (label, (width, height)) in [("reference", reference), ("current", current)] {
+                lodepng::encode32_file(
+                    run.join(format!("{index}-{label}.png")),
+                    &[30_u8, 150, 180, 255].repeat(width * height),
+                    width,
+                    height,
+                )
+                .unwrap();
+            }
+            captures.push(serde_json::json!({"status": "pass", "pair": {
+                "label": format!("Capture {index}"),
+                "reference": format!("../bitmaps_test/run-1/{index}-reference.png"),
+                "test": format!("../bitmaps_test/run-1/{index}-current.png"),
+                "diffImage": format!("../bitmaps_test/run-1/{index}-reference.png")
+            }}));
+        }
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": captures})).unwrap(),
+        )
+        .unwrap();
+        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        for (capture, (reference, current)) in cases.into_iter().enumerate() {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click(("capture", capture), cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find(("image-details", 1_usize)).is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                for mode in 0..4 {
+                    window.within("image-modes").click(mode, cx);
+                    assert_eq!(window.find("fit-image").checked(), Some(true));
+                    let (canvas_width, canvas_height) = match mode {
+                        0 | 2 => reference,
+                        1 => current,
+                        _ => (reference.0.max(current.0), reference.1.max(current.1)),
+                    };
+                    let canvas_width = canvas_width as f32;
+                    let canvas_height = canvas_height as f32;
+                    let panes = if mode == 3 {
+                        vec![0_usize, 1]
+                    } else {
+                        vec![mode]
+                    };
+                    let scale = panes.iter().fold(1.0_f32, |scale, index| {
+                        let viewport = window.find(("image-scroll", *index)).bounds();
+                        scale
+                            .min(viewport.size.width / px(canvas_width))
+                            .min(viewport.size.height / px(canvas_height))
+                    });
+                    for index in &panes {
+                        let content = window.find(("image-content", *index)).bounds();
+                        let viewport = window.find(("image-scroll", *index)).bounds();
+                        assert!(content.left() >= viewport.left() - px(1.));
+                        assert!(content.top() >= viewport.top());
+                        assert!(content.right() <= viewport.right() + px(1.));
+                        assert!(content.bottom() <= viewport.bottom() + px(1.));
+                        assert!((content.center().x - viewport.center().x).abs() <= px(1.));
+                        assert!(content.size.width <= px(canvas_width));
+                        assert!(content.size.height <= px(canvas_height));
+                        assert!(
+                            (content.size.width / px(canvas_width) - scale).abs()
+                                <= 1.0 / canvas_width
+                        );
+                        assert!(
+                            (content.size.height / px(canvas_height) - scale).abs()
+                                <= 1.0 / canvas_height
+                        );
+                    }
+                    if capture == 0 {
+                        assert_eq!(scale, 1.0);
+                        window.click("zoom-in", cx);
+                        assert_eq!(window.find("fit-image").checked(), Some(false));
+                        assert_eq!(window.find("zoom-value").label(), Some("125%"));
+                        for index in &panes {
+                            let content = window.find(("image-content", *index)).bounds();
+                            let viewport = window.find(("image-scroll", *index)).bounds();
+                            assert_eq!(
+                                content.size,
+                                size(px(canvas_width * 1.25), px(canvas_height * 1.25))
+                            );
+                            assert!((content.center().x - viewport.center().x).abs() <= px(1.));
+                        }
+                        window.click("actual-size", cx);
+                        window.click("fit-image", cx);
+                        for index in &panes {
+                            assert_eq!(
+                                window.find(("image-content", *index)).bounds().size,
+                                size(px(canvas_width), px(canvas_height))
+                            );
+                        }
+                    }
+                }
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext) {
+    use gpui_kit::InputEvent as _;
+
+    let directory = tempfile::tempdir().unwrap();
+    let run = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    lodepng::encode32_file(
+        run.join("capture.png"),
+        &[30_u8, 150, 180, 255].repeat(1200 * 1800),
+        1200,
+        1800,
+    )
+    .unwrap();
+    let image = "../bitmaps_test/run-1/capture.png";
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [{
+            "status": "pass", "pair": {
+                "label": "Zoom fixture", "reference": image, "test": image, "diffImage": image
+            }
+        }]}))
+        .unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for mode in 0..4 {
+            window.within("image-modes").click(mode, cx);
+            let panes = if mode == 3 { vec![0_usize, 1] } else { vec![mode] };
+            for index in panes {
+                for fitted in [true, false] {
+                    if window.find("fit-image").checked() != Some(true) {
+                        window.click("fit-image", cx);
+                    }
+                    if !fitted {
+                        window.click("actual-size", cx);
+                    }
+                    let viewport = window.find(("image-scroll", index)).bounds();
+                    let content = window.find(("image-content", index)).bounds();
+                    let pointer = content.origin
+                        + gpui_kit::point(
+                            content.size.width.min(viewport.size.width) * 0.4,
+                            content.size.height.min(viewport.size.height) * 0.4,
+                        );
+                    for (delta, factor) in [
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., 1.)), 1.25),
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -1.)), 0.8),
+                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))), 1.25),
+                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-40.))), 0.8),
+                    ] {
+                        let before = window.find(("image-content", index)).bounds();
+                        window.dispatch_event(
+                            gpui_kit::ScrollWheelEvent {
+                                position: pointer,
+                                delta,
+                                modifiers: gpui_kit::Modifiers {
+                                    control: true,
+                                    ..Default::default()
+                                },
+                                ..Default::default()
+                            }
+                            .to_platform_input(),
+                            cx,
+                        );
+                        window.render_frame(cx);
+                        let after = window.find(("image-content", index)).bounds();
+                        assert!(
+                            (after.size.width - before.size.width * factor).abs() <= px(2.),
+                            "Ctrl+wheel must zoom mode {mode}, pane {index}, fitted {fitted}"
+                        );
+                        let anchored = after.origin
+                            + gpui_kit::point(
+                                (pointer.x - before.origin.x) * (after.size.width / before.size.width),
+                                (pointer.y - before.origin.y) * (after.size.height / before.size.height),
+                            );
+                        assert!(
+                            (anchored.x - pointer.x).abs() <= px(2.)
+                                && (anchored.y - pointer.y).abs() <= px(2.),
+                            "Zoom must preserve the image point under the pointer in mode {mode}, fitted {fitted}, factor {factor}: {before:?} -> {after:?}, pointer {pointer:?}, anchored {anchored:?}"
+                        );
+                        assert_eq!(window.find("fit-image").checked(), Some(false));
+                        if mode == 3 {
+                            let other = window.find(("image-content", 1 - index)).bounds();
+                            let other_viewport = window.find(("image-scroll", 1 - index)).bounds();
+                            assert_eq!(after.size, other.size);
+                            assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
+                        }
+                    }
+                    let before = window.find(("image-content", index)).bounds();
+                    let movement = gpui_kit::point(px(-60.), px(-80.));
+                    window.drag(pointer, pointer + movement, cx);
+                    window.render_frame(cx);
+                    let mut after = window.find(("image-content", index)).bounds();
+                    let expected = if fitted { gpui_kit::point(px(0.), px(0.)) } else { movement };
+                    let actual = after.origin - before.origin;
+                    assert!(
+                        (actual.x - expected.x).abs() <= px(2.)
+                            && (actual.y - expected.y).abs() <= px(2.),
+                        "Dragging mode {mode}, pane {index}, fitted {fitted}: {actual:?} != {expected:?}"
+                    );
+                    if !fitted {
+                        let start = viewport.origin + gpui_kit::point(px(10.), px(10.));
+                        let movement = gpui_kit::point(px(-40.), px(-50.));
+                        window.drag(start, start + movement, cx);
+                        window.render_frame(cx);
+                        let moved = window.find(("image-content", index)).bounds();
+                        assert_eq!(moved.origin - after.origin, movement);
+                        after = moved;
+                        window.scroll(
+                            ("image-scroll", index),
+                            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-45.))),
+                            cx,
+                        );
+                        window.render_frame(cx);
+                        let scrolled = window.find(("image-content", index)).bounds();
+                        assert_eq!(scrolled.size, after.size);
+                        assert_eq!(scrolled.origin - after.origin, gpui_kit::point(px(0.), px(-45.)));
+                        after = scrolled;
+                    }
+                    if mode == 3 {
+                        let other = window.find(("image-content", 1 - index)).bounds();
+                        let other_viewport = window.find(("image-scroll", 1 - index)).bounds();
+                        assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
+                    }
+                    window.hover("actual-size", cx);
+                    window.render_frame(cx);
+                    assert_eq!(window.find(("image-content", index)).bounds(), after);
+                }
+            }
         }
     })
     .unwrap();

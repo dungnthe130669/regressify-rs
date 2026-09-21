@@ -801,9 +801,16 @@ explicit run requests exclude unrelated reports before applying the discovery
 limit of 1,000 report reads, limited to 16 MiB each.
 
 Reference, Current, Diff, and Side by side display background-loaded PNGs.
-Fit width, zoom, actual-size reset (100%), and scrollbars support tall pages.
+Fit area is enabled by default and uses the smaller width/height scale so the
+entire image is visible, capped at 100% to keep small images at their original size.
+Preview canvases are horizontally centered when narrower than their viewport.
+These defaults apply to Reference, Current, Diff, and Side by side.
+Manual zoom can enlarge images beyond 100%. Ctrl+mouse wheel zooms around the
+pointer, starting from the displayed scale. Left-button dragging pans images
+that exceed the viewport; ordinary wheel scrolling, scrollbars, and actual-size
+reset remain available.
 Side-by-side images use a common canvas and scale, including when their dimensions
-differ. Both horizontal and vertical scrolling stay synchronized from either pane.
+differ. Zoom, dragging, and both scroll axes stay synchronized from either pane.
 Moving the pointer over an image draws horizontal and vertical guides in both
 panes at the same image coordinate. Guides disappear when the pointer leaves the
 images, and selecting another capture resets the shared scroll position.
