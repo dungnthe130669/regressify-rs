@@ -4212,13 +4212,13 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                         assert_eq!(scale, 1.0);
                         window.click("zoom-in", cx);
                         assert_eq!(window.find("fit-image").checked(), Some(false));
-                        assert_eq!(window.find("zoom-value").label(), Some("125%"));
+                        assert_eq!(window.find("zoom-value").label(), Some("110%"));
                         for index in &panes {
                             let content = window.find(("image-content", *index)).bounds();
                             let viewport = window.find(("image-scroll", *index)).bounds();
-                            assert_eq!(
-                                content.size,
-                                size(px(canvas_width * 1.25), px(canvas_height * 1.25))
+                            assert!((content.size.width - px(canvas_width * 1.1)).abs() <= px(1.));
+                            assert!(
+                                (content.size.height - px(canvas_height * 1.1)).abs() <= px(1.)
                             );
                             assert!((content.center().x - viewport.center().x).abs() <= px(1.));
                         }
@@ -4242,6 +4242,25 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
 async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext) {
     use gpui_kit::InputEvent as _;
 
+    let zoom_levels = [
+        0.25_f32,
+        1. / 3.,
+        0.5,
+        2. / 3.,
+        0.75,
+        0.8,
+        0.9,
+        1.,
+        1.1,
+        1.25,
+        1.5,
+        1.75,
+        2.,
+        2.5,
+        3.,
+        4.,
+        5.,
+    ];
     let directory = tempfile::tempdir().unwrap();
     let run = directory
         .path()
@@ -4294,13 +4313,21 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                             content.size.width.min(viewport.size.width) * 0.4,
                             content.size.height.min(viewport.size.height) * 0.4,
                         );
-                    for (delta, factor) in [
-                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., 1.)), 1.25),
-                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -1.)), 0.8),
-                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))), 1.25),
-                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-40.))), 0.8),
+                    for (delta, increase) in [
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., 1.)), true),
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -1.)), false),
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., 3.)), true),
+                        (gpui_kit::ScrollDelta::Lines(gpui_kit::point(0., -3.)), false),
+                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(40.))), true),
+                        (gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-40.))), false),
                     ] {
                         let before = window.find(("image-content", index)).bounds();
+                        let current_zoom = before.size.width / px(1200.);
+                        let expected_zoom = if increase {
+                            zoom_levels.iter().copied().find(|zoom| *zoom > current_zoom + 0.001).unwrap()
+                        } else {
+                            zoom_levels.iter().copied().rfind(|zoom| *zoom < current_zoom - 0.001).unwrap_or(0.25)
+                        };
                         window.dispatch_event(
                             gpui_kit::ScrollWheelEvent {
                                 position: pointer,
@@ -4317,8 +4344,12 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                         window.render_frame(cx);
                         let after = window.find(("image-content", index)).bounds();
                         assert!(
-                            (after.size.width - before.size.width * factor).abs() <= px(2.),
-                            "Ctrl+wheel must zoom mode {mode}, pane {index}, fitted {fitted}"
+                            (after.size.width - px(1200. * expected_zoom)).abs() <= px(1.),
+                            "Ctrl+wheel must select the next preset in mode {mode}, pane {index}, fitted {fitted}"
+                        );
+                        assert_eq!(
+                            window.find("zoom-value").label(),
+                            Some(format!("{:.0}%", expected_zoom * 100.).as_str())
                         );
                         let anchored = after.origin
                             + gpui_kit::point(
@@ -4328,7 +4359,7 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                         assert!(
                             (anchored.x - pointer.x).abs() <= px(2.)
                                 && (anchored.y - pointer.y).abs() <= px(2.),
-                            "Zoom must preserve the image point under the pointer in mode {mode}, fitted {fitted}, factor {factor}: {before:?} -> {after:?}, pointer {pointer:?}, anchored {anchored:?}"
+                            "Zoom must preserve the image point under the pointer in mode {mode}, fitted {fitted}, zoom {expected_zoom}: {before:?} -> {after:?}, pointer {pointer:?}, anchored {anchored:?}"
                         );
                         assert_eq!(window.find("fit-image").checked(), Some(false));
                         if mode == 3 {
@@ -4337,6 +4368,9 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                             assert_eq!(after.size, other.size);
                             assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
                         }
+                    }
+                    if fitted {
+                        window.click("fit-image", cx);
                     }
                     let before = window.find(("image-content", index)).bounds();
                     let movement = gpui_kit::point(px(-60.), px(-80.));
@@ -4430,8 +4464,27 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
             window.find(("image-content", 1_usize)).bounds().size.width
                 <= window.find(("image-scroll", 1_usize)).bounds().size.width
         );
+        let fit_scale = window.find(("image-content", 1_usize)).bounds().size.width / px(1280.);
+        let next_fit_zoom = [0.25, 1. / 3., 0.5, 2. / 3., 0.75, 0.8, 0.9, 1., 1.1]
+            .into_iter()
+            .find(|zoom| *zoom > fit_scale + 0.001)
+            .unwrap();
+        window.click("zoom-in", cx);
+        assert_eq!(
+            window.find("zoom-value").label(),
+            Some(format!("{:.0}%", next_fit_zoom * 100.).as_str())
+        );
+        window.click("actual-size", cx);
+        window.click("zoom-in", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("110%"));
         window.click("zoom-in", cx);
         assert_eq!(window.find("zoom-value").label(), Some("125%"));
+        window.click("zoom-out", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("110%"));
+        window.click("zoom-out", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("100%"));
+        window.click("zoom-out", cx);
+        assert_eq!(window.find("zoom-value").label(), Some("90%"));
         window.click("actual-size", cx);
         assert_eq!(window.find("zoom-value").label(), Some("100%"));
         assert_eq!(

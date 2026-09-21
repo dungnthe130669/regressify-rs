@@ -805,8 +805,12 @@ Fit area is enabled by default and uses the smaller width/height scale so the
 entire image is visible, capped at 100% to keep small images at their original size.
 Preview canvases are horizontally centered when narrower than their viewport.
 These defaults apply to Reference, Current, Diff, and Side by side.
-Manual zoom can enlarge images beyond 100%. Ctrl+mouse wheel zooms around the
-pointer, starting from the displayed scale. Left-button dragging pans images
+Zoom buttons and Ctrl+mouse wheel use [Chrome's zoom presets](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/third_party/blink/common/page/page_zoom.cc):
+25%, 33%, 50%, 67%, 75%, 80%, 90%, 100%, 110%, 125%, 150%, 175%, 200%, 250%,
+300%, 400%, and 500%. Each action selects the nearest preset in the requested
+direction, starting from the displayed scale. Fit area remains exact and can
+shrink below 25%; zooming out at that size leaves the image fitted.
+Ctrl+mouse wheel keeps the image point under the pointer fixed. Left-button dragging pans images
 that exceed the viewport; ordinary wheel scrolling, scrollbars, and actual-size
 reset remain available.
 Side-by-side images use a common canvas and scale, including when their dimensions

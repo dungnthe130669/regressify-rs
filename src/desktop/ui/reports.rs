@@ -10,6 +10,41 @@ use super::*;
 use crate::desktop::results::{Catalog, Outcome, ReportEntry, ReportSelection};
 
 const PAGE_SIZE: usize = 50;
+const ZOOM_LEVELS: [f32; 17] = [
+    0.25,
+    1. / 3.,
+    0.5,
+    2. / 3.,
+    0.75,
+    0.8,
+    0.9,
+    1.,
+    1.1,
+    1.25,
+    1.5,
+    1.75,
+    2.,
+    2.5,
+    3.,
+    4.,
+    5.,
+];
+
+fn next_zoom(current: f32, increase: bool) -> f32 {
+    if increase {
+        ZOOM_LEVELS
+            .iter()
+            .copied()
+            .find(|zoom| *zoom > current + 0.001)
+            .unwrap_or(ZOOM_LEVELS[ZOOM_LEVELS.len() - 1])
+    } else {
+        ZOOM_LEVELS
+            .iter()
+            .copied()
+            .rfind(|zoom| *zoom < current - 0.001)
+            .unwrap_or(current.min(ZOOM_LEVELS[0]))
+    }
+}
 
 pub(super) enum ResultEvent {
     OpenSuite(Entry),
@@ -935,6 +970,35 @@ impl ResultsPanel {
             })
     }
 
+    fn step_zoom(&mut self, increase: bool, cx: &mut Context<Self>) {
+        let index = if self.image_mode == 3 {
+            self.previews
+                .iter()
+                .take(2)
+                .position(|preview| preview.result.is_ok())
+                .unwrap_or(0)
+        } else {
+            self.image_mode
+        };
+        let current = if self.fit {
+            self.pointer_guides.bounds[index]
+                .get()
+                .map(|bounds| bounds.size.width / px(self.preview_canvas_size(index).0 as f32))
+                .unwrap_or(self.zoom)
+        } else {
+            self.zoom
+        };
+        let zoom = next_zoom(current, increase);
+        if zoom == current {
+            return;
+        }
+        self.zoom = zoom;
+        self.fit = false;
+        self.preview_padding = Default::default();
+        self.pointer_guides.pan.borrow_mut().take();
+        cx.notify();
+    }
+
     fn zoom_at_pointer(
         &mut self,
         index: usize,
@@ -956,8 +1020,15 @@ impl ResultsPanel {
             return;
         }
         let (width, height) = self.preview_canvas_size(index);
-        let scale = bounds.size.width / px(width as f32);
-        let zoom = (scale * 1.25_f32.powf(steps)).clamp(0.01, 4.0);
+        let scale = if self.fit {
+            bounds.size.width / px(width as f32)
+        } else {
+            self.zoom
+        };
+        let zoom = next_zoom(scale, steps > 0.);
+        if zoom == scale {
+            return;
+        }
         let next_size = size(px(width as f32 * zoom), px(height as f32 * zoom));
         let slot = if self.image_mode == 3 { 3 } else { index };
         let scroll = if self.image_mode == 3 {
@@ -1506,11 +1577,7 @@ impl ResultsPanel {
                             .accessibility_label("Zoom out")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.fit = false;
-                                this.preview_padding = Default::default();
-                                this.pointer_guides.pan.borrow_mut().take();
-                                this.zoom = (this.zoom / 1.25).max(0.1);
-                                cx.notify();
+                                this.step_zoom(false, cx);
                             })),
                     )
                     .child(
@@ -1531,11 +1598,7 @@ impl ResultsPanel {
                             .accessibility_label("Zoom in")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.fit = false;
-                                this.preview_padding = Default::default();
-                                this.pointer_guides.pan.borrow_mut().take();
-                                this.zoom = (this.zoom * 1.25).min(4.0);
-                                cx.notify();
+                                this.step_zoom(true, cx);
                             })),
                     )
                     .child(
@@ -1575,8 +1638,32 @@ impl ResultsPanel {
 
 #[cfg(test)]
 mod pointer_tests {
-    use super::PointerGuides;
+    use super::{PointerGuides, ZOOM_LEVELS, next_zoom};
     use gpui_kit::{Bounds, point, px, size};
+
+    #[test]
+    fn zoom_steps_follow_chrome_presets_and_snap_in_the_requested_direction() {
+        for levels in ZOOM_LEVELS.windows(2) {
+            assert_eq!(next_zoom(levels[0], true), levels[1]);
+            assert_eq!(next_zoom(levels[1], false), levels[0]);
+        }
+        for (current, smaller, larger) in [
+            (0.42, 1. / 3., 0.5),
+            (0.68, 2. / 3., 0.75),
+            (0.92, 0.9, 1.),
+            (1.17, 1.1, 1.25),
+            (1.5625, 1.5, 1.75),
+        ] {
+            assert_eq!(next_zoom(current, false), smaller);
+            assert_eq!(next_zoom(current, true), larger);
+        }
+        assert_eq!(next_zoom(0.25, false), 0.25);
+        assert_eq!(next_zoom(5., true), 5.);
+        assert_eq!(next_zoom(0.1, true), 0.25);
+        assert_eq!(next_zoom(0.1, false), 0.1);
+        assert_eq!(next_zoom(1.0005, true), 1.1);
+        assert_eq!(next_zoom(0.9995, false), 0.9);
+    }
 
     #[test]
     fn crosshairs_use_the_same_image_coordinate_after_scroll_and_scaling() {
