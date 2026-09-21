@@ -874,11 +874,13 @@ impl Workbench {
                     })),
             );
         if self.workspace_files_open {
+            let row_height_rems = 1.5;
             let mut files = div()
-                .id("workspace-files")
                 .flex()
                 .flex_col()
-                .max_h(px(96.))
+                .h(gpui_kit::rems(
+                    row_height_rems * entries.len().min(8) as f32,
+                ))
                 .overflow_y_scrollbar();
             for (index, entry) in entries {
                 let entry = entry.clone();
@@ -886,6 +888,8 @@ impl Workbench {
                     Button::new(("file", index))
                         .ghost()
                         .small()
+                        .h(gpui_kit::rems(row_height_rems))
+                        .flex_shrink_0()
                         .w_full()
                         .min_w_0()
                         .justify_start()
@@ -912,7 +916,7 @@ impl Workbench {
                         })),
                 );
             }
-            section = section.child(files);
+            section = section.child(div().id("workspace-files").test_support().child(files));
         }
         section.into_any_element()
     }

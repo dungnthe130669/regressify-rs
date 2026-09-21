@@ -2456,6 +2456,103 @@ async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_su
 }
 
 #[gpui_kit::test]
+async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut TestAppContext) {
+    use std::path::PathBuf;
+
+    use crate::desktop::{document::DocumentKind, workspace::Entry};
+
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        for (dark, file_count) in [(false, 7), (true, 7), (false, 12), (true, 12)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+            let entries = (0..file_count)
+                .map(|index| {
+                    let path = PathBuf::from(format!("settings-{index:02}.yaml"));
+                    std::fs::write(directory.path().join(&path), "{}\n").unwrap();
+                    Entry {
+                        path,
+                        kind: DocumentKind::Workspace,
+                    }
+                })
+                .collect::<Vec<_>>();
+            let last_path = entries.last().unwrap().path.clone();
+            cx.update_window(handle.into(), |_, window, cx| {
+                super::design::apply_theme(dark, None, cx);
+                let last_index = view.update(cx, |this, cx| {
+                    this.session.entries.extend(entries);
+                    this.workspace_files_open = true;
+                    cx.notify();
+                    this.session.entries.len() - 1
+                });
+                window.render_frame(cx);
+                let sidebar = window.find("workspace-navigation").bounds();
+                let files = window.find("workspace-files").bounds();
+                assert!(files.top() >= window.find("scenario-pane").bounds().bottom());
+                assert!(files.bottom() <= sidebar.bottom());
+                assert_eq!(
+                    window.find(("file", last_index)).bounds().bottom() > files.bottom(),
+                    file_count > 8,
+                    "Short file lists must fit without scrolling"
+                );
+                window.scroll(
+                    "workspace-files",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10_000.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                let last = window.find(("file", last_index)).bounds();
+                assert!(last.top() >= files.top());
+                assert!(
+                    last.bottom() <= files.bottom() + px(1.),
+                    "The last workspace file must scroll fully into view: {last:?}, viewport: {files:?}"
+                );
+                window.scroll(
+                    "workspace-files",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(10_000.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                if file_count > 8 {
+                    let thumb = gpui_kit::point(files.right() - px(8.), files.top() + px(12.));
+                    window.drag(
+                        thumb,
+                        gpui_kit::point(thumb.x, files.bottom() - px(8.)),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    let last = window.find(("file", last_index)).bounds();
+                    assert!(last.top() >= files.top());
+                    assert!(
+                        last.bottom() <= files.bottom() + px(1.),
+                        "The workspace file scrollbar must reach the last file"
+                    );
+                }
+                window.click(("file", last_index), cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.entry.path == last_path)
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                let expanded = window.find("scenario-pane").bounds();
+                window.click("workspace-files-toggle", cx);
+                assert!(window.try_find("workspace-files").is_none());
+                assert!(window.find("scenario-pane").bounds().bottom() > expanded.bottom());
+                window.click("workspace-files-toggle", cx);
+                assert!(window.find("workspace-files").visible());
+                assert_eq!(window.find("scenario-pane").bounds(), expanded);
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn scenario_pane_switching_respects_drafts_and_workspace_files_remain_accessible(
     cx: &mut TestAppContext,
 ) {
