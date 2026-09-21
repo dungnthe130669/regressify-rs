@@ -7,9 +7,9 @@ use std::{
 };
 
 use super::*;
-use crate::desktop::results::{Catalog, Outcome, ReportEntry, ReportSelection};
+use crate::desktop::results::{Catalog, Outcome, Pair, ReportEntry, ReportSelection};
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
-const PAGE_SIZE: usize = 50;
 const ZOOM_LEVELS: [f32; 17] = [
     0.25,
     1. / 3.,
@@ -46,6 +46,17 @@ fn next_zoom(current: f32, increase: bool) -> f32 {
     }
 }
 
+fn image_page_url(pair: &Pair, index: usize) -> Option<reqwest::Url> {
+    let value = match index {
+        0 => pair.reference_url.as_deref(),
+        1 => pair.url.as_deref(),
+        _ => None,
+    }?;
+    reqwest::Url::parse(value)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https" | "file"))
+}
+
 pub(super) enum ResultEvent {
     OpenSuite(Entry),
     ApproveRun(ReportApproval),
@@ -70,6 +81,12 @@ struct LoadedImage {
     width: usize,
     height: usize,
     path: PathBuf,
+}
+
+struct ImageMenu {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    _subscription: Subscription,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -239,7 +256,7 @@ pub(super) struct ResultsPanel {
     capture: Option<usize>,
     visible_captures: Vec<usize>,
     filter: usize,
-    page: usize,
+    capture_scroll: gpui_kit::UniformListScrollHandle,
     image_mode: usize,
     preview_views: [PreviewView; 4],
     preview_scenario: Option<(PathBuf, String)>,
@@ -248,6 +265,7 @@ pub(super) struct ResultsPanel {
     _subscription: Subscription,
     focus: FocusHandle,
     previews: Vec<Preview>,
+    image_menu: Option<ImageMenu>,
     preview_textures: [PreviewTexture; 3],
     image_task: Option<gpui_kit::Task<()>>,
     image_load_gate: Arc<futures::lock::Mutex<()>>,
@@ -298,6 +316,7 @@ impl ResultsPanel {
     }
 
     fn reset_view(&mut self) {
+        self.image_menu = None;
         self.preview_views = Default::default();
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
         for scroll in &self.preview_scrolls {
@@ -308,6 +327,7 @@ impl ResultsPanel {
     }
 
     fn select_image_mode(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.image_menu = None;
         self.image_mode = index;
         self.pointer_guides.pan.borrow_mut().take();
         self.pointer_guides.active.set(None);
@@ -410,7 +430,7 @@ impl ResultsPanel {
         self.report = self.suite_report();
         self.capture = None;
         self.visible_captures.clear();
-        self.page = 0;
+        self.capture_scroll = Default::default();
         self.preview_scenario = None;
         self.reset_view();
         self.reset_previews(Some(window), cx);
@@ -453,7 +473,7 @@ impl ResultsPanel {
         self.capture = None;
         self.visible_captures.clear();
         self.filter = 0;
-        self.page = 0;
+        self.capture_scroll = Default::default();
         self.preview_scenario = None;
         self.reset_view();
         self.reset_previews(Some(window), cx);
@@ -490,7 +510,7 @@ impl ResultsPanel {
             capture: None,
             visible_captures: Vec::new(),
             filter: 0,
-            page: 0,
+            capture_scroll: Default::default(),
             image_mode: 1,
             preview_views: Default::default(),
             preview_scenario: None,
@@ -499,6 +519,7 @@ impl ResultsPanel {
             _subscription: subscription,
             focus: cx.focus_handle(),
             previews: Vec::new(),
+            image_menu: None,
             preview_textures: Default::default(),
             image_task: None,
             image_load_gate: Arc::default(),
@@ -559,7 +580,7 @@ impl ResultsPanel {
                         }
                         this.report = this.suite_report();
                         this.capture = None;
-                        this.page = 0;
+                        this.capture_scroll = Default::default();
                         this.rebuild_capture_filter(cx);
                         this.status = format!(
                             "{} {}, {} {}",
@@ -613,7 +634,7 @@ impl ResultsPanel {
         })
     }
 
-    /// Keep selection and pagination inside the current filter without reloading unchanged images.
+    /// Keep selection inside the current filter without reloading unchanged images.
     fn reconcile_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading {
             return;
@@ -624,10 +645,12 @@ impl ResultsPanel {
             .capture
             .filter(|capture| filtered.contains(capture))
             .or_else(|| filtered.first().copied());
-        self.page = selection
-            .and_then(|capture| filtered.iter().position(|index| *index == capture))
-            .unwrap_or(0)
-            / PAGE_SIZE;
+        if let Some(position) =
+            selection.and_then(|capture| filtered.iter().position(|index| *index == capture))
+        {
+            self.capture_scroll
+                .scroll_to_item(position, gpui_kit::ScrollStrategy::Nearest);
+        }
         if selection != self.capture {
             if let Some(capture) = selection {
                 self.select_capture(capture, window, cx);
@@ -641,6 +664,7 @@ impl ResultsPanel {
     }
 
     fn reset_previews(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+        self.image_menu = None;
         self.image_task = None;
         self.image_loading = false;
         for preview in &self.previews {
@@ -691,7 +715,7 @@ impl ResultsPanel {
         let artifacts = Arc::new(report.artifacts());
         let images = [
             ("Reference", test.pair.reference.clone()),
-            ("Current", test.pair.test.clone()),
+            ("Test", test.pair.test.clone()),
             ("Diff", test.pair.diff_image.clone()),
         ];
         if self.preview_scenario.as_ref() != Some(&scenario) {
@@ -703,12 +727,14 @@ impl ResultsPanel {
         for scroll in &self.preview_scrolls {
             scroll.set_offset(point(px(0.), px(0.)));
         }
-        self.page = self
+        if let Some(position) = self
             .visible_captures
             .iter()
             .position(|index| *index == capture)
-            .unwrap_or(0)
-            / PAGE_SIZE;
+        {
+            self.capture_scroll
+                .scroll_to_item(position, gpui_kit::ScrollStrategy::Nearest);
+        }
         self.capture = Some(capture);
         self.image_loading = true;
         self.generation += 1;
@@ -773,33 +799,6 @@ impl ResultsPanel {
             .unwrap_or_default();
     }
 
-    fn adjacent_capture(&self, forward: bool, failed_only: bool) -> Option<usize> {
-        if self.loading {
-            return None;
-        }
-        let report = self.selected_report()?;
-        let mut candidates = self.visible_captures.iter().copied().filter(|index| {
-            !failed_only || report.report.tests[*index].outcome() != Outcome::Passed
-        });
-        if forward {
-            candidates.find(|index| self.capture.is_none_or(|current| *index > current))
-        } else {
-            candidates.rfind(|index| self.capture.is_none_or(|current| *index < current))
-        }
-    }
-
-    fn move_capture(
-        &mut self,
-        forward: bool,
-        failed_only: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(capture) = self.adjacent_capture(forward, failed_only) {
-            self.select_capture(capture, window, cx);
-        }
-    }
-
     fn open_external(
         &mut self,
         target: Result<PathBuf>,
@@ -822,6 +821,108 @@ impl ResultsPanel {
             let _ = view.update_in(cx, |this, _, cx| {
                 if let Err(error) = result {
                     this.status = format!("Cannot open artifact: {error}");
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn show_image_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(image) = self
+            .previews
+            .get(index)
+            .and_then(|preview| preview.result.as_ref().ok())
+        else {
+            return;
+        };
+        let viewer_path = image.path.clone();
+        let reveal_path = image.path.clone();
+        let browser_url = reqwest::Url::from_file_path(&image.path).ok();
+        let page_url = self.selected_report().and_then(|report| {
+            self.capture
+                .and_then(|capture| report.report.tests.get(capture))
+                .and_then(|test| image_page_url(&test.pair, index))
+        });
+        let browser_disabled = browser_url.is_none();
+        let page_disabled = page_url.is_none();
+        let copy_url = page_url.clone();
+        let url_kind = if index == 0 { "Reference" } else { "Test" };
+        let browser = cx.listener(move |this, _, window, cx| {
+            if let Some(url) = &browser_url {
+                this.open_browser(url.clone(), window, cx);
+            }
+        });
+        let viewer = cx.listener(move |this, _, window, cx| {
+            this.open_external(Ok(viewer_path.clone()), window, cx);
+        });
+        let page = cx.listener(move |this, _, window, cx| {
+            if let Some(url) = &page_url {
+                this.open_browser(url.clone(), window, cx);
+            }
+        });
+        let focus = window.focused(cx).unwrap_or_else(|| self.focus.clone());
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.action_context(focus)
+                .item(
+                    PopupMenuItem::new("Open in default browser")
+                        .disabled(browser_disabled)
+                        .on_click(browser),
+                )
+                .item(PopupMenuItem::new("Open in default image viewer").on_click(viewer))
+                .item(
+                    PopupMenuItem::new("Show in file manager")
+                        .on_click(move |_, _, cx| cx.reveal_path(&reveal_path)),
+                )
+                .when(index < 2, |menu| {
+                    menu.separator()
+                        .item(
+                            PopupMenuItem::new(format!("Open {url_kind} URL"))
+                                .disabled(page_disabled)
+                                .on_click(page),
+                        )
+                        .item(
+                            PopupMenuItem::new(format!("Copy {url_kind} URL"))
+                                .disabled(page_disabled)
+                                .on_click(move |_, _, cx| {
+                                    if let Some(url) = &copy_url {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            url.to_string(),
+                                        ));
+                                    }
+                                }),
+                        )
+                })
+        });
+        let subscription = cx.subscribe(&menu, |this, _, _: &gpui_kit::DismissEvent, cx| {
+            this.image_menu = None;
+            cx.notify();
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.image_menu = Some(ImageMenu {
+            menu,
+            position,
+            _subscription: subscription,
+        });
+        self.pointer_guides.pan.borrow_mut().take();
+        cx.notify();
+    }
+
+    fn open_browser(&mut self, url: reqwest::Url, window: &mut Window, cx: &mut Context<Self>) {
+        let task = cx
+            .background_executor()
+            .spawn(async move { webbrowser::open(url.as_str()) });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |this, _, cx| {
+                if let Err(error) = result {
+                    this.status = format!("Cannot open browser: {error}");
                 }
                 cx.notify();
             });
@@ -854,8 +955,7 @@ impl ResultsPanel {
 
     fn render_captures(&self, cx: &mut Context<Self>) -> AnyElement {
         let filtered = &self.visible_captures;
-        let pages = filtered.len().div_ceil(PAGE_SIZE).max(1);
-        let mut list = div()
+        let list = div()
             .id("capture-list")
             .test_support()
             .flex()
@@ -893,12 +993,12 @@ impl ResultsPanel {
             );
         let mut rows = div()
             .id("capture-scroll")
+            .test_support()
             .flex()
             .flex_col()
             .flex_1()
             .min_h_0()
-            .overflow_y_scrollbar()
-            .gap_1();
+            .relative();
         if filtered.is_empty() {
             let message = if self.loading {
                 "Loading captures..."
@@ -921,130 +1021,116 @@ impl ResultsPanel {
                     .child(message),
             );
         }
-        if let Some(report) = self.selected_report() {
-            for index in filtered
-                .iter()
-                .copied()
-                .skip(self.page * PAGE_SIZE)
-                .take(PAGE_SIZE)
-            {
-                let test = &report.report.tests[index];
-                let outcome = test.outcome();
-                let color = match outcome {
-                    Outcome::Passed => cx.theme().success,
-                    Outcome::Mismatch => cx.theme().warning,
-                    _ => cx.theme().danger,
-                };
-                rows = rows.child(
-                    Button::new(("capture", index))
-                        .ghost()
-                        .w_full()
-                        .h(px(56.))
-                        .justify_start()
-                        .selected(self.capture == Some(index))
-                        .accessibility_label(format!(
-                            "{} {}",
-                            outcome.label(),
-                            test.pair.display.title
-                        ))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_3()
-                                .w_full()
-                                .min_w_0()
-                                .child(
-                                    Icon::new(match outcome {
-                                        Outcome::Passed => gpui_kit::assets::IconName::CircleCheck,
-                                        Outcome::Mismatch => gpui_kit::assets::IconName::Split,
-                                        _ => gpui_kit::assets::IconName::CircleAlert,
-                                    })
-                                    .small()
-                                    .text_color(color),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_left()
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .text_color(cx.theme().foreground)
-                                                .child(test.pair.display.title.clone()),
-                                        )
-                                        .child(div().text_xs().truncate().text_color(color).child(
-                                            if test.pair.display.detail.is_empty() {
-                                                outcome.label().to_string()
-                                            } else {
-                                                format!(
-                                                    "{} / {}",
-                                                    outcome.label(),
-                                                    test.pair.display.detail
-                                                )
-                                            },
-                                        )),
-                                ),
-                        )
-                        .tooltip(
-                            test.pair
-                                .engine_error_msg
-                                .clone()
-                                .map(|error| format!("{error}\n{}", test.pair.capture_key()))
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "{}\n{}\n{}",
-                                        test.pair.display.title,
-                                        test.pair.display.detail,
-                                        test.pair.capture_key()
-                                    )
-                                }),
-                        )
-                        .text_color(color)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.select_capture(index, window, cx)
-                        })),
-                );
-            }
-        }
-        list = list.child(rows).child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
+        if !filtered.is_empty() {
+            let scroll = self.capture_scroll.0.borrow().base_handle.clone();
+            rows = rows
                 .child(
-                    Button::new("previous-captures")
-                        .ghost()
-                        .icon(IconName::ArrowLeft)
-                        .tooltip("Previous captures")
-                        .accessibility_label("Previous captures")
-                        .disabled(self.page == 0)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.page = this.page.saturating_sub(1);
-                            cx.notify();
-                        })),
+                    uniform_list(
+                        "capture-rows",
+                        filtered.len(),
+                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                            range
+                                .map(|position| {
+                                    this.render_capture_row(this.visible_captures[position], cx)
+                                })
+                                .collect::<Vec<_>>()
+                        }),
+                    )
+                    .track_scroll(&self.capture_scroll)
+                    .size_full(),
                 )
-                .child(format!("{} / {pages}", self.page + 1))
-                .child(
-                    Button::new("next-captures")
-                        .ghost()
-                        .icon(IconName::ArrowRight)
-                        .tooltip("Next captures")
-                        .accessibility_label("Next captures")
-                        .disabled(self.page + 1 >= pages)
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            if this.page + 1 < pages {
-                                this.page += 1;
-                            }
-                            cx.notify();
-                        })),
-                ),
-        );
-        list.into_any_element()
+                .scrollbar(&scroll, scroll::ScrollbarAxis::Vertical);
+        }
+        list.child(rows).into_any_element()
+    }
+
+    fn render_capture_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
+        let Some(test) = self
+            .selected_report()
+            .and_then(|report| report.report.tests.get(index))
+        else {
+            return div().into_any_element();
+        };
+        let outcome = test.outcome();
+        let color = match outcome {
+            Outcome::Passed => cx.theme().success,
+            Outcome::Mismatch => cx.theme().warning,
+            _ => cx.theme().danger,
+        };
+        div()
+            .h(px(60.))
+            .pb_1()
+            .child(
+                Button::new(("capture", index))
+                    .ghost()
+                    .w_full()
+                    .h(px(56.))
+                    .justify_start()
+                    .selected(self.capture == Some(index))
+                    .accessibility_label(format!("{} {}", outcome.label(), test.pair.display.title))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .w_full()
+                            .min_w_0()
+                            .child(
+                                Icon::new(match outcome {
+                                    Outcome::Passed => gpui_kit::assets::IconName::CircleCheck,
+                                    Outcome::Mismatch => gpui_kit::assets::IconName::Split,
+                                    _ => gpui_kit::assets::IconName::CircleAlert,
+                                })
+                                .small()
+                                .text_color(color),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap_1()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .text_left()
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .text_color(cx.theme().foreground)
+                                            .child(test.pair.display.title.clone()),
+                                    )
+                                    .child(div().text_xs().truncate().text_color(color).child(
+                                        if test.pair.display.detail.is_empty() {
+                                            outcome.label().to_string()
+                                        } else {
+                                            format!(
+                                                "{} / {}",
+                                                outcome.label(),
+                                                test.pair.display.detail
+                                            )
+                                        },
+                                    )),
+                            ),
+                    )
+                    .tooltip(
+                        test.pair
+                            .engine_error_msg
+                            .clone()
+                            .map(|error| format!("{error}\n{}", test.pair.capture_key()))
+                            .unwrap_or_else(|| {
+                                format!(
+                                    "{}\n{}\n{}",
+                                    test.pair.display.title,
+                                    test.pair.display.detail,
+                                    test.pair.capture_key()
+                                )
+                            }),
+                    )
+                    .text_color(color)
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.select_capture(index, window, cx)
+                    })),
+            )
+            .into_any_element()
     }
 
     fn comparison_preview_count(&self) -> usize {
@@ -1368,69 +1454,45 @@ impl ResultsPanel {
                 .on_scroll_wheel(cx.listener(move |this, event, _, cx| {
                     this.zoom_at_pointer(index, event, cx);
                 }));
-                let path = image.path.clone();
                 div()
-                    .flex()
-                    .flex_col()
-                    .gap_2()
+                    .id(("image-details", index))
+                    .role(Role::Group)
+                    .aria_label(format!(
+                        "{} {} x {}",
+                        preview.label, image.width, image.height
+                    ))
+                    .test_support()
                     .size_full()
+                    .min_h_0()
+                    .relative()
                     .child(
                         div()
-                            .flex()
-                            .items_center()
-                            .justify_between()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .child(
-                                div()
-                                    .id(("image-details", index))
-                                    .role(Role::Status)
-                                    .aria_label(format!(
-                                        "{} {} x {}",
-                                        preview.label, image.width, image.height
-                                    ))
-                                    .test_support()
-                                    .child(format!(
-                                        "{}  {} x {}",
-                                        preview.label, image.width, image.height
-                                    )),
-                            )
-                            .child(
-                                Button::new(("open-image", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(gpui_kit::assets::IconName::ExternalLink)
-                                    .tooltip("Open image externally")
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.open_external(Ok(path.clone()), window, cx)
-                                    })),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_h_0()
+                            .id(("image-scroll", index))
+                            .role(Role::Group)
+                            .aria_label(format!("{} image preview", preview.label))
+                            .test_support()
+                            .size_full()
                             .relative()
-                            .child(
-                                div()
-                                    .id(("image-scroll", index))
-                                    .role(Role::Group)
-                                    .aria_label(format!("{} image preview", preview.label))
-                                    .test_support()
-                                    .size_full()
-                                    .relative()
-                                    .overflow_scroll()
-                                    .map(|mut viewport| {
-                                        viewport.style().allow_concurrent_scroll = Some(true);
-                                        viewport
-                                    })
-                                    .track_scroll(scroll)
-                                    .bg(cx.theme().muted)
-                                    .child(display),
+                            .overflow_scroll()
+                            .map(|mut viewport| {
+                                viewport.style().allow_concurrent_scroll = Some(true);
+                                viewport
+                            })
+                            .track_scroll(scroll)
+                            .bg(cx.theme().muted)
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(
+                                    move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
+                                        this.show_image_menu(index, event.position, window, cx);
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                    },
+                                ),
                             )
-                            .scrollbar(scroll, scroll::ScrollbarAxis::Both),
+                            .child(display),
                     )
+                    .scrollbar(scroll, scroll::ScrollbarAxis::Both)
                     .into_any_element()
             }
             Err(error) => div()
@@ -1467,12 +1529,6 @@ impl ResultsPanel {
         let title = test
             .map(|test| test.pair.display.title.clone())
             .unwrap_or_else(|| "Comparison".into());
-        let filtered = &self.visible_captures;
-        let position = self
-            .capture
-            .and_then(|capture| filtered.iter().position(|index| *index == capture))
-            .map_or(0, |index| index + 1);
-        let position = format!("{position} of {}", filtered.len());
         let previews = if self.image_mode == 3 {
             div()
                 .flex()
@@ -1510,11 +1566,13 @@ impl ResultsPanel {
             .min_w_0()
             .child(
                 div()
-                    .px_4()
-                    .py_2()
+                    .px_3()
+                    .h(px(32.))
+                    .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_3()
+                    .gap_2()
+                    .text_sm()
                     .font_weight(FontWeight::MEDIUM)
                     .child(
                         div()
@@ -1529,172 +1587,84 @@ impl ResultsPanel {
                     )
                     .child(
                         div()
-                            .flex()
-                            .flex_col()
-                            .items_end()
-                            .gap_1()
                             .text_xs()
                             .flex_shrink_0()
                             .child(if mismatch.is_empty() {
                                 String::new()
                             } else {
                                 format!("{mismatch} mismatch")
-                            })
-                            .children(test.and_then(|test| test.pair.mis_match_threshold).map(
-                                |threshold| {
-                                    let label = format!("Allowed: {threshold}%");
-                                    div()
-                                        .id("capture-threshold")
-                                        .role(Role::Status)
-                                        .aria_label(label.clone())
-                                        .test_support()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child(label)
-                                },
-                            )),
-                    ),
-            )
-            .when_some(test, |comparison, test| {
-                comparison.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .flex_wrap()
-                        .gap_2()
-                        .px_4()
-                        .pb_2()
-                        .child(
-                            div()
-                                .id("capture-context")
-                                .role(Role::Status)
-                                .aria_label(test.pair.display.detail.clone())
-                                .test_support()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(test.pair.display.detail.clone()),
-                        )
-                        .child(div().flex_1())
-                        .child(
-                            Button::new("copy-capture-details")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Copy)
-                                .tooltip("Copy capture details")
-                                .accessibility_label("Copy capture details")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(test) = this.selected_report().and_then(|report| {
-                                        this.capture
-                                            .and_then(|index| report.report.tests.get(index))
-                                    }) {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            test.copy_summary(),
-                                        ));
-                                        this.status = "Capture details copied".into();
-                                        cx.notify();
-                                    }
-                                })),
-                        )
-                        .child(
-                            Button::new("edit-capture-suite")
-                                .ghost()
-                                .xsmall()
-                                .icon(gpui_kit::assets::IconName::Pencil)
-                                .label("Edit suite")
-                                .tooltip("Open the suite that produced this capture")
-                                .disabled(source.is_none() || self.loading)
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    if let Some(entry) = &source {
-                                        cx.emit(ResultEvent::OpenSuite(entry.clone()));
-                                    }
-                                })),
-                        ),
-                )
-            })
-            .child(
-                TabBar::new("image-modes")
-                    .underline()
-                    .px_4()
-                    .selected_index(self.image_mode)
-                    .on_click(cx.listener(|this, index, _, cx| {
-                        this.select_image_mode(*index, cx);
-                    }))
-                    .child(Tab::new().label("Reference"))
-                    .child(Tab::new().label("Current"))
-                    .child(Tab::new().label("Diff"))
-                    .child(Tab::new().label("Side by side")),
+                            }),
+                    )
+                    .when_some(test, |header, test| {
+                        header
+                            .child(
+                                Button::new("copy-capture-details")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip(format!(
+                                        "Copy capture details\n\n{}",
+                                        test.copy_summary()
+                                    ))
+                                    .accessibility_label("Copy capture details")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        if let Some(test) =
+                                            this.selected_report().and_then(|report| {
+                                                this.capture.and_then(|index| {
+                                                    report.report.tests.get(index)
+                                                })
+                                            })
+                                        {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                test.copy_summary(),
+                                            ));
+                                            this.status = "Capture details copied".into();
+                                            cx.notify();
+                                        }
+                                    })),
+                            )
+                            .child(
+                                Button::new("edit-capture-suite")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Pencil)
+                                    .accessibility_label("Edit suite")
+                                    .tooltip("Open the suite that produced this capture")
+                                    .disabled(source.is_none() || self.loading)
+                                    .on_click(cx.listener(move |_, _, _, cx| {
+                                        if let Some(entry) = &source {
+                                            cx.emit(ResultEvent::OpenSuite(entry.clone()));
+                                        }
+                                    })),
+                            )
+                    }),
             )
             .child(
                 div()
+                    .id("image-toolbar")
+                    .test_support()
                     .flex()
                     .items_center()
-                    .flex_wrap()
-                    .gap_2()
+                    .flex_shrink_0()
+                    .min_w_0()
+                    .h(px(36.))
+                    .gap_1()
                     .px_3()
-                    .py_2()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
                     .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .child(
-                                Button::new("previous-failed-capture")
-                                    .ghost()
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::ChevronsLeft)
-                                    .tooltip("Previous failed capture")
-                                    .accessibility_label("Previous failed capture")
-                                    .disabled(self.adjacent_capture(false, true).is_none())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.move_capture(false, true, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("previous-capture")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::ChevronLeft)
-                                    .tooltip("Previous capture")
-                                    .accessibility_label("Previous capture")
-                                    .disabled(self.adjacent_capture(false, false).is_none())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.move_capture(false, false, window, cx)
-                                    })),
-                            )
-                            .child(
-                                div()
-                                    .id("capture-position")
-                                    .role(Role::Status)
-                                    .aria_label(position.clone())
-                                    .test_support()
-                                    .w(px(76.))
-                                    .text_center()
-                                    .text_xs()
-                                    .child(position),
-                            )
-                            .child(
-                                Button::new("next-capture")
-                                    .ghost()
-                                    .small()
-                                    .icon(IconName::ChevronRight)
-                                    .tooltip("Next capture")
-                                    .accessibility_label("Next capture")
-                                    .disabled(self.adjacent_capture(true, false).is_none())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.move_capture(true, false, window, cx)
-                                    })),
-                            )
-                            .child(
-                                Button::new("next-failed-capture")
-                                    .ghost()
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::ChevronsRight)
-                                    .tooltip("Next failed capture")
-                                    .accessibility_label("Next failed capture")
-                                    .disabled(self.adjacent_capture(true, true).is_none())
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.move_capture(true, true, window, cx)
-                                    })),
-                            ),
+                        TabBar::new("image-modes")
+                            .underline()
+                            .small()
+                            .flex_shrink_0()
+                            .selected_index(self.image_mode)
+                            .on_click(cx.listener(|this, index, _, cx| {
+                                this.select_image_mode(*index, cx);
+                            }))
+                            .child(Tab::new().label("Reference"))
+                            .child(Tab::new().label("Test"))
+                            .child(Tab::new().label("Diff"))
+                            .child(Tab::new().label("Side by side")),
                     )
                     .child(div().flex_1())
                     .child(
@@ -1721,6 +1691,7 @@ impl ResultsPanel {
                     .child(
                         Button::new("zoom-out")
                             .ghost()
+                            .small()
                             .icon(gpui_kit::assets::IconName::ZoomOut)
                             .tooltip("Zoom out")
                             .accessibility_label("Zoom out")
@@ -1742,6 +1713,7 @@ impl ResultsPanel {
                     .child(
                         Button::new("zoom-in")
                             .ghost()
+                            .small()
                             .icon(gpui_kit::assets::IconName::ZoomIn)
                             .tooltip("Zoom in")
                             .accessibility_label("Zoom in")
@@ -1753,6 +1725,7 @@ impl ResultsPanel {
                     .child(
                         Button::new("actual-size")
                             .ghost()
+                            .small()
                             .icon(gpui_kit::assets::IconName::Scan)
                             .tooltip("Actual size (100%)")
                             .accessibility_label("Actual size (100%)")
@@ -1790,6 +1763,42 @@ impl ResultsPanel {
 mod pointer_tests {
     use super::{PointerGuides, ZOOM_LEVELS, next_zoom};
     use gpui_kit::{Bounds, point, px, size};
+
+    #[test]
+    fn image_urls_use_each_recorded_initial_url_without_cross_fallback() {
+        let mut pair: crate::desktop::results::Pair = serde_json::from_value(serde_json::json!({
+            "referenceUrl": "https://production.example.test/start?source=reference",
+            "url": "https://staging.example.test/start?source=test"
+        }))
+        .unwrap();
+        pair.display.page_url = Some("https://current-workspace.example.test/changed".into());
+        assert_eq!(
+            super::image_page_url(&pair, 0).unwrap().as_str(),
+            pair.reference_url.as_ref().unwrap()
+        );
+        assert_eq!(
+            super::image_page_url(&pair, 1).unwrap().as_str(),
+            pair.url.as_ref().unwrap()
+        );
+        assert!(super::image_page_url(&pair, 2).is_none());
+        pair.reference_url = None;
+        assert!(super::image_page_url(&pair, 0).is_none());
+        assert!(super::image_page_url(&pair, 1).is_some());
+        for invalid in [
+            "",
+            "relative/path",
+            "javascript:alert(1)",
+            "data:text/html,test",
+            "vscode://file/private",
+        ] {
+            pair.url = Some(invalid.into());
+            assert!(super::image_page_url(&pair, 1).is_none());
+        }
+        pair.url = Some("file:///tmp/scenario.html".into());
+        assert_eq!(super::image_page_url(&pair, 1).unwrap().scheme(), "file");
+        pair.url = None;
+        assert!(super::image_page_url(&pair, 1).is_none());
+    }
 
     #[test]
     fn zoom_steps_follow_chrome_presets_and_snap_in_the_requested_direction() {
@@ -1966,16 +1975,24 @@ mod pointer_tests {
                 assert_eq!(results.read(cx).visible_captures.as_ptr(), filtered);
                 assert_eq!(results.read(cx).visible_captures.as_slice(), &[0]);
             }
-            for (id, label) in [
-                ("previous-capture", "Previous capture"),
-                ("next-capture", "Next capture"),
-                ("previous-failed-capture", "Previous failed capture"),
-                ("next-failed-capture", "Next failed capture"),
-                ("previous-captures", "Previous captures"),
-                ("next-captures", "Next captures"),
+            for id in [
+                "previous-capture",
+                "next-capture",
+                "previous-failed-capture",
+                "next-failed-capture",
+                "previous-captures",
+                "next-captures",
+                "capture-position",
             ] {
-                assert_eq!(window.find(id).label(), Some(label));
+                assert!(window.try_find(id).is_none());
             }
+            let assert_position =
+                |actual: Option<gpui_kit::Point<gpui_kit::Pixels>>,
+                 expected: gpui_kit::Point<gpui_kit::Pixels>| {
+                    let actual = actual.expect("Pointer guide must be visible");
+                    assert!((actual.x - expected.x).abs() < px(0.01));
+                    assert!((actual.y - expected.y).abs() < px(0.01));
+                };
             for index in [0_usize, 1] {
                 window.hover(("image-scroll", index), cx);
                 window.render_frame(cx);
@@ -1984,10 +2001,10 @@ mod pointer_tests {
                 let mouse = window.mouse_position();
                 let source = guides.bounds[index].get().unwrap();
                 let target = guides.bounds[1 - index].get().unwrap();
-                assert_eq!(guides.position(index, mouse), Some(mouse));
-                assert_eq!(
+                assert_position(guides.position(index, mouse), mouse);
+                assert_position(
                     guides.position(1 - index, mouse),
-                    Some(mouse - source.origin + target.origin)
+                    mouse - source.origin + target.origin,
                 );
                 window.scroll(
                     ("image-scroll", index),
@@ -1998,9 +2015,9 @@ mod pointer_tests {
                 assert_eq!(window.mouse_position(), mouse);
                 let source = guides.bounds[index].get().unwrap();
                 let target = guides.bounds[1 - index].get().unwrap();
-                assert_eq!(
+                assert_position(
                     guides.position(1 - index, mouse),
-                    Some(mouse - source.origin + target.origin)
+                    mouse - source.origin + target.origin,
                 );
             }
             let image = results.read(cx).previews[0]
@@ -2226,8 +2243,8 @@ impl Render for ResultsPanel {
                     .items_center()
                     .flex_wrap()
                     .gap_2()
-                    .px_4()
-                    .py_3()
+                    .px_3()
+                    .py_1()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -2237,16 +2254,18 @@ impl Render for ResultsPanel {
                             .aria_label(report_name.clone())
                             .test_support()
                             .flex_1()
-                            .min_w(px(160.))
+                            .min_w_0()
                             .truncate()
+                            .text_sm()
                             .font_weight(FontWeight::SEMIBOLD)
                             .child(report_name),
                     )
                     .child(
                         Button::new("refresh-results")
                             .ghost()
+                            .xsmall()
                             .icon(gpui_kit::assets::IconName::RefreshCw)
-                            .tooltip("Refresh reports")
+                            .tooltip(format!("Refresh reports\n{counts}"))
                             .disabled(self.loading || self.root.is_none())
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(root) = this.root.clone() {
@@ -2256,7 +2275,7 @@ impl Render for ResultsPanel {
                     )
                     .child(
                         Button::new("approve-report")
-                            .small()
+                            .xsmall()
                             .icon(gpui_kit::assets::IconName::Check)
                             .label("Approve This Run")
                             .tooltip(
@@ -2272,6 +2291,7 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("open-report")
                             .ghost()
+                            .xsmall()
                             .icon(gpui_kit::assets::IconName::ExternalLink)
                             .tooltip("Open HTML report")
                             .disabled(self.root.is_none())
@@ -2282,6 +2302,7 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("open-artifacts")
                             .ghost()
+                            .xsmall()
                             .icon(IconName::FolderOpen)
                             .tooltip("Open artifact directory")
                             .disabled(self.root.is_none())
@@ -2294,12 +2315,6 @@ impl Render for ResultsPanel {
                                     cx,
                                 )
                             })),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(counts),
                     ),
             )
             .child(div().flex_1().min_h_0().child(self.render_comparison(cx)))
@@ -2311,17 +2326,30 @@ impl Render for ResultsPanel {
                     .text_color(cx.theme().warning)
                     .child(warning.clone())
             }))
-            .child(
-                div()
-                    .id("results-status")
-                    .role(Role::Status)
-                    .aria_label(self.status.clone())
-                    .test_support()
-                    .px_4()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(self.status.clone()),
-            )
+            .when(!self.status.is_empty(), |panel| {
+                panel.child(
+                    div()
+                        .id("results-status")
+                        .role(Role::Status)
+                        .aria_label(self.status.clone())
+                        .test_support()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .border_t_1()
+                        .border_color(cx.theme().border)
+                        .child(self.status.clone()),
+                )
+            })
+            .children(self.image_menu.as_ref().map(|menu| {
+                gpui_kit::deferred(
+                    gpui_kit::anchored()
+                        .position(menu.position)
+                        .anchor(gpui_kit::Anchor::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu.menu.clone()),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY)
+            }))
     }
 }

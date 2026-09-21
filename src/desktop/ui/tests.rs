@@ -3773,22 +3773,17 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
             window.find(("capture", 0_usize)).label(),
             Some("Passed Payment confirmation")
         );
-        assert_eq!(
-            window.find("capture-context").label(),
-            Some("Phone / Full page")
-        );
-        assert_eq!(
-            window.find("capture-threshold").label(),
-            Some("Allowed: 0.1%")
-        );
+        assert!(window.try_find("capture-context").is_none());
+        assert!(window.try_find("capture-threshold").is_none());
         window.click("copy-capture-details", cx);
         let summary = cx.read_from_clipboard().unwrap().text().unwrap();
         assert!(summary.contains("Scenario: Payment confirmation"));
+        assert!(summary.contains("Capture: Phone / Full page"));
         assert!(summary.contains("Capture ID: 8ac900fea19642cc0000_phone__FINAL"));
         assert!(summary.contains("Page: https://example.com/receipt"));
         assert!(summary.contains("Allowed mismatch: 0.1%"));
         assert!(summary.contains("Mismatch: 0.050%"));
-        window.click("next-capture", cx);
+        window.click(("capture", 1_usize), cx);
         assert_eq!(
             window.find("capture-heading").label(),
             Some("Payment at capture time")
@@ -3798,9 +3793,8 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window
-            .try_find("capture-position")
-            .is_some_and(|position| position.label() == Some("2 of 2"))
+        window.try_find(("capture", 0_usize)).is_some()
+            && window.try_find(("capture", 1_usize)).is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
@@ -3810,9 +3804,8 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window
-            .try_find("capture-position")
-            .is_some_and(|position| position.label() == Some("1 of 1"))
+        window.try_find(("capture", 0_usize)).is_none()
+            && window.try_find(("capture", 1_usize)).is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
@@ -4092,7 +4085,7 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
             window.find(("image-content", 0_usize)).bounds().size,
             window.find(("image-content", 1_usize)).bounds().size
         );
-        window.click("next-capture", cx);
+        window.click(("capture", 1_usize), cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
@@ -4109,6 +4102,152 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
         }
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn image_context_menus_offer_external_targets_without_switching_tabs(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        lodepng::encode32_file(
+            run.join("capture.png"),
+            &[30_u8, 150, 180, 255].repeat(160 * 100),
+            160,
+            100,
+        )
+        .unwrap();
+        let image = "../bitmaps_test/run-1/capture.png";
+        std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+            "id": "ui-test", "tests": [
+                {"status": "fail", "pair": {
+                    "label": "With replacement profile", "reference": image, "test": image, "diffImage": image,
+                    "referenceUrl": "https://production.example.test/start", "url": "https://staging.example.test/start"
+                }},
+                {"status": "pass", "pair": {"label": "Legacy capture", "reference": image, "test": image}}
+            ]
+        })).unwrap()).unwrap();
+        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        for mode in 0_usize..4 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.within("image-modes").click(mode, cx);
+            })
+            .unwrap();
+            let panes = if mode == 3 {
+                vec![0_usize, 1, 2]
+            } else {
+                vec![mode]
+            };
+            for index in &panes {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.right_click(("image-content", *index), cx);
+                })
+                .unwrap();
+                cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                    window.try_find("popup-menu").is_some()
+                })
+                .await;
+                cx.update_window(handle.into(), |_, window, cx| {
+                    let menu = window.find("popup-menu").bounds();
+                    assert!(menu.left() >= px(0.) && menu.right() <= px(width));
+                    assert!(menu.top() >= px(0.) && menu.bottom() <= px(height));
+                    for (item, label) in [
+                        "Open in default browser",
+                        "Open in default image viewer",
+                        "Show in file manager",
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        assert_eq!(window.within("popup-menu").find(item).label(), Some(label));
+                    }
+                    if *index < 2 {
+                        let kind = if *index == 0 { "Reference" } else { "Test" };
+                        assert_eq!(
+                            window.within("popup-menu").find(4_usize).label(),
+                            Some(format!("Open {kind} URL").as_str())
+                        );
+                        assert_eq!(
+                            window.within("popup-menu").find(5_usize).label(),
+                            Some(format!("Copy {kind} URL").as_str())
+                        );
+                    } else {
+                        assert!(window.within("popup-menu").try_find(4_usize).is_none());
+                        assert!(window.within("popup-menu").try_find(5_usize).is_none());
+                    }
+                    for pane in &panes {
+                        assert!(window.find(("image-content", *pane)).visible());
+                    }
+                    if *index < 2 {
+                        window.within("popup-menu").click(5_usize, cx);
+                        assert_eq!(
+                            cx.read_from_clipboard().unwrap().text().unwrap(),
+                            if *index == 0 {
+                                "https://production.example.test/start"
+                            } else {
+                                "https://staging.example.test/start"
+                            }
+                        );
+                    } else {
+                        window.press("escape", cx);
+                    }
+                })
+                .unwrap();
+                cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                    window.try_find("popup-menu").is_none()
+                })
+                .await;
+            }
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(("capture", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        for index in 0_usize..2 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.within("image-modes").click(index, cx);
+                window.right_click(("image-content", index), cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("popup-menu").is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("unchanged".into()));
+                window.within("popup-menu").click(4_usize, cx);
+                window.within("popup-menu").click(5_usize, cx);
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().unwrap(),
+                    "unchanged"
+                );
+                assert!(window.try_find("popup-menu").is_some());
+                window.press("escape", cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("popup-menu").is_none()
+            })
+            .await;
+        }
+    }
 }
 
 #[gpui_kit::test]
@@ -4159,6 +4298,26 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
             window.try_find(("image-details", 1_usize)).is_some()
         })
         .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let panel = window.find("results-panel").bounds();
+            let image = window.find(("image-scroll", 1_usize)).bounds();
+            assert!(image.top() - panel.top() <= px(110.));
+            assert!(image.size.height >= panel.size.height * 0.8);
+            let toolbar = window.find("image-toolbar").bounds();
+            let tabs = window.within("image-modes").find(3_usize).bounds();
+            let fit = window.find("fit-image").bounds();
+            let actual_size = window.find("actual-size").bounds();
+            assert!(fit.left() >= tabs.right());
+            assert!((fit.center().y - tabs.center().y).abs() <= px(2.));
+            assert!((actual_size.center().y - fit.center().y).abs() <= px(2.));
+            assert!(actual_size.right() <= toolbar.right());
+            assert!(toolbar.bottom() <= image.top());
+            assert!(window.try_find("capture-position").is_none());
+            assert!(window.try_find("next-capture").is_none());
+            assert!(window.try_find("previous-captures").is_none());
+        })
+        .unwrap();
         for (capture, (reference, current)) in cases.into_iter().enumerate() {
             cx.update_window(handle.into(), |_, window, cx| {
                 window.click(("capture", capture), cx);
@@ -4193,6 +4352,8 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                     for index in &panes {
                         let content = window.find(("image-content", *index)).bounds();
                         let viewport = window.find(("image-scroll", *index)).bounds();
+                        assert_eq!(window.find(("image-details", *index)).bounds(), viewport);
+                        assert!(window.try_find(("open-image", *index)).is_none());
                         assert!(content.left() >= viewport.left() - px(1.));
                         assert!(content.top() >= viewport.top());
                         assert!(content.right() <= viewport.right() + px(1.));
@@ -4616,7 +4777,7 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
             window.find(("image-details", 1_usize)).label(),
-            Some("Current 1280 x 720")
+            Some("Test 1280 x 720")
         );
         assert!(
             window.find(("image-content", 1_usize)).bounds().size.width
@@ -4684,19 +4845,15 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
             window.find("capture-error").label(),
             Some("Missing selector #pay")
         );
-        assert_eq!(window.find("capture-position").label(), Some("1 of 2"));
-        window.click("previous-capture", cx);
+        assert!(window.try_find("capture-position").is_none());
         assert_eq!(window.find("capture-heading").label(), Some("Checkout"));
-        window.click("next-capture", cx);
+        window.click(("capture", 3_usize), cx);
         assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
-        assert_eq!(window.find("capture-position").label(), Some("2 of 2"));
-        window.click("next-capture", cx);
+        window.click(("capture", 1_usize), cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Checkout"));
+        window.click(("capture", 3_usize), cx);
         assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
         window.within("result-filter").click(0_usize, cx);
-        window.click("previous-failed-capture", cx);
-        assert_eq!(window.find("capture-heading").label(), Some("Checkout"));
-        window.click("next-failed-capture", cx);
-        assert_eq!(window.find("capture-heading").label(), Some("Receipt"));
         window.click("capture-search", cx);
         window.input("no matching capture", cx);
     })
@@ -4706,10 +4863,9 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(window.find("capture-position").label(), Some("0 of 0"));
+        assert!(window.try_find("capture-position").is_none());
         assert!(window.try_find("capture-error").is_none());
         assert!(window.try_find(("image-details", 1_usize)).is_none());
-        window.click("next-capture", cx);
         assert_eq!(window.find("capture-heading").label(), Some("Comparison"));
         window.click("capture-search", cx);
         window.press("ctrl-a", cx);
@@ -4725,16 +4881,18 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
 }
 
 #[gpui_kit::test]
-async fn result_navigation_keeps_the_selected_capture_page_visible(cx: &mut TestAppContext) {
+async fn result_capture_list_scrolls_without_pagination_and_preserves_filtered_selection(
+    cx: &mut TestAppContext,
+) {
     let directory = tempfile::tempdir().unwrap();
     let run = directory
         .path()
         .join(".regressify/ui-test/bitmaps_test/run-1");
     std::fs::create_dir_all(&run).unwrap();
-    let captures = (0..52)
+    let captures = (0..152)
         .map(|index| {
             serde_json::json!({
-                "status": if index == 0 || index == 51 { "fail" } else { "pass" },
+                "status": if index == 0 || index == 151 { "fail" } else { "pass" },
                 "pair": { "label": format!("Capture {index}") }
             })
         })
@@ -4757,20 +4915,39 @@ async fn result_navigation_keeps_the_selected_capture_page_visible(cx: &mut Test
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        window.click("next-failed-capture", cx);
-        assert_eq!(window.find("capture-position").label(), Some("52 of 52"));
-        assert!(window.try_find(("capture", 51_usize)).is_some());
+        assert!(window.try_find("previous-captures").is_none());
+        assert!(window.try_find("next-captures").is_none());
+        assert!(window.try_find(("capture", 151_usize)).is_none());
+        window.scroll(
+            "capture-scroll",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-100_000.))),
+            cx,
+        );
+        window.render_frame(cx);
+        assert!(window.find(("capture", 151_usize)).visible());
         assert!(window.try_find(("capture", 0_usize)).is_none());
-        window.click("previous-capture", cx);
-        window.click("previous-capture", cx);
-        assert_eq!(window.find("capture-heading").label(), Some("Capture 49"));
-        assert!(window.try_find(("capture", 49_usize)).is_some());
-        assert!(window.try_find(("capture", 51_usize)).is_none());
-        window.click("next-failed-capture", cx);
+        window.click(("capture", 151_usize), cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
         window.within("result-filter").click(1_usize, cx);
-        assert_eq!(window.find("capture-position").label(), Some("2 of 2"));
-        assert!(window.try_find(("capture", 0_usize)).is_some());
-        assert!(window.try_find(("capture", 51_usize)).is_some());
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
+        assert!(window.find(("capture", 0_usize)).visible());
+        assert!(window.find(("capture", 151_usize)).visible());
+        window.within("result-filter").click(0_usize, cx);
+        assert!(window.find(("capture", 151_usize)).visible());
+        assert!(window.try_find(("capture", 0_usize)).is_none());
+        window.click("capture-search", cx);
+        window.input("Capture 100", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("capture-heading")
+            .is_some_and(|heading| heading.label() == Some("Capture 100"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert!(window.find(("capture", 100_usize)).visible());
+        assert!(window.try_find(("capture", 151_usize)).is_none());
     })
     .unwrap();
 }

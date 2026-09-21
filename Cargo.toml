@@ -1,6 +1,6 @@
 [package]
 name = "regressify"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 default-run = "regressify"
 
@@ -19,7 +19,7 @@ default = ["local"]
 local = []
 cloud = []
 desktop = ["local", "dep:yaml-edit", "dep:tempfile", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:zip", "dep:keyring", "dep:zeroize", "dep:imagequant"]
-gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows"]
+gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
 [dependencies]
@@ -62,6 +62,7 @@ tree-sitter-json = { version = "0.24", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+webbrowser = { version = "1.2", optional = true }
 yaml-edit = { version = "0.3.1", optional = true }
 zeroize = { version = "1", optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }

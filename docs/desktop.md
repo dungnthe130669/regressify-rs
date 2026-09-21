@@ -875,9 +875,12 @@ tooltips. Generated desktop run UUIDs are presented as report timestamps;
 timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
 unchanged.
 
-The comparison heading shows capture context and the allowed mismatch threshold
-beside the measured difference. Copy capture details includes the human label,
-outcome, page, threshold, failure details, and raw capture ID. Edit suite opens
+The compact comparison heading shows the scenario name and measured difference.
+Capture context, allowed mismatch, page, failure details, and raw capture ID are
+available in the Copy capture details tooltip and copied summary, without extra
+metadata rows above the images. Image panes have no repeated headings or
+external-open buttons; image actions are in the context menu. Report totals are
+on Refresh reports. Edit suite opens
 the owning workspace file through the same guarded navigation used by the
 sidebar; it is unavailable when that association cannot be resolved safely.
 
@@ -888,9 +891,9 @@ runs, including on refresh and while switching between their suites. Selecting a
 suite outside that request returns to latest-report browsing. A selected capture is
 retained when its report is unchanged. Filter
 All/Failed/Passed and search labels or errors. The preview follows the filtered
-selection and clears when nothing matches. Capture lists use 50-item pages.
-Previous/next controls traverse matching captures; double arrows jump directly
-to failures. Navigation automatically reveals the selected capture's page.
+selection and clears when nothing matches. Captures use a continuously scrolling,
+virtualized list without pagination. Select a capture directly from the list;
+filtering and refresh keep the selected capture visible when it still matches.
 The navigator toggle hides both left panes for a full-width preview without
 resetting selection, filters, images, or zoom.
 
@@ -901,13 +904,14 @@ rejected. Ordinary browsing reads only the newest valid report per suite;
 explicit run requests exclude unrelated reports before applying the discovery
 limit of 1,000 report reads, limited to 16 MiB each.
 
-Reference, Current, Diff, and Side by side display background-loaded PNGs.
+Reference, Test, Diff, and Side by side display background-loaded PNGs.
+Fit and zoom controls sit to the right of these tabs on the same toolbar.
 Fit area is enabled by default and uses the smaller width/height scale so the
 entire image is visible, capped at 100% to keep small images at their original size.
 Fit width scales to the viewport width, also capped at 100%, with vertical
 scrolling for tall images. The two fit modes are mutually exclusive.
 Preview canvases are horizontally centered when narrower than their viewport.
-These defaults apply to Reference, Current, Diff, and Side by side.
+These defaults apply to Reference, Test, Diff, and Side by side.
 Each tab independently remembers its fit mode and manual zoom value while viewing
 the same scenario, including across report refreshes and viewport captures of that
 scenario. Selecting a different scenario, leaving Results, or restarting the app
@@ -921,7 +925,7 @@ shrink below 25%; zooming out at that size leaves the image fitted.
 Ctrl+mouse wheel keeps the image point under the pointer fixed. Left-button
 dragging pans images that exceed the viewport; ordinary wheel scrolling,
 scrollbars, and actual-size reset remain available.
-Side by side shows Reference and Current, followed by Diff on the right when a
+Side by side shows Reference and Test, followed by Diff on the right when a
 diff image can be loaded. Clicking an image opens its corresponding tab and
 restores that tab's own fit/zoom choice; dragging does not switch tabs.
 All comparison panes use a common canvas and scale, including when their
@@ -933,9 +937,20 @@ Image dimensions are bounded
 with the CLI's PNG helper before decoding. Missing images are recoverable errors.
 Paths resolve relative to `html_report` and must remain inside the output root.
 
-External-open controls launch the HTML summary, artifact folder, or image in its
-default application. Report HTML is not embedded in GPUI. Historical reports
-refer to current baseline files; later approval can change their reference image.
+Right-click any Reference, Test, or Diff image, including in Side by side, to open
+it in the default browser, open it in the default image viewer, or reveal it in
+the OS file manager. Reference also offers Open Reference URL and Copy Reference
+URL; Test offers Open Test URL and Copy Test URL. These actions use that capture's
+recorded initial scenario URL: Reference uses `referenceUrl`, while Test uses
+`url`, which includes the replacements applied when the test ran. These URLs do
+not use the final URL after actions or recompute from today's replacement profile.
+URL actions are disabled when the corresponding metadata is missing or unsupported;
+they are not offered for Diff. HTTP, HTTPS, and local file URLs are supported.
+
+External-open controls also launch the HTML summary and artifact folder.
+The app does not embed a browser or webview; browser actions launch the installed
+default browser as a separate application. Historical reports refer to current baseline
+files; later approval can change their reference image.
 
 ## Shortcuts
 
