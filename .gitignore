@@ -4,6 +4,7 @@
 ./backstop
 /.regressify/
 /.regressify__int/
+.env.local
 bitmaps_test/
 html_report/
 __pycache__/
