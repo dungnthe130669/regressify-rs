@@ -34,9 +34,18 @@ updates are described below; installer signing is not configured.
 
 Windows x86_64 releases include `Regressify-Desktop-Setup-N.N.N.N-x64.exe`.
 Run the installer normally, without administrator elevation. It installs per user
-in `%LOCALAPPDATA%\Programs\Regressify Desktop`, creates a Start-menu shortcut,
-and registers an uninstaller. Workspaces and desktop preferences are preserved
-by updates and uninstall. The release executable links the MSVC runtime statically.
+in `%LOCALAPPDATA%\Programs\Regressify Desktop`, creates desktop and Start-menu
+shortcuts, and adds **Open with Regressify Desktop** to folder and folder-background
+context menus. On Windows 11, the command is under **Show more options**.
+Uninstall removes these shortcuts and context-menu entries. Workspaces and desktop
+preferences are preserved by updates and uninstall. The release executable links
+the MSVC runtime statically.
+
+Right-click the app's taskbar icon to open a workspace from **Recent Workspaces**.
+The Jump List uses saved workspace history, refreshes as workspaces are opened,
+and skips missing folders and duplicates. Windows removals are remembered until
+the workspace is explicitly reopened. Windows recent-item privacy settings and
+the available Jump List space determine whether these entries are shown.
 
 Official Windows builds check for updates once at startup. When a newer version
 is available, a high-contrast banner stays visible below the title bar in every
@@ -311,19 +320,28 @@ tag. CI retains the installer as an Actions artifact before publishing.
 
 The installer is compiled with Inno Setup 6. Release CI verifies static-runtime
 dependencies and exercises installation, reinstallation, active-process blocking,
-downgrade rejection and uninstall before upload. Local packaging of a desktop
-build whose executable version matches `0.2.0.0`:
+downgrade rejection, shortcuts, folder context menus and uninstall cleanup before
+upload. Local packaging of a desktop build whose executable version matches `0.2.0.0`:
 
 ```powershell
 ./ci/build-desktop-installer.ps1 -Version 0.2.0.0 -BinaryDirectory target/debug -Compiler 'C:/Tools/Inno Setup 6/ISCC.exe' -SmokeTest
 ./ci/desktop-smoke.ps1 -SkipBuild -UpdateFlows
 ```
 
-The installer smoke test refuses to run over an existing per-user installation;
-it installs only under a generated `target/installer-smoke-*` directory, suppresses
-shortcuts/relaunch, and removes its temporary installation registration. The
-native UI smoke requires an unconfigured development build and temporarily backs
-up/restores preferences, like the other desktop smoke modes.
+The installer smoke test refuses to run over an existing per-user installation,
+shortcut group or context-menu registration. It installs only under a generated
+`target/installer-smoke-*` directory, suppresses relaunch, verifies both shortcuts
+and their Jump List identity, and checks the folder context-menu commands.
+Uninstall must remove the fixture shortcuts, context menus and installation
+registration. The native UI smoke requires an unconfigured development build and
+temporarily backs up/restores preferences, like the other desktop smoke modes.
+
+The opt-in native Jump List test uses a unique application ID, temporary workspace
+history and automatic cleanup without modifying the installed app's Jump List:
+
+```powershell
+cargo test --features gui-tests --lib desktop::jump_list::tests -- --include-ignored --test-threads=1
+```
 
 Release tests run before generating the matrix. To run them locally, install
 `PyYAML==6.0.3` for Python 3.11+ and run `python ci/test-release.py`. Bash and

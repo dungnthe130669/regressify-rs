@@ -43,9 +43,11 @@ fn token_endpoint(token: &str) -> Result<(Url, u32)> {
         .context("Invalid Azure deployment token format")?;
     ensure!(
         prefix.len() >= 64
-            && suffix.len() == 39
+            && suffix.len() >= 39
             && prefix[..64].bytes().all(|byte| byte.is_ascii_hexdigit())
-            && suffix[..36].bytes().all(|byte| byte.is_ascii_hexdigit()),
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'-'),
         "Invalid Azure deployment token format"
     );
     let slice = if prefix.len() == 64 {
@@ -55,8 +57,8 @@ fn token_endpoint(token: &str) -> Result<(Url, u32)> {
             .parse::<u32>()
             .context("Invalid Azure deployment token slice")?
     };
-    let region =
-        u16::from_str_radix(&suffix[36..], 16).context("Invalid Azure deployment token region")?;
+    let region = u16::from_str_radix(&suffix[36..39], 16)
+        .context("Invalid Azure deployment token region")?;
     let (region, version) = match region {
         0 => ("hk1", ""),
         3 => ("am2", ""),
@@ -391,6 +393,28 @@ mod tests {
     }
 
     #[test]
+    fn token_with_hyphenated_suffix_routes_to_its_slice() {
+        let token = format!(
+            "{}12-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb00f{}003",
+            "a".repeat(64),
+            "c".repeat(10)
+        );
+        let (url, slice) = token_endpoint(&token).unwrap();
+        assert_eq!(slice, 12);
+        assert_eq!(
+            url.host_str(),
+            Some("content-eus2.infrastructure.12.azurestaticapps.net")
+        );
+        validate_token(&token).unwrap();
+        let client = SwaClient::new(&token).unwrap();
+        assert!(client.authorization.is_sensitive());
+        assert_eq!(
+            client.authorization.to_str().unwrap(),
+            format!("token {token}")
+        );
+    }
+
+    #[test]
     fn token_regions_and_untrusted_upload_urls_are_validated_without_secret_errors() {
         let (url, slice) = token_endpoint(&token()).unwrap();
         assert_eq!(slice, 0);
@@ -401,6 +425,12 @@ mod tests {
         for token in [
             "not-a-token".into(),
             "\u{1f600}".repeat(104),
+            format!("{}-{}00f", "g".repeat(64), "b".repeat(36)),
+            format!("{}xx-{}00f", "a".repeat(64), "b".repeat(36)),
+            format!("{}12-{}00f", "a".repeat(64), "b".repeat(35)),
+            format!("{}-{}00f\r\n", "a".repeat(64), "b".repeat(36)),
+            format!("{}-{}00f!", "a".repeat(64), "b".repeat(36)),
+            format!("{}-{}0-0", "a".repeat(64), "b".repeat(36)),
             format!("{}-{}fff", "a".repeat(64), "b".repeat(36)),
         ] {
             let error = token_endpoint(&token).unwrap_err().to_string();

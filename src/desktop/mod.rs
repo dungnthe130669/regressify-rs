@@ -13,5 +13,8 @@ pub mod updates;
 pub mod worker;
 pub mod workspace;
 
+#[cfg(all(feature = "gui", target_os = "windows"))]
+pub mod jump_list;
+
 #[cfg(feature = "gui")]
 pub mod ui;

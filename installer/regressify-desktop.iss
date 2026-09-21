@@ -40,7 +40,16 @@ UninstallDisplayIcon={app}\regressify-desktop.exe
 Source: "{#SourceDir}\regressify-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"
+Name: "{group}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; AppUserModelID: "Regressify.Desktop"
+Name: "{autodesktop}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; AppUserModelID: "Regressify.Desktop"
+
+[Registry]
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\RegressifyDesktop"; ValueType: string; ValueName: ""; ValueData: "Open with Regressify Desktop"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\RegressifyDesktop"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\regressify-desktop.exe"",0"
+Root: HKCU; Subkey: "Software\Classes\Directory\shell\RegressifyDesktop\command"; ValueType: string; ValueName: ""; ValueData: """{app}\regressify-desktop.exe"" ""%1\."""
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\RegressifyDesktop"; ValueType: string; ValueName: ""; ValueData: "Open with Regressify Desktop"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\RegressifyDesktop"; ValueType: string; ValueName: "Icon"; ValueData: """{app}\regressify-desktop.exe"",0"
+Root: HKCU; Subkey: "Software\Classes\Directory\Background\shell\RegressifyDesktop\command"; ValueType: string; ValueName: ""; ValueData: """{app}\regressify-desktop.exe"" ""%V\."""
 
 [Run]
 Filename: "{app}\regressify-desktop.exe"; Parameters: "{code:LaunchParameters}"; Flags: nowait runasoriginaluser; Check: ShouldLaunch

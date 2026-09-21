@@ -395,9 +395,16 @@ impl Workbench {
             move || {
                 let root = workspace::Workspace::open(&path)?.root;
                 if current.as_ref() == Some(&root) {
+                    #[cfg(target_os = "windows")]
+                    super::jump_list::record_workspace(&root);
                     return Ok(None);
                 }
-                DesktopInstance::open(&directory?, &root).map(Some)
+                let opened = DesktopInstance::open(&directory?, &root)?;
+                #[cfg(target_os = "windows")]
+                if matches!(opened, OpenInstance::Activated) {
+                    super::jump_list::record_workspace(&root);
+                }
+                Ok(Some(opened))
             },
             |this, opened, window, cx| {
                 match opened {
@@ -440,6 +447,8 @@ impl Workbench {
             move || {
                 let mut session = Session::default();
                 session.connect(instance.root())?;
+                #[cfg(target_os = "windows")]
+                super::jump_list::record_workspace(instance.root());
                 Ok((session, instance))
             },
             |this, (session, mut instance), window, cx| {
@@ -2338,6 +2347,12 @@ impl Workbench {
             let _ = view.update_in(cx, |this, window, cx| {
                 this.preferences_saving = false;
                 let saved = result.is_ok();
+                #[cfg(target_os = "windows")]
+                if saved {
+                    cx.background_executor()
+                        .spawn(async { super::jump_list::refresh(None) })
+                        .detach();
+                }
                 if let Err(error) = result {
                     this.status = format!("Cannot save preferences: {error:#}");
                 }
@@ -2571,6 +2586,10 @@ pub fn launch(instance: Option<DesktopInstance>) {
         .with_assets(gpui_kit::assets::AllAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
+            #[cfg(target_os = "windows")]
+            cx.background_executor()
+                .spawn(async { super::jump_list::refresh(None) })
+                .detach();
             let preference = Preferences::path()
                 .and_then(|path| Preferences::load(&path))
                 .map(|preferences| preferences.theme_preference())

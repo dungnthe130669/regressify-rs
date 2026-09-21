@@ -30,6 +30,10 @@ fn main() -> ExitCode {
         };
     }
     let args = DesktopArgs::parse();
+    #[cfg(target_os = "windows")]
+    if let Err(error) = regressify::desktop::jump_list::initialize() {
+        eprintln!("Cannot initialize Windows shell integration: {error:#}");
+    }
     if let Err(error) = regressify::desktop::updates::protect_installation(args.after_install) {
         rfd::MessageDialog::new()
             .set_title("Regressify Desktop")
@@ -49,6 +53,8 @@ fn main() -> ExitCode {
             match result {
                 Ok(regressify::desktop::instance::OpenInstance::Owned(instance)) => Some(instance),
                 Ok(regressify::desktop::instance::OpenInstance::Activated) => {
+                    #[cfg(target_os = "windows")]
+                    regressify::desktop::jump_list::record_workspace(&root);
                     return ExitCode::SUCCESS;
                 }
                 Err(error) => {
