@@ -1,7 +1,7 @@
 //! Bundled engine execution with bounded output and process-tree cancellation.
 
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ffi::OsString,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
@@ -27,6 +27,8 @@ use crate::progress::{EventReader, LiveProgress};
 const LOG_QUEUE_CAPACITY: usize = 256;
 const MAX_LOG_CHUNK: usize = 16 * 1024;
 const MAX_LOG_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SAVED_RUN_BYTES: u64 = 32 * 1024 * 1024;
+const SAVED_RUN_VERSION: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -365,7 +367,8 @@ impl RunRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum RunOutcome {
     /// Exit zero describes command execution, not whether visual comparisons passed.
     Completed,
@@ -373,10 +376,213 @@ pub enum RunOutcome {
     Cancelled,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LogLine {
     pub stderr: bool,
     pub text: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSnapshot {
+    version: u8,
+    #[serde(default)]
+    recovered_from_reports: bool,
+    request: RunRequest,
+    outcome: RunOutcome,
+    progress: LiveProgress,
+    logs: VecDeque<LogLine>,
+    omitted_chunks: usize,
+}
+
+impl RunSnapshot {
+    pub fn path_in(root: &Path, preferences: &Path) -> Result<PathBuf> {
+        let key = super::deployment::workspace_key(root)?;
+        Ok(preferences
+            .parent()
+            .context("Preferences directory unavailable")?
+            .join("runs")
+            .join(format!("{key}.json")))
+    }
+
+    pub fn load(path: &Path, root: &Path) -> Result<Option<Self>> {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error).context("Cannot open saved run activity"),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_SAVED_RUN_BYTES + 1).read_to_end(&mut bytes)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_SAVED_RUN_BYTES,
+            "Saved run activity exceeds the 32 MiB limit"
+        );
+        let snapshot: Self =
+            serde_json::from_slice(&bytes).context("Invalid saved run activity")?;
+        snapshot.validate()?;
+        ensure!(
+            snapshot.request.root.canonicalize()? == root.canonicalize()?,
+            "Saved run activity belongs to a different workspace"
+        );
+        Ok(Some(snapshot))
+    }
+
+    fn validate(&self) -> Result<()> {
+        ensure!(
+            self.version == SAVED_RUN_VERSION,
+            "Unsupported saved run activity version"
+        );
+        ensure!(self.progress.finished, "Saved run activity is incomplete");
+        ensure!(
+            self.progress
+                .deployment
+                .as_ref()
+                .is_none_or(|deployment| deployment.has_safe_url()),
+            "Saved run activity contains an unsafe deployment URL"
+        );
+        Ok(())
+    }
+
+    pub fn save(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let bytes = serde_json::to_vec(self)?;
+        ensure!(
+            bytes.len() as u64 <= MAX_SAVED_RUN_BYTES,
+            "Saved run activity exceeds the 32 MiB limit"
+        );
+        std::fs::create_dir_all(
+            path.parent()
+                .context("Run activity directory unavailable")?,
+        )?;
+        crate::helpers::write_file_atomically(path, &bytes).context("Cannot save run activity")
+    }
+
+    pub fn recover_reports(
+        root: &Path,
+        suites: &[super::workspace::SuiteSummary],
+    ) -> Result<Option<Self>> {
+        use super::results::{Catalog, Outcome, ReportSelection, TestResult};
+        use crate::progress::{Event, Job, Record};
+
+        let mut options = RunOptions::default();
+        let mut catalog =
+            Catalog::load_selected(&options.output_directory(root), ReportSelection::Latest)?;
+        catalog.resolve_names(suites);
+        let Some(latest) = catalog
+            .reports
+            .iter()
+            .find(|report| report.source.is_some() && !report.report.tests.is_empty())
+        else {
+            return Ok(None);
+        };
+        options.run_id = latest.run_id.clone();
+        let mut manager = RunManager::default();
+        let mut filters = BTreeSet::new();
+        let mut missing_scenario_ids = false;
+        let record = |event| Record {
+            version: 1,
+            elapsed_ms: 0,
+            event,
+        };
+        for report in catalog
+            .reports
+            .iter()
+            .filter(|report| report.source.is_some() && report.run_id == options.run_id)
+        {
+            let suite = suites
+                .iter()
+                .find(|suite| suite.output_id.eq_ignore_ascii_case(&report.report.id))
+                .context("Saved report suite is unavailable")?;
+            options.suites.push(glob::Pattern::escape(&suite.output_id));
+            let mut jobs: BTreeMap<(String, String), Vec<&TestResult>> = BTreeMap::new();
+            for test in &report.report.tests {
+                let scenario_id = test.pair.scenario_id.as_deref().or_else(|| {
+                    test.pair
+                        .display
+                        .scenario_index
+                        .and_then(|index| suite.scenarios.get(index))
+                        .map(|scenario| scenario.id.as_str())
+                });
+                if let Some(id) = scenario_id {
+                    filters.insert((suite.output_id.clone(), id.to_string()));
+                } else {
+                    missing_scenario_ids = true;
+                }
+                jobs.entry((
+                    scenario_id
+                        .unwrap_or_else(|| test.pair.capture_key())
+                        .to_string(),
+                    test.pair.display.viewport.clone(),
+                ))
+                .or_default()
+                .push(test);
+            }
+            for ((scenario_id, viewport), tests) in jobs {
+                let id = manager.progress.scenarios.len() + 1;
+                manager.progress.apply(record(Event::Queued {
+                    job: Job {
+                        id,
+                        suite_id: suite.output_id.clone(),
+                        suite_name: suite.name.clone(),
+                        scenario_id: scenario_id.clone(),
+                        label: tests[0].pair.display.title.clone(),
+                        viewport,
+                        captures: tests
+                            .iter()
+                            .map(|test| test.pair.capture_key().to_string())
+                            .collect(),
+                    },
+                }));
+                for test in tests {
+                    let error = test
+                        .pair
+                        .engine_error_msg
+                        .clone()
+                        .filter(|error| !error.is_empty())
+                        .or_else(|| match test.outcome() {
+                            Outcome::Mismatch => Some("Visual mismatch".into()),
+                            Outcome::Unknown => {
+                                Some("Saved comparison has an unknown status".into())
+                            }
+                            _ => None,
+                        });
+                    manager.progress.apply(record(Event::Compared {
+                        suite_id: suite.output_id.clone(),
+                        capture: test.pair.capture_key().to_string(),
+                        label: test.pair.display.title.clone(),
+                        scenario_id: Some(scenario_id.clone()),
+                        passed: test.outcome() == Outcome::Passed,
+                        error,
+                    }));
+                }
+            }
+            manager.progress.apply(record(Event::SuiteFinished {
+                id: suite.output_id.clone(),
+            }));
+        }
+        if !missing_scenario_ids {
+            options.scenarios = filters
+                .into_iter()
+                .map(|(suite, scenario)| ScenarioFilter { suite, scenario })
+                .collect();
+        }
+        manager.request = Some(RunRequest {
+            root: root.to_path_buf(),
+            command: RunCommand::Compare,
+            options,
+        });
+        manager.outcome = Some(RunOutcome::Completed);
+        manager.progress.end(false, None);
+        manager.progress.phase = "Saved comparison results".into();
+        manager.progress.clear_logs();
+        manager.recovered_from_reports = true;
+        manager.push_log(LogLine {
+            stderr: false,
+            text: "Original execution log unavailable for these saved comparison results.\n".into(),
+        });
+        Ok(manager.snapshot())
+    }
 }
 
 struct RunHandle {
@@ -560,6 +766,10 @@ fn read_stream(
 #[derive(Default)]
 pub struct RunManager {
     active: Option<RunHandle>,
+    storage_path: Option<PathBuf>,
+    persistence: Option<JoinHandle<Result<()>>>,
+    pub persistence_error: Option<String>,
+    pub recovered_from_reports: bool,
     pub logs: VecDeque<LogLine>,
     pub outcome: Option<RunOutcome>,
     pub request: Option<RunRequest>,
@@ -575,7 +785,46 @@ impl RunManager {
     }
 
     pub fn running(&self) -> bool {
-        self.active.is_some()
+        self.active.is_some() || self.persistence.is_some()
+    }
+
+    pub fn set_storage_path(&mut self, path: PathBuf) {
+        self.storage_path = Some(path);
+    }
+
+    pub fn snapshot(&self) -> Option<RunSnapshot> {
+        if self.active.is_some() || !self.progress.finished {
+            return None;
+        }
+        let mut request = self.request.clone()?;
+        request.options.proxy.clear();
+        Some(RunSnapshot {
+            version: SAVED_RUN_VERSION,
+            recovered_from_reports: self.recovered_from_reports,
+            request,
+            outcome: self.outcome.clone()?,
+            progress: self.progress.clone(),
+            logs: self.logs.clone(),
+            omitted_chunks: self.omitted_chunks,
+        })
+    }
+
+    pub fn restore(&mut self, snapshot: RunSnapshot) -> Result<()> {
+        ensure!(!self.running(), "A command is already running");
+        snapshot.validate()?;
+        self.logs.clear();
+        self.log_bytes = 0;
+        for line in snapshot.logs {
+            self.push_log(line);
+        }
+        self.request = Some(snapshot.request);
+        self.outcome = Some(snapshot.outcome);
+        self.progress = snapshot.progress;
+        self.omitted_chunks = snapshot.omitted_chunks;
+        self.persistence_error = None;
+        self.recovered_from_reports = snapshot.recovered_from_reports;
+        self.revision = self.revision.wrapping_add(1);
+        Ok(())
     }
 
     pub fn start(&mut self, mut request: RunRequest) -> Result<()> {
@@ -614,6 +863,8 @@ impl RunManager {
         self.log_bytes = 0;
         self.omitted_chunks = 0;
         self.outcome = None;
+        self.persistence_error = None;
+        self.recovered_from_reports = false;
         self.request = Some(request);
         self.revision = self.revision.wrapping_add(1);
         Ok(())
@@ -627,6 +878,20 @@ impl RunManager {
 
     /// Non-blocking UI tick; completion is separate from the bounded log queue.
     pub fn poll(&mut self) -> bool {
+        if let Some(persistence) = &self.persistence {
+            if !persistence.is_finished() {
+                return false;
+            }
+            if let Some(persistence) = self.persistence.take() {
+                self.persistence_error = persistence
+                    .join()
+                    .unwrap_or_else(|_| Err(anyhow!("Run activity writer stopped unexpectedly")))
+                    .err()
+                    .map(|error| format!("{error:#}"));
+            }
+            self.revision = self.revision.wrapping_add(1);
+            return true;
+        }
         let Some(active) = &self.active else {
             return false;
         };
@@ -660,8 +925,17 @@ impl RunManager {
                 })
             });
             self.revision = self.revision.wrapping_add(1);
+            if let (Some(path), Some(snapshot)) = (self.storage_path.clone(), self.snapshot()) {
+                match thread::Builder::new()
+                    .name("regressify-save-run".into())
+                    .spawn(move || snapshot.save(&path))
+                {
+                    Ok(persistence) => self.persistence = Some(persistence),
+                    Err(error) => self.persistence_error = Some(error.to_string()),
+                }
+            }
         }
-        finished
+        finished && self.persistence.is_none()
     }
 
     fn push_log(&mut self, line: LogLine) {
@@ -678,25 +952,259 @@ impl RunManager {
     }
 }
 
+impl Drop for RunManager {
+    fn drop(&mut self) {
+        if let Some(persistence) = self.persistence.take() {
+            let _ = persistence.join();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_reports_recover_the_latest_matching_run_without_modifying_artifacts() {
+        use super::super::document::DocumentKind;
+        use super::super::workspace::{Entry, ScenarioSummary, SuiteSummary};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let suites =
+            [("shop", "shop-output"), ("other", "other-output")].map(|(name, output_id)| {
+                SuiteSummary {
+                    entry: Entry {
+                        path: format!("visual_tests/{name}.tests.yaml").into(),
+                        kind: DocumentKind::Suite,
+                    },
+                    name: name.into(),
+                    output_id: output_id.into(),
+                    error: None,
+                    scenarios: vec![ScenarioSummary {
+                        id: "home".into(),
+                        label: "Home".into(),
+                        url: "https://example.com/".into(),
+                    }],
+                }
+            });
+        assert!(
+            RunSnapshot::recover_reports(root, &suites)
+                .unwrap()
+                .is_none()
+        );
+        let mut files = Vec::new();
+        for (suite, run, timestamp) in [
+            ("shop-output", "old", 1),
+            ("other-output", "earlier", 2),
+            ("shop-output", "existing", 3),
+            ("orphan", "unrelated", 4),
+        ] {
+            let path = root.join(format!(
+                ".regressify/{suite}/bitmaps_test/{run}/report.json"
+            ));
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let tests = [("phone", "FINAL", false), ("phone", "$step", true), ("tablet", "FINAL", false), ("desktop", "FINAL", true)]
+                .map(|(viewport, capture, passed)| serde_json::json!({
+                    "status": if passed { "pass" } else { "fail" },
+                    "pair": { "fileName": format!("home_{viewport}__{capture}.png"), "scenarioId": "home", "scenarioLabel": "Home", "engineErrorMsg": if passed { None } else { Some("Dimensions differ") } }
+                }));
+            let bytes =
+                serde_json::to_vec(&serde_json::json!({ "id": suite, "tests": tests })).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(
+                    std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(timestamp),
+                ))
+                .unwrap();
+            files.push((path, bytes));
+        }
+        let snapshot = RunSnapshot::recover_reports(root, &suites)
+            .unwrap()
+            .unwrap();
+        let mut manager = RunManager::default();
+        manager.restore(snapshot).unwrap();
+        assert!(!manager.running());
+        assert!(manager.recovered_from_reports);
+        let request = manager.request.as_ref().unwrap();
+        assert_eq!(request.options.run_id, "existing");
+        assert_eq!(request.options.suites, ["shop-output"]);
+        assert_eq!(request.options.scenarios[0].to_string(), "shop-output:home");
+        assert_eq!(manager.progress.scenarios.len(), 3);
+        assert_eq!(manager.progress.comparison_counts(None).total, 4);
+        assert_eq!(manager.progress.comparison_counts(None).failed, 2);
+        assert_eq!(manager.progress.comparison_counts(None).passed, 2);
+        assert!(
+            manager
+                .progress
+                .scenarios
+                .values()
+                .any(|scenario| scenario.job.viewport == "phone"
+                    && scenario.job.captures.len() == 2
+                    && scenario.message.as_deref() == Some("Dimensions differ"))
+        );
+        assert!(manager.progress.logs.is_empty());
+        for (path, bytes) in files {
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn completed_run_activity_survives_a_new_manager_without_restarting_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = RunSnapshot::path_in(&root, &directory.path().join("preferences.json")).unwrap();
+        assert!(RunSnapshot::load(&path, &root).unwrap().is_none());
+        let mut manager = RunManager::default();
+        let mut request = request(RunCommand::Test);
+        request.root = root.clone();
+        request.options.run_id = "saved-test".into();
+        request.options.site_env = "staging".into();
+        request.options.suites = vec!["shop".into()];
+        request.options.scenarios = vec!["shop:home".parse().unwrap()];
+        request.options.proxy = "http://user:private-password@proxy.example".into();
+        manager.request = Some(request);
+        manager.progress.apply(crate::progress::Record {
+            version: 1,
+            elapsed_ms: 27_100,
+            event: crate::progress::Event::Compared {
+                suite_id: "shop".into(),
+                capture: "home_phone__FINAL".into(),
+                label: "Home".into(),
+                scenario_id: Some("home".into()),
+                passed: false,
+                error: Some("Dimensions differ".into()),
+            },
+        });
+        manager.progress.end(false, None);
+        manager.push_log(LogLine {
+            stderr: true,
+            text: "Comparison failed\n".into(),
+        });
+        manager.omitted_chunks = 3;
+        for outcome in [
+            RunOutcome::Completed,
+            RunOutcome::Failed("Report write failed".into()),
+            RunOutcome::Cancelled,
+        ] {
+            manager.outcome = Some(outcome.clone());
+            manager.snapshot().unwrap().save(&path).unwrap();
+            let snapshot = RunSnapshot::load(&path, &root).unwrap().unwrap();
+            let mut reopened = RunManager::default();
+            reopened.restore(snapshot).unwrap();
+            assert!(!reopened.running());
+            assert!(!reopened.poll());
+            assert_eq!(reopened.outcome, Some(outcome));
+            assert_eq!(reopened.progress.comparison_counts(None).failed, 1);
+            assert_eq!(reopened.progress.elapsed_ms, 27_100);
+            assert_eq!(reopened.logs[0].text, "Comparison failed\n");
+            assert_eq!(reopened.omitted_chunks, 3);
+            let request = reopened.request.as_ref().unwrap();
+            assert_eq!(request.options.run_id, "saved-test");
+            assert_eq!(request.options.scenarios[0].to_string(), "shop:home");
+            assert_eq!(
+                request.options.output_directory(&root),
+                root.join(".regressify__staging")
+            );
+            assert!(request.options.proxy.is_empty());
+        }
+        assert!(
+            !std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("private-password")
+        );
+        let other = tempfile::tempdir().unwrap();
+        assert!(RunSnapshot::load(&path, other.path()).is_err());
+        assert_ne!(
+            path,
+            RunSnapshot::path_in(other.path(), &directory.path().join("preferences.json")).unwrap()
+        );
+        std::fs::write(&path, b"{broken").unwrap();
+        assert!(RunSnapshot::load(&path, &root).is_err());
+    }
+
+    #[test]
+    fn completion_waits_for_activity_persistence_and_reports_write_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        for fails in [false, true] {
+            let path = if fails {
+                directory.path().to_path_buf()
+            } else {
+                directory.path().join("run.json")
+            };
+            let (mut manager, shared) = polling_fixture();
+            shared.lock().unwrap().end(false, None);
+            manager.active.as_mut().unwrap().worker = Some(thread::spawn(|| RunOutcome::Completed));
+            let mut request = request(RunCommand::Test);
+            request.root = directory.path().canonicalize().unwrap();
+            manager.request = Some(request);
+            manager.set_storage_path(path.clone());
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while !manager.poll() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "Run completion did not finish"
+                );
+                thread::yield_now();
+            }
+            assert!(!manager.running());
+            assert_eq!(manager.persistence_error.is_some(), fails);
+            assert_eq!(manager.outcome, Some(RunOutcome::Completed));
+            if !fails {
+                assert!(
+                    RunSnapshot::load(&path, directory.path())
+                        .unwrap()
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn saved_activity_rejects_unsupported_incomplete_and_unsafe_snapshots() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = directory.path().join("run.json");
+        let mut manager = RunManager::default();
+        manager.request = Some(RunRequest {
+            root: root.clone(),
+            command: RunCommand::Test,
+            options: RunOptions::default(),
+        });
+        manager.outcome = Some(RunOutcome::Completed);
+        manager.progress.end(false, None);
+        let snapshot = manager.snapshot().unwrap();
+        let mut invalid = vec![snapshot.clone(); 3];
+        invalid[0].version = SAVED_RUN_VERSION + 1;
+        invalid[1].progress.finished = false;
+        invalid[2].progress.deployment = Some(crate::progress::DeploymentResult {
+            target: "Unsafe".into(),
+            url: "file:///C:/untrusted.exe".into(),
+        });
+        for snapshot in invalid {
+            std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            assert!(RunSnapshot::load(&path, &root).is_err());
+            assert!(RunManager::default().restore(snapshot).is_err());
+        }
+        snapshot.save(&path).unwrap();
+        assert!(RunSnapshot::load(&path, &root).unwrap().is_some());
+    }
 
     fn polling_fixture() -> (RunManager, Arc<Mutex<LiveProgress>>) {
         let (_, logs) = mpsc::sync_channel(1);
         let (cancel, _) = mpsc::sync_channel(1);
         let progress = Arc::new(Mutex::new(LiveProgress::default()));
-        let manager = RunManager {
-            active: Some(RunHandle {
-                logs,
-                cancel,
-                worker: None,
-                omitted: Arc::new(AtomicUsize::new(0)),
-                progress: progress.clone(),
-                _events_file: None,
-            }),
-            ..Default::default()
-        };
+        let mut manager = RunManager::default();
+        manager.active = Some(RunHandle {
+            logs,
+            cancel,
+            worker: None,
+            omitted: Arc::new(AtomicUsize::new(0)),
+            progress: progress.clone(),
+            _events_file: None,
+        });
         (manager, progress)
     }
 

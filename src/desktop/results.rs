@@ -124,6 +124,7 @@ pub struct Pair {
 pub struct CaptureDisplay {
     pub title: String,
     pub detail: String,
+    pub viewport: String,
     pub scenario_index: Option<usize>,
     pub page_url: Option<String>,
 }
@@ -265,6 +266,7 @@ impl Pair {
         self.display = CaptureDisplay {
             title,
             detail,
+            viewport: viewport.to_string(),
             scenario_index: matched.map(|(index, _)| index),
             page_url: self
                 .url

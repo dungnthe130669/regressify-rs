@@ -663,7 +663,10 @@ function Test-ArtifactFlows {
     Capture-Window 'artifacts-existing-report'
     if ((Get-FileHash $reportPath).Hash -ne $reportHash) { throw 'Opening an existing report rewrote its data.' }
     Invoke-Control 'Runs'
-    Wait-Control 'No command running' | Out-Null
+    Invoke-Control 'Activity'
+    Wait-Control 'Saved comparison results' | Out-Null
+    Wait-Control 'Screenshot comparisons: 2' | Out-Null
+    Wait-Control 'Failed: 2' | Out-Null
     Invoke-Control 'Editor'
     $accountOutput = Join-Path $workspace '.regressify/account'
     $reference = Join-Path $accountOutput 'bitmaps_reference/profile__FINAL.png'
@@ -693,6 +696,13 @@ function Test-ArtifactFlows {
     $process.CloseMainWindow() | Out-Null
     if (-not $process.WaitForExit(10000)) { throw 'Artifact fixture did not close cleanly.' }
     Start-Fixture
+    Invoke-Control 'Runs'
+    Wait-Control 'Last run: Compare Results' | Out-Null
+    Wait-Control 'Passed: 1' | Out-Null
+    Wait-Control 'Failed: 0' | Out-Null
+    Wait-Control 'Completed' | Out-Null
+    Capture-Window 'artifacts-activity-after-restart'
+    Invoke-Control 'Editor'
     Invoke-Control 'account.tests.json'
     Invoke-Control 'Profile'
     Wait-Control '1 reference image / 1 saved test run' | Out-Null
@@ -701,8 +711,9 @@ function Test-ArtifactFlows {
     Wait-Control 'Current 640 x 420' | Out-Null
     Capture-Window 'artifacts-report-after-restart'
     Invoke-Control 'Runs'
-    Wait-Control 'No command running' | Out-Null
-    Write-Output 'Baseline gating, saved-report opening, capture-only comparison, and restart detection passed without browser capture.'
+    Wait-Control 'Last run: Compare Results' | Out-Null
+    Wait-Control 'Passed: 1' | Out-Null
+    Write-Output 'Baseline gating, saved-report opening, capture-only comparison, and persistent activity after restart passed without browser capture.'
 }
 
 function Test-ScenarioFlows {
@@ -758,6 +769,23 @@ function Test-ScenarioFlows {
     Invoke-Control 'Back to Activity'
     Wait-Control 'Passed: 1' | Out-Null
     Capture-Window 'scenario-completed-dark-compact'
+    $reportHashes = @($reports | ForEach-Object { @{ Path = $_.FullName; Hash = (Get-FileHash $_.FullName).Hash } })
+    $process.CloseMainWindow() | Out-Null
+    if (-not $process.WaitForExit(10000)) { throw 'Completed scenario fixture did not close cleanly.' }
+    Start-Fixture
+    Invoke-Control 'Runs'
+    Wait-Control 'Last run: Run Test' | Out-Null
+    Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
+    Wait-Control 'Passed: 1' | Out-Null
+    Wait-Control 'Failed: 0' | Out-Null
+    Wait-Control 'Completed' | Out-Null
+    Capture-Window 'scenario-activity-after-restart'
+    foreach ($report in $reportHashes) {
+        if ((Get-FileHash $report.Path).Hash -ne $report.Hash) { throw 'Restoring activity modified a saved report.' }
+    }
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Invoke-Control 'Runs'
     Invoke-Control 'View run log: Checkout'
     Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
     Invoke-Control 'All run logs'
@@ -778,7 +806,7 @@ function Test-ScenarioFlows {
     foreach ($reference in $siblingReferences) {
         if ((Get-FileHash $reference.Path).Hash -ne $reference.Hash) { throw 'Scenario approval changed a sibling baseline.' }
     }
-    Write-Output 'Scenario-only capture, attributed live logs, scoped approval/comparison, and sibling baseline checks passed.'
+    Write-Output 'Scenario-only capture, persistent activity and logs after restart, scoped approval/comparison, and sibling baseline checks passed.'
 }
 
 function Get-FixtureDeploymentSettingsPath {
@@ -1560,6 +1588,11 @@ try {
             Remove-Item -LiteralPath $settingsPath
         }
         Write-Output 'Original desktop preferences restored.'
+        if (-not $KeepOpen) {
+            $activityName = [System.IO.Path]::GetFileName((Get-FixtureDeploymentSettingsPath))
+            $activityPath = Join-Path (Split-Path -Parent $settingsPath) ('runs/' + $activityName)
+            if (Test-Path -LiteralPath $activityPath) { Remove-Item -LiteralPath $activityPath }
+        }
         if ($DeploymentFlows -and -not $KeepOpen) {
             $targetSettings = Get-FixtureDeploymentSettingsPath
             if (Test-Path -LiteralPath $targetSettings) {

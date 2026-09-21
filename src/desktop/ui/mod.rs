@@ -442,16 +442,44 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let preferences = self.preferences_path.clone();
         self.task(
             "Opening workspace...",
             move || {
                 let mut session = Session::default();
                 session.connect(instance.root())?;
+                let activity_path = preferences
+                    .ok_or_else(|| anyhow!("Desktop preferences path unavailable"))
+                    .and_then(|path| super::runner::RunSnapshot::path_in(instance.root(), &path));
+                let activity = match &activity_path {
+                    Ok(path) => super::runner::RunSnapshot::load(path, instance.root()),
+                    Err(error) => Err(anyhow!("{error:#}")),
+                };
+                let activity_warning = activity
+                    .as_ref()
+                    .err()
+                    .map(|error| format!("Could not restore saved run activity: {error:#}"));
+                let activity = match activity {
+                    Ok(Some(snapshot)) => Ok(Some(snapshot)),
+                    _ => super::runner::RunSnapshot::recover_reports(
+                        instance.root(),
+                        &session.suites,
+                    ),
+                };
                 #[cfg(target_os = "windows")]
                 super::jump_list::record_workspace(instance.root());
-                Ok((session, instance))
+                Ok((
+                    session,
+                    instance,
+                    activity_path.ok(),
+                    activity,
+                    activity_warning,
+                ))
             },
-            |this, (session, mut instance), window, cx| {
+            |this,
+             (session, mut instance, activity_path, activity, activity_warning),
+             window,
+             cx| {
                 this.activation_task = instance.activation_events().map(|mut events| {
                     cx.spawn_in(window, async move |view, cx| {
                         while events.next().await.is_some() {
@@ -499,6 +527,9 @@ impl Workbench {
                     this.save_preferences(window, cx);
                 }
                 this.sync_editor(window, cx);
+                this.runs.update(cx, |panel, cx| {
+                    panel.restore_activity(activity_path, activity, activity_warning, window, cx)
+                });
                 this.status = "Workspace opened".into();
                 this.refresh_results(window, cx);
             },

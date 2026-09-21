@@ -85,6 +85,11 @@ impl RunPanel {
         } else {
             progress.elapsed_ms
         };
+        let elapsed_label = if self.manager.recovered_from_reports {
+            "--:--".into()
+        } else {
+            format!("{:02}:{:02}", elapsed / 60_000, elapsed / 1000 % 60)
+        };
         let selected_scenarios = self.selected_scenario_count();
         let mut content =
             div()
@@ -105,15 +110,19 @@ impl RunPanel {
                                 .flex_col()
                                 .gap_1()
                                 .children(self.manager.request.as_ref().map(|request| {
-                                    let label = format!(
-                                        "{}: {}",
-                                        if self.running() {
-                                            "Running"
-                                        } else {
-                                            "Last run"
-                                        },
-                                        request.command.action_label()
-                                    );
+                                    let label = if self.manager.recovered_from_reports {
+                                        "Saved comparison results".into()
+                                    } else {
+                                        format!(
+                                            "{}: {}",
+                                            if self.running() {
+                                                "Running"
+                                            } else {
+                                                "Last run"
+                                            },
+                                            request.command.action_label()
+                                        )
+                                    };
                                     div()
                                         .id("run-command-context")
                                         .role(Role::Status)
@@ -151,13 +160,13 @@ impl RunPanel {
                         )
                         .child(
                             div()
+                                .id("run-elapsed")
+                                .role(Role::Status)
+                                .aria_label(elapsed_label.clone())
+                                .test_support()
                                 .text_sm()
                                 .font_family(cx.theme().mono_font_family.clone())
-                                .child(format!(
-                                    "{:02}:{:02}",
-                                    elapsed / 60_000,
-                                    elapsed / 1000 % 60
-                                )),
+                                .child(elapsed_label),
                         ),
                 )
                 .child(
@@ -310,6 +319,20 @@ impl RunPanel {
                     .py_2()
                     .bg(cx.theme().danger.opacity(0.08))
                     .text_color(cx.theme().danger)
+                    .child(error.clone()),
+            );
+        }
+        if let Some(error) = &self.manager.persistence_error {
+            content = content.child(
+                div()
+                    .id("run-persistence-error")
+                    .role(Role::Status)
+                    .aria_label(error.clone())
+                    .test_support()
+                    .px_3()
+                    .py_2()
+                    .bg(cx.theme().warning.opacity(0.08))
+                    .text_color(cx.theme().warning)
                     .child(error.clone()),
             );
         }

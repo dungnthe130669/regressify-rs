@@ -6,7 +6,9 @@ use std::{
 };
 
 use super::*;
-use crate::desktop::runner::{RunCommand, RunManager, RunOptions, RunOutcome, RunRequest};
+use crate::desktop::runner::{
+    RunCommand, RunManager, RunOptions, RunOutcome, RunRequest, RunSnapshot,
+};
 use crate::desktop::workspace::{SuiteSelection, SuiteSummary};
 
 mod activity;
@@ -347,6 +349,116 @@ impl RunPanel {
         self.rebuild(window, cx);
         self.refresh_artifacts(cx);
         cx.notify();
+    }
+
+    pub(super) fn restore_activity(
+        &mut self,
+        path: Option<PathBuf>,
+        activity: Result<Option<RunSnapshot>>,
+        warning: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(path) = path {
+            self.manager.set_storage_path(path);
+        }
+        let restored = (|| -> Result<()> {
+            let Some(snapshot) = activity? else {
+                return Ok(());
+            };
+            self.manager.restore(snapshot)?;
+            let request = self
+                .manager
+                .request
+                .as_ref()
+                .ok_or_else(|| anyhow!("Missing saved run request"))?;
+            let mut options = request.options.clone();
+            options.run_id.clear();
+            self.options = serde_json::to_value(options)?;
+            self.command = request.command;
+            self.selection.clear();
+            for suite in self.suites.iter().filter(|suite| {
+                suite.error.is_none()
+                    && request.options.suites.contains(&glob::Pattern::escape(
+                        if request.command.uses_output_suite_ids() {
+                            &suite.output_id
+                        } else {
+                            &suite.name
+                        },
+                    ))
+            }) {
+                if request.options.scenarios.is_empty() {
+                    self.selection.toggle(suite, true)?;
+                } else {
+                    for scenario in &suite.scenarios {
+                        if request.options.scenarios.iter().any(|filter| {
+                            filter.scenario == scenario.id
+                                && filter.suite
+                                    == if request.command.uses_output_suite_ids() {
+                                        &suite.output_id
+                                    } else {
+                                        &suite.name
+                                    }
+                                    .as_str()
+                        }) {
+                            self.selection.toggle_scenario(suite, &scenario.id, true)?;
+                        }
+                    }
+                }
+            }
+            self.executed_suites = self
+                .manager
+                .progress
+                .suites
+                .values()
+                .map(|suite| {
+                    let name = self
+                        .suites
+                        .iter()
+                        .find(|current| current.output_id == suite.id)
+                        .map(|current| current.name.clone())
+                        .unwrap_or_else(|| suite.name.clone());
+                    (name, suite.id.clone())
+                })
+                .collect();
+            if self.executed_suites.is_empty() {
+                self.executed_suites = self
+                    .suites
+                    .iter()
+                    .filter(|suite| self.selection.contains(&suite.name))
+                    .map(|suite| (suite.name.clone(), suite.output_id.clone()))
+                    .collect();
+            }
+            self.status = self.completion_status();
+            self.rebuild(window, cx);
+            self.refresh_log(window, cx);
+            Ok(())
+        })();
+        if let Err(error) = restored {
+            let error = format!("Could not restore saved run activity: {error:#}");
+            self.status = error.clone();
+            self.manager.persistence_error = Some(error);
+        } else if let Some(warning) = warning {
+            self.status = warning.clone();
+            self.manager.persistence_error = Some(warning);
+        }
+        self.refresh_artifacts(cx);
+        cx.emit(RunEvent::SelectionChanged);
+        cx.emit(RunEvent::ProgressChanged);
+        cx.notify();
+    }
+
+    fn completion_status(&self) -> String {
+        let status = match &self.manager.outcome {
+            Some(RunOutcome::Completed) => "Completed".into(),
+            Some(RunOutcome::Cancelled) => "Cancelled".into(),
+            Some(RunOutcome::Failed(error)) => error.clone(),
+            None => "Command ended without a result".into(),
+        };
+        match &self.manager.persistence_error {
+            Some(error) => format!("{status}. Run activity was not saved: {error}"),
+            None => status,
+        }
     }
 
     pub(super) fn set_suites(
@@ -986,12 +1098,7 @@ impl RunPanel {
                                     this.refresh_log(window, cx);
                                 }
                                 if finished {
-                                    this.status = match &this.manager.outcome {
-                                        Some(RunOutcome::Completed) => "Completed".into(),
-                                        Some(RunOutcome::Cancelled) => "Cancelled".into(),
-                                        Some(RunOutcome::Failed(error)) => error.clone(),
-                                        None => "Command ended without a result".into(),
-                                    };
+                                    this.status = this.completion_status();
                                     cx.emit(RunEvent::Finished);
                                     if review_after_run && this.executed_report_available() {
                                         this.review_results(cx);
@@ -1541,6 +1648,210 @@ mod tests {
     use gpui_kit::{AppContext, TestAppContext};
     use serde_json::json;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    async fn reopening_recovers_legacy_results_even_with_corrupt_activity(cx: &mut TestAppContext) {
+        use crate::desktop::runner::RunSnapshot;
+        for corrupt in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().canonicalize().unwrap();
+            let (handle, view) = super::super::tests::editor(cx, directory.path());
+            let (path, bytes) = cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    let suite = this.session.suites[0].clone();
+                    let scenario = &suite.scenarios[0];
+                    let output = root.join(".regressify").join(&suite.output_id);
+                    let run = output.join("bitmaps_test/existing-run");
+                    std::fs::create_dir_all(&run).unwrap();
+                    std::fs::create_dir_all(output.join("bitmaps_reference")).unwrap();
+                    let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+                    let tests = [("phone", false), ("tablet", false), ("desktop", true)].map(|(viewport, passed)| {
+                        let filename = format!("{}_{viewport}__FINAL.png", scenario.id);
+                        std::fs::write(run.join(&filename), &png).unwrap();
+                        std::fs::write(output.join("bitmaps_reference").join(&filename), &png).unwrap();
+                        json!({ "status": if passed { "pass" } else { "fail" }, "pair": {
+                            "fileName": filename, "scenarioId": scenario.id, "scenarioLabel": "Restored Home",
+                            "engineErrorMsg": if passed { None } else { Some("Dimensions differ") }
+                        } })
+                    });
+                    let path = run.join("report.json");
+                    let bytes = serde_json::to_vec(&json!({ "id": suite.output_id, "tests": tests })).unwrap();
+                    std::fs::write(&path, &bytes).unwrap();
+                    if corrupt {
+                        let saved = RunSnapshot::path_in(&root, this.preferences_path.as_ref().unwrap()).unwrap();
+                        std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+                        std::fs::write(saved, b"{broken").unwrap();
+                    }
+                    this.close_workspace(window, cx);
+                    this.load_workspace(root.clone(), window, cx);
+                    (path, bytes)
+                })
+            }).unwrap();
+            cx.wait_for(handle.into(), std::time::Duration::from_secs(5), |_, cx| {
+                !view.read(cx).busy && view.read(cx).runs.read(cx).manager.request.is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.main_tab = 1;
+                    cx.notify();
+                });
+                window.render_frame(cx);
+                let panel = view.read(cx).runs.read(cx);
+                assert!(panel.manager.recovered_from_reports);
+                assert_eq!(panel.manager.persistence_error.is_some(), corrupt);
+                assert!(!panel.running());
+                assert_eq!(panel.selected_count(), 1);
+                assert_eq!(panel.selected_scenario_count(), 1);
+                assert_eq!(panel.manager.progress.scenarios.len(), 3);
+                assert!(panel.manager.progress.logs.is_empty());
+                assert_eq!(
+                    window.find("run-outcome-heading").label(),
+                    Some("2 failed, 1 passed")
+                );
+                assert_eq!(
+                    window.find("run-command-context").label(),
+                    Some("Saved comparison results")
+                );
+                assert_eq!(window.find("run-elapsed").label(), Some("--:--"));
+                assert_eq!(window.find("metric-failed").label(), Some("Failed: 2"));
+                assert_eq!(window.find("metric-passed").label(), Some("Passed: 1"));
+                assert_eq!(window.try_find("run-persistence-error").is_some(), corrupt);
+                window.click("activity-view-results", cx);
+            })
+            .unwrap();
+            cx.wait_for(
+                handle.into(),
+                std::time::Duration::from_secs(5),
+                |window, _| {
+                    window
+                        .try_find("capture-heading")
+                        .is_some_and(|heading| heading.label() == Some("Restored Home"))
+                },
+            )
+            .await;
+            cx.update_window(handle.into(), |_, _, cx| {
+                let panel = view.read(cx).runs.read(cx);
+                assert!(!panel.running());
+                assert_eq!(
+                    panel.manager.request.as_ref().unwrap().options.run_id,
+                    "existing-run"
+                );
+            })
+            .unwrap();
+            assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[gpui_kit::test]
+    async fn reopening_workspace_restores_activity_selection_logs_and_output_settings(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::desktop::runner::RunSnapshot;
+        use crate::progress::{Event, Job, Record};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let suite = this.session.suites[0].clone();
+                let scenario = suite.scenarios[0].clone();
+                let path =
+                    RunSnapshot::path_in(&root, this.preferences_path.as_ref().unwrap()).unwrap();
+                this.runs.update(cx, |panel, _| {
+                    panel.manager.request = Some(RunRequest {
+                        root: root.clone(),
+                        command: RunCommand::Test,
+                        options: RunOptions {
+                            run_id: "previous-run".into(),
+                            regressify_dir: "saved-output".into(),
+                            suites: vec![suite.name.clone()],
+                            scenarios: vec![crate::cli::args::ScenarioFilter {
+                                suite: suite.name.clone(),
+                                scenario: scenario.id.clone(),
+                            }],
+                            ..Default::default()
+                        },
+                    });
+                    for (id, viewport) in [(1, "phone"), (2, "tablet"), (3, "desktop")] {
+                        let capture = format!("{}_{viewport}__FINAL", scenario.id);
+                        for event in [
+                            Event::Queued {
+                                job: Job {
+                                    id,
+                                    suite_id: suite.output_id.clone(),
+                                    suite_name: suite.name.clone(),
+                                    scenario_id: scenario.id.clone(),
+                                    label: scenario.label.clone(),
+                                    viewport: viewport.into(),
+                                    captures: vec![capture.clone()],
+                                },
+                            },
+                            Event::Started { id },
+                            Event::Compared {
+                                suite_id: suite.output_id.clone(),
+                                capture,
+                                label: scenario.label.clone(),
+                                scenario_id: Some(scenario.id.clone()),
+                                passed: id == 3,
+                                error: (id != 3).then(|| "Dimensions differ".into()),
+                            },
+                        ] {
+                            panel.manager.progress.apply(Record {
+                                version: 1,
+                                elapsed_ms: 27_100,
+                                event,
+                            });
+                        }
+                    }
+                    panel.manager.progress.end(false, None);
+                    panel.manager.outcome = Some(RunOutcome::Completed);
+                    panel.manager.snapshot().unwrap().save(&path).unwrap();
+                });
+                this.close_workspace(window, cx);
+                assert!(this.runs.read(cx).manager.request.is_none());
+                this.load_workspace(root.clone(), window, cx);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(5), |_, cx| {
+            !view.read(cx).busy && view.read(cx).runs.read(cx).manager.request.is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 1;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let panel = view.read(cx).runs.read(cx);
+            assert!(!panel.running());
+            assert_eq!(panel.selected_count(), 1);
+            assert_eq!(panel.selected_scenario_count(), 1);
+            assert!(panel.selection.has_scenario_selection());
+            assert_eq!(panel.options["runId"], "");
+            assert_eq!(panel.output_root().unwrap(), root.join("saved-output"));
+            assert_eq!(
+                panel.manager.request.as_ref().unwrap().options.run_id,
+                "previous-run"
+            );
+            assert_eq!(panel.manager.progress.elapsed_ms, 27_100);
+            assert_eq!(panel.manager.progress.logs.len(), 9);
+            assert_eq!(
+                window.find("run-outcome-heading").label(),
+                Some("2 failed, 1 passed")
+            );
+            assert_eq!(
+                window.find("metric-total").label(),
+                Some("Screenshot comparisons: 3")
+            );
+            assert_eq!(window.find("metric-passed").label(), Some("Passed: 1"));
+            assert_eq!(window.find("metric-failed").label(), Some("Failed: 2"));
+            assert!(window.find("activity-view-results").visible());
+            assert_eq!(window.find("run-status").label(), Some("Completed"));
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     fn different_suite_selection_does_not_offer_an_unrelated_previous_report(

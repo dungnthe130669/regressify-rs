@@ -680,9 +680,11 @@ Scenario messages are attributed to job IDs before concurrent output interleaves
 Their shared retained history is capped at 2 MiB or 4,096 entries, with 16 KiB
 per message and an explicit omission notice. It is independent of the console
 queue, so heavy console output cannot mix or discard scenario telemetry. The
-current run's history remains available until another run starts or the workspace
-closes; historical reports do not contain these session logs. Custom scripts,
-URLs, selectors, and error messages may still contain project-provided data.
+latest completed run's retained logs are saved with its activity and restored
+when the workspace reopens. Starting another command replaces the displayed
+activity; its completion replaces the saved snapshot. Historical comparison
+reports do not contain execution logs. Custom scripts, URLs, selectors, and
+error messages may still contain project-provided data in the local snapshot.
 
 **Command completed means exit zero, not visual success.** Scenario failures,
 missing references, and mismatches are report outcomes. Configuration,
@@ -723,6 +725,22 @@ counts, expandable suites, and each scenario/viewport's status, elapsed time,
 and failure details. Failures only narrows the activity list. Captured is distinct
 from Passed, which requires comparison. Suites, Run settings, and Log are separate
 tabs; live running/finished counts remain visible in the workspace navigator.
+
+Completed, failed, and cancelled run activity persists across app launches.
+Reopening the same workspace restores its last command, suite/scenario selection,
+pass/fail counts, viewport rows, failure details, timings, bounded logs, and output
+directory settings. It does not restart a worker. The recorded run ID remains
+available for report review; the next capture gets a fresh ID. Proxy credentials
+are not included in the saved settings.
+
+Activity is saved atomically under `runs/<workspace-key>.json` alongside the
+desktop preferences, separately for each workspace. Completion waits for the save;
+save/load failures remain visible. This is the latest activity snapshot, not an
+unbounded execution history. Screenshots and reports remain in their existing
+output directories. If there is no readable snapshot, the app recovers the newest
+matching comparison run from the default `.regressify` output. These older results
+are labeled Saved comparison results; original execution logs and timings cannot
+be reconstructed from reports and are not fabricated.
 
 ## Reviewing Results
 

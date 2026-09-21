@@ -261,7 +261,8 @@ impl EventReader {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum Status {
     Queued,
     Running,
@@ -289,7 +290,8 @@ impl Status {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScenarioProgress {
     pub job: Job,
     pub status: Status,
@@ -300,21 +302,24 @@ pub struct ScenarioProgress {
     compared: HashMap<String, bool>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SuiteProgress {
     pub id: String,
     pub name: String,
     pub finished: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScenarioLog {
     pub job_id: usize,
     pub elapsed_ms: u64,
     pub message: Arc<str>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LiveProgress {
     pub deployment: Option<DeploymentResult>,
     pub phase: String,
@@ -326,14 +331,49 @@ pub struct LiveProgress {
     pub logs: VecDeque<ScenarioLog>,
     pub omitted_logs: usize,
     log_bytes: usize,
+    #[serde(with = "capture_index")]
     captures: HashMap<(String, String), usize>,
+    #[serde(skip)]
     revision: u64,
 }
 
-#[derive(Clone, Debug)]
+mod capture_index {
+    use super::*;
+
+    pub fn serialize<S: serde::Serializer>(
+        captures: &HashMap<(String, String), usize>,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        captures.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<HashMap<(String, String), usize>, D::Error> {
+        Ok(Vec::<((String, String), usize)>::deserialize(deserializer)?
+            .into_iter()
+            .collect())
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DeploymentResult {
     pub target: String,
     pub url: String,
+}
+
+impl DeploymentResult {
+    pub fn has_safe_url(&self) -> bool {
+        reqwest::Url::parse(&self.url).is_ok_and(|parsed| {
+            parsed.scheme() == "https"
+                && parsed.host_str().is_some()
+                && parsed.username().is_empty()
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none()
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -363,6 +403,13 @@ impl Counts {
 impl LiveProgress {
     pub fn revision(&self) -> u64 {
         self.revision
+    }
+
+    pub fn clear_logs(&mut self) {
+        self.logs.clear();
+        self.log_bytes = 0;
+        self.omitted_logs = 0;
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn apply(&mut self, record: Record) {
@@ -518,15 +565,9 @@ impl LiveProgress {
                 }
             }
             Event::Deployed { target, url } => {
-                if reqwest::Url::parse(&url).is_ok_and(|parsed| {
-                    parsed.scheme() == "https"
-                        && parsed.host_str().is_some()
-                        && parsed.username().is_empty()
-                        && parsed.password().is_none()
-                        && parsed.query().is_none()
-                        && parsed.fragment().is_none()
-                }) {
-                    self.deployment = Some(DeploymentResult { target, url });
+                let deployment = DeploymentResult { target, url };
+                if deployment.has_safe_url() {
+                    self.deployment = Some(deployment);
                 }
             }
             Event::Finished { error } => self.end(false, error),
@@ -721,6 +762,63 @@ mod tests {
             viewport: "desktop".into(),
             captures: vec![format!("capture-{id}")],
         }
+    }
+
+    #[test]
+    fn saved_progress_preserves_results_timings_logs_and_capture_identity() {
+        let mut live = LiveProgress::default();
+        for (id, suite) in [(1, "shop"), (2, "account")] {
+            let mut queued = job(id, suite);
+            queued.captures = vec!["home".into()];
+            live.apply(record(Event::Queued { job: queued }));
+            live.apply(record(Event::Started { id }));
+            live.apply(record(Event::Captured {
+                id,
+                error: None,
+                infrastructure: false,
+            }));
+            live.apply(Record {
+                version: VERSION,
+                elapsed_ms: 27_100,
+                event: Event::Compared {
+                    suite_id: suite.into(),
+                    capture: "home".into(),
+                    label: "Home".into(),
+                    scenario_id: Some(format!("scenario-{id}")),
+                    passed: id == 2,
+                    error: (id == 1).then(|| "Dimensions differ".into()),
+                },
+            });
+        }
+        live.end(false, None);
+        let bytes = serde_json::to_vec(&live).unwrap();
+        let mut restored: LiveProgress = serde_json::from_slice(&bytes).unwrap();
+        assert!(restored.finished);
+        assert_eq!(restored.elapsed_ms, 27_100);
+        assert_eq!(restored.comparison_counts(None).passed, 1);
+        assert_eq!(restored.comparison_counts(None).failed, 1);
+        assert_eq!(
+            restored.scenarios[&1].message.as_deref(),
+            Some("Dimensions differ")
+        );
+        assert_eq!(restored.scenarios[&1].finished_ms, Some(27_100));
+        assert_eq!(restored.logs.len(), live.logs.len());
+        assert_eq!(restored.log_bytes, live.log_bytes);
+        assert_eq!(
+            restored.logs.back().unwrap().message,
+            live.logs.back().unwrap().message
+        );
+        restored.apply(record(Event::Compared {
+            suite_id: "shop".into(),
+            capture: "home".into(),
+            label: "Home".into(),
+            scenario_id: Some("scenario-1".into()),
+            passed: true,
+            error: None,
+        }));
+        assert_eq!(restored.scenarios.len(), 2);
+        assert_eq!(restored.comparison_counts(None).passed, 2);
+        assert_eq!(restored.comparison_counts(None).failed, 0);
     }
 
     #[test]

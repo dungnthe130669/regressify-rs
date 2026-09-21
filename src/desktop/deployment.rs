@@ -420,7 +420,7 @@ fn phase(name: &str) {
     crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
 }
 
-fn workspace_key(root: &Path) -> Result<String> {
+pub(super) fn workspace_key(root: &Path) -> Result<String> {
     let root = root.canonicalize()?;
     let mut identity = super::workspace::display_path(&root);
     if cfg!(windows) {
