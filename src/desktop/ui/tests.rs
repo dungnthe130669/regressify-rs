@@ -4017,6 +4017,7 @@ async fn side_by_side_scrolls_both_axes_from_either_pane_with_different_image_si
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.within("image-modes").click(3_usize, cx);
+        assert!(window.try_find(("image-scroll", 2_usize)).is_none());
         for index in [0_usize, 1] {
             let viewport = window.find(("image-scroll", index)).bounds();
             let content = window.find(("image-content", index)).bounds();
@@ -4179,7 +4180,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                     let canvas_width = canvas_width as f32;
                     let canvas_height = canvas_height as f32;
                     let panes = if mode == 3 {
-                        vec![0_usize, 1]
+                        vec![0_usize, 1, 2]
                     } else {
                         vec![mode]
                     };
@@ -4231,11 +4232,167 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                             );
                         }
                     }
+                    window.click("fit-width", cx);
+                    assert_eq!(window.find("fit-width").checked(), Some(true));
+                    assert_eq!(window.find("fit-image").checked(), Some(false));
+                    for index in &panes {
+                        let content = window.find(("image-content", *index)).bounds();
+                        let viewport = window.find(("image-scroll", *index)).bounds();
+                        let scale = (viewport.size.width / px(canvas_width)).min(1.);
+                        assert!((content.size.width - px(canvas_width * scale)).abs() <= px(1.));
+                        assert!((content.size.height - px(canvas_height * scale)).abs() <= px(1.));
+                        assert!((content.center().x - viewport.center().x).abs() <= px(1.));
+                        if content.size.height > viewport.size.height + px(80.) {
+                            window.scroll(
+                                ("image-scroll", *index),
+                                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-40.))),
+                                cx,
+                            );
+                            window.render_frame(cx);
+                            assert!(
+                                window.find(("image-content", *index)).bounds().top()
+                                    < content.top()
+                            );
+                        }
+                    }
+                    window.click("fit-image", cx);
                 }
             })
             .unwrap();
         }
     }
+}
+
+#[gpui_kit::test]
+async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let run = directory
+        .path()
+        .join(".regressify/ui-test/bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    lodepng::encode32_file(
+        run.join("capture.png"),
+        &[30_u8, 150, 180, 255].repeat(1200 * 1800),
+        1200,
+        1800,
+    )
+    .unwrap();
+    let image = "../bitmaps_test/run-1/capture.png";
+    std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+        "id": "ui-test", "tests": [
+            {"status": "fail", "pair": {"label": "First viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
+            {"status": "fail", "pair": {"label": "Second viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
+            {"status": "pass", "pair": {"label": "Other scenario", "scenarioId": "second", "reference": image, "test": image}}
+        ]
+    })).unwrap()).unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for mode in 0..4 {
+            window.within("image-modes").click(mode, cx);
+            assert_eq!(window.find("fit-image").checked(), Some(true));
+            if mode == 0 {
+                window.click("fit-width", cx);
+            } else {
+                window.click("actual-size", cx);
+                if mode == 2 {
+                    window.click("zoom-out", cx);
+                } else {
+                    for _ in 0..mode {
+                        window.click("zoom-in", cx);
+                    }
+                }
+            }
+        }
+        let left = window.find(("image-scroll", 0_usize)).bounds();
+        let middle = window.find(("image-scroll", 1_usize)).bounds();
+        let right = window.find(("image-scroll", 2_usize)).bounds();
+        assert!(left.right() <= middle.left() && middle.right() <= right.left());
+        for (index, label) in [(0_usize, "100%"), (1, "110%"), (2, "90%")] {
+            window.within("image-modes").click(3_usize, cx);
+            assert_eq!(window.find("zoom-value").label(), Some("150%"));
+            window.click(("image-scroll", index), cx);
+            assert_eq!(
+                window.within("image-modes").find(index).selected(),
+                Some(true)
+            );
+            assert_eq!(window.find("zoom-value").label(), Some(label));
+            assert_eq!(window.find("fit-width").checked(), Some(index == 0));
+        }
+        window.within("image-modes").click(3_usize, cx);
+        window.click("refresh-results", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 2_usize)).is_some()
+    })
+    .await;
+    for capture in [0_usize, 1] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(("capture", capture), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 2_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            for (mode, label) in [(0_usize, "100%"), (1, "110%"), (2, "90%"), (3, "150%")] {
+                window.within("image-modes").click(mode, cx);
+                assert_eq!(window.find("fit-width").checked(), Some(mode == 0));
+                assert_eq!(window.find("fit-image").checked(), Some(false));
+                assert_eq!(window.find("zoom-value").label(), Some(label));
+            }
+        })
+        .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click(("capture", 2_usize), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find(("image-scroll", 2_usize)).is_none());
+        window.click(("image-content", 0_usize), cx);
+        assert_eq!(
+            window.within("image-modes").find(0_usize).selected(),
+            Some(true)
+        );
+        for mode in 0..4 {
+            window.within("image-modes").click(mode, cx);
+            assert_eq!(window.find("fit-image").checked(), Some(true));
+            assert_eq!(window.find("zoom-value").label(), Some("100%"));
+            window.click("actual-size", cx);
+        }
+        window.within("workbench-tabs").click(0_usize, cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 1_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for mode in 0..4 {
+            window.within("image-modes").click(mode, cx);
+            assert_eq!(window.find("fit-image").checked(), Some(true));
+            assert_eq!(window.find("zoom-value").label(), Some("100%"));
+        }
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -4297,7 +4454,7 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
     cx.update_window(handle.into(), |_, window, cx| {
         for mode in 0..4 {
             window.within("image-modes").click(mode, cx);
-            let panes = if mode == 3 { vec![0_usize, 1] } else { vec![mode] };
+            let panes = if mode == 3 { vec![0_usize, 1, 2] } else { vec![mode] };
             for index in panes {
                 for fitted in [true, false] {
                     if window.find("fit-image").checked() != Some(true) {
@@ -4363,8 +4520,8 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                         );
                         assert_eq!(window.find("fit-image").checked(), Some(false));
                         if mode == 3 {
-                            let other = window.find(("image-content", 1 - index)).bounds();
-                            let other_viewport = window.find(("image-scroll", 1 - index)).bounds();
+                            let other = window.find(("image-content", (index + 1) % 3)).bounds();
+                            let other_viewport = window.find(("image-scroll", (index + 1) % 3)).bounds();
                             assert_eq!(after.size, other.size);
                             assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
                         }
@@ -4404,9 +4561,10 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                         after = scrolled;
                     }
                     if mode == 3 {
-                        let other = window.find(("image-content", 1 - index)).bounds();
-                        let other_viewport = window.find(("image-scroll", 1 - index)).bounds();
-                        assert_eq!(after.origin - viewport.origin, other.origin - other_viewport.origin);
+                        let other = window.find(("image-content", (index + 1) % 3)).bounds();
+                        let other_viewport = window.find(("image-scroll", (index + 1) % 3)).bounds();
+                        let difference = (after.origin - viewport.origin) - (other.origin - other_viewport.origin);
+                        assert!(difference.x.abs() <= px(1.) && difference.y.abs() <= px(1.));
                     }
                     window.hover("actual-size", cx);
                     window.render_frame(cx);

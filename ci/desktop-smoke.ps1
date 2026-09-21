@@ -547,19 +547,21 @@ public static class RegressifySmokeZoomKeys {
         return $false
     }
     function Read-StableComparisonSample($Bitmap, $Bounds, [int]$Horizontal, [int]$Vertical) {
-        for ($shift = 0; $shift -le 4; $shift++) {
-            $colors = @()
-            $stable = $true
-            foreach ($preview in $Bounds) {
-                $column = [int]($preview.Left + $Horizontal + 2 * $shift)
-                $row = [int]($preview.Top + $Vertical + 2 * $shift)
-                $color = $Bitmap.GetPixel($column, $row)
-                foreach ($neighbor in @(@(-2, 0), @(2, 0), @(0, -2), @(0, 2))) {
-                    if ($Bitmap.GetPixel($column + $neighbor[0], $row + $neighbor[1]).ToArgb() -ne $color.ToArgb()) { $stable = $false }
+        for ($verticalShift = 0; $verticalShift -le 8; $verticalShift++) {
+            for ($horizontalShift = 0; $horizontalShift -le 8; $horizontalShift++) {
+                $colors = @()
+                $stable = $true
+                foreach ($preview in $Bounds) {
+                    $column = [int]($preview.Left + $Horizontal + $horizontalShift)
+                    $row = [int]($preview.Top + $Vertical + $verticalShift)
+                    $color = $Bitmap.GetPixel($column, $row)
+                    foreach ($neighbor in @(@(-2, 0), @(2, 0), @(0, -2), @(0, 2))) {
+                        if ($Bitmap.GetPixel($column + $neighbor[0], $row + $neighbor[1]).ToArgb() -ne $color.ToArgb()) { $stable = $false }
+                    }
+                    $colors += $color
                 }
-                $colors += $color
+                if ($stable) { return $colors }
             }
-            if ($stable) { return $colors }
         }
         throw 'Comparison pixel probe did not find a stable tile interior.'
     }
@@ -567,7 +569,7 @@ public static class RegressifySmokeZoomKeys {
         $pointer = Move-ComparisonPointer $Pane $HorizontalFraction $VerticalFraction
         $native = [RegressifySmokeNative+Rect]::new()
         if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read comparison window bounds.' }
-        $bounds = @('Reference', 'Current') | ForEach-Object {
+        $bounds = @('Reference', 'Current', 'Diff') | ForEach-Object {
             $preview = Get-ComparisonBounds $_
             [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
         }
@@ -593,12 +595,14 @@ public static class RegressifySmokeZoomKeys {
                     $horizontal = [int]($bounds[0].Width * $horizontalFraction)
                     $sample = Read-StableComparisonSample $bitmap $bounds $horizontal $vertical
                     $reference = $sample[0]
-                    $current = $sample[1]
-                    if ([Math]::Abs([int]$reference.R - $current.R) -le 8 -and [Math]::Abs([int]$reference.G - $current.G) -le 8 -and [Math]::Abs([int]$reference.B - $current.B) -le 8) { $matches++ }
+                    foreach ($compared in $sample[1..($sample.Count - 1)]) {
+                        if ([Math]::Abs([int]$reference.R - $compared.R) -le 8 -and [Math]::Abs([int]$reference.G - $compared.G) -le 8 -and [Math]::Abs([int]$reference.B - $compared.B) -le 8) { $matches++ }
+                    }
                     $signature += $reference.ToArgb()
                 }
             }
-            if ($matches -ne 9) { throw "Comparison offsets differ in '$Name' ($matches/9 matching pixel samples)." }
+            $expected = 9 * ($bounds.Count - 1)
+            if ($matches -ne $expected) { throw "Comparison offsets differ in '$Name' ($matches/$expected matching pixel samples)." }
             $script:comparisonSignature = $signature -join ','
         } finally { $bitmap.Dispose() }
     }
@@ -647,11 +651,13 @@ public static class RegressifySmokeZoomKeys {
     }
     Write-ComparisonImage (Join-Path $output 'bitmaps_reference/checkout.png') 1600 2200
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout.png') 1280 1800
+    Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') 1600 2400
     Invoke-Control 'smoke.tests.json'
     Invoke-Control 'Results'
     Wait-Control 'Current 1280 x 1800' | Out-Null
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 1600 x 2200' | Out-Null
+    Wait-Control 'Diff 1600 x 2400' | Out-Null
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
@@ -666,7 +672,7 @@ public static class RegressifySmokeZoomKeys {
             $name = 'comparison-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]
             Assert-ComparisonPixels "$name-initial"
             Assert-ComparisonPixels "$name-moved-guides" -HorizontalFraction 0.61 -VerticalFraction 0.54
-            foreach ($pane in @('Reference', 'Current')) {
+            foreach ($pane in @('Reference', 'Current', 'Diff')) {
                 foreach ($horizontal in @($false, $true)) {
                     $before = $script:comparisonSignature
                     Send-ComparisonWheel $pane $horizontal
@@ -674,11 +680,11 @@ public static class RegressifySmokeZoomKeys {
                     if ($before -eq $script:comparisonSignature) { throw "The $pane wheel did not move comparison pixels (horizontal: $horizontal)." }
                 }
             }
-            foreach ($pane in @('Reference', 'Current')) {
+            foreach ($pane in @('Reference', 'Current', 'Diff')) {
                 Test-ComparisonGestures ("$name-" + $pane.ToLowerInvariant()) $pane
             }
             Invoke-Control 'Fit area'
-            foreach ($pane in @('Reference', 'Current')) {
+            foreach ($pane in @('Reference', 'Current', 'Diff')) {
                 $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
                 $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
                 $scale = [Math]::Min(1.0, [Math]::Min($preview.Width / $actual.Width, $preview.Height / $actual.Height))
@@ -694,6 +700,30 @@ public static class RegressifySmokeZoomKeys {
             }
             Assert-ComparisonPixels "$name-fit" 'Current'
             Assert-ComparisonPixels "$name-no-guides" -HideGuides
+            Invoke-Control 'Fit width'
+            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+                $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
+                $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
+                $scale = [Math]::Min(1.0, $preview.Width / $actual.Width)
+                if ([Math]::Abs($canvas.Width - $actual.Width * $scale) -gt 2 -or [Math]::Abs($canvas.Height - $actual.Height * $scale) -gt 2) {
+                    throw "Fit width used an incorrect scale for $pane in '$name'."
+                }
+            }
+            Assert-ComparisonPixels "$name-fit-width" 'Diff'
+            Invoke-Control 'Fit area'
+            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+                Move-ComparisonPointer $pane | Out-Null
+                [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+                [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                Wait-Control "$pane image preview" | Out-Null
+                foreach ($other in @('Reference', 'Current', 'Diff') | Where-Object { $_ -ne $pane }) {
+                    if ($null -ne (Find-Control "$other image preview")) { throw "Clicking $pane did not open its tab." }
+                }
+                Invoke-Control 'Fit width'
+                Capture-Window ("$name-" + $pane.ToLowerInvariant() + '-tab')
+                Invoke-Control 'Side by side'
+                Wait-Control 'Diff 1600 x 2400' | Out-Null
+            }
         }
     }
     Invoke-Control 'account.tests.json'
@@ -702,7 +732,7 @@ public static class RegressifySmokeZoomKeys {
     Capture-Window 'comparison-empty-suite'
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Current 1280 x 1800' | Out-Null
-    Write-Output 'Centered fit-area Results, pointer-centered Ctrl+wheel zoom, drag panning, two-axis linked scrolling, and crosshairs passed native checks from both panes in light/dark desktop and compact windows.'
+    Write-Output 'Three-pane Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, and crosshairs passed native checks in light/dark desktop and compact windows.'
 }
 
 function Test-ArtifactFlows {

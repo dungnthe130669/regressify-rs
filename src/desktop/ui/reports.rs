@@ -72,6 +72,30 @@ struct LoadedImage {
     path: PathBuf,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ZoomMode {
+    FitArea,
+    FitWidth,
+    Manual,
+}
+
+#[derive(Clone, Copy)]
+struct PreviewView {
+    mode: ZoomMode,
+    zoom: f32,
+    padding: Option<gpui_kit::Edges<Pixels>>,
+}
+
+impl Default for PreviewView {
+    fn default() -> Self {
+        Self {
+            mode: ZoomMode::FitArea,
+            zoom: 1.0,
+            padding: None,
+        }
+    }
+}
+
 #[derive(Default, Clone)]
 struct PreviewTexture(Rc<RefCell<Option<Arc<gpui_kit::RenderImage>>>>);
 
@@ -93,6 +117,7 @@ struct PreviewPan {
     scroll: ScrollHandle,
     horizontal: bool,
     vertical: bool,
+    dragged: bool,
 }
 
 #[derive(Default)]
@@ -145,6 +170,12 @@ impl Render for PointerLayer {
                             return;
                         }
                         let movement = event.position - pan.position;
+                        if !pan.dragged && movement.x.abs().max(movement.y.abs()) < px(4.) {
+                            return;
+                        }
+                        if let Some(pan) = panning.pan.borrow_mut().as_mut() {
+                            pan.dragged = true;
+                        }
                         let maximum = pan.scroll.max_offset();
                         pan.scroll.set_offset(point(
                             if pan.horizontal {
@@ -166,10 +197,12 @@ impl Render for PointerLayer {
                 window.on_mouse_event(move |event: &gpui_kit::MouseUpEvent, phase, window, cx| {
                     if phase == gpui_kit::DispatchPhase::Capture
                         && event.button == MouseButton::Left
-                        && panning.pan.borrow_mut().take().is_some()
+                        && let Some(pan) = panning.pan.borrow_mut().take()
                     {
                         window.refresh();
-                        cx.stop_propagation();
+                        if pan.dragged {
+                            cx.stop_propagation();
+                        }
                     }
                 });
                 let Some(pointer) = guides.position(index, window.mouse_position()) else {
@@ -208,8 +241,9 @@ pub(super) struct ResultsPanel {
     filter: usize,
     page: usize,
     image_mode: usize,
-    zoom: f32,
-    fit: bool,
+    preview_views: [PreviewView; 4],
+    preview_scenario: Option<(PathBuf, String)>,
+    visible: bool,
     search: Entity<InputState>,
     _subscription: Subscription,
     focus: FocusHandle,
@@ -219,7 +253,6 @@ pub(super) struct ResultsPanel {
     image_load_gate: Arc<futures::lock::Mutex<()>>,
     preview_scrolls: [ScrollHandle; 3],
     comparison_scroll: ScrollHandle,
-    preview_padding: [Option<gpui_kit::Edges<Pixels>>; 4],
     pointer_guides: Rc<PointerGuides>,
     pointer_layers: [Entity<PointerLayer>; 3],
     status: String,
@@ -256,6 +289,48 @@ impl Render for CaptureList {
 }
 
 impl ResultsPanel {
+    pub(super) fn set_visible(&mut self, visible: bool, cx: &mut Context<Self>) {
+        if self.visible && !visible {
+            self.reset_view();
+            cx.notify();
+        }
+        self.visible = visible;
+    }
+
+    fn reset_view(&mut self) {
+        self.preview_views = Default::default();
+        self.comparison_scroll.set_offset(point(px(0.), px(0.)));
+        for scroll in &self.preview_scrolls {
+            scroll.set_offset(point(px(0.), px(0.)));
+        }
+        self.pointer_guides.pan.borrow_mut().take();
+        self.pointer_guides.active.set(None);
+    }
+
+    fn select_image_mode(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.image_mode = index;
+        self.pointer_guides.pan.borrow_mut().take();
+        self.pointer_guides.active.set(None);
+        cx.notify();
+    }
+
+    fn set_zoom_mode(&mut self, mode: ZoomMode, cx: &mut Context<Self>) {
+        let view = &mut self.preview_views[self.image_mode];
+        if view.mode == mode {
+            return;
+        }
+        view.mode = mode;
+        view.padding = None;
+        let scroll = if self.image_mode == 3 {
+            &self.comparison_scroll
+        } else {
+            &self.preview_scrolls[self.image_mode]
+        };
+        scroll.set_offset(point(px(0.), px(0.)));
+        self.pointer_guides.pan.borrow_mut().take();
+        cx.notify();
+    }
+
     pub(super) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         if self.disabled != disabled {
             self.disabled = disabled;
@@ -275,7 +350,7 @@ impl ResultsPanel {
         self.preferred_run = (!run_id.is_empty()).then_some(run_id);
         self.filter = 0;
         self.image_mode = 3;
-        self.fit = true;
+        self.reset_view();
         self.search
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.refresh(root, window, cx);
@@ -302,7 +377,7 @@ impl ResultsPanel {
         self.preferred_run = None;
         self.filter = 0;
         self.image_mode = 3;
-        self.fit = true;
+        self.reset_view();
         self.search
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.refresh(root, window, cx);
@@ -336,6 +411,8 @@ impl ResultsPanel {
         self.capture = None;
         self.visible_captures.clear();
         self.page = 0;
+        self.preview_scenario = None;
+        self.reset_view();
         self.reset_previews(Some(window), cx);
         let outside_requested = self.preferred_reports.as_ref().is_some_and(|targets| {
             !self.suites.iter().any(|suite| {
@@ -377,6 +454,8 @@ impl ResultsPanel {
         self.visible_captures.clear();
         self.filter = 0;
         self.page = 0;
+        self.preview_scenario = None;
+        self.reset_view();
         self.reset_previews(Some(window), cx);
         self.loading = false;
         self.status = "No reports loaded".into();
@@ -413,8 +492,9 @@ impl ResultsPanel {
             filter: 0,
             page: 0,
             image_mode: 1,
-            zoom: 1.0,
-            fit: true,
+            preview_views: Default::default(),
+            preview_scenario: None,
+            visible: false,
             search,
             _subscription: subscription,
             focus: cx.focus_handle(),
@@ -424,7 +504,6 @@ impl ResultsPanel {
             image_load_gate: Arc::default(),
             preview_scrolls: Default::default(),
             comparison_scroll: ScrollHandle::default(),
-            preview_padding: Default::default(),
             pointer_guides,
             pointer_layers,
             status: "No reports loaded".into(),
@@ -575,7 +654,9 @@ impl ResultsPanel {
             }
         }
         self.previews.clear();
-        self.preview_padding = Default::default();
+        for view in &mut self.preview_views {
+            view.padding = None;
+        }
         self.pointer_guides.pan.borrow_mut().take();
         self.pointer_guides.active.set(None);
         for bounds in &self.pointer_guides.bounds {
@@ -598,12 +679,25 @@ impl ResultsPanel {
         let Some(root) = self.root.clone() else {
             return;
         };
+        let scenario = (
+            report.path.clone(),
+            test.pair
+                .scenario_id
+                .as_ref()
+                .filter(|id| !id.is_empty())
+                .map(|id| format!("scenario:{id}"))
+                .unwrap_or_else(|| format!("capture:{capture}")),
+        );
         let artifacts = Arc::new(report.artifacts());
         let images = [
             ("Reference", test.pair.reference.clone()),
             ("Current", test.pair.test.clone()),
             ("Diff", test.pair.diff_image.clone()),
         ];
+        if self.preview_scenario.as_ref() != Some(&scenario) {
+            self.reset_view();
+            self.preview_scenario = Some(scenario);
+        }
         self.reset_previews(Some(window), cx);
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
         for scroll in &self.preview_scrolls {
@@ -953,9 +1047,21 @@ impl ResultsPanel {
         list.into_any_element()
     }
 
+    fn comparison_preview_count(&self) -> usize {
+        if self
+            .previews
+            .get(2)
+            .is_some_and(|preview| preview.result.is_ok())
+        {
+            3
+        } else {
+            2
+        }
+    }
+
     fn preview_canvas_size(&self, index: usize) -> (usize, usize) {
-        let images = if self.image_mode == 3 && index < 2 {
-            &self.previews[..self.previews.len().min(2)]
+        let images = if self.image_mode == 3 {
+            &self.previews[..self.previews.len().min(self.comparison_preview_count())]
         } else {
             self.previews
                 .get(index)
@@ -974,27 +1080,30 @@ impl ResultsPanel {
         let index = if self.image_mode == 3 {
             self.previews
                 .iter()
-                .take(2)
+                .take(self.comparison_preview_count())
                 .position(|preview| preview.result.is_ok())
                 .unwrap_or(0)
         } else {
             self.image_mode
         };
-        let current = if self.fit {
+        let view = self.preview_views[self.image_mode];
+        let current = if view.mode != ZoomMode::Manual {
             self.pointer_guides.bounds[index]
                 .get()
                 .map(|bounds| bounds.size.width / px(self.preview_canvas_size(index).0 as f32))
-                .unwrap_or(self.zoom)
+                .unwrap_or(view.zoom)
         } else {
-            self.zoom
+            view.zoom
         };
         let zoom = next_zoom(current, increase);
         if zoom == current {
             return;
         }
-        self.zoom = zoom;
-        self.fit = false;
-        self.preview_padding = Default::default();
+        self.preview_views[self.image_mode] = PreviewView {
+            mode: ZoomMode::Manual,
+            zoom,
+            padding: None,
+        };
         self.pointer_guides.pan.borrow_mut().take();
         cx.notify();
     }
@@ -1020,25 +1129,26 @@ impl ResultsPanel {
             return;
         }
         let (width, height) = self.preview_canvas_size(index);
-        let scale = if self.fit {
+        let view = self.preview_views[self.image_mode];
+        let scale = if view.mode != ZoomMode::Manual {
             bounds.size.width / px(width as f32)
         } else {
-            self.zoom
+            view.zoom
         };
         let zoom = next_zoom(scale, steps > 0.);
         if zoom == scale {
             return;
         }
         let next_size = size(px(width as f32 * zoom), px(height as f32 * zoom));
-        let slot = if self.image_mode == 3 { 3 } else { index };
         let scroll = if self.image_mode == 3 {
             &self.comparison_scroll
         } else {
             &self.preview_scrolls[index]
         };
         let viewport = scroll.bounds().size;
-        let padding = self.preview_padding[slot]
-            .filter(|_| !self.fit)
+        let padding = view
+            .padding
+            .filter(|_| view.mode == ZoomMode::Manual)
             .map(|padding| point(padding.left, padding.top))
             .unwrap_or_else(|| {
                 point(
@@ -1053,16 +1163,17 @@ impl ResultsPanel {
                 (event.position.x - bounds.origin.x) * (next_size.width / bounds.size.width),
                 (event.position.y - bounds.origin.y) * (next_size.height / bounds.size.height),
             );
-        self.preview_padding = Default::default();
-        self.preview_padding[slot] = Some(gpui_kit::Edges {
-            left: anchored.x.max(px(0.)),
-            top: anchored.y.max(px(0.)),
-            right: (viewport.width - anchored.x - next_size.width).max(px(0.)),
-            bottom: (viewport.height - anchored.y - next_size.height).max(px(0.)),
-        });
+        self.preview_views[self.image_mode] = PreviewView {
+            mode: ZoomMode::Manual,
+            zoom,
+            padding: Some(gpui_kit::Edges {
+                left: anchored.x.max(px(0.)),
+                top: anchored.y.max(px(0.)),
+                right: (viewport.width - anchored.x - next_size.width).max(px(0.)),
+                bottom: (viewport.height - anchored.y - next_size.height).max(px(0.)),
+            }),
+        };
         scroll.set_offset(point(anchored.x.min(px(0.)), anchored.y.min(px(0.))));
-        self.fit = false;
-        self.zoom = zoom;
         self.pointer_guides.pan.borrow_mut().take();
         cx.notify();
     }
@@ -1084,15 +1195,20 @@ impl ResultsPanel {
         };
         let content = match &preview.result {
             Ok(image) => {
+                let view = self.preview_views[self.image_mode];
                 let (canvas_width, canvas_height) = self.preview_canvas_size(index);
-                let scroll = if self.image_mode == 3 && index < 2 {
+                let scroll = if self.image_mode == 3 {
                     &self.comparison_scroll
                 } else {
                     &self.preview_scrolls[index]
                 };
                 let display = div()
                     .id(("image-content", index))
-                    .role(Role::Group)
+                    .role(if self.image_mode == 3 {
+                        Role::Button
+                    } else {
+                        Role::Group
+                    })
                     .aria_label(format!("{} image canvas", preview.label))
                     .test_support()
                     .relative()
@@ -1105,16 +1221,30 @@ impl ResultsPanel {
                             .h(relative(image.height as f32 / canvas_height as f32))
                             .object_fit(ObjectFit::Contain),
                     )
-                    .cursor(if self.pointer_guides.pan.borrow().is_some() {
-                        CursorStyle::ClosedHand
-                    } else if !self.fit
-                        && (px(canvas_width as f32 * self.zoom) > scroll.bounds().size.width
-                            || px(canvas_height as f32 * self.zoom) > scroll.bounds().size.height)
-                    {
-                        CursorStyle::OpenHand
-                    } else {
-                        CursorStyle::Crosshair
-                    })
+                    .cursor(
+                        if self
+                            .pointer_guides
+                            .pan
+                            .borrow()
+                            .as_ref()
+                            .is_some_and(|pan| pan.horizontal || pan.vertical)
+                        {
+                            CursorStyle::ClosedHand
+                        } else if view.mode != ZoomMode::FitArea
+                            && self.pointer_guides.bounds[index]
+                                .get()
+                                .is_some_and(|bounds| {
+                                    bounds.size.width > scroll.bounds().size.width
+                                        || bounds.size.height > scroll.bounds().size.height
+                                })
+                        {
+                            CursorStyle::OpenHand
+                        } else if self.image_mode == 3 {
+                            CursorStyle::PointingHand
+                        } else {
+                            CursorStyle::Crosshair
+                        },
+                    )
                     .on_mouse_down(MouseButton::Left, {
                         let guides = self.pointer_guides.clone();
                         let scroll = scroll.clone();
@@ -1125,21 +1255,24 @@ impl ResultsPanel {
                             let viewport = scroll.bounds().size;
                             let horizontal = bounds.size.width > viewport.width;
                             let vertical = bounds.size.height > viewport.height;
-                            if !horizontal && !vertical {
-                                return;
-                            }
                             *guides.pan.borrow_mut() = Some(PreviewPan {
                                 position: event.position,
                                 offset: scroll.offset(),
                                 scroll: scroll.clone(),
                                 horizontal,
                                 vertical,
+                                dragged: false,
                             });
                             window.refresh();
                             window.prevent_default();
                             cx.stop_propagation();
                         }
                     })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if this.image_mode == 3 {
+                            this.select_image_mode(index, cx);
+                        }
+                    }))
                     .on_mouse_move({
                         let guides = self.pointer_guides.clone();
                         let layers = self.pointer_layers.clone();
@@ -1174,7 +1307,7 @@ impl ResultsPanel {
                             .size_full()
                             .child(self.pointer_layers[index].clone()),
                     );
-                let display = if self.fit {
+                let display = if view.mode == ZoomMode::FitArea {
                     div().size_full().child(
                         canvas(
                             move |bounds, window, cx| {
@@ -1202,12 +1335,19 @@ impl ResultsPanel {
                         )
                         .size_full(),
                     )
+                } else if view.mode == ZoomMode::FitWidth {
+                    div().w_full().flex().items_start().justify_center().child(
+                        display
+                            .w_full()
+                            .max_w(px(canvas_width as f32))
+                            .aspect_ratio(canvas_width as f32 / canvas_height as f32)
+                            .flex_shrink_0(),
+                    )
                 } else {
-                    let width = px(canvas_width as f32 * self.zoom);
-                    let height = px(canvas_height as f32 * self.zoom);
+                    let width = px(canvas_width as f32 * view.zoom);
+                    let height = px(canvas_height as f32 * view.zoom);
                     let display = display.w(width).h(height).flex_shrink_0();
-                    let slot = if self.image_mode == 3 { 3 } else { index };
-                    if let Some(padding) = self.preview_padding[slot] {
+                    if let Some(padding) = view.padding {
                         div()
                             .relative()
                             .w(width + padding.left + padding.right)
@@ -1319,6 +1459,7 @@ impl ResultsPanel {
     }
 
     fn render_comparison(&self, cx: &mut Context<Self>) -> AnyElement {
+        let view = self.preview_views[self.image_mode];
         let test = self.selected_report().and_then(|report| {
             self.capture
                 .and_then(|index| report.report.tests.get(index))
@@ -1337,8 +1478,10 @@ impl ResultsPanel {
                 .flex()
                 .size_full()
                 .gap_2()
-                .child(self.render_preview(0, cx))
-                .child(self.render_preview(1, cx))
+                .children(
+                    (0..self.comparison_preview_count())
+                        .map(|index| self.render_preview(index, cx)),
+                )
                 .into_any_element()
         } else {
             self.render_preview(self.image_mode, cx)
@@ -1473,10 +1616,7 @@ impl ResultsPanel {
                     .px_4()
                     .selected_index(self.image_mode)
                     .on_click(cx.listener(|this, index, _, cx| {
-                        this.image_mode = *index;
-                        this.pointer_guides.pan.borrow_mut().take();
-                        this.pointer_guides.active.set(None);
-                        cx.notify();
+                        this.select_image_mode(*index, cx);
                     }))
                     .child(Tab::new().label("Reference"))
                     .child(Tab::new().label("Current"))
@@ -1558,16 +1698,25 @@ impl ResultsPanel {
                     )
                     .child(div().flex_1())
                     .child(
-                        Checkbox::new("fit-image")
-                            .label("Fit area")
-                            .checked(self.fit)
+                        gpui_kit::component::button::ButtonGroup::new("image-fit-modes")
+                            .small()
                             .disabled(self.capture.is_none())
-                            .on_change(cx.listener(|this, value, _, cx| {
-                                this.fit = *value;
-                                this.preview_padding = Default::default();
-                                this.pointer_guides.pan.borrow_mut().take();
-                                cx.notify();
-                            })),
+                            .child(
+                                Button::new("fit-image")
+                                    .label("Fit area")
+                                    .selected(view.mode == ZoomMode::FitArea)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_zoom_mode(ZoomMode::FitArea, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("fit-width")
+                                    .label("Fit width")
+                                    .selected(view.mode == ZoomMode::FitWidth)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.set_zoom_mode(ZoomMode::FitWidth, cx);
+                                    })),
+                            ),
                     )
                     .child(
                         Button::new("zoom-out")
@@ -1584,11 +1733,11 @@ impl ResultsPanel {
                         div()
                             .id("zoom-value")
                             .role(Role::Status)
-                            .aria_label(format!("{:.0}%", self.zoom * 100.))
+                            .aria_label(format!("{:.0}%", view.zoom * 100.))
                             .test_support()
                             .w(px(48.))
                             .text_center()
-                            .child(format!("{:.0}%", self.zoom * 100.)),
+                            .child(format!("{:.0}%", view.zoom * 100.)),
                     )
                     .child(
                         Button::new("zoom-in")
@@ -1609,10 +1758,11 @@ impl ResultsPanel {
                             .accessibility_label("Actual size (100%)")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
-                                this.fit = false;
-                                this.preview_padding = Default::default();
+                                this.preview_views[this.image_mode] = PreviewView {
+                                    mode: ZoomMode::Manual,
+                                    ..Default::default()
+                                };
                                 this.pointer_guides.pan.borrow_mut().take();
-                                this.zoom = 1.0;
                                 cx.notify();
                             })),
                     ),

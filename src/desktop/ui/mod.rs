@@ -2459,6 +2459,8 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.results
+            .update(cx, |panel, cx| panel.set_visible(self.main_tab == 2, cx));
         let editor = if self.main_tab == 3 {
             self.git.clone().into_any_element()
         } else if self.main_tab == 2 {
