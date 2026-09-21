@@ -784,7 +784,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires a locally installed Chromium browser"]
+    #[ignore = "requires managed Chromium; run regressify install"]
     async fn selectors_resolve_text_xpath_shadow_dom_and_cross_origin_frames() -> Result<()> {
         use super::super::browser_tests::Site;
         use tiny_http::{Header, Response};
@@ -803,9 +803,7 @@ mod tests {
             );
         })?;
         let (mut browser, handler, directory) =
-            super::super::browsers::launch_browser(&None, "selectors", Default::default())
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
+            super::super::browser_tests::launch_browser("selectors", Default::default()).await?;
         let result: Result<()> = async {
             let page = browser.new_page(outer.origin.as_str()).await?;
             let runtime = Runtime::new(&browser, &page).await?;

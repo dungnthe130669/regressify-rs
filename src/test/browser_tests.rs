@@ -1,4 +1,5 @@
 use std::{
+    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -13,8 +14,18 @@ use crate::types::BasicAuth;
 
 use super::{
     authentication::Authentication,
-    browsers::{LaunchOptions, launch_browser},
+    browsers::{LaunchOptions, prepare_browser},
 };
+
+pub(crate) async fn launch_browser(
+    log_prefix: &str,
+    options: LaunchOptions,
+) -> Result<(chromiumoxide::Browser, tokio::task::JoinHandle<()>, PathBuf)> {
+    let executable = prepare_browser(Some(false)).await?;
+    super::browsers::launch_browser(&Some(executable), log_prefix, options)
+        .await
+        .map_err(|error| anyhow!("{error}"))
+}
 
 pub(crate) struct Site {
     pub origin: String,
@@ -93,7 +104,7 @@ fn auth_site(
 }
 
 #[tokio::test]
-#[ignore = "requires a locally installed Chromium browser"]
+#[ignore = "requires managed Chromium; run regressify install"]
 async fn basic_auth_is_origin_scoped_and_cancels_bad_credentials() -> Result<()> {
     let allowed = Arc::new(AtomicBool::new(false));
     let other_allowed = Arc::new(AtomicBool::new(false));
@@ -106,9 +117,7 @@ async fn basic_auth_is_origin_scoped_and_cancels_bad_credentials() -> Result<()>
     )?;
     let second = auth_site("Basic b3RoZXI6cGFzcw==", other_allowed.clone(), None)?;
     let (mut browser, handler, directory) =
-        launch_browser(&None, "fixture", LaunchOptions::default())
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
+        launch_browser("fixture", LaunchOptions::default()).await?;
     let result: Result<()> = async {
         let page = browser.new_page("about:blank").await?;
         let entries = [
@@ -211,13 +220,11 @@ fn interaction_page(request: Request) {
 }
 
 #[tokio::test]
-#[ignore = "requires a locally installed Chromium browser"]
+#[ignore = "requires managed Chromium; run regressify install"]
 async fn navigation_options_wait_for_load_and_network_idle() -> Result<()> {
     let site = Site::new(interaction_page)?;
     let (mut browser, handler, directory) =
-        launch_browser(&None, "navigation-options", LaunchOptions::default())
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
+        launch_browser("navigation-options", LaunchOptions::default()).await?;
     let result: Result<()> = async {
         let page = browser.new_page("about:blank").await?;
         let runtime = super::runtime::Runtime::new(&browser, &page).await?;
@@ -256,7 +263,7 @@ async fn navigation_options_wait_for_load_and_network_idle() -> Result<()> {
 }
 
 #[tokio::test]
-#[ignore = "requires a locally installed Chromium browser"]
+#[ignore = "requires managed Chromium; run regressify install"]
 async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()> {
     use super::{
         runtime::Runtime,
@@ -270,9 +277,7 @@ async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()>
     let inner = Site::new(interaction_page)?;
     let outer = Site::new(interaction_page)?;
     let (mut browser, handler, directory) =
-        launch_browser(&None, "interactions", LaunchOptions::default())
-            .await
-            .map_err(|error| anyhow!("{error}"))?;
+        launch_browser("interactions", LaunchOptions::default()).await?;
     let result: Result<()> = async {
         let page = browser.new_page("about:blank").await?;
         let runtime = Runtime::new(&browser, &page).await?;

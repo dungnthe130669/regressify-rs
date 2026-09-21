@@ -42,7 +42,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | Command    | Purpose                                                                                                                                                                                                                  |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `init`     | Create missing starter files, Rust-derived JSON schemas, and VS Code YAML/JSON associations; copy missing legacy `data/` files without deleting their sources. Existing files, including editor settings, are preserved. |
-| `install`  | Fetch the Chromium browser binary used by this CLI into the project download cache.                                                                                                                                      |
+| `install`  | Fetch managed Chromium into the per-user cache shared by all CLI and Desktop workspaces.                                                                                                                                 |
 | `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                                         |
 | `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved.                                                                      |
 | `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                               |
@@ -109,6 +109,41 @@ The command exits zero for website and visual results: navigation timeouts, miss
 ## Browser support
 
 The Rust CLI currently drives Chromium through the Chrome DevTools Protocol. `browser: chromium` is supported. `firefox` and `webkit` are rejected as configuration errors until browser backends are implemented.
+
+Both `ref` and `test` always use managed Chromium from a per-user cache shared by
+all workspaces and by CLI and Desktop runs. The Chromium revision is fixed by the
+fetcher shipped with Regressify, so
+use the same Regressify version across QA machines. A missing browser is downloaded
+automatically; an existing cached build is reused. Installed Chrome and Edge are
+never auto-detected, and a missing or invalid executable is an infrastructure
+error, not a reason to switch browsers.
+
+The shared cache locations are:
+
+- Windows: `%LOCALAPPDATA%\regressify\chromium`
+- macOS: `~/Library/Caches/regressify/chromium`
+- Linux: `$XDG_CACHE_HOME/regressify/chromium`, or `~/.cache/regressify/chromium`
+
+Builds are stored by platform and revision. An OS file lock serializes installation
+across processes, so concurrent workspace runs do not download or extract the same
+build simultaneously. Only browser binaries are shared; each scenario still uses
+its own temporary browser profile. Old workspace `download/` folders are no longer
+used and are not deleted automatically.
+
+For offline runs, install the managed build once for your user account, then
+disable downloads explicitly in any workspace:
+
+```powershell
+regressify install
+regressify ref --fetch-browser false
+regressify test --fetch-browser false
+```
+
+`--fetch-browser false` requires the expected cached Chromium revision and fails
+with an installation hint if it is missing. Omitting the flag or setting it to
+`true` permits downloading only when needed. `browser: chromium` chooses the
+supported engine; it is not an executable path override. Baselines captured with
+a different browser or revision may need to be regenerated and reviewed.
 
 ## Replacement profiles
 

@@ -18,7 +18,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:directories", "dep:tempfile", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:zip", "dep:keyring", "dep:zeroize"]
+desktop = ["local", "dep:yaml-edit", "dep:tempfile", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:zip", "dep:keyring", "dep:zeroize"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
@@ -31,7 +31,7 @@ clap = { version = "4", features = ["derive"] }
 colored = "3.0.0"
 command-group = { version = "5", optional = true }
 deunicode = "1.6.2"
-directories = { version = "6", optional = true }
+directories = "6"
 futures = "0.3.31"
 glob = "0.3.3"
 globset = "0.4"

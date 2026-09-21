@@ -244,7 +244,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires a locally installed Chromium browser"]
+    #[ignore = "requires managed Chromium; run regressify install"]
     async fn storage_is_restored_before_scripts_and_persisted_across_origins() -> Result<()> {
         use super::super::browser_tests::Site;
         use tiny_http::{Header, Response};
@@ -261,9 +261,7 @@ mod tests {
         let first = site()?;
         let second = site()?;
         let (mut browser, handler, directory) =
-            super::super::browsers::launch_browser(&None, "state", Default::default())
-                .await
-                .map_err(|error| anyhow!("{error}"))?;
+            super::super::browser_tests::launch_browser("state", Default::default()).await?;
         let result: Result<()> = async {
             let page = browser.new_page("about:blank").await?;
             let initial = Origins::from([(

@@ -20,7 +20,7 @@ use crate::{
     progress::{self, Event as ProgressEvent},
     snapshot,
     test::{
-        browsers::fetcher,
+        browsers::prepare_browser,
         capture,
         test_scenario::{
             ScenarioRequest, capture_progress_keys, collect_url_replacements, make_log_prefix,
@@ -1104,18 +1104,7 @@ pub async fn exec_test_suites(args: TestArgs) -> Result<()> {
     // model where pairs are scaffolded upfront and run independently.
     let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
 
-    let exe_path = if fetch_browser.unwrap_or(false) {
-        progress::emit(ProgressEvent::Phase {
-            name: "Installing Chromium".into(),
-        });
-        Some(
-            fetcher()
-                .await
-                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?,
-        )
-    } else {
-        None
-    };
+    let exe_path = Some(prepare_browser(fetch_browser).await?);
 
     // Run all scenarios across all suites with a global concurrency limit.
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);
@@ -1265,18 +1254,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
     let jobs = build_capture_jobs(&parsed_suites, workspace_config.as_ref(), &scenarios)?;
 
-    let exe_path = if fetch_browser.unwrap_or(false) {
-        progress::emit(ProgressEvent::Phase {
-            name: "Installing Chromium".into(),
-        });
-        Some(
-            fetcher()
-                .await
-                .map_err(|e| anyhow!("Failed to fetch the browser: {:?}", e))?,
-        )
-    } else {
-        None
-    };
+    let exe_path = Some(prepare_browser(fetch_browser).await?);
 
     // Run all scenarios across all suites with a global concurrency limit
     let limit = common::ASYNC_CAPTURE_LIMIT.get().copied().unwrap_or(5);

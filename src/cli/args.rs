@@ -61,7 +61,7 @@ pub struct SnapshotArgs {
 
 #[derive(clap::Args)]
 pub struct TestArgs {
-    /// Whether to fetch the browser before running tests
+    /// Download managed Chromium if missing (default: true); false requires cached Chromium
     #[clap(long)]
     pub fetch_browser: Option<bool>,
 
@@ -93,7 +93,7 @@ pub struct TestArgs {
 
 #[derive(clap::Args)]
 pub struct RefArgs {
-    /// Whether to fetch the browser before running tests
+    /// Download managed Chromium if missing (default: true); false requires cached Chromium
     #[clap(long)]
     pub fetch_browser: Option<bool>,
 
@@ -236,6 +236,38 @@ mod tests {
         percentage_parser, positive_u32_parser, positive_usize_parser, run_id_parser,
         site_env_parser, speed_parser,
     };
+
+    #[test]
+    fn capture_commands_accept_managed_browser_download_settings() {
+        use crate::cli::{Command, root::Cli};
+        use clap::Parser;
+
+        for command in ["ref", "test"] {
+            for (value, expected) in [
+                (None, None),
+                (Some("true"), Some(true)),
+                (Some("false"), Some(false)),
+            ] {
+                let mut arguments = vec!["regressify", command];
+                if let Some(value) = value {
+                    arguments.extend(["--fetch-browser", value]);
+                }
+                let actual = match Cli::try_parse_from(arguments).unwrap().command {
+                    Command::Ref(args) => args.fetch_browser,
+                    Command::Test(args) => args.fetch_browser,
+                    _ => panic!("Expected a capture command"),
+                };
+                assert_eq!(actual, expected);
+            }
+            let help = Cli::try_parse_from(["regressify", command, "--help"])
+                .err()
+                .unwrap()
+                .to_string();
+            let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(help.contains("default: true"));
+            assert!(help.contains("false requires cached Chromium"));
+        }
+    }
 
     #[test]
     fn scenario_selection_parser_preserves_exact_names_and_rejects_empty_parts() {

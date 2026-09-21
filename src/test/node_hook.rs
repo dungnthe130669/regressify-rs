@@ -76,7 +76,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires Chromium and npm install --prefix target/node-hooks playwright-core@1.59.1"]
+    #[ignore = "requires regressify install and npm install --prefix target/node-hooks playwright-core@1.59.1"]
     async fn node_hook_attaches_without_closing_browser_and_is_bounded() -> Result<()> {
         let packages = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/node-hooks");
         let workspace = tempfile::tempdir_in(packages)?;
@@ -87,9 +87,7 @@ mod tests {
         )?;
         validate(workspace.path(), "hook.cjs")?;
         let (mut browser, handler, directory) =
-            super::super::browsers::launch_browser(&None, "node-hook", Default::default())
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            super::super::browser_tests::launch_browser("node-hook", Default::default()).await?;
         let result: Result<()> = async {
             let page = browser.new_page("about:blank").await?;
             let payload = serde_json::json!({"script": hook, "endpoint": browser.websocket_address(),

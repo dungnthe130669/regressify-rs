@@ -95,7 +95,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "requires a locally installed Chromium browser"]
+    #[ignore = "requires managed Chromium; run regressify install"]
     async fn hooks_follow_navigation_once_and_propagate_script_errors() -> Result<()> {
         let site = super::super::browser_tests::Site::new(|request| {
             let _ = request.respond(
@@ -117,9 +117,7 @@ mod tests {
         };
         let hooks = DocumentHooks::load(workspace.path(), &TestScenario::default(), &config)?;
         let (mut browser, handler, directory) =
-            super::super::browsers::launch_browser(&None, "hooks", Default::default())
-                .await
-                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            super::super::browser_tests::launch_browser("hooks", Default::default()).await?;
         let result: Result<()> = async {
             let page = browser.new_page(site.origin.as_str()).await?;
             for path in ["/first", "/next"] {

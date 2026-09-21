@@ -615,6 +615,15 @@ Run settings is independent of the last command. Search the Environment & output
 Capture, Comparison, Report, Image optimization, and Diagnostics & network groups
 before running any action. Browser download has Auto/Always/Never choices;
 Compare after test controls whether a test capture is immediately compared.
+Auto (the default) and Always use the managed Chromium revision shipped with
+Regressify, downloading it only when missing from the shared per-user browser
+cache. On Windows this is `%LOCALAPPDATA%\regressify\chromium`; all workspaces and
+CLI runs reuse it. Concurrent installations are serialized with a file lock.
+Never uses that same cached build without downloading; run Install Chromium once
+if the shared cache is empty. Captures never auto-detect installed Chrome or Edge,
+and missing or invalid managed executables fail the run instead of switching
+browsers. Use the same Regressify version across QA machines and review baselines
+again when changing browser revisions.
 Invalid settings block only commands that use them. Other drafts stay visible
 and retained, and unrelated options are omitted from the execution request.
 
@@ -830,9 +839,9 @@ In PowerShell 7 on an interactive Windows desktop:
 
 Add `-Capture` to run direct reference capture, stop a test, rerun the test, and
 open the completed results for three local fixture scenarios across two suites.
-An installed Chromium browser is required; the script asserts live pass counts
-and capture metadata. This uses local HTML only and does not contact an external
-test website or download a browser.
+The fixture reuses the shared managed Chromium cache, downloading the browser only
+if needed. The script asserts live pass counts and capture metadata. Test pages
+use local HTML only and do not contact an external test website.
 
 Use `./ci/desktop-smoke.ps1 -ScenarioFlows` for focused scenario acceptance. It
 implies capture, creates suite references, selects and runs only Checkout,

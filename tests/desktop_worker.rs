@@ -14,6 +14,90 @@ fn invoke(executable: &Path, request: &RunRequest) -> Output {
 }
 
 #[test]
+#[ignore = "requires managed Chromium; run regressify install"]
+fn capture_workspaces_share_managed_chromium() {
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let shared_cache = directories::BaseDirs::new()
+        .unwrap()
+        .cache_dir()
+        .join("regressify/chromium");
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let mut selected_browser = None;
+    let page = "data:text/html,<body style='background:rgb(24,128,100)'><div id='not-select' style='height:64px'>Managed Chromium</div></body>";
+    let suite = serde_json::json!({
+        "id": "managed",
+        "postInteractionWait": 0,
+        "scenarios": [
+            {"id": "passing", "label": "passing", "url": page, "delay": 0, "noScrollTop": true},
+            {"id": "failing", "label": "failing", "url": page, "delay": 0, "noScrollTop": true,
+             "actions": [{"select": "#not-select", "value": "missing"}]}
+        ]
+    });
+    for (index, workspace) in [&first, &second].into_iter().enumerate() {
+        let suites = workspace.path().join("visual_tests");
+        std::fs::create_dir_all(&suites).unwrap();
+        std::fs::write(
+            suites.join("managed.tests.json"),
+            serde_json::to_vec(&suite).unwrap(),
+        )
+        .unwrap();
+        for (command, run_id) in [
+            (RunCommand::Reference, "shared-reference"),
+            (RunCommand::Test, "shared-test"),
+        ] {
+            let request = RunRequest {
+                root: workspace.path().into(),
+                command,
+                options: RunOptions {
+                    suites: vec!["managed".into()],
+                    run_id: run_id.into(),
+                    fetch_browser: (index == 1).then_some(false),
+                    async_capture_limit: 1,
+                    async_capture_ramp_ms: 0,
+                    ..Default::default()
+                },
+            };
+            let output = invoke(executable, &request);
+            let log = format!(
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(output.status.success(), "{log}");
+            let browser = log
+                .lines()
+                .find_map(|line| line.strip_prefix("Managed Chromium executable: "))
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| panic!("Missing managed browser path: {log}"));
+            assert!(browser.starts_with(&shared_cache), "{}", browser.display());
+            assert!(browser.is_file());
+            assert_eq!(selected_browser.get_or_insert(browser.clone()), &browser);
+            assert!(!workspace.path().join("download").exists());
+        }
+        let artifacts = workspace.path().join(".regressify/managed");
+        let references: Vec<_> = std::fs::read_dir(artifacts.join("bitmaps_reference"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "png"))
+            .collect();
+        assert!(!references.is_empty());
+        assert!(references.iter().all(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("passing")
+        }));
+        assert!(
+            walkdir::WalkDir::new(artifacts.join("bitmaps_test/shared-test"))
+                .into_iter()
+                .map(|entry| entry.unwrap())
+                .any(|entry| entry.file_name().to_string_lossy().ends_with(".error.json"))
+        );
+    }
+}
+
+#[test]
 fn deploy_missing_token_fails_before_snapshot_modifies_output() {
     use regressify::desktop::deployment::{DeployTarget, DeploymentJob};
     let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));

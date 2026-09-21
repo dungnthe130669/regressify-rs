@@ -1,11 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::anyhow;
+use anyhow::{Context, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use chromiumoxide::{
     Browser, BrowserConfig,
-    fetcher::{BrowserFetcher, BrowserFetcherOptions},
+    fetcher::{BrowserFetcher, BrowserFetcherOptions, BrowserKind, BrowserVersion},
     handler::viewport::Viewport,
 };
 use futures::StreamExt;
@@ -13,7 +13,8 @@ use tokio::task::JoinHandle;
 
 use crate::{
     common,
-    helpers::{OnceLockBoolExtensions, OnceLockExtensions},
+    helpers::OnceLockBoolExtensions,
+    progress::{self, Event as ProgressEvent},
 };
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -23,55 +24,122 @@ pub struct LaunchOptions {
 }
 
 pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let work_dir = common::ROOT_DIR.get_required()?;
+    Ok(prepare_browser(Some(true)).await?)
+}
 
-    let download_path = work_dir.join("download");
-    tokio::fs::create_dir_all(&download_path).await?;
+fn browser_cache_dir() -> anyhow::Result<PathBuf> {
+    directories::BaseDirs::new()
+        .map(|directories| directories.cache_dir().join("regressify/chromium"))
+        .ok_or_else(|| anyhow!("Cannot determine the shared Chromium cache directory"))
+}
+
+fn managed_browser(cache_dir: &Path) -> anyhow::Result<(BrowserFetcher, PathBuf)> {
+    let version = BrowserVersion::current(BrowserKind::Chromium);
+    let BrowserVersion::Revision(revision) = version else {
+        return Err(anyhow!(
+            "Managed Chromium requires a fixed browser revision"
+        ));
+    };
     let fetcher = BrowserFetcher::new(
         BrowserFetcherOptions::builder()
-            .with_path(&download_path)
+            .with_path(cache_dir)
+            .with_kind(BrowserKind::Chromium)
+            .with_version(version)
             .build()?,
     );
-    let info = fetcher.fetch().await?;
-    let exe = &info.executable_path;
+    let (platform, executable) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => ("linux", "chrome-linux/chrome"),
+        ("macos", "x86_64") => ("mac", "chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        ("macos", "aarch64") => ("mac_arm", "chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
+        ("windows", "x86") => ("win32", "chrome-win/chrome.exe"),
+        ("windows", "x86_64" | "aarch64") => ("win64", "chrome-win/chrome.exe"),
+        (os, arch) => return Err(anyhow!("Managed Chromium is not supported on {os}/{arch}")),
+    };
+    let executable = cache_dir
+        .join(format!("{platform}-{revision}"))
+        .join(executable);
+    Ok((fetcher, executable))
+}
 
-    if !exe.exists() {
-        return Err(anyhow!(
-            "Fetched browser executable does not exist: {}",
-            exe.display()
-        )
-        .into());
+async fn lock_browser_cache(cache_dir: &Path) -> anyhow::Result<std::fs::File> {
+    let lock_path = cache_dir.join(".install.lock");
+    tokio::task::spawn_blocking(move || {
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .with_context(|| {
+                format!(
+                    "Cannot open shared Chromium cache lock: {}",
+                    lock_path.display()
+                )
+            })?;
+        lock.lock()
+            .context("Cannot lock the shared Chromium cache")?;
+        Ok::<_, anyhow::Error>(lock)
+    })
+    .await?
+}
+
+pub(super) async fn prepare_browser(fetch_browser: Option<bool>) -> anyhow::Result<PathBuf> {
+    prepare_browser_in(&browser_cache_dir()?, fetch_browser).await
+}
+
+async fn prepare_browser_in(
+    cache_dir: &Path,
+    fetch_browser: Option<bool>,
+) -> anyhow::Result<PathBuf> {
+    let (fetcher, cached_executable) = managed_browser(cache_dir)?;
+    if fetch_browser == Some(false) && !cached_executable.is_file() {
+        return resolve_executable(&Some(cached_executable));
     }
+    tokio::fs::create_dir_all(cache_dir).await?;
+    let _cache_lock = lock_browser_cache(cache_dir).await?;
+    let executable = if fetch_browser.unwrap_or(true) {
+        if !cached_executable.is_file() {
+            progress::emit(ProgressEvent::Phase {
+                name: "Installing Chromium".into(),
+            });
+        }
+        fetcher
+            .fetch()
+            .await
+            .map_err(|error| anyhow!("Failed to fetch managed Chromium: {error}"))?
+            .executable_path
+    } else {
+        cached_executable
+    };
+    let exe = resolve_executable(&Some(executable))?;
 
     // Ensure the binary is executable on Unix
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let metadata = std::fs::metadata(exe)?;
+        let metadata = std::fs::metadata(&exe)?;
         let perms = metadata.permissions();
         if perms.mode() & 0o111 == 0 {
             crate::progress::scenario_log!("Fixing executable permissions for: {}", exe.display());
-            std::fs::set_permissions(exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;
+            std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;
         }
     }
 
-    crate::progress::scenario_log!("Browser executable: {}", exe.display());
-    Ok(info.executable_path)
+    crate::progress::scenario_log!("Managed Chromium executable: {}", exe.display());
+    Ok(exe)
 }
 
-/// Resolve a valid Chrome/Chromium executable path.
-/// If `exe_path` is provided but missing on disk, falls back to auto-detection.
-fn resolve_executable(exe_path: &Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(path) = exe_path {
-        if path.exists() {
-            return Some(path.clone());
-        }
-        crate::progress::scenario_log!(
-            "Warning: provided browser path does not exist: {}. Falling back to auto-detection.",
+fn resolve_executable(exe_path: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    let path = exe_path.as_ref().ok_or_else(|| {
+        anyhow!("Managed Chromium executable was not selected. Run 'regressify install' before capturing.")
+    })?;
+    if !path.is_file() {
+        return Err(anyhow!(
+            "Managed Chromium executable is missing or is not a file: {}. Run 'regressify install' to repair the browser cache.",
             path.display()
-        );
+        ));
     }
-    None
+    Ok(path.clone())
 }
 
 const MAX_LAUNCH_RETRIES: u32 = 2;
@@ -83,12 +151,8 @@ pub async fn launch_browser(
 ) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
     let debug = (common::DEBUG.get_bool() || options.debug) && !common::is_ci();
 
-    let mut config_builder = BrowserConfig::builder();
-
-    let resolved = resolve_executable(exe_path);
-    if let Some(ref resolved) = resolved {
-        config_builder = config_builder.chrome_executable(resolved);
-    }
+    let resolved = resolve_executable(exe_path)?;
+    let mut config_builder = BrowserConfig::builder().chrome_executable(&resolved);
 
     if debug {
         config_builder = config_builder.with_head();
@@ -167,15 +231,11 @@ pub async fn launch_browser(
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
-    if let Some(ref path) = resolved {
-        crate::progress::scenario_log!(
-            "{} Launching browser (executable: {})...",
-            log_prefix,
-            path.display()
-        );
-    } else {
-        crate::progress::scenario_log!("{} Launching browser (auto-detected)...", log_prefix);
-    }
+    crate::progress::scenario_log!(
+        "{} Launching Chromium (executable: {})...",
+        log_prefix,
+        resolved.display()
+    );
 
     let mut last_err = None;
     for attempt in 1..=MAX_LAUNCH_RETRIES {
@@ -224,4 +284,116 @@ pub async fn launch_browser(
         last_err,
     )
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        browser_cache_dir, lock_browser_cache, managed_browser, prepare_browser_in,
+        resolve_executable,
+    };
+
+    #[test]
+    fn managed_chromium_uses_the_os_user_cache() {
+        let directories = directories::BaseDirs::new().unwrap();
+        assert_eq!(
+            browser_cache_dir().unwrap(),
+            directories.cache_dir().join("regressify/chromium")
+        );
+        assert!(browser_cache_dir().unwrap().is_absolute());
+    }
+
+    #[tokio::test]
+    async fn shared_browser_cache_lock_is_exclusive_and_released() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = lock_browser_cache(directory.path()).await.unwrap();
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(directory.path().join(".install.lock"))
+            .unwrap();
+        assert!(contender.try_lock().is_err());
+        drop(lock);
+        contender.try_lock().unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_download_settings_use_the_same_managed_chromium() {
+        let directory = tempfile::tempdir().unwrap();
+        let (fetcher, executable) = managed_browser(directory.path()).unwrap();
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "cached Chromium fixture").unwrap();
+        assert_eq!(fetcher.fetch().await.unwrap().executable_path, executable);
+
+        let (automatic, enabled, disabled) = tokio::join!(
+            prepare_browser_in(directory.path(), None),
+            prepare_browser_in(directory.path(), Some(true)),
+            prepare_browser_in(directory.path(), Some(false)),
+        );
+        for result in [automatic, enabled, disabled] {
+            assert_eq!(result.unwrap(), executable);
+        }
+        assert_eq!(
+            std::fs::read_to_string(executable).unwrap(),
+            "cached Chromium fixture"
+        );
+    }
+
+    #[tokio::test]
+    async fn downloads_disabled_requires_the_pinned_cached_browser() {
+        let directory = tempfile::tempdir().unwrap();
+        let (_, executable) = managed_browser(directory.path()).unwrap();
+        let error = prepare_browser_in(directory.path(), Some(false))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&executable.display().to_string()));
+        assert!(error.contains("regressify install"));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+
+        let stale = directory.path().join("stale-build/chrome.exe");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(stale, "wrong revision").unwrap();
+        assert!(
+            prepare_browser_in(directory.path(), Some(false))
+                .await
+                .is_err()
+        );
+
+        std::fs::create_dir_all(executable).unwrap();
+        assert!(
+            prepare_browser_in(directory.path(), Some(false))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn browser_launch_requires_an_explicit_executable() {
+        let error = resolve_executable(&None).unwrap_err().to_string();
+        assert!(error.contains("Managed Chromium executable was not selected"));
+        assert!(error.contains("regressify install"));
+    }
+
+    #[test]
+    fn browser_launch_rejects_missing_executables_and_directories() {
+        let directory = tempfile::tempdir().unwrap();
+        for path in [
+            directory.path().join("missing.exe"),
+            directory.path().to_path_buf(),
+        ] {
+            let error = resolve_executable(&Some(path.clone()))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&path.display().to_string()));
+            assert!(error.contains("regressify install"));
+        }
+    }
+
+    #[test]
+    fn browser_launch_preserves_the_selected_executable() {
+        let executable = tempfile::NamedTempFile::new().unwrap();
+        let path = executable.path().to_path_buf();
+        assert_eq!(resolve_executable(&Some(path.clone())).unwrap(), path);
+    }
 }

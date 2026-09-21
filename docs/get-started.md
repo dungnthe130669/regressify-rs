@@ -30,7 +30,7 @@ Please follow the instructions on this page exactly. Testers sometimes use other
 Before you begin, make sure you have the following programs installed on your system:
 
 - [Rust][rust] - latest stable toolchain
-- Chromium, Chrome, or Microsoft Edge available on the machine, unless you use `--fetch-browser true`
+- Network access for the first managed Chromium download. All workspaces share a per-user browser cache; `regressify install` can populate it ahead of offline runs. Installed Chrome and Edge are not used.
 - [Git][git]
 - [Visual Studio Code][vs-code] - Latest version
 
