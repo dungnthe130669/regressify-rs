@@ -2179,7 +2179,7 @@ impl Workbench {
                     .justify_between()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .px_5()
+                    .px_4()
                     .bg(cx.theme().muted.opacity(0.45))
                     .child(
                         TabBar::new("editor-tabs")

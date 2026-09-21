@@ -210,6 +210,12 @@ rules are rejected instead of silently publishing unprotected reports on Netlify
 Configure access protection in Netlify itself for private reports. Both providers
 retain the 30-minute deadline and keep tokens out of URLs and logs.
 
+Both providers send `X-Robots-Tag: noindex,nofollow,nocache,nosnippet,noarchive`
+for all report URLs. Snapshots include a Netlify `_headers` file matching the SWA
+global headers, asset caching rules, and content types; it is included in deployment
+automatically. These directives ask search engines not to index reports, but do
+not restrict access to them.
+
 The last selected target is remembered per workspace, and removing a target
 requires confirmation. Deploy and target management are also available from the
 command palette. Progress, the deployed site URL, and Open Site appear in Runs.

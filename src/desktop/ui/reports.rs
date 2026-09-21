@@ -1198,6 +1198,7 @@ impl ResultsPanel {
             .child(
                 TabBar::new("image-modes")
                     .underline()
+                    .px_4()
                     .selected_index(self.image_mode)
                     .on_click(cx.listener(|this, index, _, cx| {
                         this.image_mode = *index;

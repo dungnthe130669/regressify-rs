@@ -528,6 +528,7 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "script.js",
         "index_bundle.js",
         "staticwebapp.config.json",
+        "_headers",
         "diff.js",
         "diverged.js",
         "divergedWorker.js",

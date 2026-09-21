@@ -271,10 +271,15 @@ impl Workbench {
                     .child(Button::new("deploy-target-save").primary().icon(gpui_kit::assets::IconName::Save).label("Save target").disabled(saving)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.save_deploy_target(window, cx)))));
             } else {
-                body = body.child(div().text_sm().child(selected.map(|target| format!("{} | {}", match target.provider {
+                body = body.child(div().flex().items_center().gap_2()
+                    .child(div().flex_1().min_w_0().text_sm().child(selected.map(|target| format!("{} | {}", match target.provider {
                     DeploymentProvider::AzureSwa => if target.environment.is_empty() { "Production".into() } else { target.environment.clone() },
                     DeploymentProvider::Netlify => format!("Production | {}", target.site_id),
-                }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()));
+                }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()))
+                    .when(selected.is_some_and(|target| target.credential_id.is_none()), |row| row.child(
+                        Button::new("deploy-add-token").small().icon(gpui_kit::assets::IconName::Pencil).label("Add token")
+                            .accessibility_label("Add deployment token").disabled(saving)
+                            .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))));
                 body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
                 body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
                     .children(state.intent.iter().flat_map(|intent| intent.suite_names.iter()).map(|name| div().truncate().child(name.clone()))));
@@ -300,6 +305,7 @@ impl Workbench {
                     })))
                     .child(Button::new("deploy-confirm").primary().icon(gpui_kit::assets::IconName::CloudUpload).label("Deploy")
                         .accessibility_label("Deploy selected reports")
+                        .when(selected.is_some_and(|target| target.credential_id.is_none()), |button| button.tooltip("Deployment token required"))
                         .disabled(!state.can_deploy()).on_click(window.listener_for(&view, |this, _, window, cx| this.begin_deployment(window, cx)))))
         });
     }
@@ -859,7 +865,7 @@ mod tests {
                         targets: vec![DeployTarget {
                             id: "qa".into(),
                             name: "QA".into(),
-                            credential_id: Some(uuid::Uuid::new_v4().to_string()),
+                            credential_id: None,
                             environment: String::new(),
                             provider: Default::default(),
                             site_id: String::new(),
@@ -873,7 +879,7 @@ mod tests {
                     state.partial = true;
                     assert!(!state.can_deploy());
                     state.confirmed = true;
-                    assert!(state.can_deploy());
+                    assert!(!state.can_deploy());
                     state.confirmed = false;
                     cx.notify();
                 });
@@ -894,10 +900,25 @@ mod tests {
             window.click("deploy-confirm", cx);
             assert!(!view.read(cx).runs.read(cx).running());
             window.click("deploy-confirm-subset", cx);
+            window.render_frame(cx);
+            assert!(!view.read(cx).deployment.read(cx).can_deploy());
+            assert!(window.try_find("deploy-add-token").is_some());
+            window.click("deploy-add-token", cx);
+            window.render_frame(cx);
+            assert!(view.read(cx).deployment.read(cx).editing);
+            assert!(!view.read(cx).deployment.read(cx).can_deploy());
+            window.click("deploy-token", cx);
+            window.input(&format!("{}-{}000", "a".repeat(64), "b".repeat(36)), cx);
+            window.click("deploy-target-save", cx);
         })
         .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).deployment.read(cx).can_deploy()
+        })
+        .await;
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
+            assert!(window.try_find("deploy-add-token").is_none());
             window.click("deploy-confirm", cx);
         })
         .unwrap();
@@ -909,6 +930,11 @@ mod tests {
             window.click("guard-cancel", cx);
             assert!(view.read(cx).unsaved());
             assert!(!view.read(cx).runs.read(cx).running());
+            let state = view.read(cx).deployment.read(cx);
+            let mut settings = state.settings.clone();
+            settings
+                .remove_target(root.path(), state.path.as_ref().unwrap(), "qa")
+                .unwrap();
         })
         .unwrap();
     }

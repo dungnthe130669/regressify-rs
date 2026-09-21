@@ -21,6 +21,7 @@
   "globalHeaders": {
     "Access-Control-Max-Age": "86400",
     "Cross-Origin-Opener-Policy": "same-origin",
-    "Vary": "Origin"
+    "Vary": "Origin",
+    "X-Robots-Tag": "noindex,nofollow,nocache,nosnippet,noarchive"
   }
 }

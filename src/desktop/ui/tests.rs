@@ -2814,6 +2814,133 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
 }
 
 #[gpui_kit::test]
+async fn overview_suite_columns_align_with_headers_at_both_sizes(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let captures = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/layout-run");
+        let references = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_reference");
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::create_dir_all(&references).unwrap();
+        std::fs::write(captures.join("home.png"), &png).unwrap();
+        std::fs::write(references.join("home.png"), &png).unwrap();
+        std::fs::write(
+            captures.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": [{"status": "pass", "pair": {"label": "Home"}}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("without-saved-reports")
+                    .unwrap();
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+                this.overview = true;
+                this.runs
+                    .update(cx, |panel, cx| panel.refresh_artifacts(cx));
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).runs.read(cx).can_open_saved_suite("ui-test")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            for dark in [false, true] {
+                super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                let suite_count = view.read(cx).session.suites.len();
+                assert_eq!(suite_count, 2);
+                let mut report_buttons = 0;
+                for index in 0..suite_count {
+                    for (heading, cell) in [
+                        ("overview-scenarios-header", "overview-scenarios"),
+                        ("overview-status-header", "overview-status"),
+                        ("overview-suite-header", "overview-suite"),
+                        ("overview-actions-header", "overview-actions"),
+                    ] {
+                        let header = window.find(heading).bounds();
+                        let value = window.find((cell, index)).bounds();
+                        assert_eq!(value.left(), header.left(), "Misaligned {heading}");
+                        assert_eq!(
+                            value.size.width, header.size.width,
+                            "Unequal {heading} width"
+                        );
+                    }
+                    let actions = window.find(("overview-actions", index)).bounds();
+                    let edit = window.find(("overview-edit", index)).bounds();
+                    assert!(edit.left() >= actions.left());
+                    assert!(edit.right() <= actions.right());
+                    if let Some(report) = window.try_find(("overview-report", index)) {
+                        report_buttons += 1;
+                        let report = report.bounds();
+                        assert!(report.left() >= actions.left());
+                        assert!(report.right() <= edit.left());
+                    }
+                }
+                assert_eq!(report_buttons, 1);
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn panel_tabs_align_with_content_at_both_window_sizes(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        for dark in [false, true] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                window.within("workbench-tabs").click(0_usize, cx);
+                assert_eq!(
+                    window.within("editor-tabs").find(0_usize).bounds().left(),
+                    window.find("editor-heading").bounds().left(),
+                    "Editor tabs must align with the heading"
+                );
+                window.within("workbench-tabs").click(1_usize, cx);
+                assert_eq!(
+                    window.within("run-tabs").find(0_usize).bounds().left(),
+                    window.find("run-scope").bounds().left(),
+                    "Run tabs must align with the command controls"
+                );
+                window.within("workbench-tabs").click(2_usize, cx);
+                for mode in 0_usize..4 {
+                    window.within("image-modes").click(mode, cx);
+                    let first = window.within("image-modes").find(0_usize).bounds();
+                    let last = window.within("image-modes").find(3_usize).bounds();
+                    let comparison = window.find("comparison-view").bounds();
+                    assert_eq!(
+                        first.left(),
+                        window.find("capture-heading").bounds().left(),
+                        "Comparison tabs must align with the capture heading"
+                    );
+                    assert!(first.left() > comparison.left());
+                    assert!(last.right() <= comparison.right());
+                }
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn layout_and_view_shortcuts_preserve_the_open_draft(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
@@ -3939,6 +4066,10 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         assert!(window.find(("image-details", 0_usize)).visible());
         assert!(window.find(("image-details", 1_usize)).visible());
         assert_eq!(window.find("capture-heading").label(), Some("Home"));
+        assert_eq!(
+            window.within("image-modes").find(0_usize).bounds().left(),
+            window.find("capture-heading").bounds().left()
+        );
         assert!(window.find("capture-list").visible());
         let navigator = window.find("workspace-navigation").bounds();
         let captures = window.find("capture-list").bounds();

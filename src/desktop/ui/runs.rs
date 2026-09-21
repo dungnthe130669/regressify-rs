@@ -1501,6 +1501,7 @@ impl Render for RunPanel {
             .child(
                 TabBar::new("run-tabs")
                     .underline()
+                    .px_4()
                     .selected_index(self.tab)
                     .on_click(cx.listener(|this, index, _, cx| {
                         this.tab = *index;

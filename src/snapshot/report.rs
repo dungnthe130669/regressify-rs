@@ -84,6 +84,8 @@ pub fn generate_html_report_summary(
     let swa_config_path = regressify_dir.join("staticwebapp.config.json");
     write_file_atomically(&swa_config_path, swa_config)?;
 
+    write_shared_file(regressify_dir, "_headers", include_bytes!("data/_headers"))?;
+
     Ok(())
 }
 
@@ -195,6 +197,78 @@ pub fn write_shared_file(regressify_dir: &Path, file_name: &str, content: &[u8])
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netlify_headers_match_azure_configuration() {
+        use std::collections::BTreeMap;
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut tera = tera::Tera::default();
+        tera.add_raw_template("report_template.html", "<html>{{ title }}</html>")
+            .unwrap();
+        let args = SnapshotArgs {
+            test_suite: Vec::new(),
+            title: "Report".into(),
+            heading: "Summary".into(),
+            subheading: String::new(),
+        };
+        std::fs::write(directory.path().join("_headers"), "stale policy").unwrap();
+        generate_html_report_summary(directory.path(), &tera, &[], &args).unwrap();
+
+        let config: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(directory.path().join("staticwebapp.config.json")).unwrap(),
+        )
+        .unwrap();
+        let mut expected = BTreeMap::<String, BTreeMap<String, String>>::new();
+        expected.insert(
+            "/*".to_owned(),
+            serde_json::from_value(config["globalHeaders"].clone()).unwrap(),
+        );
+        for route in config["routes"].as_array().unwrap() {
+            let extensions = route["route"]
+                .as_str()
+                .unwrap()
+                .strip_prefix("/*.{")
+                .unwrap()
+                .strip_suffix('}')
+                .unwrap();
+            for extension in extensions.split(',') {
+                expected.insert(
+                    format!("/*.{extension}"),
+                    serde_json::from_value(route["headers"].clone()).unwrap(),
+                );
+            }
+        }
+        for (extension, mime_type) in config["mimeTypes"].as_object().unwrap() {
+            expected
+                .entry(format!("/*{extension}"))
+                .or_default()
+                .insert(
+                    "Content-Type".to_owned(),
+                    mime_type.as_str().unwrap().to_owned(),
+                );
+        }
+
+        let headers = std::fs::read_to_string(directory.path().join("_headers"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let actual = headers
+            .trim()
+            .split("\n\n")
+            .map(|block| {
+                let mut lines = block.lines();
+                let path = lines.next().unwrap().to_owned();
+                let headers = lines
+                    .map(|line| {
+                        let (name, value) = line.trim().split_once(": ").unwrap();
+                        (name.to_owned(), value.to_owned())
+                    })
+                    .collect();
+                (path, headers)
+            })
+            .collect::<BTreeMap<_, BTreeMap<_, _>>>();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn shared_report_files_replace_existing_content_atomically() {

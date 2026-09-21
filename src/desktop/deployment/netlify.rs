@@ -277,7 +277,7 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::{
-        io::Cursor,
+        io::{Cursor, Read},
         sync::{
             Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
@@ -347,10 +347,26 @@ mod tests {
             };
             let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
         })?;
-        let root = tempfile::tempdir()?;
-        std::fs::write(root.path().join("index.html"), "report")?;
+        let directory = tempfile::tempdir()?;
+        let output = directory.path().join("output");
+        std::fs::create_dir_all(output.join("one/html_report"))?;
+        std::fs::write(output.join("index.html"), "report")?;
+        std::fs::write(output.join("one/html_report/index.html"), "suite report")?;
+        let report = json!({"id": "one", "tests": []});
+        std::fs::write(
+            output.join("one/html_report/config.js"),
+            format!("report({report});"),
+        )?;
+        let headers = include_str!("../../snapshot/data/_headers");
+        std::fs::write(output.join("_headers"), headers)?;
+        std::fs::write(
+            output.join("staticwebapp.config.json"),
+            include_bytes!("../../snapshot/data/staticwebapp.config.json"),
+        )?;
+        let root = directory.path().join("publish");
+        super::super::stage_reports(&output, &["one".into()], &root)?;
         assert_eq!(
-            client(&site.origin).deploy(root.path(), &target()).await?,
+            client(&site.origin).deploy(&root, &target()).await?,
             "https://qa-reports.netlify.app/"
         );
         assert_eq!(reads.load(Ordering::SeqCst), 2);
@@ -364,6 +380,11 @@ mod tests {
         assert_eq!(uploads[0].2.as_deref(), Some("application/zip"));
         let mut zip = zip::ZipArchive::new(Cursor::new(&uploads[0].3))?;
         assert_eq!(zip.by_name("index.html")?.size(), 6);
+        assert_eq!(zip.by_name("one/html_report/index.html")?.size(), 12);
+        let mut uploaded_headers = String::new();
+        zip.by_name("_headers")?
+            .read_to_string(&mut uploaded_headers)?;
+        assert_eq!(uploaded_headers, headers);
         assert!(
             records
                 .iter()
