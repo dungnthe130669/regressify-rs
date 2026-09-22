@@ -1892,7 +1892,7 @@ public static class RegressifySmokeShortcut {
         if ([Math]::Abs($line.Top - $description.Top) -gt $tolerance -or [Math]::Abs($severity.Top - $description.Top) -gt $tolerance) {
             throw 'The issue line link or severity dot is not aligned with the first description line.'
         }
-        if ([Math]::Abs($line.Left - $headers[0].Left) -gt $tolerance -or [Math]::Abs($severity.Left - $headers[1].Left) -gt $tolerance -or [Math]::Abs($description.Left - $headers[2].Left) -gt $tolerance) {
+        if ([Math]::Abs(($line.Left + $line.Width / 2) - ($headers[0].Left + $headers[0].Width / 2)) -gt $tolerance -or [Math]::Abs(($severity.Left + $severity.Width / 2) - ($headers[1].Left + $headers[1].Width / 2)) -gt $tolerance -or [Math]::Abs($description.Left - $headers[2].Left) -gt $tolerance) {
             throw 'The source issue columns do not line up with their headers.'
         }
         if ($headers[0].Right -gt $headers[1].Left -or $headers[1].Right -gt $headers[2].Left -or $line.Right -gt $severity.Left -or $severity.Right -gt $description.Left -or $description.Right -gt $table.Right + $tolerance) {
@@ -1903,8 +1903,8 @@ public static class RegressifySmokeShortcut {
         if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$windowBounds)) { throw 'Cannot locate the source issue screenshot.' }
         $bitmap = [System.Drawing.Bitmap]::new((Join-Path $artifacts ($CaptureName + '.png')))
         try {
-            $color = $bitmap.GetPixel([int]($severity.Left - $windowBounds.Left + 4 * $scale), [int]($severity.Top - $windowBounds.Top + $severity.Height / 2))
-            if ($color.R -le $color.G * 1.2 -or $color.R -le $color.B * 1.1) { throw 'The error severity indicator is not a visible red dot.' }
+            $color = $bitmap.GetPixel([int]($severity.Left - $windowBounds.Left + $severity.Width / 2), [int]($severity.Top - $windowBounds.Top + $severity.Height / 2))
+            if ($color.R -le $color.G * 1.2 -or $color.R -le $color.B * 1.1) { throw 'The error severity indicator is not a centered red dot.' }
         } finally { $bitmap.Dispose() }
         Scroll-SchemaIssues -Bottom
         Wait-WindowState {

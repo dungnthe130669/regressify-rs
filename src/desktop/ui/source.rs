@@ -413,6 +413,8 @@ impl Workbench {
                             .role(Role::Cell)
                             .w(px(64.))
                             .flex_shrink_0()
+                            .flex()
+                            .justify_center()
                             .child(
                                 Button::new(("source-diagnostic", index))
                                     .ghost()
@@ -444,7 +446,15 @@ impl Workbench {
                             .flex_shrink_0()
                             .flex()
                             .items_center()
-                            .child(div().size(px(8.)).rounded_full().bg(color)),
+                            .justify_center()
+                            .child(
+                                div()
+                                    .id(("source-diagnostic-dot", index))
+                                    .test_support()
+                                    .size(px(8.))
+                                    .rounded_full()
+                                    .bg(color),
+                            ),
                     )
                     .child(
                         div()
@@ -513,6 +523,7 @@ impl Workbench {
                                         .test_support()
                                         .w(px(width))
                                         .flex_shrink_0()
+                                        .text_center()
                                         .child(label)
                                 }))
                                 .child(

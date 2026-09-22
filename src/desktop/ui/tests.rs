@@ -680,6 +680,7 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                     let text = window.find(("source-diagnostic-message", index)).bounds();
                     let jump = window.find(("source-diagnostic", index)).bounds();
                     let severity = window.find(("source-diagnostic-type", index));
+                    let dot = window.find(("source-diagnostic-dot", index)).bounds();
                     assert_eq!(
                         severity.label(),
                         Some(if index == 1 { "Warning" } else { "Error" })
@@ -687,8 +688,10 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                     assert_eq!(jump.top(), text.top());
                     assert_eq!(severity.bounds().top(), text.top());
                     assert_eq!(jump.size.height, px(20.));
-                    assert_eq!(jump.left(), line_header.left());
+                    assert_eq!(jump.center().x, line_header.center().x);
                     assert_eq!(severity.bounds().left(), type_header.left());
+                    assert_eq!(dot.center().x, type_header.center().x);
+                    assert_eq!(dot.center().y, severity.bounds().center().y);
                     assert_eq!(text.left(), description_header.left());
                     assert!(text.left() >= severity.bounds().right());
                     assert!(text.right() <= panel.right(), "{text:?}, {panel:?}");
