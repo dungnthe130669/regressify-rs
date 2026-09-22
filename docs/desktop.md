@@ -82,9 +82,12 @@ unless the required browser revision changes or the cache was removed. Installed
 Chrome/Edge are not substitutes for this managed build. The browser cache remains
 available after app uninstall.
 
-Interactive setup shows browser download/extraction progress and writes detailed
-messages to its setup log. If browser preparation fails, the app installation
-still succeeds; setup reports the problem, and Reference/Test can retry later.
+Interactive setup and visible `/SILENT` updates show Chromium preparation progress.
+During downloads, the text reports transferred size, percentage when available,
+speed, and elapsed time. Connection waits, downloads, and extraction report activity
+every five seconds. Fully silent `/VERYSILENT` setup stays hidden; all modes write
+detailed messages to the setup log. If browser preparation fails, the app installation
+still succeeds; interactive setup reports the problem, and Reference/Test can retry later.
 Silent setup records the failure without opening a dialog. Pass `/SKIPCHROMIUM=1`
 to defer preparation explicitly. Setup uses the HTTP client's default proxy
 configuration, not a workspace's saved Proxy setting; for a workspace-specific

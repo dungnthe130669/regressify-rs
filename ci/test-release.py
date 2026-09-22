@@ -151,6 +151,22 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("http://127.0.0.1:9", smoke)
         self.assertIn("'/SKIPCHROMIUM=1'", smoke)
 
+    def test_windows_installer_shows_chromium_progress_for_visible_updates(self):
+        installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
+        updater = (ROOT / "src/desktop/updates.rs").read_text(encoding="utf-8")
+        smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
+        preparation = installer.split("procedure PrepareChromium;", 1)[1].split("Started := False;", 1)[0]
+        self.assertIn('command.args(["/SP-", "/SILENT", "/NORESTART"]);', updater)
+        self.assertIn("if WizardForm.Visible then", preparation)
+        self.assertNotIn("WizardSilent", preparation)
+        self.assertIn("ChromiumProgress.Show;", preparation)
+        self.assertIn("ChromiumProgress.Animate;", preparation)
+        self.assertIn("ChromiumProgress.SetText(S, '');", installer)
+        self.assertIn("Log('Chromium progress: ' + S);", installer)
+        self.assertIn("Assert-ChromiumPreparation $installLog $false", smoke)
+        self.assertIn("Assert-ChromiumPreparation $foregroundLog $true", smoke)
+        self.assertIn("Chromium progress: Checking Chromium cache", smoke)
+
     def test_tuyen_upload_arguments_and_failures(self):
         shell = shutil.which("pwsh")
         self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")

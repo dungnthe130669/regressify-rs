@@ -71,7 +71,10 @@ begin
       (Pos('Connecting ', S) = 1) or (Pos('Downloading ', S) = 1) or
       (Pos('Extracting ', S) = 1) or (Pos('Verifying ', S) = 1) or
       (Pos('Reusing cached ', S) = 1) or (Pos('Chromium ready', S) = 1)) then
+  begin
     ChromiumProgress.SetText(S, '');
+    Log('Chromium progress: ' + S);
+  end;
 end;
 
 procedure PrepareChromium;
@@ -89,7 +92,7 @@ begin
   end;
 
   Log('Preparing shared Chromium cache before launching Regressify Desktop.');
-  if not WizardSilent then
+  if WizardForm.Visible then
   begin
     ChromiumProgress := CreateOutputMarqueeProgressPage('Preparing Chromium', '');
     ChromiumProgress.SetText('Checking Chromium cache', '');
