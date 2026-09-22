@@ -87,6 +87,19 @@ fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable
         window.focus(&source.read(cx).focus_handle(cx), cx);
         window.render_frame(cx);
         window.press("ctrl-a", cx);
+        let incomplete = "# Keep this draft\nscenarios:\n- url: https://example.com\n  actions:\n  - click:\n  - hover:\n";
+        window.input(incomplete, cx);
+        window.within("editor-tabs").click(1_usize, cx);
+        assert_eq!(view.read(cx).tab, 0);
+        assert_eq!(view.read(cx).source_issues.len(), 2);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), incomplete);
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        assert_eq!(view.read(cx).tab, 1);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), incomplete);
+        window.focus(&source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
         window.input("scenarios: [}", cx);
         let draft = view.read(cx).source.read(cx).value();
         window.within("editor-tabs").click(1_usize, cx);
@@ -646,6 +659,7 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                         .unwrap();
                     this.tab = 1;
                     this.sync_editor(window, cx);
+                    this.source_issues[1].severity = Some(lsp_types::DiagnosticSeverity::WARNING);
                 });
                 window.render_frame(cx);
                 let panel = window.find("diagnostic").bounds();
@@ -655,10 +669,28 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                 );
                 assert!(panel.left() >= window.find("workspace-navigation").bounds().right());
                 assert_eq!(panel.size.height, px(160.));
+                assert_eq!(
+                    window.find("source-issues-table").label(),
+                    Some("Source issues")
+                );
+                let line_header = window.find("Line").bounds();
+                let type_header = window.find("Type").bounds();
+                let description_header = window.find("Description").bounds();
                 for index in 0_usize..10 {
                     let text = window.find(("source-diagnostic-message", index)).bounds();
                     let jump = window.find(("source-diagnostic", index)).bounds();
-                    assert!(text.left() >= jump.right());
+                    let severity = window.find(("source-diagnostic-type", index));
+                    assert_eq!(
+                        severity.label(),
+                        Some(if index == 1 { "Warning" } else { "Error" })
+                    );
+                    assert_eq!(jump.top(), text.top());
+                    assert_eq!(severity.bounds().top(), text.top());
+                    assert_eq!(jump.size.height, px(20.));
+                    assert_eq!(jump.left(), line_header.left());
+                    assert_eq!(severity.bounds().left(), type_header.left());
+                    assert_eq!(text.left(), description_header.left());
+                    assert!(text.left() >= severity.bounds().right());
                     assert!(text.right() <= panel.right(), "{text:?}, {panel:?}");
                     assert!(text.size.width > px(100.));
                     if index < 9 {
@@ -675,7 +707,7 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                     window.find(("source-diagnostic", 9_usize)).bounds().top() > panel.bottom()
                 );
                 window.scroll(
-                    "diagnostic",
+                    "source-issues-table",
                     gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10_000.))),
                     cx,
                 );
@@ -691,6 +723,43 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
             .unwrap();
         }
     }
+}
+
+#[gpui_kit::test]
+fn schema_issue_descriptions_support_pointer_selection_and_plain_text_copy(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let message = "scenarios[0].actions[0].select: Expected a <select> element.\nExample: '#country' & \"region\"; **literal text**, not markup.";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.tab = 1;
+            this.source_issues = vec![lsp_types::Diagnostic {
+                message: message.into(),
+                severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                ..Default::default()
+            }];
+            this.diagnostic = Some(message.into());
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let bounds = window.find(("source-diagnostic-message", 0_usize)).bounds();
+        let start = gpui_kit::point(bounds.left() + px(1.), bounds.top() + px(10.));
+        window.drag(start, start + gpui_kit::point(px(150.), px(0.)), cx);
+        window.press("ctrl-c", cx);
+        let selected = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(!selected.is_empty());
+        assert!(message.contains(&selected), "{selected:?}");
+        assert_ne!(selected, message);
+        window.press("ctrl-a", cx);
+        window.press("ctrl-c", cx);
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), message);
+        window.input("must not edit the issue", cx);
+        assert_eq!(view.read(cx).source_issues[0].message, message);
+        assert!(!view.read(cx).unsaved());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -740,6 +809,12 @@ async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
             assert!(messages.contains("Did you mean 'debug'"));
             assert!(!messages.contains("private-user"));
             assert!(!messages.contains("private-password"));
+            window.within("editor-tabs").click(1_usize, cx);
+            assert_eq!(view.read(cx).tab, 0);
+            window.render_frame(cx);
+            window.within("editor-tabs").click(0_usize, cx);
+            assert_eq!(view.read(cx).tab, 1);
+            assert_eq!(view.read(cx).source.read(cx).value().as_ref(), draft);
             for (index, line) in [3, 5, 7].into_iter().enumerate() {
                 window.click(("source-diagnostic", index), cx);
                 assert_eq!(view.read(cx).source.read(cx).cursor_position().line, line);

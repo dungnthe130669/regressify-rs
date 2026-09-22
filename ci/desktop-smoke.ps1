@@ -1795,7 +1795,7 @@ public static class RegressifySmokeShortcut {
         $deadline = [System.Diagnostics.Stopwatch]::StartNew()
         do {
             try { return (& $Operation) } catch {
-                if ($_.Exception.GetBaseException() -isnot [System.Runtime.InteropServices.ExternalException] -or $deadline.Elapsed.TotalSeconds -ge 3) { throw }
+                if ($_.Exception.GetBaseException() -isnot [System.Runtime.InteropServices.ExternalException] -or $deadline.Elapsed.TotalSeconds -ge 10) { throw }
                 [RegressifySmokeNative]::DwmFlush() | Out-Null
             }
         } while ($true)
@@ -1819,6 +1819,101 @@ public static class RegressifySmokeShortcut {
             throw 'The schema fixture paste did not preserve the expected source text.'
         }
     }
+    function Test-SchemaFieldsRoundTrip([string]$Source) {
+        Invoke-Control 'Fields' -Pointer
+        Wait-Control 'Overrides only' | Out-Null
+        if ($null -ne (Find-Control 'Configuration source')) { throw 'Fields did not replace the Source editor.' }
+        Invoke-Control 'Source' -Pointer
+        Wait-Control 'Configuration source' | Out-Null
+        if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $Source) {
+            throw 'Switching Source and Fields changed the invalid draft.'
+        }
+    }
+    function Get-SchemaIssueDescription([int]$Line) {
+        $row = Wait-Control "Issue on line $Line" 'Source issues'
+        $description = $row.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+            Where-Object { $_.Current.Name.Contains(': ') } | Select-Object -First 1
+        if ($null -eq $description) { throw "Issue on line $Line has no accessible description." }
+        return $description
+    }
+    function Scroll-SchemaIssues([switch]$Bottom) {
+        $bounds = (Wait-Control 'Source issues').Current.BoundingRectangle
+        Focus-Fixture
+        if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2))) {
+            throw 'Cannot position the mouse over the source issues table.'
+        }
+        $delta = if ($Bottom) { [uint32]::MaxValue - 1199 } else { 1200 }
+        [RegressifySmokeNative]::mouse_event(0x0800, 0, 0, $delta, [UIntPtr]::Zero)
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    }
+    function Test-SchemaIssueCopy([int]$Line) {
+        $description = Get-SchemaIssueDescription $Line
+        $expected = $description.Current.Name
+        $bounds = $description.Current.BoundingRectangle
+        $scale = [RegressifySmokeWindowState]::GetDpiForWindow($script:window) / 96.0
+        Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetText('No diagnostic selection copied') }
+        Focus-Fixture
+        try {
+            if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + 1 * $scale), [int]($bounds.Top + 10 * $scale))) {
+                throw 'Cannot position the mouse at the issue description.'
+            }
+            [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+            if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + 150 * $scale), [int]($bounds.Top + 10 * $scale))) {
+                throw 'Cannot select the issue description.'
+            }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        } finally { [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero) }
+        Capture-Window 'schema-issue-selection'
+        Send-SchemaShortcut 0x43
+        Wait-WindowState {
+            $copied = Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetText() }
+            $copied.Length -gt 0 -and $copied.Length -lt $expected.Length -and $expected.Contains($copied)
+        } 'Dragging across an issue did not select copyable text.'
+        Send-SchemaShortcut 0x41
+        Send-SchemaShortcut 0x43
+        Wait-WindowState {
+            (Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetText() }).Replace("`r`n", "`n") -ceq $expected
+        } 'Copying an entire issue lost text, punctuation, or line breaks.'
+    }
+    function Test-SchemaIssueTable([string]$CaptureName) {
+        Scroll-SchemaIssues
+        $table = (Wait-Control 'Source issues').Current.BoundingRectangle
+        $headers = @('Line', 'Type', 'Description') | ForEach-Object { (Wait-Control $_ 'Source issues').Current.BoundingRectangle }
+        Wait-WindowState {
+            $first = Find-Control 'Go to issue on line 4' 'Source issues'
+            $null -ne $first -and $first.Current.BoundingRectangle.Top -ge $headers[0].Bottom
+        } 'Scrolling did not reveal the first issue below the fixed table header.'
+        $line = (Wait-Control 'Go to issue on line 4' 'Source issues').Current.BoundingRectangle
+        $severity = (Wait-Control 'Error' 'Issue on line 4').Current.BoundingRectangle
+        $description = (Get-SchemaIssueDescription 4).Current.BoundingRectangle
+        $scale = [RegressifySmokeWindowState]::GetDpiForWindow($script:window) / 96.0
+        $tolerance = 2 * $scale
+        if ([Math]::Abs($line.Top - $description.Top) -gt $tolerance -or [Math]::Abs($severity.Top - $description.Top) -gt $tolerance) {
+            throw 'The issue line link or severity dot is not aligned with the first description line.'
+        }
+        if ([Math]::Abs($line.Left - $headers[0].Left) -gt $tolerance -or [Math]::Abs($severity.Left - $headers[1].Left) -gt $tolerance -or [Math]::Abs($description.Left - $headers[2].Left) -gt $tolerance) {
+            throw 'The source issue columns do not line up with their headers.'
+        }
+        if ($headers[0].Right -gt $headers[1].Left -or $headers[1].Right -gt $headers[2].Left -or $line.Right -gt $severity.Left -or $severity.Right -gt $description.Left -or $description.Right -gt $table.Right + $tolerance) {
+            throw 'Source issue columns overlap or extend beyond the panel.'
+        }
+        Capture-Window $CaptureName
+        $windowBounds = [RegressifySmokeNative+Rect]::new()
+        if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$windowBounds)) { throw 'Cannot locate the source issue screenshot.' }
+        $bitmap = [System.Drawing.Bitmap]::new((Join-Path $artifacts ($CaptureName + '.png')))
+        try {
+            $color = $bitmap.GetPixel([int]($severity.Left - $windowBounds.Left + 4 * $scale), [int]($severity.Top - $windowBounds.Top + $severity.Height / 2))
+            if ($color.R -le $color.G * 1.2 -or $color.R -le $color.B * 1.1) { throw 'The error severity indicator is not a visible red dot.' }
+        } finally { $bitmap.Dispose() }
+        Scroll-SchemaIssues -Bottom
+        Wait-WindowState {
+            $last = Find-Control 'Go to issue on line 8' 'Source issues'
+            $null -ne $last -and $last.Current.BoundingRectangle.Top -ge $headers[0].Bottom -and $last.Current.BoundingRectangle.Bottom -le $table.Bottom
+        } 'The final source issue cannot be scrolled fully into view.'
+        Invoke-Control 'Go to issue on line 8' -Pointer
+        Wait-Control 'Ln 8, Col 1' | Out-Null
+    }
     $clipboard = Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
     $backup = [System.Windows.Forms.DataObject]::new()
     if ($null -ne $clipboard) {
@@ -1833,9 +1928,23 @@ public static class RegressifySmokeShortcut {
     $original = (Get-FileHash -LiteralPath $path).Hash
     Invoke-Control 'schema.tests.yaml'
     Wait-Control 'Configuration source' | Out-Null
+    $incomplete = "scenarios:`n  - url: https://example.com`n    actions:`n      - click:`n      - hover:`n"
+    Write-SchemaSource $incomplete
+    Send-FixtureKeys '{ESC}'
+    Wait-Control '2 issues' | Out-Null
+    Test-SchemaFieldsRoundTrip $incomplete
+    Wait-Control '2 issues' | Out-Null
+    Write-SchemaSource 'scenarios: [}'
+    Send-FixtureKeys '{ESC}'
+    Wait-Control '1 issue' | Out-Null
+    Invoke-Control 'Fields' -Pointer
+    Wait-Control 'Correct the source syntax errors before switching to Fields' | Out-Null
+    if ((Read-ControlText 'Configuration source') -cne 'scenarios: [}') { throw 'Attempting Fields changed an unparseable draft.' }
     $invalid = "scenarios:`n  - url: https://example.com`n    actions:`n      - press: '#search'`nbasicAuth:`n  - username: qa-user`n    password: synthetic-password`ndebugg: true`n"
     Write-SchemaSource $invalid
     Send-FixtureKeys '{ESC}'
+    Wait-Control '3 issues' | Out-Null
+    Test-SchemaFieldsRoundTrip $invalid
     Wait-Control '3 issues' | Out-Null
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
     $messages = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
@@ -1855,12 +1964,14 @@ public static class RegressifySmokeShortcut {
         @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
             Where-Object { $_.Current.Name.StartsWith('Ln 6, Col ') }).Count -gt 0
     } 'Issue navigation did not reach the missing-origin entry.'
+    Test-SchemaIssueCopy 4
+    if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $invalid) { throw 'Selecting issue text changed the source draft.' }
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
             Wait-Control '3 issues' | Out-Null
-            Capture-Window ('schema-errors-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Test-SchemaIssueTable ('schema-errors-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
         }
     }
     Write-SchemaSource "scenarios: []`nbasicAuth:`n  ori"
@@ -1880,7 +1991,7 @@ public static class RegressifySmokeShortcut {
     if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
     Capture-Window 'schema-corrected'
-    Write-Output 'Native schema messages, safe diagnostics, issue navigation, nested completion, corrected save, and compact light/dark layouts passed.'
+    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, completion, corrected save, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }

@@ -2080,8 +2080,15 @@ impl Workbench {
             cx.notify();
             return false;
         }
-        if index == 0 && self.tab == 1 && self.diagnostic.is_some() {
-            self.status = "Correct the source errors before switching to Fields".into();
+        if index == 0
+            && self.tab == 1
+            && self
+                .session
+                .open
+                .as_ref()
+                .is_some_and(|open| open.document.value().is_err())
+        {
+            self.status = "Correct the source syntax errors before switching to Fields".into();
             cx.notify();
             return false;
         }

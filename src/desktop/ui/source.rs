@@ -2,7 +2,10 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use gpui_kit::component::input::{CompletionProvider, HoverProvider, Rope};
+use gpui_kit::component::{
+    input::{CompletionProvider, HoverProvider, Rope},
+    text::{SelectionFormat, TextView},
+};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     Documentation, Position, TextEdit,
@@ -366,12 +369,111 @@ impl Workbench {
 
     pub(super) fn render_source_diagnostics(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let summary = self.diagnostic.as_ref()?;
+        let rows = self
+            .source_issues
+            .iter()
+            .enumerate()
+            .map(|(index, issue)| {
+                let position = issue.range.start;
+                let mut description = String::with_capacity(issue.message.len());
+                for character in issue.message.chars() {
+                    if character == '\n' {
+                        description.push_str("\\\n");
+                    } else {
+                        if character.is_ascii_punctuation() {
+                            description.push('\\');
+                        }
+                        description.push(character);
+                    }
+                }
+                let (severity, color) =
+                    if issue.severity == Some(lsp_types::DiagnosticSeverity::WARNING) {
+                        ("Warning", cx.theme().warning)
+                    } else {
+                        ("Error", cx.theme().danger)
+                    };
+                div()
+                    .id(("source-diagnostic-row", index))
+                    .role(Role::Row)
+                    .aria_label(format!("Issue on line {}", position.line + 1))
+                    .flex()
+                    .items_start()
+                    .gap_3()
+                    .px_4()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .w_full()
+                    .min_w_0()
+                    .text_sm()
+                    .line_height(px(20.))
+                    .child(
+                        div()
+                            .id(("source-diagnostic-line", index))
+                            .role(Role::Cell)
+                            .w(px(64.))
+                            .flex_shrink_0()
+                            .child(
+                                Button::new(("source-diagnostic", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .h(px(20.))
+                                    .py_0()
+                                    .text_sm()
+                                    .line_height(px(20.))
+                                    .label((position.line + 1).to_string())
+                                    .accessibility_label(format!(
+                                        "Go to issue on line {}",
+                                        position.line + 1
+                                    ))
+                                    .tooltip("Go to this issue")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.go_to_source_position(position, window, cx)
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("source-diagnostic-type", index))
+                            .role(Role::Cell)
+                            .aria_label(severity)
+                            .test_support()
+                            .w(px(48.))
+                            .h(px(20.))
+                            .flex_shrink_0()
+                            .flex()
+                            .items_center()
+                            .child(div().size(px(8.)).rounded_full().bg(color)),
+                    )
+                    .child(
+                        div()
+                            .id(("source-diagnostic-message", index))
+                            .role(Role::Cell)
+                            .aria_label(issue.message.clone())
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(cx.theme().foreground)
+                            .child(
+                                TextView::markdown(("source-diagnostic-text", index), description)
+                                    .selectable(true)
+                                    .selection_format(SelectionFormat::Plain)
+                                    .scrollable(false)
+                                    .text_sm()
+                                    .line_height(px(20.)),
+                            ),
+                    )
+            })
+            .collect::<Vec<_>>();
         Some(
             div()
                 .id("diagnostic")
                 .role(Role::Alert)
                 .aria_label(summary.clone())
                 .test_support()
+                .flex()
+                .flex_col()
                 .h(px(if self.source_issues.len() == 1 {
                     112.
                 } else {
@@ -380,49 +482,57 @@ impl Workbench {
                 .flex_shrink_0()
                 .border_t_1()
                 .border_color(cx.theme().border)
-                .bg(cx.theme().danger.opacity(0.04))
+                .bg(cx.theme().background)
                 .child(
                     div()
-                        .id("source-issues-scroll")
+                        .id("source-issues-table")
+                        .role(Role::Table)
+                        .aria_label("Source issues")
+                        .test_support()
+                        .flex()
+                        .flex_col()
                         .size_full()
-                        .overflow_y_scrollbar()
-                        .child(div().flex().flex_col().gap_3().px_4().py_2().children(
-                            self.source_issues.iter().enumerate().map(|(index, issue)| {
-                                let position = issue.range.start;
-                                div()
-                                    .flex()
-                                    .items_start()
-                                    .gap_2()
-                                    .w_full()
-                                    .min_w_0()
-                                    .child(
-                                        Button::new(("source-diagnostic", index))
-                                            .ghost()
-                                            .xsmall()
-                                            .icon(gpui_kit::assets::IconName::ArrowRight)
-                                            .label(format!("Ln {}", position.line + 1))
-                                            .accessibility_label(format!(
-                                                "Go to issue on line {}",
-                                                position.line + 1
-                                            ))
-                                            .tooltip("Go to this issue")
-                                            .disabled(self.busy)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.go_to_source_position(position, window, cx)
-                                            })),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(("source-diagnostic-message", index))
-                                            .test_support()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_sm()
-                                            .text_color(cx.theme().danger)
-                                            .child(issue.message.clone()),
-                                    )
-                            }),
-                        )),
+                        .child(
+                            div()
+                                .id("source-issues-header")
+                                .role(Role::Row)
+                                .flex()
+                                .flex_shrink_0()
+                                .gap_3()
+                                .px_4()
+                                .py_1()
+                                .border_b_1()
+                                .border_color(cx.theme().border)
+                                .text_xs()
+                                .text_color(cx.theme().muted_foreground)
+                                .children([("Line", 64.), ("Type", 48.)].map(|(label, width)| {
+                                    div()
+                                        .id(label)
+                                        .role(Role::ColumnHeader)
+                                        .aria_label(label)
+                                        .test_support()
+                                        .w(px(width))
+                                        .flex_shrink_0()
+                                        .child(label)
+                                }))
+                                .child(
+                                    div()
+                                        .id("Description")
+                                        .role(Role::ColumnHeader)
+                                        .aria_label("Description")
+                                        .test_support()
+                                        .flex_1()
+                                        .child("Description"),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .id("source-issues-scroll")
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_y_scrollbar()
+                                .child(div().flex().flex_col().children(rows)),
+                        ),
                 )
                 .into_any_element(),
         )
