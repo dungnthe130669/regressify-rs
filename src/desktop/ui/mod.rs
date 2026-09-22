@@ -65,6 +65,7 @@ actions!(
         CompleteSource,
         OpenDeployment,
         OpenGit,
+        ShowAbout,
         OpenCommands
     ]
 );
@@ -2527,6 +2528,7 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(Self::show_about))
             .on_action(cx.listener(|this, action: &RunSuiteCommand, window, cx| {
                 if let Some(command) = super::runner::RunCommand::ALL.get(action.index) {
                     this.run_open_suite(*command, window, cx);
@@ -2579,35 +2581,6 @@ impl Render for Workbench {
             .child(self.render_header(cx))
             .children(self.render_update_banner(cx))
             .child(div().flex_1().min_h_0().child(layout))
-            .child(
-                div()
-                    .id("status")
-                    .role(Role::Status)
-                    .aria_label(self.status.clone())
-                    .test_support()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .px_4()
-                    .h(px(24.))
-                    .text_xs()
-                    .flex_shrink_0()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .child(div().flex_1().truncate().child(self.status.clone()))
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(if self.busy {
-                                "Working"
-                            } else if self.unsaved() {
-                                "Modified"
-                            } else {
-                                "Ready"
-                            }),
-                    ),
-            )
             .children(Root::render_dialog_layer(window, cx))
             .children(Root::render_sheet_layer(window, cx))
             .children(Root::render_notification_layer(window, cx))

@@ -514,9 +514,20 @@ viewport definitions.
 
 File supports new/duplicate/rename/delete suite, Save As, reload, configuration
 and viewport-file creation, file browsing, refresh, and light/dark appearance.
+Open in VS Code opens the current workspace in an external VS Code window.
+Open in File Explorer (Windows), Open in Finder (macOS), or Open in File Manager
+(Linux) opens the workspace folder in the operating system's default folder viewer.
+These actions require an open workspace and do not save or discard editor drafts.
 Save As takes a workspace-relative destination and never replaces an existing
 file. Reload discards a draft after confirmation. Suite-file deletion is
 confirmed but cannot be undone through document history.
+
+The title bar displays the package version beside Regressify. Help > About shows
+Regressify Desktop, its version, author Tuyen Pham, and the clickable website
+`https://tuyen.blog/`, which opens in the external default browser.
+There is no bottom application or Results status bar. Application status and
+Report status icons in their respective headers retain messages in tooltips and
+accessibility labels, leaving the bottom edge available for content.
 
 Opening another document/workspace or closing with a draft prompts Save,
 Discard, or Cancel. A failed save retains the prompt and draft. Recent workspaces
@@ -876,6 +887,14 @@ timestamp-based CLI run IDs are formatted as local dates. Custom run names remai
 unchanged.
 
 The compact comparison heading shows the scenario name and measured difference.
+Hover over the information icon beside the name to see Label, Selector,
+Reference URL, Test URL, Diff %, Diff X, and Diff Y. Selector is the recorded
+capture target, such as `document` or `body .carousel`. Each recorded URL can
+be opened in the external default browser or copied using its adjacent button.
+When both URLs match, Test URL displays Same URL but still opens and copies the
+actual URL. Diff X and Diff Y are the signed width and height differences in
+pixels (test minus reference). Missing metadata displays Unavailable rather
+than an inferred value; unavailable URL controls are disabled.
 Capture context, allowed mismatch, page, failure details, and raw capture ID are
 available in the Copy capture details tooltip and copied summary, without extra
 metadata rows above the images. Image panes have no repeated headings or
@@ -1018,6 +1037,15 @@ capture-only data, exact suite identity when run IDs match, and detection after
 restart. Screenshot and reference hashes remain unchanged. It captures seven
 light/dark windows at 1600x1000 and 1080x720 and restores user preferences.
 
+Use `./ci/desktop-smoke.ps1 -ComparisonFlows` for native Results acceptance without
+browser capture. It verifies the information popup and URL clipboard contents,
+including distinct URLs and Same URL, image context menus, header-only controls,
+fit/zoom, drag panning, linked scrolling, and crosshair pixels in both themes at
+1600x1000 and 1080x720. Image navigation uses the continuous capture list.
+All smoke modes also check the title-bar version, File workspace-opening items,
+and Help > About. External launch items are checked without opening other apps;
+URL copy tests restore the clipboard afterward.
+
 Use `./ci/desktop-smoke.ps1 -InstanceFlows` for multi-instance acceptance. It opens
 two different workspaces and multiple empty windows, verifies duplicate startup
 and recent-workspace handoff, restores a minimized owner, and checks its unsaved
@@ -1049,7 +1077,9 @@ approves a viewed historical run despite a newer capture directory, checks the
 promoted image's checksum, compares that exact run, and opens Run settings in
 both themes. Input steps verify foreground focus and stable control bounds;
 literal fixture text uses Unicode input packets without changing the user's
-keyboard settings.
+keyboard settings. Source-completion setup verifies the caret position between
+navigation keys before entering a new property. Native menu items use enabled
+state checks and physical clicks rather than assuming an Invoke automation pattern.
 Close existing desktop windows before starting the smoke check because the
 fixture temporarily changes shared preferences, not because the application
 restricts the number of windows.

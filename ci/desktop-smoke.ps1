@@ -220,8 +220,8 @@ Write-TestImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') (
 Write-JsonFixture (Join-Path $output 'bitmaps_test/smoke-run/report.json') ([ordered]@{
     id = 'smoke'
     tests = @(
-        @{ status = 'fail'; pair = @{ label = '8ac900fea19642cc0000 desktop FINAL'; fileName = '8ac900fea19642cc0000_desktop__FINAL.png'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; misMatchPercentage = '4.20' } } },
-        @{ status = 'fail'; pair = @{ label = 'Account desktop'; engineErrorMsg = 'Missing selector #account' } }
+        @{ status = 'fail'; pair = @{ label = '8ac900fea19642cc0000 desktop FINAL'; scenarioId = '8ac900fea19642cc0000'; scenarioLabel = 'Checkout'; selector = 'document'; referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout'; fileName = '8ac900fea19642cc0000_desktop__FINAL.png'; reference = '../bitmaps_reference/checkout.png'; test = '../bitmaps_test/smoke-run/checkout.png'; diffImage = '../bitmaps_test/smoke-run/checkout_diff.png'; diff = @{ rawMisMatchPercentage = 4.2; misMatchPercentage = '4.20'; dimensionDifference = @{ width = 0; height = 0 } } } },
+        @{ status = 'fail'; pair = @{ label = 'Account desktop'; scenarioLabel = 'Account desktop'; selector = 'body .carousel'; referenceUrl = 'https://example.com/account'; url = 'https://example.com/account'; engineErrorMsg = 'Missing selector #account' } }
     )
 })
 
@@ -325,14 +325,19 @@ function Test-ControlInvokable([string]$Name) {
     (Wait-Control $Name).TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)
 }
 
+function Test-MenuActionEnabled([string]$Name) {
+    $element = Wait-Control $Name
+    $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem -and $element.Current.IsEnabled
+}
+
 function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
     $element = Wait-Control $Name $Within
     $pattern = $null
     if (-not $Pointer -and $element.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.InvokePattern]$pattern).Invoke()
-    } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
+    } elseif (-not $Pointer -and $element.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.SelectionItemPattern]$pattern).Select()
-    } elseif ($element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
+    } elseif (-not $Pointer -and $element.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
         ([System.Windows.Automation.TogglePattern]$pattern).Toggle()
     } else {
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, 0, 0, 0, 0, 0x0043) | Out-Null
@@ -343,6 +348,15 @@ function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
         }
         [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
         [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
+function Hover-Control([string]$Name) {
+    $bounds = (Wait-Control $Name).Current.BoundingRectangle
+    Focus-Fixture
+    if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2))) {
+        throw "Cannot hover '$Name'."
     }
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }
@@ -406,6 +420,93 @@ function Capture-Window([string]$Name) {
         $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
         Write-Output "$Name`: ${width}x${height}, $($colors.Count) sampled colors, $path"
     } finally { $graphics.Dispose(); $bitmap.Dispose() }
+}
+
+function Test-ApplicationMenus {
+    $metadata = & cargo metadata --no-deps --format-version 1 --manifest-path (Join-Path $repository 'Cargo.toml')
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot determine the expected desktop version.' }
+    $version = (($metadata | ConvertFrom-Json).packages | Where-Object name -eq 'regressify').version
+    $versionBounds = (Wait-Control "v$version").Current.BoundingRectangle
+    $fileBounds = (Wait-Control 'File').Current.BoundingRectangle
+    $statusBounds = (Wait-Control 'Application status').Current.BoundingRectangle
+    if ([Math]::Abs($versionBounds.Top - $fileBounds.Top) -gt 20 -or [Math]::Abs($statusBounds.Top - $fileBounds.Top) -gt 20) {
+        throw 'Version and application status must be in the title bar, not a bottom status bar.'
+    }
+    Invoke-Control 'File' -Pointer
+    foreach ($name in @('Open in VS Code', 'Open in File Explorer')) {
+        if (-not (Test-MenuActionEnabled $name)) { throw "Workspace action '$name' is unavailable." }
+    }
+    Capture-Window 'file-external-workspace-actions'
+    Send-FixtureKeys '{ESC}'
+    Invoke-Control 'Help' -Pointer
+    Invoke-Control 'About' -Pointer
+    Wait-Control 'Regressify Desktop' | Out-Null
+    Wait-Control "Version: $version" | Out-Null
+    Wait-Control 'Author: Tuyen Pham' | Out-Null
+    if (-not (Test-ControlInvokable 'https://tuyen.blog/')) { throw 'About website must be an external link.' }
+    Capture-Window 'help-about'
+    Invoke-Control 'Close'
+    Wait-WindowState { $null -eq (Find-Control "Version: $version") } 'About dialog did not close.'
+}
+
+function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 0, [int]$DiffY = 0) {
+    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        Hover-Control 'Scenario information'
+        Wait-Control 'Scenario information details' | Out-Null
+        $label = if ($SameUrl) { 'Account desktop' } else { 'Checkout' }
+        $selector = if ($SameUrl) { 'body .carousel' } else { 'document' }
+        Wait-Control "Label: $label" | Out-Null
+        Wait-Control "Selector: $selector" | Out-Null
+        if ($SameUrl) {
+            Wait-Control 'Same URL' | Out-Null
+            Wait-Control 'Diff %: Unavailable' | Out-Null
+            Wait-Control 'Diff X: Unavailable' | Out-Null
+            Wait-Control 'Diff Y: Unavailable' | Out-Null
+        } else {
+            Wait-Control 'Diff %: 4.20%' | Out-Null
+            Wait-Control "Diff X: $DiffX" | Out-Null
+            Wait-Control "Diff Y: $DiffY" | Out-Null
+        }
+        foreach ($kind in @('Reference', 'Test')) {
+            if (-not (Test-ControlInvokable "Open $kind URL")) { throw "$kind URL must be clickable." }
+            Hover-Control "Copy $kind URL"
+            Invoke-Control "Copy $kind URL" -Pointer
+            $expected = if ($SameUrl) { 'https://example.com/account' } elseif ($kind -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
+            Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "$kind URL was not copied correctly."
+        }
+        Capture-Window $Name
+        Hover-Control 'Help'
+        Wait-WindowState { $null -eq (Find-Control 'Scenario information details') } 'Scenario information did not close after the pointer left.'
+    } finally {
+        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
+}
+
+function Test-ImageContextMenus {
+    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        foreach ($pane in @('Reference', 'Test', 'Diff')) {
+            Hover-Control "$pane image preview"
+            [RegressifySmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+            [RegressifySmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+            foreach ($name in @('Open in default browser', 'Open in default image viewer', 'Show in file manager')) {
+                if (-not (Test-MenuActionEnabled $name)) { throw "Image action '$name' is unavailable." }
+            }
+            if ($pane -ne 'Diff') {
+                if (-not (Test-MenuActionEnabled "Open $pane URL")) { throw "$pane URL must be available in the image menu." }
+                Invoke-Control "Copy $pane URL" -Pointer
+                $expected = if ($pane -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
+                Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "Image menu copied an incorrect $pane URL."
+            } else {
+                if ($null -ne (Find-Control 'Open Reference URL') -or $null -ne (Find-Control 'Copy Test URL')) { throw 'Diff must not offer scenario URL actions.' }
+                Send-FixtureKeys '{ESC}'
+            }
+            Wait-WindowState { $null -eq (Find-Control 'Open in default browser') } 'Image context menu did not close.'
+        }
+    } finally {
+        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
 }
 
 function Test-InstanceFlows {
@@ -569,7 +670,7 @@ public static class RegressifySmokeZoomKeys {
         $pointer = Move-ComparisonPointer $Pane $HorizontalFraction $VerticalFraction
         $native = [RegressifySmokeNative+Rect]::new()
         if (-not [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$native)) { throw 'Cannot read comparison window bounds.' }
-        $bounds = @('Reference', 'Current', 'Diff') | ForEach-Object {
+        $bounds = @('Reference', 'Test', 'Diff') | ForEach-Object {
             $preview = Get-ComparisonBounds $_
             [System.Drawing.RectangleF]::new($preview.Left - $native.Left, $preview.Top - $native.Top, $preview.Width, $preview.Height)
         }
@@ -652,9 +753,14 @@ public static class RegressifySmokeZoomKeys {
     Write-ComparisonImage (Join-Path $output 'bitmaps_reference/checkout.png') 1600 2200
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout.png') 1280 1800
     Write-ComparisonImage (Join-Path $output 'bitmaps_test/smoke-run/checkout_diff.png') 1600 2400
+    $reportPath = Join-Path $output 'bitmaps_test/smoke-run/report.json'
+    $report = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json
+    $report.tests[0].pair.diff.dimensionDifference.width = -320
+    $report.tests[0].pair.diff.dimensionDifference.height = -400
+    Write-JsonFixture $reportPath $report
     Invoke-Control 'smoke.tests.json'
     Invoke-Control 'Results'
-    Wait-Control 'Current 1280 x 1800' | Out-Null
+    Wait-Control 'Test 1280 x 1800' | Out-Null
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 1600 x 2200' | Out-Null
     Wait-Control 'Diff 1600 x 2400' | Out-Null
@@ -662,17 +768,28 @@ public static class RegressifySmokeZoomKeys {
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
-            Invoke-Control 'Next capture'
+            Invoke-Control 'Error Account desktop'
             Wait-Control 'Missing selector #account' | Out-Null
-            Invoke-Control 'Previous capture'
+            Test-CaptureInformation ('information-same-url-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]) -SameUrl
+            Invoke-Control 'Mismatch Checkout'
             Wait-Control 'Reference 1600 x 2200' | Out-Null
-            Wait-Control 'Current 1280 x 1800' | Out-Null
+            Wait-Control 'Test 1280 x 1800' | Out-Null
+            Test-CaptureInformation ('information-distinct-urls-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]) -DiffX -320 -DiffY -400
+            Test-ImageContextMenus
+            foreach ($removed in @('Next capture', 'Previous capture', 'Next captures', 'Previous captures')) {
+                if ($null -ne (Find-Control $removed)) { throw "Removed pagination control '$removed' is still present." }
+            }
+            $tab = (Wait-Control 'Side by side').Current.BoundingRectangle
+            $fit = (Wait-Control 'Fit area').Current.BoundingRectangle
+            if ($fit.Left -lt $tab.Right -or [Math]::Abs(($fit.Top + $fit.Height / 2) - ($tab.Top + $tab.Height / 2)) -gt 3) {
+                throw 'Image controls are not aligned to the right of the tabs.'
+            }
             Invoke-Control 'Actual size (100%)'
             $actual = (Wait-Control 'Reference image canvas').Current.BoundingRectangle
             $name = 'comparison-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]
             Assert-ComparisonPixels "$name-initial"
             Assert-ComparisonPixels "$name-moved-guides" -HorizontalFraction 0.61 -VerticalFraction 0.54
-            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+            foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 foreach ($horizontal in @($false, $true)) {
                     $before = $script:comparisonSignature
                     Send-ComparisonWheel $pane $horizontal
@@ -680,11 +797,11 @@ public static class RegressifySmokeZoomKeys {
                     if ($before -eq $script:comparisonSignature) { throw "The $pane wheel did not move comparison pixels (horizontal: $horizontal)." }
                 }
             }
-            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+            foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 Test-ComparisonGestures ("$name-" + $pane.ToLowerInvariant()) $pane
             }
             Invoke-Control 'Fit area'
-            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+            foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
                 $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
                 $scale = [Math]::Min(1.0, [Math]::Min($preview.Width / $actual.Width, $preview.Height / $actual.Height))
@@ -698,10 +815,10 @@ public static class RegressifySmokeZoomKeys {
                     throw "Fit area did not center the $pane image in '$name'."
                 }
             }
-            Assert-ComparisonPixels "$name-fit" 'Current'
+            Assert-ComparisonPixels "$name-fit" 'Test'
             Assert-ComparisonPixels "$name-no-guides" -HideGuides
             Invoke-Control 'Fit width'
-            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+            foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 $preview = (Wait-Control "$pane image preview").Current.BoundingRectangle
                 $canvas = (Wait-Control "$pane image canvas").Current.BoundingRectangle
                 $scale = [Math]::Min(1.0, $preview.Width / $actual.Width)
@@ -711,12 +828,12 @@ public static class RegressifySmokeZoomKeys {
             }
             Assert-ComparisonPixels "$name-fit-width" 'Diff'
             Invoke-Control 'Fit area'
-            foreach ($pane in @('Reference', 'Current', 'Diff')) {
+            foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 Move-ComparisonPointer $pane | Out-Null
                 [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
                 [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
                 Wait-Control "$pane image preview" | Out-Null
-                foreach ($other in @('Reference', 'Current', 'Diff') | Where-Object { $_ -ne $pane }) {
+                foreach ($other in @('Reference', 'Test', 'Diff') | Where-Object { $_ -ne $pane }) {
                     if ($null -ne (Find-Control "$other image preview")) { throw "Clicking $pane did not open its tab." }
                 }
                 Invoke-Control 'Fit width'
@@ -728,10 +845,10 @@ public static class RegressifySmokeZoomKeys {
     }
     Invoke-Control 'account.tests.json'
     Wait-Control 'No captures for this suite' | Out-Null
-    if ($null -ne (Find-Control 'Current image preview') -or $null -ne (Find-Control 'Mismatch Checkout')) { throw 'An empty suite displayed another suite''s captures.' }
+    if ($null -ne (Find-Control 'Test image preview') -or $null -ne (Find-Control 'Mismatch Checkout')) { throw 'An empty suite displayed another suite''s captures.' }
     Capture-Window 'comparison-empty-suite'
     Invoke-Control 'smoke.tests.json'
-    Wait-Control 'Current 1280 x 1800' | Out-Null
+    Wait-Control 'Test 1280 x 1800' | Out-Null
     Write-Output 'Three-pane Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, and crosshairs passed native checks in light/dark desktop and compact windows.'
 }
 
@@ -760,7 +877,7 @@ function Test-ArtifactFlows {
     Invoke-Control 'Open Report'
     Wait-Control '1 report, 0 warnings' | Out-Null
     Wait-Control 'Reference 640 x 420' | Out-Null
-    Wait-Control 'Current 640 x 420' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
     Capture-Window 'artifacts-existing-report'
     if ((Get-FileHash $reportPath).Hash -ne $reportHash) { throw 'Opening an existing report rewrote its data.' }
     Invoke-Control 'Runs'
@@ -786,7 +903,7 @@ function Test-ArtifactFlows {
     Invoke-Control 'Open Report'
     Wait-Control '1 report, 0 warnings' | Out-Null
     Wait-Control 'Reference 640 x 420' | Out-Null
-    Wait-Control 'Current 640 x 420' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
     Capture-Window 'artifacts-compared-saved-run'
     $accountReport = Get-Content (Join-Path $accountOutput 'bitmaps_test/smoke-run/report.json') -Raw | ConvertFrom-Json
     if ($accountReport.tests.Count -ne 1 -or $accountReport.tests[0].status -ne 'pass') { throw 'Saved captures were not compared correctly.' }
@@ -809,7 +926,7 @@ function Test-ArtifactFlows {
     Wait-Control '1 reference image / 1 saved test run' | Out-Null
     Invoke-Control 'Open Report'
     Wait-Control 'Reference 640 x 420' | Out-Null
-    Wait-Control 'Current 640 x 420' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
     Capture-Window 'artifacts-report-after-restart'
     Invoke-Control 'Runs'
     Wait-Control 'Last run: Compare Results' | Out-Null
@@ -1378,6 +1495,7 @@ try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
     Start-Fixture
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    Test-ApplicationMenus
     if ($GitFlows) {
         Test-GitFlows
         return
@@ -1470,7 +1588,11 @@ try {
     Invoke-Control 'Source'
     Wait-Control 'Configuration source' | Out-Null
     Invoke-Control 'Configuration source' -Pointer
-    Send-FixtureKeys '^{HOME}{RIGHT}{ENTER}'
+    Send-FixtureKeys '^{HOME}'
+    Wait-Control 'Ln 1, Col 1' | Out-Null
+    Send-FixtureKeys '{RIGHT}'
+    Wait-Control 'Ln 1, Col 2' | Out-Null
+    Send-FixtureKeys '{ENTER}'
     Send-FixtureText '"deb'
     Wait-Control '1 suggestion' | Out-Null
     Capture-Window 'source-completion'
@@ -1496,9 +1618,9 @@ try {
     Capture-Window 'source-compact'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
-    Wait-Control 'Current 640 x 420' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
     Wait-Control 'Mismatch Checkout' | Out-Null
-    Wait-Control 'Desktop / Full page' | Out-Null
+    Test-CaptureInformation 'results-scenario-information'
     Wait-Control 'Edit suite' | Out-Null
     Capture-Window 'results'
     Select-Theme 'Dark'

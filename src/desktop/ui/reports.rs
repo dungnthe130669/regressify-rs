@@ -8,6 +8,7 @@ use std::{
 
 use super::*;
 use crate::desktop::results::{Catalog, Outcome, Pair, ReportEntry, ReportSelection};
+use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
 const ZOOM_LEVELS: [f32; 17] = [
@@ -1520,6 +1521,202 @@ impl ResultsPanel {
             .into_any_element()
     }
 
+    fn render_capture_information(&self, pair: &Pair, cx: &mut Context<Self>) -> AnyElement {
+        let pair = pair.clone();
+        let panel = cx.entity().downgrade();
+        HoverCard::new("capture-information-card")
+            .anchor(gpui_kit::Anchor::TopLeft)
+            .open_delay(std::time::Duration::from_millis(200))
+            .close_delay(std::time::Duration::from_millis(300))
+            .trigger(
+                Button::new("capture-information")
+                    .ghost()
+                    .xsmall()
+                    .icon(gpui_kit::assets::IconName::Info)
+                    .accessibility_label("Scenario information"),
+            )
+            .content(move |_, window, cx| {
+                let difference = pair.diff.as_ref();
+                let dimensions = difference.and_then(|diff| diff.dimension_difference.as_ref());
+                let percentage = difference
+                    .and_then(|diff| {
+                        if diff.mis_match_percentage.is_empty() {
+                            diff.raw_mis_match_percentage
+                                .map(|value| format!("{value:.3}%"))
+                        } else {
+                            Some(format!("{}%", diff.mis_match_percentage))
+                        }
+                    })
+                    .unwrap_or_else(|| "Unavailable".into());
+                let mut content = div()
+                    .id("capture-information-content")
+                    .role(Role::Group)
+                    .aria_label("Scenario information details")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .w(px(460.))
+                    .max_w(window.bounds().size.width - px(48.))
+                    .text_sm();
+                let mut details = div().flex().items_center().gap_3().min_w_0();
+                for (id, label) in [
+                    (
+                        "capture-info-label",
+                        format!("Label: {}", pair.display.title),
+                    ),
+                    (
+                        "capture-info-selector",
+                        format!(
+                            "Selector: {}",
+                            if pair.selector.is_empty() {
+                                "Unavailable"
+                            } else {
+                                &pair.selector
+                            }
+                        ),
+                    ),
+                ] {
+                    details = details.child(
+                        div()
+                            .id(id)
+                            .role(Role::Status)
+                            .aria_label(label.clone())
+                            .test_support()
+                            .min_w_0()
+                            .flex_shrink_1()
+                            .truncate()
+                            .child(label),
+                    );
+                }
+                content = content.child(details);
+                for (index, kind) in [(0, "Reference"), (1, "Test")] {
+                    let url = image_page_url(&pair, index);
+                    let same = index == 1 && url.is_some() && url == image_page_url(&pair, 0);
+                    let value = if same {
+                        "Same URL".into()
+                    } else {
+                        url.as_ref()
+                            .map(|url| url.as_str().to_string())
+                            .unwrap_or_else(|| "Unavailable".into())
+                    };
+                    let link_url = url.clone();
+                    let copy_url = url.clone();
+                    let panel = panel.clone();
+                    content = content.child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .id(("capture-info-url-label", index))
+                                    .role(Role::Status)
+                                    .aria_label(format!("{kind} URL:"))
+                                    .test_support()
+                                    .flex_shrink_0()
+                                    .child(format!("{kind} URL:")),
+                            )
+                            .child(
+                                Button::new(("capture-info-url", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .flex_shrink_1()
+                                    .min_w_0()
+                                    .px_0()
+                                    .justify_start()
+                                    .text_left()
+                                    .cursor(if url.is_some() {
+                                        CursorStyle::PointingHand
+                                    } else {
+                                        CursorStyle::Arrow
+                                    })
+                                    .accessibility_label(format!("Open {kind} URL"))
+                                    .tooltip(
+                                        url.as_ref()
+                                            .map(|url| url.as_str())
+                                            .unwrap_or("URL unavailable")
+                                            .to_string(),
+                                    )
+                                    .disabled(url.is_none())
+                                    .child(
+                                        div()
+                                            .id(("capture-info-url-value", index))
+                                            .role(Role::Status)
+                                            .aria_label(value.clone())
+                                            .test_support()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(cx.theme().primary)
+                                            .underline()
+                                            .child(value),
+                                    )
+                                    .on_click(move |_, window, cx| {
+                                        if let Some(url) = &link_url {
+                                            let _ = panel.update(cx, |this, cx| {
+                                                this.open_browser(url.clone(), window, cx)
+                                            });
+                                        }
+                                    }),
+                            )
+                            .child(
+                                Button::new(("capture-info-copy-url", index))
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Copy)
+                                    .tooltip(format!("Copy {kind} URL"))
+                                    .accessibility_label(format!("Copy {kind} URL"))
+                                    .disabled(url.is_none())
+                                    .on_click(move |_, _, cx| {
+                                        if let Some(url) = &copy_url {
+                                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                                url.to_string(),
+                                            ));
+                                        }
+                                    }),
+                            ),
+                    );
+                }
+                let mut diff_stats = div().flex().items_center().gap_3().min_w_0();
+                for (id, label) in [
+                    ("capture-info-diff", format!("Diff %: {percentage}")),
+                    (
+                        "capture-info-diff-x",
+                        format!(
+                            "Diff X: {}",
+                            dimensions
+                                .map(|value| value.width.to_string())
+                                .unwrap_or_else(|| "Unavailable".into())
+                        ),
+                    ),
+                    (
+                        "capture-info-diff-y",
+                        format!(
+                            "Diff Y: {}",
+                            dimensions
+                                .map(|value| value.height.to_string())
+                                .unwrap_or_else(|| "Unavailable".into())
+                        ),
+                    ),
+                ] {
+                    diff_stats = diff_stats.child(
+                        div()
+                            .id(id)
+                            .role(Role::Status)
+                            .aria_label(label.clone())
+                            .test_support()
+                            .min_w_0()
+                            .flex_shrink_1()
+                            .truncate()
+                            .child(label),
+                    );
+                }
+                content.child(diff_stats)
+            })
+            .into_any_element()
+    }
+
     fn render_comparison(&self, cx: &mut Context<Self>) -> AnyElement {
         let view = self.preview_views[self.image_mode];
         let test = self.selected_report().and_then(|report| {
@@ -1576,14 +1773,24 @@ impl ResultsPanel {
                     .font_weight(FontWeight::MEDIUM)
                     .child(
                         div()
-                            .id("capture-heading")
-                            .role(Role::Heading)
-                            .aria_label(title.clone())
-                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap_1()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(title),
+                            .child(
+                                div()
+                                    .id("capture-heading")
+                                    .role(Role::Heading)
+                                    .aria_label(title.clone())
+                                    .test_support()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(title),
+                            )
+                            .when_some(test, |heading, test| {
+                                heading.child(self.render_capture_information(&test.pair, cx))
+                            }),
                     )
                     .child(
                         div()
@@ -2261,6 +2468,21 @@ impl Render for ResultsPanel {
                             .child(report_name),
                     )
                     .child(
+                        div()
+                            .id("results-status")
+                            .role(Role::Status)
+                            .aria_label(self.status.clone())
+                            .test_support()
+                            .child(
+                                Button::new("results-information")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Info)
+                                    .accessibility_label("Report status")
+                                    .tooltip(self.status.clone()),
+                            ),
+                    )
+                    .child(
                         Button::new("refresh-results")
                             .ghost()
                             .xsmall()
@@ -2326,21 +2548,6 @@ impl Render for ResultsPanel {
                     .text_color(cx.theme().warning)
                     .child(warning.clone())
             }))
-            .when(!self.status.is_empty(), |panel| {
-                panel.child(
-                    div()
-                        .id("results-status")
-                        .role(Role::Status)
-                        .aria_label(self.status.clone())
-                        .test_support()
-                        .px_3()
-                        .py_1()
-                        .text_xs()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(self.status.clone()),
-                )
-            })
             .children(self.image_menu.as_ref().map(|menu| {
                 gpui_kit::deferred(
                     gpui_kit::anchored()

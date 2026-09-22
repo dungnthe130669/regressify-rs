@@ -1,6 +1,59 @@
 use super::*;
 
 impl Workbench {
+    pub(super) fn show_about(
+        &mut self,
+        _: &ShowAbout,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog
+                .title("About")
+                .child(
+                    div()
+                        .id("about-application")
+                        .role(Role::Heading)
+                        .aria_label("Regressify Desktop")
+                        .test_support()
+                        .text_lg()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .child("Regressify Desktop"),
+                )
+                .child(
+                    div()
+                        .id("about-version")
+                        .role(Role::Status)
+                        .aria_label(format!("Version: {}", env!("CARGO_PKG_VERSION")))
+                        .test_support()
+                        .child(format!("Version: {}", env!("CARGO_PKG_VERSION"))),
+                )
+                .child(
+                    div()
+                        .id("about-author")
+                        .role(Role::Status)
+                        .aria_label("Author: Tuyen Pham")
+                        .test_support()
+                        .child("Author: Tuyen Pham"),
+                )
+                .child(
+                    div().flex().items_center().gap_1().child("Website:").child(
+                        Button::new("about-website")
+                            .ghost()
+                            .small()
+                            .label("https://tuyen.blog/")
+                            .accessibility_label("https://tuyen.blog/")
+                            .on_click(|_, _, cx| cx.open_url("https://tuyen.blog/")),
+                    ),
+                )
+                .footer(
+                    Button::new("about-close")
+                        .label("Close")
+                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                )
+        });
+    }
+
     pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
         let root = self
             .session
@@ -58,7 +111,29 @@ impl Workbench {
                             .text_sm()
                             .child("Regressify"),
                     )
+                    .child(
+                        div()
+                            .id("application-version")
+                            .role(Role::Status)
+                            .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
+                            .test_support()
+                            .text_xs()
+                            .flex_shrink_0()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                    )
                     .child(design::titlebar_control(self.file_menu(cx)))
+                    .child(design::titlebar_control({
+                        let focus = self.focus.clone();
+                        Button::new("help-menu")
+                            .ghost()
+                            .xsmall()
+                            .label("Help")
+                            .dropdown_menu(move |menu, _, _| {
+                                menu.action_context(focus.clone())
+                                    .menu("About", Box::new(ShowAbout))
+                            })
+                    }))
                     .child(design::titlebar_control(
                         Button::new("toggle-navigation")
                             .ghost()
@@ -120,6 +195,31 @@ impl Workbench {
                                 })),
                         ))
                     })
+                    .child(design::titlebar_control(
+                        div()
+                            .id("status")
+                            .role(Role::Status)
+                            .aria_label(self.status.clone())
+                            .test_support()
+                            .child(
+                                Button::new("application-status")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Info)
+                                    .accessibility_label("Application status")
+                                    .tooltip(format!(
+                                        "{}\n{}",
+                                        self.status,
+                                        if self.busy {
+                                            "Working"
+                                        } else if self.unsaved() {
+                                            "Modified"
+                                        } else {
+                                            "Ready"
+                                        }
+                                    )),
+                            ),
+                    ))
                     .child(design::titlebar_control(
                         Button::new("open-commands")
                             .ghost()

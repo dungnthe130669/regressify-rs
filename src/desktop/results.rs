@@ -300,6 +300,13 @@ pub struct Difference {
     pub raw_mis_match_percentage: Option<f64>,
     #[serde(default)]
     pub mis_match_percentage: String,
+    pub dimension_difference: Option<DimensionDifference>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct DimensionDifference {
+    pub width: i64,
+    pub height: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -768,6 +775,23 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn difference_preserves_signed_offsets_and_allows_legacy_metadata() {
+        let difference: super::Difference = serde_json::from_value(serde_json::json!({
+            "rawMisMatchPercentage": 4.2,
+            "misMatchPercentage": "4.20",
+            "dimensionDifference": {"width": -20, "height": 40}
+        }))
+        .unwrap();
+        let dimensions = difference.dimension_difference.unwrap();
+        assert_eq!((dimensions.width, dimensions.height), (-20, 40));
+        let legacy: super::Difference = serde_json::from_value(serde_json::json!({
+            "rawMisMatchPercentage": 0.0
+        }))
+        .unwrap();
+        assert!(legacy.dimension_difference.is_none());
+    }
+
     use super::*;
     use serde_json::json;
 

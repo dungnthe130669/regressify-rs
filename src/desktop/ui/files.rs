@@ -13,6 +13,8 @@ pub(super) enum Operation {
     Browse,
     Refresh,
     Theme,
+    OpenVSCode,
+    OpenFolder,
     CloseWorkspace,
 }
 
@@ -179,6 +181,21 @@ impl Workbench {
             Operation::Viewports => self.create_config(true, window, cx),
             Operation::Browse => self.browse_document(window, cx),
             Operation::Refresh => self.refresh_files(window, cx),
+            Operation::OpenVSCode | Operation::OpenFolder => {
+                let Some(workspace) = &self.session.workspace else {
+                    return;
+                };
+                let result = if command.operation == Operation::OpenVSCode {
+                    vscode_workspace_url(&workspace.root)
+                        .and_then(|url| open::that_detached(url.as_str()).map_err(Into::into))
+                } else {
+                    open::that_detached(&workspace.root).map_err(Into::into)
+                };
+                if let Err(error) = result {
+                    self.status = format!("Cannot open workspace externally: {error:#}");
+                    cx.notify();
+                }
+            }
             Operation::CloseWorkspace => self.guard(Pending::CloseWorkspace, window, cx),
             Operation::Theme => {
                 let preference = if cx.theme().mode.is_dark() {
@@ -672,6 +689,22 @@ impl Workbench {
     }
 }
 
+pub(super) fn vscode_workspace_url(root: &std::path::Path) -> Result<reqwest::Url> {
+    let mut url = reqwest::Url::parse("vscode://file/")?;
+    url.set_path(&display_path(root));
+    Ok(url)
+}
+
+pub(super) fn folder_viewer_label() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "Open in File Explorer"
+    } else if cfg!(target_os = "macos") {
+        "Open in Finder"
+    } else {
+        "Open in File Manager"
+    }
+}
+
 pub(super) fn menu_entries() -> Vec<(&'static str, FileCommand)> {
     [
         ("New suite", Operation::New),
@@ -683,6 +716,8 @@ pub(super) fn menu_entries() -> Vec<(&'static str, FileCommand)> {
         ("Create workspace config", Operation::Config),
         ("Create viewport file", Operation::Viewports),
         ("Open configuration file", Operation::Browse),
+        ("Open in VS Code", Operation::OpenVSCode),
+        (folder_viewer_label(), Operation::OpenFolder),
         ("Refresh files", Operation::Refresh),
         ("Toggle light/dark theme", Operation::Theme),
         ("Close workspace", Operation::CloseWorkspace),

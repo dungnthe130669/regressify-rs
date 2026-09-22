@@ -2880,6 +2880,108 @@ pub(super) fn editor_at_size(
 }
 
 #[gpui_kit::test]
+async fn workspace_external_menus_and_about_show_version_without_changing_drafts(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        assert!(view.read(cx).unsaved());
+        assert_eq!(
+            window.find("application-version").label(),
+            Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
+        );
+        window.click("file-menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for operation in [
+            super::files::Operation::OpenVSCode,
+            super::files::Operation::OpenFolder,
+        ] {
+            let entries = super::files::menu_entries();
+            let (index, (label, _)) = entries
+                .iter()
+                .enumerate()
+                .find(|(_, (_, entry))| entry.operation == operation)
+                .unwrap();
+            assert_eq!(
+                window.within("popup-menu").find(index).label(),
+                Some(*label)
+            );
+            assert!(view.read(cx).file_operation_enabled(operation, cx));
+        }
+        let root = &view.read(cx).session.workspace.as_ref().unwrap().root;
+        let url = super::files::vscode_workspace_url(root).unwrap();
+        assert_eq!(url.scheme(), "vscode");
+        assert_eq!(url.host_str(), Some("file"));
+        assert_eq!(
+            url.path().trim_start_matches('/'),
+            super::workspace::display_path(root).trim_start_matches('/')
+        );
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.click("help-menu", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("About")
+        );
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("about-application").label(),
+            Some("Regressify Desktop")
+        );
+        assert_eq!(
+            window.find("about-version").label(),
+            Some(format!("Version: {}", env!("CARGO_PKG_VERSION")).as_str())
+        );
+        assert_eq!(
+            window.find("about-author").label(),
+            Some("Author: Tuyen Pham")
+        );
+        assert_eq!(
+            window.find("about-website").label(),
+            Some("https://tuyen.blog/")
+        );
+        window.click("about-close", cx);
+        assert!(view.read(cx).unsaved());
+        view.update(cx, |this, _| this.session.workspace = None);
+        assert!(
+            !view
+                .read(cx)
+                .file_operation_enabled(super::files::Operation::OpenVSCode, cx)
+        );
+        assert!(
+            !view
+                .read(cx)
+                .file_operation_enabled(super::files::Operation::OpenFolder, cx)
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut TestAppContext) {
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
         let directory = tempfile::tempdir().unwrap();
@@ -2888,6 +2990,12 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             window.render_frame(cx);
             let titlebar = window.find("workspace-titlebar").bounds();
             assert!(titlebar.size.height <= px(38.));
+            let status = window.find("status").bounds();
+            assert!(status.top() >= titlebar.top() && status.bottom() <= titlebar.bottom());
+            assert_eq!(
+                window.find("application-version").label(),
+                Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
+            );
             let tabs = window.find("titlebar-navigation").bounds();
             assert!(tabs.origin.y < px(38.));
             let open = window.find("open-workspace").bounds();
@@ -2898,6 +3006,7 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             let navigation = window.find("workspace-navigation").bounds();
             assert!(navigation.origin.y <= px(39.));
             assert!(navigation.size.height >= px(height - 65.));
+            assert!(navigation.bottom() >= px(height - 2.));
             assert!(window.find("field-url").bounds().size.width >= px(190.));
             assert!(window.find("suite-run-test").visible());
             window.within("workbench-tabs").click(1_usize, cx);
@@ -2905,6 +3014,12 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             window.within("workbench-tabs").click(0_usize, cx);
             assert_eq!(view.read(cx).main_tab, 0);
             assert!(window.find("field-url").visible());
+            window.within("workbench-tabs").click(2_usize, cx);
+            assert!(window.find("results-panel").bounds().bottom() >= px(height - 2.));
+            assert!(
+                window.find("results-status").bounds().bottom()
+                    <= window.find("capture-heading").bounds().top()
+            );
         })
         .unwrap();
     }
@@ -3731,6 +3846,145 @@ async fn suite_commands_request_execution_directly_and_keep_editor_state(cx: &mu
         assert!(!view.read(cx).session.dirty());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
+    cx: &mut TestAppContext,
+) {
+    let long_url = format!("https://example.test/{}", "long-capture-path/".repeat(24));
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+            "id": "ui-test", "tests": [
+                {"status": "fail", "pair": {"scenarioLabel": "Carousel", "selector": "body .carousel", "referenceUrl": "https://production.example.test/start", "url": "https://staging.example.test/start", "diff": {"misMatchPercentage": "4.20", "dimensionDifference": {"width": -20, "height": 40}}}},
+                {"status": "pass", "pair": {"scenarioLabel": "Whole document", "selector": "document", "referenceUrl": "https://example.test/", "url": "https://example.test/", "diff": {"rawMisMatchPercentage": 0.0, "dimensionDifference": {"width": 0, "height": 0}}}},
+                {"status": "fail", "pair": {"label": "Legacy capture"}},
+                {"status": "pass", "pair": {"scenarioLabel": "Long URL capture", "selector": "document", "referenceUrl": long_url, "url": long_url}}
+            ]
+        })).unwrap()).unwrap();
+        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find("capture-information").is_some()
+        })
+        .await;
+        for index in 0_usize..4 {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click(("capture", index), cx);
+                window.hover("capture-information", cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("capture-info-label").is_some_and(|label| {
+                    label.label()
+                        == Some(match index {
+                            0 => "Label: Carousel",
+                            1 => "Label: Whole document",
+                            3 => "Label: Long URL capture",
+                            _ => "Label: Legacy capture",
+                        })
+                })
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                let bounds = window.find("capture-information-content").bounds();
+                assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
+                assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(height));
+                let label = window.find("capture-info-label").bounds();
+                let selector = window.find("capture-info-selector").bounds();
+                assert_eq!(label.top(), selector.top());
+                assert!(label.right() < selector.left() && selector.right() <= bounds.right());
+                let diff_stats = [
+                    "capture-info-diff",
+                    "capture-info-diff-x",
+                    "capture-info-diff-y",
+                ]
+                .map(|id| window.find(id).bounds());
+                for pair in diff_stats.windows(2) {
+                    assert_eq!(pair[0].top(), pair[1].top());
+                    assert!(pair[0].right() < pair[1].left());
+                }
+                assert!(diff_stats[2].right() <= bounds.right());
+                assert!(bounds.size.height <= px(120.));
+                assert_eq!(
+                    window.find("capture-info-selector").label(),
+                    Some(match index {
+                        0 => "Selector: body .carousel",
+                        1 | 3 => "Selector: document",
+                        _ => "Selector: Unavailable",
+                    })
+                );
+                assert_eq!(
+                    window.find("capture-info-diff").label(),
+                    Some(match index {
+                        0 => "Diff %: 4.20%",
+                        1 => "Diff %: 0.000%",
+                        _ => "Diff %: Unavailable",
+                    })
+                );
+                assert_eq!(
+                    window.find("capture-info-diff-x").label(),
+                    Some(match index {
+                        0 => "Diff X: -20",
+                        1 => "Diff X: 0",
+                        _ => "Diff X: Unavailable",
+                    })
+                );
+                assert_eq!(
+                    window.find("capture-info-diff-y").label(),
+                    Some(match index {
+                        0 => "Diff Y: 40",
+                        1 => "Diff Y: 0",
+                        _ => "Diff Y: Unavailable",
+                    })
+                );
+                if index == 1 || index == 3 {
+                    assert_eq!(
+                        window.find(("capture-info-url-value", 1_usize)).label(),
+                        Some("Same URL")
+                    );
+                }
+                for image in 0_usize..2 {
+                    let label = window.find(("capture-info-url-label", image)).bounds();
+                    let url = window.find(("capture-info-url-value", image)).bounds();
+                    let copy = window.find(("capture-info-copy-url", image)).bounds();
+                    assert!((label.center().y - url.center().y).abs() <= px(1.));
+                    assert!((copy.center().y - url.center().y).abs() <= px(1.));
+                    assert!(url.left() >= label.right() && url.left() - label.right() <= px(8.));
+                    assert!(copy.left() >= url.right() && copy.left() - url.right() <= px(8.));
+                    assert!(copy.right() <= bounds.right());
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("unchanged".into()));
+                    window.click(("capture-info-copy-url", image), cx);
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().unwrap(),
+                        match (index, image) {
+                            (0, 0) => "https://production.example.test/start",
+                            (0, _) => "https://staging.example.test/start",
+                            (1, _) => "https://example.test/",
+                            (3, _) => long_url.as_str(),
+                            _ => "unchanged",
+                        }
+                    );
+                    assert!(window.find("capture-information-content").visible());
+                }
+                window.hover("capture-search", cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("capture-information-content").is_none()
+            })
+            .await;
+        }
+    }
 }
 
 #[gpui_kit::test]
