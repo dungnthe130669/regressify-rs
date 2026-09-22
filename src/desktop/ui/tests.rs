@@ -61,7 +61,7 @@ fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable
         window.click("field-url", cx);
         window.press("ctrl-a", cx);
         window.input("https://example.com/latest-draft", cx);
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         assert!(
             view.read(cx)
                 .source
@@ -74,7 +74,7 @@ fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable
         window.render_frame(cx);
         window.press("ctrl-a", cx);
         window.input("scenarios:\n- url: https://example.com/from-source", cx);
-        window.within("editor-tabs").click(0_usize, cx);
+        window.within("editor-tabs").click(1_usize, cx);
         view.update(cx, |this, cx| {
             this.select(Selection::Scenario(0), window, cx)
         });
@@ -83,13 +83,13 @@ fn switching_editor_views_flushes_pending_text_and_keeps_invalid_source_editable
             window.find("field-url").value(),
             Some("https://example.com/from-source")
         );
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         window.focus(&source.read(cx).focus_handle(cx), cx);
         window.render_frame(cx);
         window.press("ctrl-a", cx);
         window.input("scenarios: [}", cx);
         let draft = view.read(cx).source.read(cx).value();
-        window.within("editor-tabs").click(0_usize, cx);
+        window.within("editor-tabs").click(1_usize, cx);
         assert_eq!(view.read(cx).tab, 1);
         assert_eq!(view.read(cx).source.read(cx).value(), draft);
         assert!(view.read(cx).diagnostic.is_some());
@@ -333,7 +333,7 @@ async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
     });
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         window.click("source-larger", cx);
         assert!(!view.read(cx).busy);
         window.click("source-larger", cx);
@@ -550,7 +550,7 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         view.read(cx).source.clone().update(cx, |state, cx| {
             state.set_value("scenarios:\n  - url: /\n    ", window, cx);
             state.set_selected_range(state.text().len()..state.text().len(), cx);
@@ -628,7 +628,7 @@ async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppCo
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         let original = view.read(cx).source.read(cx).value();
         window.click("source-wrap", cx);
         assert!(!view.read(cx).source_wrap);
@@ -2341,6 +2341,23 @@ fn suite_row_click_checks_the_selected_suite(cx: &mut TestAppContext) {
         window.render_frame(cx);
         window.click(("file", index), cx);
         assert!(view.read(cx).runs.read(cx).all_selected("ui-test"));
+        assert_eq!(view.read(cx).tab, 1, "Selecting a suite must open Source");
+        assert_eq!(
+            window.within("editor-tabs").find(0_usize).label(),
+            Some("Source")
+        );
+        assert_eq!(
+            window.within("editor-tabs").find(1_usize).label(),
+            Some("Fields")
+        );
+        assert!(
+            window.within("editor-tabs").find(0_usize).bounds().right()
+                <= window.within("editor-tabs").find(1_usize).bounds().left()
+        );
+        window.within("editor-tabs").click(1_usize, cx);
+        assert_eq!(view.read(cx).tab, 0);
+        window.click(("file", index), cx);
+        assert_eq!(view.read(cx).tab, 1);
     })
     .unwrap();
 }
@@ -2922,6 +2939,8 @@ async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_su
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(view.read(cx).tab, 1, "Newly loaded suites must open Source");
+        assert!(window.find("source-find").visible());
         assert_eq!(window.find("scenario-count").label(), Some("2 of 2"));
         assert_eq!(
             window.find(("scenario", 0_usize)).label(),
@@ -2937,6 +2956,11 @@ async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_su
     })
     .await;
     cx.update(|cx| {
+        assert_eq!(
+            view.read(cx).tab,
+            0,
+            "Scenario selection must still open Fields"
+        );
         assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
         assert_eq!(
             view.read(cx).session.open.as_ref().unwrap().entry.path,
@@ -3259,6 +3283,7 @@ async fn setting_search_reveals_advanced_fields_without_changing_the_draft(
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
         window.render_frame(cx);
+        window.within("editor-tabs").click(1_usize, cx);
         assert!(window.try_find("field-debug").is_none());
         window.click("field-search", cx);
         window.input("debug", cx);
@@ -3295,6 +3320,7 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
         window.render_frame(cx);
+        window.within("editor-tabs").click(1_usize, cx);
         window.click("field-search", cx);
         window.input("asyncCaptureLimit", cx);
     })
@@ -3962,7 +3988,7 @@ async fn invalid_source_exposes_a_diagnostic_and_save_does_not_write(cx: &mut Te
     let original = std::fs::read_to_string(&path).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.within("editor-tabs").click(1_usize, cx);
+        window.within("editor-tabs").click(0_usize, cx);
         let focus = view.read(cx).source.read(cx).focus_handle(cx);
         window.focus(&focus, cx);
         window.render_frame(cx);

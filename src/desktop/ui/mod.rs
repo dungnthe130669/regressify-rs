@@ -607,12 +607,11 @@ impl Workbench {
                 this.main_tab = 0;
                 this.session.selection = selection;
                 this.session.reconcile_selection();
-                this.tab = if this
-                    .session
-                    .open
-                    .as_ref()
-                    .is_some_and(|open| open.entry.kind == DocumentKind::Data)
-                {
+                this.tab = if this.session.open.as_ref().is_some_and(|open| {
+                    open.entry.kind == DocumentKind::Data
+                        || (open.entry.kind == DocumentKind::Suite
+                            && this.session.selection == Selection::Root)
+                }) {
                     1
                 } else {
                     0
@@ -1356,7 +1355,17 @@ impl Workbench {
         match self.session.select(selection) {
             Ok(()) => {
                 self.reset_field_view(window, cx);
-                self.tab = 0;
+                self.tab = if self.session.selection == Selection::Root
+                    && self
+                        .session
+                        .open
+                        .as_ref()
+                        .is_some_and(|open| open.entry.kind == DocumentKind::Suite)
+                {
+                    1
+                } else {
+                    0
+                };
                 self.overview = false;
                 self.main_tab = 0;
                 self.rebuild_fields(window, cx);
@@ -2264,12 +2273,12 @@ impl Workbench {
                     .child(
                         TabBar::new("editor-tabs")
                             .underline()
-                            .selected_index(self.tab)
+                            .selected_index([1, 0, 2][self.tab])
                             .on_click(cx.listener(|this, index, window, cx| {
-                                this.select_editor_tab(*index, window, cx);
+                                this.select_editor_tab([1, 0, 2][*index], window, cx);
                             }))
-                            .child(Tab::new().label("Fields"))
                             .child(Tab::new().label("Source"))
+                            .child(Tab::new().label("Fields"))
                             .child(Tab::new().label("Effective")),
                     )
                     .child(

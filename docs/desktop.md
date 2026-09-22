@@ -681,7 +681,12 @@ a diagnostic rather than a guessed value.
 
 ### Source and Save Safety
 
-Switching Fields, Source, and Effective reads pending input before changing the
+Editor tabs are ordered Source, Fields, and Effective. Selecting a test suite in
+the editor opens Source, including reselecting an already-open suite. Selecting
+a scenario or action opens its Fields. Suite selection while reviewing Results
+stays in Results and switches the displayed suite.
+
+Switching Source, Fields, and Effective reads pending input before changing the
 view. Invalid source stays in Source when Fields cannot represent it, with its
 diagnostic retained. File-menu actions use the same availability rules as command
 search, including disabling suite deletion for unsaved documents.
