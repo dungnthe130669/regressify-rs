@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -10,7 +9,6 @@ use chromiumoxide::{
     cdp::browser_protocol::page::{CaptureScreenshotFormat, Viewport},
     page::ScreenshotParams,
 };
-use rgb::RGBA8;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -925,87 +923,10 @@ fn selector_capture_script(selector: &str) -> Result<String> {
     ))
 }
 
-/// Deterministic error-placeholder PNG (a red warning triangle with an
-/// exclamation mark on a white background). Generated once and cached. The
-/// image is only for display in the report; failure detection is driven by the
-/// JSON error marker (see [`write_error_screenshot`] / [`read_error_marker`]).
-fn error_icon_png() -> &'static [u8] {
-    static ICON: OnceLock<Vec<u8>> = OnceLock::new();
-    ICON.get_or_init(generate_error_icon).as_slice()
-}
-
-/// Render the error placeholder as raw PNG bytes.
-fn generate_error_icon() -> Vec<u8> {
-    const W: usize = 512;
-    const H: usize = 512;
-
-    let red = RGBA8::new(214, 40, 40, 255);
-    let white = RGBA8::new(255, 255, 255, 255);
-    let dark = RGBA8::new(30, 30, 30, 255);
-
-    // White background.
-    let mut img = vec![white; W * H];
-
-    // Triangle vertices (outer red border) and an inwardly-scaled white interior.
-    let outer = [(256.0_f64, 48.0_f64), (40.0, 452.0), (472.0, 452.0)];
-    let cx = (outer[0].0 + outer[1].0 + outer[2].0) / 3.0;
-    let cy = (outer[0].1 + outer[1].1 + outer[2].1) / 3.0;
-    let shrink = 0.74;
-    let inner = [
-        (
-            cx + (outer[0].0 - cx) * shrink,
-            cy + (outer[0].1 - cy) * shrink,
-        ),
-        (
-            cx + (outer[1].0 - cx) * shrink,
-            cy + (outer[1].1 - cy) * shrink,
-        ),
-        (
-            cx + (outer[2].0 - cx) * shrink,
-            cy + (outer[2].1 - cy) * shrink,
-        ),
-    ];
-
-    let sign = |p: (f64, f64), a: (f64, f64), b: (f64, f64)| -> f64 {
-        (p.0 - b.0) * (a.1 - b.1) - (a.0 - b.0) * (p.1 - b.1)
-    };
-    let in_tri = |p: (f64, f64), t: &[(f64, f64); 3]| -> bool {
-        let d1 = sign(p, t[0], t[1]);
-        let d2 = sign(p, t[1], t[2]);
-        let d3 = sign(p, t[2], t[0]);
-        let has_neg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
-        let has_pos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
-        !(has_neg && has_pos)
-    };
-
-    for y in 0..H {
-        for x in 0..W {
-            let p = (x as f64 + 0.5, y as f64 + 0.5);
-            if in_tri(p, &outer) {
-                img[y * W + x] = if in_tri(p, &inner) { white } else { red };
-            }
-        }
-    }
-
-    // Exclamation mark (bar + dot) painted dark over the white interior.
-    let bar_half = 20.0;
-    let bar_top = 205.0;
-    let bar_bottom = 350.0;
-    let dot_cy = 400.0;
-    let dot_r = 24.0;
-    for y in 0..H {
-        for x in 0..W {
-            let fx = x as f64 + 0.5;
-            let fy = y as f64 + 0.5;
-            let on_bar = (fx - cx).abs() <= bar_half && (bar_top..=bar_bottom).contains(&fy);
-            let on_dot = (fx - cx).powi(2) + (fy - dot_cy).powi(2) <= dot_r * dot_r;
-            if on_bar || on_dot {
-                img[y * W + x] = dark;
-            }
-        }
-    }
-
-    lodepng::encode32(&img, W, H).expect("failed to encode error placeholder PNG")
+/// Shared rounded error artwork for captures and report previews. Capture failure
+/// detection uses the JSON sidecar, not the displayed pixels.
+pub(crate) fn error_icon_png() -> &'static [u8] {
+    include_bytes!("../snapshot/data/error-icon.png")
 }
 
 /// Sidecar JSON marker recording that a screenshot is a capture failure.
@@ -1179,10 +1100,18 @@ mod tests {
     #[test]
     fn error_icon_is_deterministic_and_valid_png() {
         const PNG_SIGNATURE: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-        let a = error_icon_png();
-        let b = generate_error_icon();
-        assert_eq!(a, b.as_slice(), "error icon must be byte-deterministic");
-        assert_eq!(&a[..8], &PNG_SIGNATURE, "error icon must be a valid PNG");
+        let bytes = error_icon_png();
+        assert!(std::ptr::eq(bytes, error_icon_png()));
+        assert_eq!(
+            &bytes[..8],
+            &PNG_SIGNATURE,
+            "error icon must be a valid PNG"
+        );
+        assert!(lodepng::decode32(bytes).is_ok());
+        assert!(
+            bytes == include_bytes!("../snapshot/data/error-icon.png"),
+            "Capture failures must use the same rounded error artwork as the report"
+        );
     }
 
     #[test]

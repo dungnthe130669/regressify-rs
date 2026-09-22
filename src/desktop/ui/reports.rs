@@ -95,12 +95,19 @@ impl LoadedImage {
         path: Option<&str>,
     ) -> Result<Self> {
         match path.map(|path| artifacts.read_image(root, path)) {
-            Some(Ok((image, bytes))) => Ok(Self {
-                image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
-                width: image.width,
-                height: image.height,
-                path: Some(image.path),
-            }),
+            Some(Ok((image, bytes))) => {
+                if matches!(label, "Reference" | "Test")
+                    && crate::test::capture::read_error_marker(&image.path).is_some()
+                {
+                    return Self::error_placeholder();
+                }
+                Ok(Self {
+                    image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
+                    width: image.width,
+                    height: image.height,
+                    path: Some(image.path),
+                })
+            }
             Some(Err(error))
                 if label == "Reference"
                     && error
@@ -116,9 +123,9 @@ impl LoadedImage {
     }
 
     fn error_placeholder() -> Result<Self> {
-        let bytes = include_bytes!("../../snapshot/data/error-icon.png");
+        let bytes = crate::test::capture::error_icon_png();
         let (width, height) = crate::helpers::png::read_bounded_png_dimensions_from_reader(
-            bytes.as_slice(),
+            bytes,
             Path::new("error-icon.png"),
         )?;
         Ok(Self {
@@ -2009,6 +2016,57 @@ impl ResultsPanel {
 mod pointer_tests {
     use super::{PointerGuides, ZOOM_LEVELS, next_zoom};
     use gpui_kit::{Bounds, point, px, size};
+
+    #[test]
+    fn marked_reference_and_test_failures_use_the_shared_rounded_artwork() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join(".regressify");
+        let suite = root.join("shop");
+        let html = suite.join("html_report");
+        let run = suite.join("bitmaps_test/run-1");
+        std::fs::create_dir_all(&html).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("report.json"), r#"{"id":"shop","tests":[]}"#).unwrap();
+        let legacy = lodepng::encode32(&[214_u8, 40, 40, 255], 1, 1).unwrap();
+        let legacy_path = html.join("legacy-error.png");
+        std::fs::write(&legacy_path, &legacy).unwrap();
+        std::fs::write(
+            crate::test::capture::error_marker_path(&legacy_path),
+            r#"{"error":true,"message":"Capture failed"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            html.join("diff-error.png"),
+            crate::test::capture::error_icon_png(),
+        )
+        .unwrap();
+        let catalog = super::Catalog::load(&root).unwrap();
+        let artifacts = catalog.reports[0].artifacts();
+        let diff =
+            super::LoadedImage::load(&artifacts, &root, "Diff", Some("diff-error.png")).unwrap();
+        let shared = super::LoadedImage::error_placeholder().unwrap();
+        for label in ["Reference", "Test"] {
+            let preview =
+                super::LoadedImage::load(&artifacts, &root, label, Some("legacy-error.png"))
+                    .unwrap();
+            assert_eq!((preview.width, preview.height), (diff.width, diff.height));
+            assert_eq!(
+                (preview.width, preview.height),
+                (shared.width, shared.height)
+            );
+            assert!(preview.path.is_none());
+        }
+        assert!(std::fs::read(&legacy_path).unwrap() == legacy);
+        std::fs::write(
+            crate::test::capture::error_marker_path(&legacy_path),
+            r#"{"error":false,"message":""}"#,
+        )
+        .unwrap();
+        let valid =
+            super::LoadedImage::load(&artifacts, &root, "Test", Some("legacy-error.png")).unwrap();
+        assert_eq!((valid.width, valid.height), (1, 1));
+        assert!(valid.path.is_some());
+    }
 
     #[test]
     fn reference_placeholder_only_replaces_missing_reference_images() {

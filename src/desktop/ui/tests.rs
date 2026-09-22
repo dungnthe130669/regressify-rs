@@ -5554,13 +5554,21 @@ async fn failed_reference_uses_error_placeholder_in_image_views(cx: &mut TestApp
     std::fs::create_dir_all(output.join("html_report")).unwrap();
     let placeholder = include_bytes!("../../snapshot/data/error-icon.png");
     let image = lodepng::decode32(placeholder).unwrap();
-    std::fs::write(run.join("failed.png"), placeholder).unwrap();
+    let legacy = lodepng::encode32(&[214_u8, 40, 40, 255], 1, 1).unwrap();
+    std::fs::write(run.join("failed.png"), &legacy).unwrap();
+    std::fs::write(
+        run.join("failed.png.error.json"),
+        r#"{"error":true,"message":"Capture failed: missing selector #pay"}"#,
+    )
+    .unwrap();
+    std::fs::write(run.join("failed_diff.png"), placeholder).unwrap();
     let report = serde_json::json!({"id": "ui-test", "tests": [{
         "status": "fail",
         "pair": {
             "label": "Failed reference",
             "reference": "../bitmaps_reference/failed.png",
             "test": "../bitmaps_test/run-1/failed.png",
+            "diffImage": "../bitmaps_test/run-1/failed_diff.png",
             "engineErrorMsg": "Capture failed: missing selector #pay"
         }
     }]});
@@ -5582,30 +5590,33 @@ async fn failed_reference_uses_error_placeholder_in_image_views(cx: &mut TestApp
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         let dimensions = format!("{} x {}", image.width, image.height);
-        assert_eq!(
-            window.find(("image-details", 0_usize)).label(),
-            Some(format!("Reference {dimensions}").as_str())
-        );
-        assert_eq!(
-            window.find(("image-details", 1_usize)).label(),
-            Some(format!("Test {dimensions}").as_str())
-        );
+        for (index, label) in ["Reference", "Test", "Diff"].into_iter().enumerate() {
+            assert_eq!(
+                window.find(("image-details", index)).label(),
+                Some(format!("{label} {dimensions}").as_str())
+            );
+            let canvas = window.find(("image-content", index)).bounds().size;
+            let reference = window.find(("image-content", 0_usize)).bounds().size;
+            assert!(
+                (canvas.width - reference.width).abs() <= px(1.)
+                    && (canvas.height - reference.height).abs() <= px(1.)
+            );
+        }
         assert_eq!(
             window.find("capture-error").label(),
             Some("Capture failed: missing selector #pay")
         );
-        assert_eq!(
-            window.find(("image-content", 0_usize)).bounds().size,
-            window.find(("image-content", 1_usize)).bounds().size
-        );
-        window.within("image-modes").click(0_usize, cx);
-        assert!(window.find(("image-content", 0_usize)).visible());
-        assert!(window.find(("image-details", 0_usize)).visible());
-        window.right_click(("image-content", 0_usize), cx);
-        assert!(window.try_find("popup-menu").is_none());
+        for index in [0_usize, 1] {
+            window.within("image-modes").click(index, cx);
+            assert!(window.find(("image-content", index)).visible());
+            assert!(window.find(("image-details", index)).visible());
+            window.right_click(("image-content", index), cx);
+            assert!(window.try_find("popup-menu").is_none());
+        }
     })
     .unwrap();
     assert!(!output.join("bitmaps_reference/failed.png").exists());
+    assert!(std::fs::read(run.join("failed.png")).unwrap() == legacy);
 }
 
 #[gpui_kit::test]
