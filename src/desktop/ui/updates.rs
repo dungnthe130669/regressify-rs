@@ -544,6 +544,8 @@ impl Workbench {
                 return;
             }
         }
+        #[cfg(target_os = "windows")]
+        self.taskbar.take();
         cx.quit();
     }
 }

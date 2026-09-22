@@ -113,6 +113,8 @@ pub struct Workbench {
     session: Session,
     activation_task: Option<Task<()>>,
     workspace_instance: Option<DesktopInstance>,
+    #[cfg(target_os = "windows")]
+    taskbar: Option<super::jump_list::WindowTaskbar>,
     source: Entity<EditorState>,
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
@@ -291,6 +293,8 @@ impl Workbench {
             session: Session::default(),
             workspace_instance: None,
             activation_task: None,
+            #[cfg(target_os = "windows")]
+            taskbar: None,
             source,
             resolved,
             search,
@@ -2660,6 +2664,11 @@ pub fn launch(instance: Option<DesktopInstance>) {
                     },
                     |window, cx| {
                         let view = cx.new(|cx| Workbench::new(window, cx));
+                        #[cfg(target_os = "windows")]
+                        match super::jump_list::initialize_window(window) {
+                            Ok(taskbar) => view.update(cx, |this, _| this.taskbar = Some(taskbar)),
+                            Err(error) => eprintln!("Cannot set Windows taskbar icon: {error:#}"),
+                        }
                         let weak = view.downgrade();
                         window.on_window_should_close(cx, move |window, cx| {
                             weak.update(cx, |this, cx| {

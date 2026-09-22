@@ -1,6 +1,6 @@
 [package]
 name = "regressify"
-version = "0.21.0"
+version = "0.22.0"
 edition = "2024"
 default-run = "regressify"
 
@@ -19,7 +19,7 @@ default = ["local"]
 local = []
 cloud = []
 desktop = ["local", "dep:yaml-edit", "dep:tempfile", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:zip", "dep:keyring", "dep:zeroize", "dep:imagequant"]
-gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser"]
+gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser", "dep:raw-window-handle"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
 [dependencies]
@@ -68,7 +68,8 @@ zeroize = { version = "1", optional = true }
 zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem"] }
+raw-window-handle = { version = "0.6", optional = true }
+windows = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Storage_EnhancedStorage", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Registry", "Win32_System_Variant", "Win32_UI_Shell", "Win32_UI_Shell_Common", "Win32_UI_Shell_PropertiesSystem"] }
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Threading"] }
 
 [dev-dependencies]

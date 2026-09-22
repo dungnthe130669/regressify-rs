@@ -8,9 +8,11 @@ fn generate_pe_header() {
     if cfg!(unix) {
         res.set_windres_path("x86_64-w64-mingw32-windres");
     }
-    // res.set_icon("favicon.ico");
     res.set("LegalCopyright", &copyright);
     if std::env::var_os("CARGO_FEATURE_GUI").is_some() {
+        println!("cargo:rerun-if-changed=assets/icon.ico");
+        res.set_icon("assets/icon.ico");
+        res.append_rc_content("STRINGTABLE\nBEGIN\n    101 \"Regressify Desktop\"\nEND\n");
         let (version, parts) = desktop_version();
         let packed = parts
             .iter()

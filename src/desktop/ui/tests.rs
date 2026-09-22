@@ -3511,6 +3511,13 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             window.render_frame(cx);
             let titlebar = window.find("workspace-titlebar").bounds();
             assert!(titlebar.size.height <= px(38.));
+            let logo = window.find("application-logo").bounds();
+            assert_eq!(logo.size, size(px(22.), px(22.)));
+            assert!(logo.top() >= titlebar.top() && logo.bottom() <= titlebar.bottom());
+            assert_eq!(
+                window.find("application-logo").label(),
+                Some("Regressify logo")
+            );
             let status = window.find("status").bounds();
             assert!(status.top() >= titlebar.top() && status.bottom() <= titlebar.bottom());
             assert_eq!(

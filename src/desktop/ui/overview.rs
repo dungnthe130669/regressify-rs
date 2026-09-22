@@ -1,4 +1,12 @@
 use super::*;
+use std::sync::{Arc, LazyLock};
+
+static APPLICATION_LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
+    Arc::new(Image::from_bytes(
+        ImageFormat::Png,
+        include_bytes!("../../../assets/icon.png").to_vec(),
+    ))
+});
 
 impl Workbench {
     pub(super) fn show_about(
@@ -94,15 +102,19 @@ impl Workbench {
                     .pr_2()
                     .child(
                         div()
+                            .id("application-logo")
+                            .role(Role::Image)
+                            .aria_label("Regressify logo")
+                            .test_support()
                             .size(px(22.))
                             .flex_shrink_0()
                             .flex()
                             .items_center()
                             .justify_center()
                             .child(
-                                Icon::new(gpui_kit::assets::IconName::Layers)
-                                    .size_4()
-                                    .text_color(cx.theme().primary),
+                                img(Arc::clone(&APPLICATION_LOGO))
+                                    .size_full()
+                                    .object_fit(ObjectFit::Contain),
                             ),
                     )
                     .child(

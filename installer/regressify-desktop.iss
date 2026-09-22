@@ -34,14 +34,15 @@ Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
 SetupLogging=yes
+SetupIconFile=..\assets\icon.ico
 UninstallDisplayIcon={app}\regressify-desktop.exe
 
 [Files]
 Source: "{#SourceDir}\regressify-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; AppUserModelID: "Regressify.Desktop"
-Name: "{autodesktop}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; AppUserModelID: "Regressify.Desktop"
+Name: "{group}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; IconFilename: "{app}\regressify-desktop.exe"; IconIndex: 0; AppUserModelID: "Regressify.Desktop"
+Name: "{autodesktop}\Regressify Desktop"; Filename: "{app}\regressify-desktop.exe"; IconFilename: "{app}\regressify-desktop.exe"; IconIndex: 0; AppUserModelID: "Regressify.Desktop"
 
 [Registry]
 Root: HKCU; Subkey: "Software\Classes\Directory\shell\RegressifyDesktop"; ValueType: string; ValueName: ""; ValueData: "Open with Regressify Desktop"; Flags: uninsdeletekey

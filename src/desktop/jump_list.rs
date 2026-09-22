@@ -1,36 +1,164 @@
 use std::{
     collections::BTreeSet,
+    ffi::OsString,
     fs,
-    os::windows::ffi::OsStrExt,
+    os::windows::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::OnceLock,
 };
 
 use anyhow::{Context, Result, anyhow};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use sha2::{Digest, Sha256};
 use windows::{
     Win32::{
-        Foundation::{E_ACCESSDENIED, RPC_E_CHANGED_MODE},
-        Storage::EnhancedStorage::PKEY_Title,
-        System::Com::{
-            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
-            CoUninitialize, StructuredStorage::PROPVARIANT,
+        Foundation::{
+            E_ACCESSDENIED, ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND, HWND, PROPERTYKEY,
+            RPC_E_CHANGED_MODE,
+        },
+        Storage::EnhancedStorage::{
+            PKEY_AppUserModel_ID, PKEY_AppUserModel_RelaunchCommand,
+            PKEY_AppUserModel_RelaunchDisplayNameResource, PKEY_AppUserModel_RelaunchIconResource,
+            PKEY_Title,
+        },
+        System::{
+            Com::{
+                CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+                CoUninitialize, StructuredStorage::PROPVARIANT,
+            },
+            Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW},
         },
         UI::Shell::{
             Common::{IObjectArray, IObjectCollection},
             DestinationList, EnumerableObjectCollection, ICustomDestinationList, IShellLinkW,
-            PropertiesSystem::{IPropertyStore, PSCoerceToCanonicalValue},
+            PropertiesSystem::{
+                IPropertyStore, PSCoerceToCanonicalValue, SHGetPropertyStoreForWindow,
+            },
             SetCurrentProcessExplicitAppUserModelID, ShellLink,
         },
     },
-    core::{HSTRING, Interface, PCWSTR},
+    core::{BSTR, HSTRING, Interface, PCWSTR, w},
 };
 
 const APP_ID: &str = "Regressify.Desktop";
-static ENABLED: AtomicBool = AtomicBool::new(false);
+static APP_IDENTITY: OnceLock<String> = OnceLock::new();
+
+fn installed_executable() -> Result<Option<PathBuf>> {
+    let mut buffer = vec![0u16; 32768];
+    let mut length = (buffer.len() * size_of::<u16>()) as u32;
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(
+                "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{ED6F0908-7E11-4608-A532-E43482AA117B}_is1"
+            ),
+            w!("InstallLocation"),
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            None,
+            Some(buffer.as_mut_ptr().cast()),
+            Some(&mut length),
+        )
+    };
+    if result == ERROR_FILE_NOT_FOUND || result == ERROR_PATH_NOT_FOUND {
+        return Ok(None);
+    }
+    result
+        .ok()
+        .context("Cannot read the desktop installation location")?;
+    let end = buffer
+        .iter()
+        .position(|unit| *unit == 0)
+        .unwrap_or(buffer.len());
+    Ok((end > 0)
+        .then(|| PathBuf::from(OsString::from_wide(&buffer[..end])).join("regressify-desktop.exe")))
+}
+
+fn application_id(executable: &Path, installed: Option<&Path>) -> String {
+    let normalize = |path: &Path| {
+        fs::canonicalize(path)
+            .unwrap_or_else(|_| path.to_path_buf())
+            .as_os_str()
+            .to_ascii_lowercase()
+    };
+    let executable = normalize(executable);
+    if installed.is_some_and(|installed| normalize(installed) == executable) {
+        return APP_ID.into();
+    }
+    let mut hash = Sha256::new();
+    for unit in executable.encode_wide() {
+        hash.update(unit.to_le_bytes());
+    }
+    format!("{APP_ID}.Portable.{:x}", hash.finalize())
+}
+
+const TASKBAR_PROPERTIES: [PROPERTYKEY; 4] = [
+    PKEY_AppUserModel_RelaunchCommand,
+    PKEY_AppUserModel_RelaunchIconResource,
+    PKEY_AppUserModel_RelaunchDisplayNameResource,
+    PKEY_AppUserModel_ID,
+];
+
+pub struct WindowTaskbar {
+    properties: IPropertyStore,
+}
+
+impl WindowTaskbar {
+    fn new(properties: IPropertyStore, executable: &Path, app_id: &str) -> Result<Self> {
+        let taskbar = Self { properties };
+        let path: Vec<_> = executable.as_os_str().encode_wide().collect();
+        let mut command = vec![b'"' as u16];
+        command.extend_from_slice(&path);
+        command.push(b'"' as u16);
+        let mut display_name = vec![b'@' as u16];
+        display_name.extend_from_slice(&path);
+        display_name.extend(",-101".encode_utf16());
+        let mut icon = path;
+        icon.extend(",-1".encode_utf16());
+        let values = [
+            PROPVARIANT::from(BSTR::from_wide(&command)),
+            PROPVARIANT::from(BSTR::from_wide(&icon)),
+            PROPVARIANT::from(BSTR::from_wide(&display_name)),
+            PROPVARIANT::from(app_id),
+        ];
+        for (key, value) in TASKBAR_PROPERTIES.iter().zip(values) {
+            unsafe { taskbar.properties.SetValue(key, &value)? };
+        }
+        Ok(taskbar)
+    }
+}
+
+impl Drop for WindowTaskbar {
+    fn drop(&mut self) {
+        for key in TASKBAR_PROPERTIES {
+            if let Err(error) = unsafe { self.properties.SetValue(&key, &PROPVARIANT::default()) } {
+                eprintln!("Cannot release Windows taskbar properties: {error:#}");
+            }
+        }
+    }
+}
+
+pub fn initialize_window(window: &gpui_kit::Window) -> Result<WindowTaskbar> {
+    let handle = HasWindowHandle::window_handle(window)
+        .map_err(|error| anyhow!("Cannot access Windows window handle: {error:?}"))?;
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return Err(anyhow!("The desktop window has no Windows handle"));
+    };
+    let properties = unsafe { SHGetPropertyStoreForWindow(HWND(handle.hwnd.get() as _))? };
+    let app_id = APP_IDENTITY
+        .get()
+        .ok_or_else(|| anyhow!("Windows shell identity is not initialized"))?;
+    WindowTaskbar::new(properties, &std::env::current_exe()?, app_id)
+}
 
 pub fn initialize() -> Result<()> {
-    unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(APP_ID))? };
-    ENABLED.store(true, Ordering::Release);
+    let app_id = application_id(
+        &std::env::current_exe()?,
+        installed_executable()?.as_deref(),
+    );
+    unsafe { SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(&app_id))? };
+    APP_IDENTITY
+        .set(app_id)
+        .map_err(|_| anyhow!("Windows shell identity is already initialized"))?;
     Ok(())
 }
 
@@ -39,11 +167,11 @@ pub fn record_workspace(workspace: &Path) {
 }
 
 pub fn refresh(reopened: Option<&Path>) {
-    if !ENABLED.load(Ordering::Acquire) {
+    let Some(app_id) = APP_IDENTITY.get() else {
         return;
-    }
+    };
     let result = super::workspace::Preferences::path()
-        .and_then(|path| refresh_for(&path, reopened, &std::env::current_exe()?, APP_ID));
+        .and_then(|path| refresh_for(&path, reopened, &std::env::current_exe()?, app_id));
     if let Err(error) = result {
         eprintln!("Cannot update recent workspaces in the Windows Jump List: {error:#}");
     }
@@ -241,8 +369,9 @@ fn refresh_for(
 #[cfg(test)]
 mod tests {
     use super::{
-        APP_ID, ComApartment, IPropertyStore, Interface, PKEY_Title, reconcile_removals,
-        refresh_for, removed_arguments, visible_workspaces, workspace_arguments, workspace_link,
+        APP_ID, ComApartment, IPropertyStore, Interface, PKEY_Title, TASKBAR_PROPERTIES,
+        WindowTaskbar, application_id, reconcile_removals, refresh_for, removed_arguments,
+        visible_workspaces, workspace_arguments, workspace_link,
     };
     use std::{collections::BTreeSet, os::windows::ffi::OsStrExt, path::Path};
     use windows::{
@@ -254,6 +383,71 @@ mod tests {
     };
 
     #[test]
+    fn taskbar_window_metadata_uses_running_executable_and_is_cleared_on_drop() {
+        let _apartment = ComApartment::enter().unwrap();
+        for path in [
+            r"C:\Program Files\Regressify Desktop\regressify-desktop.exe",
+            r"\\server\share\Regressify Desktop\regressify-desktop.exe",
+            "C:\\Workspaces\\\u{4f8b}\\regressify-desktop.exe",
+        ] {
+            let properties: IPropertyStore = unsafe {
+                let link: super::IShellLinkW =
+                    super::CoCreateInstance(&super::ShellLink, None, super::CLSCTX_INPROC_SERVER)
+                        .unwrap();
+                link.cast().unwrap()
+            };
+            let taskbar = WindowTaskbar::new(properties.clone(), Path::new(path), APP_ID).unwrap();
+            let expected = [
+                format!("\"{path}\""),
+                format!("{path},-1"),
+                format!("@{path},-101"),
+                APP_ID.into(),
+            ];
+            for (key, expected) in TASKBAR_PROPERTIES.iter().zip(expected) {
+                assert_eq!(
+                    unsafe { properties.GetValue(key).unwrap() }.to_string(),
+                    expected
+                );
+            }
+            drop(taskbar);
+            for key in TASKBAR_PROPERTIES {
+                assert!(
+                    unsafe { properties.GetValue(&key).unwrap() }
+                        .to_string()
+                        .is_empty()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn taskbar_identity_separates_portable_copies_from_installed_shortcuts() {
+        let installed = Path::new(r"C:\Custom Install\regressify-desktop.exe");
+        let debug = Path::new(r"D:\git\regressify-cli\target\debug\regressify-desktop.exe");
+        let release = Path::new(r"D:\git\regressify-cli\target\release\regressify-desktop.exe");
+        assert_eq!(application_id(installed, Some(installed)), APP_ID);
+        assert_eq!(
+            application_id(
+                Path::new(r"c:\CUSTOM INSTALL\regressify-desktop.exe"),
+                Some(installed)
+            ),
+            APP_ID
+        );
+        let portable = application_id(debug, Some(installed));
+        assert!(portable.starts_with("Regressify.Desktop.Portable."));
+        assert!(portable.len() <= 128);
+        assert_eq!(portable, application_id(debug, None));
+        assert_ne!(portable, application_id(release, Some(installed)));
+        assert_eq!(
+            portable,
+            application_id(
+                Path::new(r"d:\GIT\REGRESSIFY-CLI\TARGET\DEBUG\REGRESSIFY-DESKTOP.EXE"),
+                None
+            )
+        );
+    }
+
+    #[test]
     fn installer_shortcuts_use_matching_app_id() {
         let installer = include_str!("../../installer/regressify-desktop.iss");
         for location in ["{group}", "{autodesktop}"] {
@@ -261,6 +455,7 @@ mod tests {
             assert!(installer.lines().any(|line| {
                 line.starts_with(&shortcut)
                     && line.contains(&format!("AppUserModelID: \"{APP_ID}\""))
+                    && line.contains("IconFilename: \"{app}\\regressify-desktop.exe\"")
             }));
         }
     }

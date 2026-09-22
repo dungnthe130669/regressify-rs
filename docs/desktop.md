@@ -30,6 +30,39 @@ executable picker is needed. It launches itself in a private headless worker mod
 to isolate run settings and browser processes. Windows installation and in-app
 updates are described below; installer signing is not configured.
 
+### Desktop Icon
+
+The icon source is [assets/icon.svg](../assets/icon.svg). Windows GUI builds embed
+[assets/icon.ico](../assets/icon.ico) as resource `1`, which GPUI uses for the
+window and taskbar. The custom title bar embeds [assets/icon.png](../assets/icon.png)
+without tinting its gradient. Shortcuts, Jump Lists, and Explorer context menus
+use the executable's icon; the Windows installer uses the same artwork.
+
+The installed executable keeps the `Regressify.Desktop` taskbar identity.
+Local and portable copies use a stable identity derived from their executable
+path, so Windows does not reuse an installed copy's shortcut or cached icon.
+Their window metadata explicitly supplies the running executable's icon,
+display name, and relaunch command. Moving a portable copy changes its identity.
+
+The ICO contains transparent 32-bit images at 16, 20, 24, 32, 40, 48, 64, 128,
+and 256 pixels; the title-bar PNG is 256 pixels. The SVG viewBox tightly frames
+the letter to avoid oversized transparent margins. After editing the SVG,
+regenerate both exports with Node.js:
+
+```sh
+npm install --prefix target/icon-tools --no-save --package-lock=false --ignore-scripts @resvg/resvg-js@2.6.2 png-to-ico@2.1.8
+node ci/generate-icon.mjs
+```
+
+Commit the SVG and both exports together. Normal Rust and installer builds use
+the checked-in images and do not require Node.js or the export tools. On an
+unlocked Windows desktop with no other app instances running, verify the native
+window icons and rendered title-bar/taskbar pixels with:
+
+```powershell
+./ci/desktop-smoke.ps1 -IconFlows
+```
+
 ## Windows Installation and Updates
 
 Windows x86_64 releases include `Regressify-Desktop-Setup-N.N.N.N-x64.exe`.
