@@ -392,6 +392,8 @@ pub struct RunSnapshot {
     request: RunRequest,
     outcome: RunOutcome,
     progress: LiveProgress,
+    #[serde(default)]
+    suite_history: BTreeMap<PathBuf, BTreeMap<String, crate::progress::Counts>>,
     logs: VecDeque<LogLine>,
     omitted_chunks: usize,
 }
@@ -776,6 +778,7 @@ pub struct RunManager {
     pub omitted_chunks: usize,
     log_bytes: usize,
     pub progress: LiveProgress,
+    suite_history: BTreeMap<PathBuf, BTreeMap<String, crate::progress::Counts>>,
     revision: u64,
 }
 
@@ -792,6 +795,40 @@ impl RunManager {
         self.storage_path = Some(path);
     }
 
+    pub fn suite_counts(&self, output: &Path, id: &str) -> Option<crate::progress::Counts> {
+        if self
+            .request
+            .as_ref()
+            .is_none_or(|request| request.options.output_directory(&request.root) == output)
+        {
+            let counts = self.progress.counts(Some(id));
+            if counts.total > 0 {
+                return Some(counts);
+            }
+        }
+        self.suite_history.get(output)?.get(id).copied()
+    }
+
+    fn completed_suite_history(
+        &self,
+    ) -> BTreeMap<PathBuf, BTreeMap<String, crate::progress::Counts>> {
+        let mut history = self.suite_history.clone();
+        if self.progress.finished
+            && let Some(request) = &self.request
+        {
+            let suites = history
+                .entry(request.options.output_directory(&request.root))
+                .or_default();
+            for id in self.progress.suites.keys() {
+                let counts = self.progress.counts(Some(id));
+                if counts.total > 0 {
+                    suites.insert(id.clone(), counts);
+                }
+            }
+        }
+        history
+    }
+
     pub fn snapshot(&self) -> Option<RunSnapshot> {
         if self.active.is_some() || !self.progress.finished {
             return None;
@@ -804,6 +841,7 @@ impl RunManager {
             request,
             outcome: self.outcome.clone()?,
             progress: self.progress.clone(),
+            suite_history: self.completed_suite_history(),
             logs: self.logs.clone(),
             omitted_chunks: self.omitted_chunks,
         })
@@ -820,6 +858,8 @@ impl RunManager {
         self.request = Some(snapshot.request);
         self.outcome = Some(snapshot.outcome);
         self.progress = snapshot.progress;
+        self.suite_history = snapshot.suite_history;
+        self.suite_history = self.completed_suite_history();
         self.omitted_chunks = snapshot.omitted_chunks;
         self.persistence_error = None;
         self.recovered_from_reports = snapshot.recovered_from_reports;
@@ -858,6 +898,7 @@ impl RunManager {
             Some(events),
             scratch,
         )?);
+        self.suite_history = self.completed_suite_history();
         self.progress = LiveProgress::default();
         self.logs.clear();
         self.log_bytes = 0;
@@ -1123,6 +1164,80 @@ mod tests {
         );
         std::fs::write(&path, b"{broken").unwrap();
         assert!(RunSnapshot::load(&path, &root).is_err());
+    }
+
+    #[test]
+    fn suite_status_history_survives_other_runs_restart_and_output_changes() {
+        use crate::progress::{Event, Record};
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let output = root.join(".regressify");
+        let path = root.join("run.json");
+        let mut manager = RunManager::default();
+        let mut request = request(RunCommand::Test);
+        request.root = root.clone();
+        request.options.suites = vec!["first".into()];
+        manager.request = Some(request.clone());
+        manager.progress.apply(Record {
+            version: 1,
+            elapsed_ms: 10,
+            event: Event::Compared {
+                suite_id: "first".into(),
+                capture: "home_phone__FINAL".into(),
+                label: "Home".into(),
+                scenario_id: Some("home".into()),
+                passed: false,
+                error: Some("Visual mismatch".into()),
+            },
+        });
+        manager.progress.end(false, None);
+        manager.outcome = Some(RunOutcome::Completed);
+        manager.restore(manager.snapshot().unwrap()).unwrap();
+        request.options.suites = vec!["second".into()];
+        manager.request = Some(request.clone());
+        manager.progress = LiveProgress::default();
+        assert_eq!(manager.suite_counts(&output, "first").unwrap().failed, 1);
+        assert_eq!(manager.progress.counts(None).total, 0);
+        manager.progress.apply(Record {
+            version: 1,
+            elapsed_ms: 20,
+            event: Event::Compared {
+                suite_id: "second".into(),
+                capture: "home_phone__FINAL".into(),
+                label: "Home".into(),
+                scenario_id: Some("home".into()),
+                passed: true,
+                error: None,
+            },
+        });
+        assert_eq!(manager.suite_counts(&output, "first").unwrap().failed, 1);
+        assert_eq!(manager.suite_counts(&output, "second").unwrap().passed, 1);
+        assert_eq!(manager.progress.counts(None).total, 1);
+        manager.progress.end(false, None);
+        manager.snapshot().unwrap().save(&path).unwrap();
+        let mut reopened = RunManager::default();
+        reopened
+            .restore(RunSnapshot::load(&path, &root).unwrap().unwrap())
+            .unwrap();
+        assert_eq!(reopened.suite_counts(&output, "first").unwrap().failed, 1);
+        assert_eq!(reopened.suite_counts(&output, "second").unwrap().passed, 1);
+        assert_eq!(reopened.progress.counts(None).total, 1);
+        request.options.site_env = "staging".into();
+        reopened.request = Some(request);
+        reopened.progress = LiveProgress::default();
+        assert!(
+            reopened
+                .suite_counts(&root.join(".regressify__staging"), "first")
+                .is_none()
+        );
+        assert_eq!(reopened.suite_counts(&output, "first").unwrap().failed, 1);
+        let mut legacy = serde_json::to_value(manager.snapshot().unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("suiteHistory");
+        reopened
+            .restore(serde_json::from_value(legacy).unwrap())
+            .unwrap();
+        reopened.progress = LiveProgress::default();
+        assert_eq!(reopened.suite_counts(&output, "second").unwrap().passed, 1);
     }
 
     #[test]

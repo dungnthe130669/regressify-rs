@@ -19,6 +19,28 @@ impl ArtifactScan {
 }
 
 impl RunPanel {
+    pub(in crate::desktop::ui) fn suite_counts(&self, id: &str) -> crate::progress::Counts {
+        let Ok(root) = self.output_root() else {
+            return crate::progress::Counts::default();
+        };
+        self.manager
+            .suite_counts(&root, id)
+            .or_else(|| {
+                if self.artifacts.root.as_ref() != Some(&root) {
+                    return None;
+                }
+                self.artifacts
+                    .suites
+                    .get(id)?
+                    .as_ref()
+                    .ok()?
+                    .runs
+                    .first()?
+                    .counts
+            })
+            .unwrap_or_default()
+    }
+
     pub(in crate::desktop::ui) fn refresh_artifacts_if_idle(&mut self, cx: &mut Context<Self>) {
         if !self.running() && !self.artifacts.loading {
             self.refresh_artifacts(cx);

@@ -1860,6 +1860,142 @@ async fn selecting_suite_discovers_baseline_and_opens_saved_report_without_runni
 }
 
 #[gpui_kit::test]
+async fn suite_panel_restores_all_saved_statuses_and_keeps_them_during_other_runs(
+    cx: &mut TestAppContext,
+) {
+    use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+    use crate::progress::{Event, Job, LiveProgress, Record};
+    let directory = tempfile::tempdir().unwrap();
+    for (suite, run, passed) in [
+        ("ui-test", "first-run", false),
+        ("other", "second-run", true),
+    ] {
+        let path = directory.path().join(format!(
+            ".regressify/{suite}/bitmaps_test/{run}/report.json"
+        ));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tests = ["home_phone__FINAL", "home_phone__$step", "home_desktop__FINAL"]
+            .map(|capture| serde_json::json!({
+                "status": if passed || capture.ends_with("$step") { "pass" } else { "fail" },
+                "pair": { "fileName": format!("{capture}.png"), "scenarioId": "home", "scenarioLabel": "Home" }
+            }));
+        std::fs::write(
+            path,
+            serde_json::to_vec(&serde_json::json!({ "id": suite, "tests": tests })).unwrap(),
+        )
+        .unwrap();
+    }
+    let (handle, view) = editor(cx, directory.path());
+    let indices = cx
+        .update_window(handle.into(), |_, _, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("other")
+                    .unwrap();
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+                ["ui-test", "other"].map(|name| {
+                    this.session
+                        .entries
+                        .iter()
+                        .position(|entry| entry.suite_name().as_deref() == Some(name))
+                        .unwrap()
+                })
+            })
+        })
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find(("suite-activity", indices[0]))
+            .is_some_and(|status| status.label() == Some("2 failed / 2 finished"))
+            && window
+                .try_find(("suite-activity", indices[1]))
+                .is_some_and(|status| status.label() == Some("2 passed"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions {
+                        suites: vec!["other".into()],
+                        ..Default::default()
+                    },
+                });
+                panel.manager.progress = LiveProgress::default();
+                for event in [
+                    Event::Queued {
+                        job: Job {
+                            id: 1,
+                            suite_id: "other".into(),
+                            suite_name: "other".into(),
+                            scenario_id: "home".into(),
+                            label: "Home".into(),
+                            viewport: "phone".into(),
+                            captures: vec!["home_phone__FINAL".into()],
+                        },
+                    },
+                    Event::Started { id: 1 },
+                ] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 1,
+                        event,
+                    });
+                }
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("suite-activity", indices[0])).label(),
+            Some("2 failed / 2 finished")
+        );
+        assert_eq!(
+            window.find(("suite-activity", indices[1])).label(),
+            Some("1 running / 0 finished")
+        );
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 5,
+                    event: Event::Compared {
+                        suite_id: "other".into(),
+                        capture: "home_phone__FINAL".into(),
+                        label: "Home".into(),
+                        scenario_id: Some("home".into()),
+                        passed: true,
+                        error: None,
+                    },
+                });
+                panel.manager.progress.end(false, None);
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                let snapshot = panel.manager.snapshot().unwrap();
+                panel.manager = Default::default();
+                panel.restore_activity(None, Ok(Some(snapshot)), None, window, cx);
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("suite-activity", indices[0])).label(),
+            Some("2 failed / 2 finished")
+        );
+        assert_eq!(
+            window.find(("suite-activity", indices[1])).label(),
+            Some("1 passed")
+        );
+        assert_eq!(view.read(cx).runs.read(cx).progress().counts(None).total, 1);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn report_totals_and_access_survive_execution_errors(cx: &mut TestAppContext) {
     use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
     use crate::progress::{Event, Job, Record};
@@ -2143,7 +2279,7 @@ async fn followup_approve_and_compare_use_the_last_matching_run_but_capture_stay
 }
 
 #[gpui_kit::test]
-async fn scenario_editor_actions_keep_drafts_and_do_not_change_checkbox_scope_implicitly(
+async fn scenario_row_selection_keeps_drafts_and_scopes_reference_to_selected_scenario(
     cx: &mut TestAppContext,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -2152,8 +2288,8 @@ async fn scenario_editor_actions_keep_drafts_and_do_not_change_checkbox_scope_im
         window.render_frame(cx);
         window.click("duplicate-item", cx);
         assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
-        window.click(("sidebar-scenario", 0_usize), cx);
-        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        window.click(("scenario", 0_usize), cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
         assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
         window.click("scenario-run-reference", cx);
     })
@@ -2181,9 +2317,394 @@ async fn scenario_editor_actions_keep_drafts_and_do_not_change_checkbox_scope_im
         window.click("guard-cancel", cx);
         assert!(!view.read(cx).runs.read(cx).running());
         assert!(view.read(cx).session.dirty());
-        assert_eq!(view.read(cx).session.selection, Selection::Scenario(1));
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn suite_row_click_checks_the_selected_suite(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.runs
+                .update(cx, |panel, cx| panel.select_all(false, cx));
+        });
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("ui-test"))
+            .unwrap();
+        window.render_frame(cx);
+        window.click(("file", index), cx);
+        assert!(view.read(cx).runs.read(cx).all_selected("ui-test"));
+    })
+    .unwrap();
+}
+
+fn click_with_modifiers(
+    window: &mut gpui_kit::Window,
+    target: impl Into<gpui_kit::ElementId>,
+    modifiers: gpui_kit::Modifiers,
+    cx: &mut gpui_kit::App,
+) {
+    use gpui_kit::{InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+    window.render_frame(cx);
+    let target = window.find(target);
+    assert!(target.visible());
+    let position = target.bounds().center();
+    window.dispatch_event(
+        MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+    window.dispatch_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+    window.dispatch_event(
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers,
+            click_count: 1,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+#[gpui_kit::test]
+fn navigator_suite_selection_supports_modifiers_filters_and_empty_space(cx: &mut TestAppContext) {
+    use gpui_kit::{Modifiers, point};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            for name in ["a-ui", "middle"] {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite(name)
+                    .unwrap();
+            }
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.main_tab = 2;
+        });
+        let indices = ["a-ui", "middle", "ui-test"].map(|name| {
+            view.read(cx)
+                .session
+                .entries
+                .iter()
+                .position(|entry| entry.suite_name().as_deref() == Some(name))
+                .unwrap()
+        });
+        let selected = |cx: &gpui_kit::App| view.read(cx).runs.read(cx).selected_names();
+        let control = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let both = Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        };
+        window.render_frame(cx);
+        assert!(window.try_find(("sidebar-suite", indices[0])).is_none());
+        window.click(("file", indices[0]), cx);
+        assert_eq!(selected(cx), ["a-ui"]);
+        click_with_modifiers(window, ("file", indices[2]), control, cx);
+        assert_eq!(selected(cx), ["a-ui", "ui-test"]);
+        click_with_modifiers(window, ("file", indices[0]), control, cx);
+        assert_eq!(selected(cx), ["ui-test"]);
+        window.click(("file", indices[1]), cx);
+        assert_eq!(selected(cx), ["middle"]);
+        click_with_modifiers(window, ("file", indices[0]), shift, cx);
+        assert_eq!(selected(cx), ["a-ui", "middle"]);
+        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        assert_eq!(selected(cx), ["middle", "ui-test"]);
+        click_with_modifiers(window, ("file", indices[0]), both, cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        window.click(("file", indices[2]), cx);
+        click_with_modifiers(window, ("file", indices[0]), shift, cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        let pane = window.find("suite-pane").bounds();
+        let last = window.find(("suite-row", indices[2])).bounds();
+        assert!(last.bottom() < pane.bottom() - px(12.));
+        window.click_at("suite-pane", point(px(12.), pane.size.height - px(12.)), cx);
+        assert!(selected(cx).is_empty());
+        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        assert_eq!(selected(cx), ["ui-test"]);
+        window.click("sidebar-select-none", cx);
+        assert!(selected(cx).is_empty());
+        window.click("sidebar-select-all", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        view.update(cx, |this, cx| {
+            this.search
+                .update(cx, |state, cx| state.set_value("ui", window, cx));
+        });
+        window.render_frame(cx);
+        assert!(window.try_find(("file", indices[1])).is_none());
+        window.click(("file", indices[0]), cx);
+        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        assert_eq!(selected(cx), ["a-ui", "ui-test"]);
+        view.update(cx, |this, cx| {
+            this.search
+                .update(cx, |state, cx| state.set_value("ui-test", window, cx));
+        });
+        window.render_frame(cx);
+        click_with_modifiers(window, ("file", indices[2]), shift, cx);
+        assert_eq!(selected(cx), ["ui-test"]);
+        window.click("sidebar-select-all", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        window.click("sidebar-select-none", cx);
+        assert!(selected(cx).is_empty());
+        assert_eq!(view.read(cx).main_tab, 2);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("ui-test")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn navigator_scenario_selection_supports_modifiers_filters_and_empty_space(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{Modifiers, point};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1600.), px(1000.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("other-suite")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            let mut value = this.session.value().unwrap();
+            let scenario = value["scenarios"][0].clone();
+            value["scenarios"] = (0..5)
+                .map(|index| {
+                    let mut scenario = scenario.clone();
+                    scenario["id"] = serde_json::json!(format!("scenario-{index}"));
+                    scenario["label"] = serde_json::json!(format!(
+                        "{} {index}",
+                        if index % 2 == 0 { "Range" } else { "Other" }
+                    ));
+                    scenario
+                })
+                .collect();
+            this.session
+                .open
+                .as_mut()
+                .unwrap()
+                .document
+                .set_source(serde_yaml::to_string(&value).unwrap())
+                .unwrap();
+            this.sync_editor(window, cx);
+        });
+        let selected = |cx: &gpui_kit::App| {
+            (0..5)
+                .filter(|index| {
+                    view.read(cx)
+                        .runs
+                        .read(cx)
+                        .scenario_selected("ui-test", &format!("scenario-{index}"))
+                })
+                .collect::<Vec<_>>()
+        };
+        let control = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let both = Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        };
+        window.render_frame(cx);
+        assert!(window.try_find(("sidebar-scenario", 0_usize)).is_none());
+        window.click(("scenario", 0_usize), cx);
+        assert_eq!(selected(cx), [0]);
+        click_with_modifiers(window, ("scenario", 4_usize), control, cx);
+        assert_eq!(selected(cx), [0, 4]);
+        click_with_modifiers(window, ("scenario", 0_usize), control, cx);
+        assert_eq!(selected(cx), [4]);
+        window.click(("scenario", 2_usize), cx);
+        assert_eq!(selected(cx), [2]);
+        click_with_modifiers(window, ("scenario", 0_usize), shift, cx);
+        assert_eq!(selected(cx), [0, 1, 2]);
+        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        assert_eq!(selected(cx), [2, 3, 4]);
+        click_with_modifiers(window, ("scenario", 0_usize), both, cx);
+        assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
+        window.click(("scenario", 4_usize), cx);
+        click_with_modifiers(window, ("scenario", 0_usize), shift, cx);
+        assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
+        let pane = window.find("scenario-pane").bounds();
+        let last = window.find(("scenario-row", 4_usize)).bounds();
+        assert!(last.bottom() < pane.bottom() - px(12.));
+        window.click_at(
+            "scenario-pane",
+            point(px(12.), pane.size.height - px(12.)),
+            cx,
+        );
+        assert!(selected(cx).is_empty());
+        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        assert_eq!(selected(cx), [4]);
+        window.click("sidebar-scenarios-none", cx);
+        assert!(selected(cx).is_empty());
+        window.click("sidebar-scenarios-all", cx);
+        assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
+        view.update(cx, |this, cx| {
+            this.scenario_search
+                .update(cx, |state, cx| state.set_value("Range", window, cx));
+        });
+        window.render_frame(cx);
+        assert!(window.try_find(("scenario", 1_usize)).is_none());
+        window.click(("scenario", 0_usize), cx);
+        click_with_modifiers(window, ("scenario", 4_usize), shift, cx);
+        assert_eq!(selected(cx), [0, 2, 4]);
+        view.update(cx, |this, cx| {
+            this.scenario_search
+                .update(cx, |state, cx| state.set_value("Other", window, cx));
+        });
+        window.render_frame(cx);
+        click_with_modifiers(window, ("scenario", 3_usize), shift, cx);
+        assert_eq!(selected(cx), [3]);
+        view.update(cx, |this, cx| {
+            this.runs
+                .update(cx, |panel, cx| panel.toggle_suite("other-suite", true, cx));
+        });
+        window.click(("scenario", 1_usize), cx);
+        assert_eq!(selected(cx), [1]);
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        window.click("sidebar-scenarios-none", cx);
+        assert!(selected(cx).is_empty());
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        window.click("sidebar-scenarios-all", cx);
+        assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        assert!(view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn scenario_row_clicks_replace_selection_and_none_all_clear_it(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        window.click("duplicate-item", cx);
+        window.click("sidebar-scenarios-all", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 3);
+        window.click(("scenario", 1_usize), cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        let previous = view.read(cx).draft_suite_summary().unwrap().scenarios[1]
+            .id
+            .clone();
+        window.click(("scenario", 2_usize), cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        assert!(
+            !view
+                .read(cx)
+                .runs
+                .read(cx)
+                .scenario_selected("ui-test", &previous)
+        );
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(2));
+        window.click("sidebar-scenarios-none", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        window.click("sidebar-scenarios-all", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 3);
+        window.click("sidebar-select-none", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        assert!(view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn navigator_selection_controls_fit_both_window_sizes_and_themes(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            for dark in [false, true] {
+                super::design::apply_theme(dark, None, cx);
+                window.render_frame(cx);
+                for (pane, none, all) in [
+                    ("suite-pane", "sidebar-select-none", "sidebar-select-all"),
+                    (
+                        "scenario-pane",
+                        "sidebar-scenarios-none",
+                        "sidebar-scenarios-all",
+                    ),
+                ] {
+                    let pane = window.find(pane).bounds();
+                    let none = window.find(none);
+                    let all = window.find(all);
+                    assert!(none.visible() && all.visible());
+                    assert!(pane.contains(&none.bounds().origin));
+                    assert!(pane.contains(&none.bounds().bottom_right()));
+                    assert!(pane.contains(&all.bounds().origin));
+                    assert!(pane.contains(&all.bounds().bottom_right()));
+                    assert!(none.bounds().right() <= all.bounds().left());
+                }
+                let filter = window.within("navigator-filter").find(1_usize).bounds();
+                assert!(filter.right() <= window.find("sidebar-select-none").bounds().left());
+                window.click("sidebar-select-all", cx);
+                assert_eq!(view.read(cx).runs.read(cx).selected_count(), 1);
+                window.click("sidebar-select-none", cx);
+                assert_eq!(view.read(cx).runs.read(cx).selected_count(), 0);
+                window.click("sidebar-scenarios-all", cx);
+                assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+                window.click("sidebar-scenarios-none", cx);
+                assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+            }
+        })
+        .unwrap();
+    }
 }
 
 #[gpui_kit::test]

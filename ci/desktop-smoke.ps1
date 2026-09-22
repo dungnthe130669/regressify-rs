@@ -950,7 +950,8 @@ function Test-ScenarioFlows {
     Invoke-Control 'Suites'
     Invoke-Control 'Select all'
     Invoke-Control 'Select all'
-    Invoke-Control 'Select scenario Checkout'
+    Invoke-Control 'Checkout'
+    Invoke-Control 'Runs'
     Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
     Invoke-Control 'smoke (1/2 scenarios)'
     Capture-Window 'scenario-selection'
@@ -1017,6 +1018,8 @@ function Test-ScenarioFlows {
     Invoke-Control 'Approve Results' -Within 'Run confirmation'
     Wait-Control 'Reference images updated' | Out-Null
     Invoke-Control 'Compare This Run'
+    Wait-Control 'Last run: Compare Results' | Out-Null
+    Wait-Control 'Completed' | Out-Null
     Wait-Control '1 passed' | Out-Null
     Invoke-Control 'View run log: Checkout'
     Wait-SourceText 'Comparison passed:' 'Scenario run log'
@@ -1083,19 +1086,9 @@ public static class RegressifySmokeCredentials {
 }
 
 function Clear-DeploymentFixtureSelection {
-    Wait-Control 'Select suite smoke' | Out-Null
-    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
-    $names = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
-        ForEach-Object { $_.Current.Name } | Where-Object { $_ -like 'Select suite *' } | Sort-Object -Unique
-    foreach ($name in $names) {
-        $control = Wait-Control $name
-        $pattern = $null
-        if (-not $control.TryGetCurrentPattern([System.Windows.Automation.TogglePattern]::Pattern, [ref]$pattern)) {
-            throw "Fixture suite checkbox does not expose its selection: $name"
-        }
-        if (([System.Windows.Automation.TogglePattern]$pattern).Current.ToggleState -ne [System.Windows.Automation.ToggleState]::Off) {
-            Invoke-Control $name
-        }
+    Wait-Control 'Deselect all suites' | Out-Null
+    if (Test-ControlInvokable 'Deselect all suites') {
+        Invoke-Control 'Deselect all suites'
     }
 }
 
@@ -1144,7 +1137,8 @@ function Test-DeploymentFlows {
     Capture-Window 'deploy-target-restored'
     Invoke-Control 'Close'
     Clear-DeploymentFixtureSelection
-    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'smoke.tests.json'
+    Wait-Control 'Run Suite Reference' | Out-Null
     Invoke-Control 'Deploy'
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
     if (Test-ControlInvokable 'Deploy selected reports') { throw 'Subset deployment must require confirmation.' }
@@ -1252,7 +1246,8 @@ function Test-DeploymentFlows {
     }
     [RegressifySmokeCredentials]::Remove($credentialName)
     Clear-DeploymentFixtureSelection
-    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'smoke.tests.json'
+    Wait-Control 'Run Suite Reference' | Out-Null
     Invoke-Control 'Deploy'
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
     Invoke-Control 'Yes, deploy only these 1 of 2 suites'
@@ -1321,7 +1316,8 @@ function Test-TitlebarFlows {
     Invoke-Control 'Results' -Pointer
     Wait-Control 'Approve This Run' | Out-Null
     Invoke-Control 'Editor' -Pointer
-    Invoke-Control 'Select suite smoke'
+    Invoke-Control 'smoke.tests.json'
+    Wait-Control 'Run Suite Reference' | Out-Null
     Invoke-Control 'Deploy' -Pointer
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
     Capture-Window 'titlebar-deploy-pointer'
@@ -1660,6 +1656,8 @@ try {
         throw 'Report approval used the newer directory instead of the viewed run.'
     }
     Invoke-Control 'Compare This Run'
+    Wait-Control 'Last run: Compare Results' | Out-Null
+    Wait-Control 'Completed' | Out-Null
     Wait-Control '1 passed' | Out-Null
     Capture-Window 'reviewed-run-compared'
     Invoke-Control 'Runs'

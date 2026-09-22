@@ -16,6 +16,20 @@ mod artifacts;
 mod log;
 mod settings;
 
+fn selection_range<'item>(
+    items: &'item [String],
+    clicked: &str,
+    anchor: Option<&str>,
+    extend: bool,
+) -> Option<&'item [String]> {
+    let end = items.iter().position(|item| item == clicked)?;
+    let start = anchor
+        .filter(|_| extend)
+        .and_then(|anchor| items.iter().position(|item| item == anchor))
+        .unwrap_or(end);
+    Some(&items[start.min(end)..=start.max(end)])
+}
+
 #[derive(Clone, Debug)]
 pub(super) enum RunEvent {
     Requested(Box<RunIntent>),
@@ -188,6 +202,8 @@ pub(super) struct RunPanel {
     log_scope: Option<log::ScenarioLogScope>,
     suites: Vec<SuiteSummary>,
     selection: SuiteSelection,
+    suite_selection_anchor: Option<String>,
+    scenario_selection_anchor: Option<(String, String)>,
     catalog_error: Option<String>,
     collapsed: BTreeSet<String>,
     expanded_selections: BTreeSet<String>,
@@ -226,6 +242,8 @@ impl RunPanel {
             log_scope: None,
             suites: Vec::new(),
             selection: SuiteSelection::default(),
+            suite_selection_anchor: None,
+            scenario_selection_anchor: None,
             catalog_error: None,
             collapsed: BTreeSet::new(),
             expanded_selections: BTreeSet::new(),
@@ -484,6 +502,8 @@ impl RunPanel {
             "Selected suite is no longer available"
         );
         self.selection = selection;
+        self.suite_selection_anchor = None;
+        self.scenario_selection_anchor = None;
         self.confirmation = false;
         cx.emit(RunEvent::SelectionChanged);
         cx.notify();
@@ -502,6 +522,8 @@ impl RunPanel {
         self.settings_search
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.selection.clear();
+        self.suite_selection_anchor = None;
+        self.scenario_selection_anchor = None;
         self.suites.clear();
         self.catalog_error = None;
         self.log_text.clear();
@@ -618,6 +640,55 @@ impl RunPanel {
             cx.notify();
         }
     }
+
+    pub(super) fn select_scenario(
+        &mut self,
+        name: &str,
+        id: &str,
+        visible: &[String],
+        modifiers: gpui_kit::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled {
+            return;
+        }
+        let Some(suite) = self.suites.iter().find(|suite| suite.name == name) else {
+            return;
+        };
+        let anchor = self
+            .scenario_selection_anchor
+            .as_ref()
+            .filter(|(owner, _)| owner == name)
+            .map(|(_, id)| id.as_str());
+        let Some(ids) = selection_range(visible, id, anchor, modifiers.shift) else {
+            return;
+        };
+        let additive = modifiers.control || cfg!(target_os = "macos") && modifiers.platform;
+        let checked = modifiers.shift || !additive || !self.scenario_selected(name, id);
+        let mut selection = self.selection.clone();
+        let result = (|| -> Result<()> {
+            if !additive {
+                selection.toggle(suite, false)?;
+            }
+            for id in ids {
+                selection.toggle_scenario(suite, id, checked)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
+        if !modifiers.shift || anchor.is_none_or(|anchor| !visible.iter().any(|id| id == anchor)) {
+            self.scenario_selection_anchor = Some((name.to_string(), id.to_string()));
+        }
+        self.selection = selection;
+        self.confirmation = false;
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
+    }
+
     fn scope_label(&self) -> String {
         if !self.command.supports_suites() {
             "Workspace command".into()
@@ -729,10 +800,61 @@ impl RunPanel {
             if let Err(error) = self.selection.toggle(suite, checked) {
                 self.status = format!("{error:#}");
             }
+            self.scenario_selection_anchor = None;
             self.confirmation = false;
             cx.emit(RunEvent::SelectionChanged);
             cx.notify();
         }
+    }
+
+    pub(super) fn select_suite(
+        &mut self,
+        name: &str,
+        visible: &[String],
+        modifiers: gpui_kit::Modifiers,
+        cx: &mut Context<Self>,
+    ) {
+        if self.running() || self.disabled {
+            return;
+        }
+        let Some(names) = selection_range(
+            visible,
+            name,
+            self.suite_selection_anchor.as_deref(),
+            modifiers.shift,
+        ) else {
+            return;
+        };
+        let additive = modifiers.control || cfg!(target_os = "macos") && modifiers.platform;
+        let checked = modifiers.shift || !additive || !self.selected(name);
+        let mut selection = if additive {
+            self.selection.clone()
+        } else {
+            SuiteSelection::default()
+        };
+        for name in names {
+            let Some(suite) = self.suites.iter().find(|suite| &suite.name == name) else {
+                return;
+            };
+            if let Err(error) = selection.toggle(suite, checked) {
+                self.status = format!("{error:#}");
+                cx.notify();
+                return;
+            }
+        }
+        if !modifiers.shift
+            || self
+                .suite_selection_anchor
+                .as_ref()
+                .is_none_or(|anchor| !visible.contains(anchor))
+        {
+            self.suite_selection_anchor = Some(name.to_string());
+        }
+        self.selection = selection;
+        self.scenario_selection_anchor = None;
+        self.confirmation = false;
+        cx.emit(RunEvent::SelectionChanged);
+        cx.notify();
     }
 
     pub(super) fn select_all(&mut self, selected: bool, cx: &mut Context<Self>) {
@@ -744,6 +866,8 @@ impl RunPanel {
         } else {
             self.selection.clear();
         }
+        self.suite_selection_anchor = None;
+        self.scenario_selection_anchor = None;
         self.confirmation = false;
         cx.emit(RunEvent::SelectionChanged);
         cx.notify();

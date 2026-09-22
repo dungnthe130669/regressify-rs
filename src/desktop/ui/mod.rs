@@ -821,10 +821,11 @@ impl Workbench {
         Ok(summary)
     }
 
-    fn toggle_open_scenario(
+    fn select_open_scenario(
         &mut self,
         index: usize,
-        checked: bool,
+        visible: &[usize],
+        modifiers: gpui_kit::Modifiers,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -841,10 +842,53 @@ impl Workbench {
                 .ok_or_else(|| anyhow!("Scenario is no longer available"))?
                 .id
                 .clone();
+            let visible = visible
+                .iter()
+                .filter_map(|index| {
+                    suite
+                        .scenarios
+                        .get(*index)
+                        .map(|scenario| scenario.id.clone())
+                })
+                .collect::<Vec<_>>();
             self.runs.update(cx, |panel, cx| {
                 panel.update_draft_suite(suite, cx);
-                panel.toggle_scenario(&name, &id, checked, cx);
+                panel.select_scenario(&name, &id, &visible, modifiers, cx);
             });
+            Ok(())
+        })();
+        if let Err(error) = result {
+            self.status = format!("{error:#}");
+        }
+        cx.notify();
+    }
+
+    fn select_open_scenarios(
+        &mut self,
+        selected: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        let result = (|| -> Result<()> {
+            let name = if selected {
+                self.flush_drafts(window, cx)?;
+                let suite = self.draft_suite_summary()?;
+                let name = suite.name.clone();
+                self.runs
+                    .update(cx, |panel, cx| panel.update_draft_suite(suite, cx));
+                name
+            } else {
+                self.session
+                    .open
+                    .as_ref()
+                    .and_then(|open| open.entry.suite_name())
+                    .ok_or_else(|| anyhow!("Open a test suite first"))?
+            };
+            self.runs
+                .update(cx, |panel, cx| panel.toggle_suite(&name, selected, cx));
             Ok(())
         })();
         if let Err(error) = result {

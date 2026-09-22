@@ -376,7 +376,7 @@ impl DeploymentResult {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Counts {
     pub total: usize,
     pub queued: usize,

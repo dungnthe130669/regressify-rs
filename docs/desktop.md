@@ -244,7 +244,7 @@ to enable deployment.
 
 At least one suite must be selected. When only a subset is selected, the dialog
 lists it and requires explicit confirmation that excluding the other suites is
-intentional. Individual scenario checkboxes do not narrow deployment: the full
+intentional. Individual scenario selections do not narrow deployment: the full
 latest report of each selected suite is published. Unsaved changes use the normal
 Save/Cancel guard, and a changed suite catalog requires selection review again.
 
@@ -476,19 +476,27 @@ prefixes: `\\?\D:\project` appears as `D:/project`, while a network share remain
 checks, and saved paths keep their original semantics.
 
 The navigator has separate, vertically resizable Test suites and Scenarios panes.
-Suite rows keep aligned checkboxes and remain highlighted while their scenario
-or action is edited. The lower pane lists only the open suite's scenarios, with
+Selected rows are highlighted without checkboxes; a left-edge marker identifies
+the suite or scenario currently open. The lower pane lists only the open suite's scenarios, with
 labels and URLs; actions are edited in the scenario's action sequence rather
 than nested in the sidebar. Both panes scroll independently.
+
+Click a row to select only that item in its list. Ctrl-click toggles individual
+items (Cmd-click also works on macOS), and Shift-click selects a range from the
+last clicked item in visible list order. Ctrl+Shift-click adds a range to the
+existing selection. Hidden filtered rows are excluded from ranges.
+Click empty list space or None to clear selection; All selects every valid suite
+or every scenario in the open suite, including filtered-out items. Scenario
+selection changes only the open suite's scope, preserving other selected suites.
+Clearing selection does not close the editor or discard its draft.
 
 In Results, the lower pane becomes Captures for the active suite. Selecting a
 suite there changes the report being reviewed without opening another editor
 document or disturbing an unsaved draft.
 
-Scenario checkboxes select execution scope independently of the scenario being
-edited. A suite checkbox shows a mixed state for partial selection; clicking it
-selects the whole suite, then clears it on the next click. The sidebar's play
-button runs only that row's scenario. Runs > Suites also expands each suite into
+Selecting a suite selects all of its scenarios; clicking an individual scenario
+narrows that suite's execution scope and opens its editor. The sidebar's play
+button runs only that row's scenario. Runs > Suites still expands each suite into
 scenario checkboxes with direct Test and Reference buttons. Clearing the last
 scenario disables suite commands rather than reverting to an all-scenario run.
 
@@ -501,7 +509,7 @@ scrolling or dragging a thumb in either pane moves both images together.
 Suite search matches paths and scenario labels, IDs, or URLs across the workspace,
 but displays matching suites only. Open a suite to see its scenarios below. The
 lower search filters only that suite, without changing the suite search or run
-selection. Selected narrows the upper list to checked suites. Ctrl+P (Cmd+P on
+selection. Selected narrows the upper list to selected suites. Ctrl+P (Cmd+P on
 macOS) focuses suite search. Navigation retains Save/Discard/Cancel protection.
 Suite rows also show queued/running/pass/fail totals. The refresh icon reloads
 suite discovery. Scenario rows shorten web addresses to host/path and local
@@ -686,8 +694,8 @@ or arbitrary executables.
 Runs provides direct Run Test, Run Reference, Approve Results, and Compare
 Results buttons. There is no command-mode selector followed by a generic Run.
 More actions provides Build Report, Optimize Images, Install Chromium, and
-Initialize Workspace. Suite checkboxes in the navigator and Runs support multiple
-selections and Select all. No selection disables suite commands, never an
+Initialize Workspace. Navigator rows and the checkboxes in Runs support multiple
+selections and All. No selection disables suite commands, never an
 implicit all-suite run. Invalid suites remain visible for
 repair and are excluded from Select all. Editor Run Suite Test and Run Suite
 Reference act on the whole open suite, with Approve/Compare in More suite actions.
@@ -718,7 +726,7 @@ scenario, viewport, or saved step has a reference. Missing individual references
 remain comparison results. Standalone CLI behavior is unchanged.
 
 When references and test data exist, Open Report is available beside the open
-suite, on its Runs/Overview row, and for a compatible checked-suite selection.
+suite, on its Runs/Overview row, and for a compatible suite selection.
 An existing report opens directly without starting a worker or changing captures.
 If saved screenshots have no usable report, the app compares those screenshots
 against the references and opens the result automatically, without launching a
@@ -752,8 +760,9 @@ Cancel. Saving cannot silently switch the requested command. Preflight resolves
 those exact suites again, including any newly saved output IDs; it never substitutes
 another same-sized selection or expands an empty selection to all suites.
 
-Selecting a scenario for editing does not change run checkboxes. Use its direct
-scenario actions or the checkbox selection to restrict execution. Scenario runs
+Selecting a scenario in the navigator also selects it for execution. Use Ctrl or
+Shift to select multiple scenarios, the direct scenario actions to run one, or
+the checkboxes in Runs to adjust scope without navigating. Scenario runs
 include all configured viewports and saved steps, and still execute `needs`
 setup actions without separately capturing dependency scenarios. Unsaved new
 scenarios use the normal save guard; choosing Run saved version cannot run a new
@@ -843,6 +852,13 @@ counts, expandable suites, and each scenario/viewport's status, elapsed time,
 and failure details. Failures only narrows the activity list. Captured is distinct
 from Passed, which requires comparison. Suites, Run settings, and Log are separate
 tabs; live running/finished counts remain visible in the workspace navigator.
+
+The Test suites panel retains each suite's latest counts when another suite runs
+and after restarting the app. These per-suite summaries are saved separately from
+the current Activity totals and scoped to the output directory/environment.
+Missing summaries are loaded from each suite's latest saved comparison report at
+startup, including suites outside the most recent run. Capture-only and cancelled
+statuses remain distinct from passed comparisons.
 
 Completed, failed, and cancelled run activity persists across app launches.
 Reopening the same workspace restores its last command, suite/scenario selection,

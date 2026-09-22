@@ -148,14 +148,6 @@ impl Workbench {
             .iter()
             .filter(|suite| suite.error.is_none())
             .count();
-        let all_selected = valid > 0
-            && self
-                .session
-                .suites
-                .iter()
-                .filter(|suite| suite.error.is_none())
-                .all(|suite| runs.all_selected(&suite.name));
-        let select_all_panel = self.runs.clone();
         let mut rows = div()
             .id("suite-list")
             .test_support()
@@ -163,68 +155,90 @@ impl Workbench {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .on_click(cx.listener(|this, _, _, cx| {
+                if !this.busy {
+                    this.runs
+                        .update(cx, |panel, cx| panel.select_all(false, cx));
+                }
+            }))
             .overflow_y_scrollbar();
-        let mut count = 0;
-        for (index, entry) in self
+        let entries = self
             .session
             .entries
             .iter()
             .enumerate()
             .filter(|(_, entry)| entry.kind == DocumentKind::Suite)
-        {
-            let open = self
-                .session
-                .open
-                .as_ref()
-                .is_some_and(|open| open.entry.path == entry.path);
+            .filter_map(|(index, entry)| {
+                let open = self
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.entry.path == entry.path);
+                let suite = self
+                    .session
+                    .suites
+                    .iter()
+                    .find(|suite| suite.entry.path == entry.path);
+                if self.selected_only && !suite.is_some_and(|suite| runs.selected(&suite.name)) {
+                    return None;
+                }
+                let matches = if open {
+                    self.value["scenarios"]
+                        .as_array()
+                        .map(|scenarios| {
+                            scenarios
+                                .iter()
+                                .filter(|scenario| {
+                                    ["label", "id", "url"].iter().any(|key| {
+                                        scenario[*key].as_str().is_some_and(|text| {
+                                            text.to_lowercase().contains(&query)
+                                        })
+                                    })
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0)
+                } else {
+                    suite
+                        .map(|suite| {
+                            suite
+                                .scenarios
+                                .iter()
+                                .filter(|scenario| {
+                                    [&scenario.label, &scenario.id, &scenario.url]
+                                        .iter()
+                                        .any(|text| text.to_lowercase().contains(&query))
+                                })
+                                .count()
+                        })
+                        .unwrap_or(0)
+                };
+                if !query.is_empty()
+                    && !entry.label().to_lowercase().contains(&query)
+                    && matches == 0
+                {
+                    return None;
+                }
+                Some((index, entry, suite, open, matches))
+            })
+            .collect::<Vec<_>>();
+        let visible = std::sync::Arc::new(
+            entries
+                .iter()
+                .filter_map(|(_, _, suite, _, _)| {
+                    suite
+                        .filter(|suite| suite.error.is_none())
+                        .map(|suite| suite.name.clone())
+                })
+                .collect::<Vec<_>>(),
+        );
+        let count = entries.len();
+        for (index, entry, suite, open, matches) in entries {
             let current = if self.main_tab == 2 {
                 self.results.read(cx).active_suite() == Some(&entry.path)
             } else {
                 open
             };
-            let suite = self
-                .session
-                .suites
-                .iter()
-                .find(|suite| suite.entry.path == entry.path);
-            if self.selected_only && !suite.is_some_and(|suite| runs.selected(&suite.name)) {
-                continue;
-            }
-            let matches = if open {
-                self.value["scenarios"]
-                    .as_array()
-                    .map(|scenarios| {
-                        scenarios
-                            .iter()
-                            .filter(|scenario| {
-                                ["label", "id", "url"].iter().any(|key| {
-                                    scenario[*key]
-                                        .as_str()
-                                        .is_some_and(|text| text.to_lowercase().contains(&query))
-                                })
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0)
-            } else {
-                suite
-                    .map(|suite| {
-                        suite
-                            .scenarios
-                            .iter()
-                            .filter(|scenario| {
-                                [&scenario.label, &scenario.id, &scenario.url]
-                                    .iter()
-                                    .any(|text| text.to_lowercase().contains(&query))
-                            })
-                            .count()
-                    })
-                    .unwrap_or(0)
-            };
-            if !query.is_empty() && !entry.label().to_lowercase().contains(&query) && matches == 0 {
-                continue;
-            }
-            count += 1;
             let scenario_count = if open {
                 self.value["scenarios"].as_array().map_or(0, Vec::len)
             } else {
@@ -257,8 +271,7 @@ impl Workbench {
                 .or_else(|| entry.suite_name())
                 .unwrap_or_default();
             let selected = runs.selected(&name);
-            let all_in_suite = runs.all_selected(&name);
-            let check_panel = self.runs.clone();
+            let visible = visible.clone();
             let entry = entry.clone();
             let filename = entry
                 .path
@@ -266,7 +279,7 @@ impl Workbench {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            let counts = suite.map(|suite| runs.progress().counts(Some(&suite.output_id)));
+            let counts = suite.map(|suite| runs.suite_counts(&suite.output_id));
             if error.is_none()
                 && let Some(counts) = &counts
             {
@@ -282,6 +295,14 @@ impl Workbench {
                     detail = format!("{} passed", counts.passed);
                 } else if counts.queued > 0 {
                     detail = format!("{} queued", counts.queued);
+                } else if counts.cancelled > 0 {
+                    detail = format!(
+                        "{} cancelled / {} finished",
+                        counts.cancelled,
+                        counts.complete()
+                    );
+                } else if counts.captured > 0 {
+                    detail = format!("{} captured", counts.captured);
                 }
             }
             let status_color =
@@ -310,39 +331,8 @@ impl Workbench {
                     } else {
                         cx.theme().transparent
                     })
-                    .when(current, |row| row.bg(cx.theme().accent))
-                    .child(
-                        div()
-                            .w(px(30.))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                design::selection_checkbox(
-                                    ("sidebar-suite", index),
-                                    all_in_suite,
-                                    selected && !all_in_suite,
-                                    self.busy
-                                        || runs.running()
-                                        || suite.is_none()
-                                        || error.is_some(),
-                                    cx,
-                                )
-                                .accessibility_label(format!("Select suite {name}"))
-                                .on_change(
-                                    move |state, _, _, cx| {
-                                        check_panel.update(cx, |panel, cx| {
-                                            panel.toggle_suite(
-                                                &name,
-                                                state == gpui_kit::base::CheckboxState::Checked,
-                                                cx,
-                                            )
-                                        })
-                                    },
-                                ),
-                            ),
-                    )
+                    .when(selected, |row| row.bg(cx.theme().accent))
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         Button::new(("file", index))
                             .ghost()
@@ -350,7 +340,7 @@ impl Workbench {
                             .flex_1()
                             .min_w_0()
                             .justify_start()
-                            .selected(current)
+                            .selected(selected)
                             .accessibility_label(filename)
                             .tooltip(error.map_or_else(
                                 || entry.label(),
@@ -394,15 +384,26 @@ impl Workbench {
                                     ),
                             )
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                if this.main_tab == 2 {
-                                    this.results.update(cx, |panel, cx| {
-                                        panel.select_suite(&entry, window, cx);
+                            .on_click(cx.listener(
+                                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    this.runs.update(cx, |panel, cx| {
+                                        panel.select_suite(&name, &visible, event.modifiers(), cx);
                                     });
-                                } else {
-                                    this.open_location(entry.clone(), Selection::Root, window, cx);
-                                }
-                            })),
+                                    if this.main_tab == 2 {
+                                        this.results.update(cx, |panel, cx| {
+                                            panel.select_suite(&entry, window, cx);
+                                        });
+                                    } else {
+                                        this.open_location(
+                                            entry.clone(),
+                                            Selection::Root,
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                },
+                            )),
                     ),
             );
         }
@@ -505,21 +506,27 @@ impl Workbench {
                     )
                     .child(div().flex_1())
                     .child(
-                        design::selection_checkbox(
-                            "sidebar-select-all",
-                            all_selected,
-                            runs.selected_count() > 0 && !all_selected,
-                            self.busy || runs.running() || valid == 0,
-                            cx,
-                        )
-                        .accessibility_label("All")
-                        .child("All")
-                        .on_change(move |state, _, _, cx| {
-                            select_all_panel.update(cx, |panel, cx| {
-                                panel
-                                    .select_all(state == gpui_kit::base::CheckboxState::Checked, cx)
-                            })
-                        }),
+                        Button::new("sidebar-select-none")
+                            .ghost()
+                            .xsmall()
+                            .label("None")
+                            .accessibility_label("Deselect all suites")
+                            .disabled(self.busy || runs.running() || runs.selected_count() == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.runs
+                                    .update(cx, |panel, cx| panel.select_all(false, cx));
+                            })),
+                    )
+                    .child(
+                        Button::new("sidebar-select-all")
+                            .ghost()
+                            .xsmall()
+                            .label("All")
+                            .accessibility_label("Select all suites")
+                            .disabled(self.busy || runs.running() || valid == 0)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+                            })),
                     ),
             )
             .child(rows)
@@ -555,36 +562,58 @@ impl Workbench {
             .flex_col()
             .flex_1()
             .min_h_0()
+            .when(suite, |rows| {
+                rows.on_click(cx.listener(|this, _, window, cx| {
+                    this.select_open_scenarios(false, window, cx);
+                }))
+            })
             .overflow_y_scrollbar();
-        let mut count = 0;
-        for (index, item) in items.iter().enumerate() {
-            let label = item["label"]
-                .as_str()
-                .filter(|label| !label.trim().is_empty())
-                .or_else(|| item["url"].as_str().filter(|url| !url.is_empty()))
-                .map(str::to_string)
-                .unwrap_or_else(|| {
-                    format!(
-                        "{} {}",
-                        if viewport { "Viewport" } else { "Scenario" },
-                        index + 1
-                    )
-                });
-            let url = item["url"].as_str().unwrap_or_default();
-            if !query.is_empty()
-                && ![label.as_str(), url, item["id"].as_str().unwrap_or_default()]
+        let entries = items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, item)| {
+                let label = item["label"]
+                    .as_str()
+                    .filter(|label| !label.trim().is_empty())
+                    .or_else(|| item["url"].as_str().filter(|url| !url.is_empty()))
+                    .map(str::to_string)
+                    .unwrap_or_else(|| {
+                        format!(
+                            "{} {}",
+                            if viewport { "Viewport" } else { "Scenario" },
+                            index + 1
+                        )
+                    });
+                if !query.is_empty()
+                    && ![
+                        label.as_str(),
+                        item["url"].as_str().unwrap_or_default(),
+                        item["id"].as_str().unwrap_or_default(),
+                    ]
                     .iter()
                     .any(|text| text.to_lowercase().contains(&query))
-            {
-                continue;
-            }
-            count += 1;
+                {
+                    return None;
+                }
+                Some((index, item, label))
+            })
+            .collect::<Vec<_>>();
+        let visible = std::sync::Arc::new(
+            entries
+                .iter()
+                .map(|(index, _, _)| *index)
+                .collect::<Vec<_>>(),
+        );
+        let count = entries.len();
+        for (index, item, label) in entries {
+            let visible = visible.clone();
+            let url = item["url"].as_str().unwrap_or_default();
             let selection = if viewport {
                 Selection::Viewport(index)
             } else {
                 Selection::Scenario(index)
             };
-            let selected = self.session.selection == selection
+            let current = self.session.selection == selection
                 || (!viewport && self.session.selection.scenario() == Some(index));
             let detail = if viewport {
                 format!("{} x {}", item["width"], item["height"])
@@ -600,6 +629,13 @@ impl Workbench {
             let scenario_id = serde_json::from_value::<crate::types::TestScenario>(item.clone())
                 .ok()
                 .map(|scenario| workspace::ScenarioSummary::from_scenario(&scenario).id);
+            let selected = if viewport {
+                current
+            } else {
+                scenario_id
+                    .as_ref()
+                    .is_some_and(|id| runs.scenario_selected(&owner, id))
+            };
             let log_scenario = scenario_id.clone();
             let log_suite = owner.clone();
             let has_log = scenario_id
@@ -615,35 +651,14 @@ impl Workbench {
                     .flex_shrink_0()
                     .w_full()
                     .min_w_0()
-                    .when(suite, |row| {
-                        row.child(
-                            div()
-                                .w(px(30.))
-                                .flex_shrink_0()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .child(
-                                    Checkbox::new(("sidebar-scenario", index))
-                                        .accessibility_label(format!("Select scenario {label}"))
-                                        .checked(
-                                            scenario_id.as_ref().is_some_and(|id| {
-                                                runs.scenario_selected(&owner, id)
-                                            }),
-                                        )
-                                        .disabled(
-                                            self.busy || runs.running() || scenario_id.is_none(),
-                                        )
-                                        .on_change(cx.listener(
-                                            move |this, checked, window, cx| {
-                                                this.toggle_open_scenario(
-                                                    index, *checked, window, cx,
-                                                )
-                                            },
-                                        )),
-                                ),
-                        )
+                    .border_l_2()
+                    .border_color(if current {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().transparent
                     })
+                    .when(selected, |row| row.bg(cx.theme().accent))
+                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         Button::new(("scenario", index))
                             .ghost()
@@ -678,7 +693,7 @@ impl Workbench {
                                     .child(
                                         div()
                                             .truncate()
-                                            .font_weight(if selected {
+                                            .font_weight(if current {
                                                 FontWeight::SEMIBOLD
                                             } else {
                                                 FontWeight::NORMAL
@@ -694,9 +709,21 @@ impl Workbench {
                                     ),
                             )
                             .disabled(self.busy)
-                            .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select(selection, window, cx)
-                            })),
+                            .on_click(cx.listener(
+                                move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    if suite {
+                                        this.select_open_scenario(
+                                            index,
+                                            &visible,
+                                            event.modifiers(),
+                                            window,
+                                            cx,
+                                        );
+                                    }
+                                    this.select(selection, window, cx);
+                                },
+                            )),
                     )
                     .when(suite, |row| {
                         row.child(
@@ -830,6 +857,39 @@ impl Workbench {
                         .disabled(!(suite || viewport)),
                 ),
             )
+            .when(!viewport, |pane| {
+                pane.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_end()
+                        .gap_2()
+                        .px_3()
+                        .pb_2()
+                        .child(
+                            Button::new("sidebar-scenarios-none")
+                                .ghost()
+                                .xsmall()
+                                .label("None")
+                                .accessibility_label("Deselect all scenarios")
+                                .disabled(!suite || self.busy || runs.running())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.select_open_scenarios(false, window, cx);
+                                })),
+                        )
+                        .child(
+                            Button::new("sidebar-scenarios-all")
+                                .ghost()
+                                .xsmall()
+                                .label("All")
+                                .accessibility_label("Select all scenarios")
+                                .disabled(!suite || self.busy || runs.running() || items.is_empty())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.select_open_scenarios(true, window, cx);
+                                })),
+                        ),
+                )
+            })
             .child(rows)
             .into_any_element()
     }

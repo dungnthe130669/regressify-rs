@@ -44,6 +44,37 @@ pub struct Report {
     pub tests: Vec<TestResult>,
 }
 
+impl Report {
+    fn scenario_counts(&self) -> crate::progress::Counts {
+        let mut scenarios = std::collections::BTreeMap::new();
+        for test in &self.tests {
+            let capture = test.pair.capture_key();
+            let key = if let Some(id) = test.pair.scenario_id.as_deref() {
+                let viewport = capture
+                    .strip_prefix(id)
+                    .and_then(|suffix| suffix.split_once("__"))
+                    .map_or("", |(viewport, _)| viewport);
+                (id, viewport)
+            } else {
+                (capture.split_once("__").map_or(capture, |(key, _)| key), "")
+            };
+            let passed = test.outcome() == Outcome::Passed;
+            scenarios
+                .entry(key)
+                .and_modify(|selected| *selected &= passed)
+                .or_insert(passed);
+        }
+        let total = scenarios.len();
+        let passed = scenarios.values().filter(|passed| **passed).count();
+        crate::progress::Counts {
+            total,
+            passed,
+            failed: total - passed,
+            ..Default::default()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TestResult {
     pub status: String,
@@ -471,6 +502,7 @@ pub struct SavedRun {
     pub run_id: String,
     pub modified: SystemTime,
     pub has_report: bool,
+    pub counts: Option<crate::progress::Counts>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -515,9 +547,11 @@ impl SuiteArtifacts {
                 .map_err(|_| anyhow!("Capture run name must be UTF-8"))?;
             let (captures, mut modified) = capture_inventory(&entry.path(), false)?;
             let report_path = entry.path().join("report.json");
-            let has_report = read_report(&root, &report_path, modified).is_ok_and(|report| {
-                report.report.id == suite_id && !report.report.tests.is_empty()
-            });
+            let counts = read_report(&root, &report_path, modified)
+                .ok()
+                .filter(|report| report.report.id == suite_id && !report.report.tests.is_empty())
+                .map(|report| report.report.scenario_counts());
+            let has_report = counts.is_some();
             if captures == 0 && has_report {
                 modified = fs::metadata(&report_path)?.modified()?;
             }
@@ -526,6 +560,7 @@ impl SuiteArtifacts {
                     run_id,
                     modified,
                     has_report,
+                    counts,
                 });
             }
         }
@@ -775,6 +810,32 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn saved_status_counts_preserve_scenario_ids_and_group_capture_steps() {
+        let mut tests = Vec::new();
+        for scenario in ["home__cart", "home__receipt"] {
+            for viewport in ["phone", "desktop"] {
+                for capture in ["FINAL", "$step"] {
+                    tests.push(serde_json::json!({
+                        "status": if viewport == "phone" && capture == "FINAL" { "fail" } else { "pass" },
+                        "pair": {
+                            "scenarioId": scenario,
+                            "fileName": format!("{scenario}_{viewport}__{capture}.png")
+                        }
+                    }));
+                }
+            }
+        }
+        let report: super::Report = serde_json::from_value(serde_json::json!({
+            "id": "shop", "tests": tests
+        }))
+        .unwrap();
+        let counts = report.scenario_counts();
+        assert_eq!(counts.total, 4);
+        assert_eq!(counts.failed, 2);
+        assert_eq!(counts.passed, 2);
+    }
+
     #[test]
     fn difference_preserves_signed_offsets_and_allows_legacy_metadata() {
         let difference: super::Difference = serde_json::from_value(serde_json::json!({
