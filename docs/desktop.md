@@ -158,7 +158,7 @@ Installers are currently unsigned, so Windows may show SmartScreen warnings.
 
 The title bar shows the number of changed files and incoming/outgoing commits
 for the workspace's repository. Click it, use Ctrl+Shift+G (Cmd+Shift+G on macOS),
-or choose Git from Commands to open the change tree and read-only diff review.
+or choose Git from Commands to open the change trees and read-only change review.
 The repository root is shown explicitly, including when the workspace is a
 subdirectory of a larger repository. Counts and the tree cover that repository.
 
@@ -172,9 +172,38 @@ for a successful fresh check. Network commands have deadlines and terminal
 credential prompts are disabled. Configure Git credentials/SSH trust outside
 the app; authentication failures can be handled in VS Code.
 
-Changed files appear as a collapsible, virtualized folder tree. Select a file to
-review its staged and unstaged changes; binary files are identified by Git.
-Choose files or folders with the checkboxes. A folder checkbox selects all of its
+Changed files appear as collapsible, virtualized folder trees. **Changes** contains
+ordinary project files. **Comparison Changes**, beneath it, contains files under
+`.regressify` and `.regressify__<environment>` directories, including nested
+workspaces. Renames into or out of these directories are comparison changes too.
+Comparison Changes starts collapsed and unselected, even for files already staged
+in Git. Expanding or reviewing a file does not select it. The ordinary All and
+folder checkboxes never select comparison files; select those explicitly in their
+own panel to include them in a commit. Collapsing the panel preserves explicit
+selections, and the confirmation calls out included comparison files. Git-ignored
+results stay ignored; this does not edit `.gitignore` or force-add ignored files.
+
+Selecting YAML or JSON opens **Changes**, a structured Before/After review of the
+last commit and the current saved file. It groups settings, scenarios, actions,
+and viewport definitions, using readable labels, units, and Added, Removed,
+Changed, or Moved indicators. Unchanged items are counted and omitted; changed
+groups can be collapsed. Scenario matching prefers explicit IDs, then unique
+unchanged content, labels, or URLs. Actions use unique content or action type.
+Ambiguous matches remain additions/removals instead of guessed replacements.
+Inserting an item does not mark every subsequent item as moved. Values are
+explicit configuration, not an inferred comparison of inherited runtime settings;
+removed overrides are shown as Not set.
+
+**Source Diff** remains available for exact staged and unstaged patches, including
+comments and formatting. Formatting-only edits are identified in Changes. Invalid
+YAML/JSON, unsupported/binary files, conflicts, and submodules fall back to Source
+Diff with a reason. File sizes, nesting, collection matching, and displayed values
+are bounded; oversized reviews use the existing raw-diff fallback. Structured
+review does not execute scenarios or predict visual website changes, and does not
+include unsaved editor drafts. Existing save/discard/cancel guards still apply
+before commits. Neither review mode modifies files or the Git index.
+
+Choose files or folders with the checkboxes. A folder checkbox selects its group's
 eligible changed files recursively, including files in collapsed subfolders, and
 shows a partial state when only some are selected. Conflicts and submodules are
 excluded from selection. Enter a commit message and confirm the commit.
@@ -222,7 +251,8 @@ background and close a document removed by the operation while retaining the
 Git view. Discard retains the draft commit message.
 
 `./ci/desktop-smoke.ps1 -GitFlows` runs the native acceptance flow against local
-repositories only. It verifies initialization, tree and diff review, selected
+repositories only. It verifies initialization, structured and source review,
+comparison-file opt-in, selected
 commits that preserve unrelated staging, push, automatic one-minute incoming
 checks, fast-forward pull, and conflict handoff in light/dark compact windows.
 The Git workspace is isolated under the OS temporary directory; screenshots

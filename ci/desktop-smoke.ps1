@@ -1576,8 +1576,63 @@ function Test-GitFlows {
     [System.IO.Directory]::CreateDirectory((Join-Path $workspace 'nested')) | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/selected.txt'), "initial`n")
     [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/staged.txt'), "initial`n")
+    $reviewSuite = 'visual_tests/qa-review.tests.json'
+    $reviewResult = '.regressify/qa-review/report.json'
+    $unselectedResult = '.regressify__staging/qa-review/report.json'
+    Write-JsonFixture (Join-Path $workspace $reviewSuite) @{ scenarios = @(@{ id = 'checkout'; label = 'Checkout'; url = '/checkout'; actions = @(@{ wait = 1000 }) }) }
+    foreach ($path in @($reviewResult, $unselectedResult)) { Write-JsonFixture (Join-Path $workspace $path) @{ status = 'before' } }
     Invoke-FixtureGit $workspace @('add', '.') | Out-Null
+    Invoke-FixtureGit $workspace @('add', '-f', '--', $reviewResult, $unselectedResult) | Out-Null
     Invoke-FixtureGit $workspace @('commit', '-m', 'initial fixture') | Out-Null
+    Write-JsonFixture (Join-Path $workspace $reviewSuite) @{ scenarios = @(@{ id = 'checkout'; label = 'Checkout'; url = '/checkout'; actions = @(@{ wait = 2500 }) }) }
+    foreach ($path in @($reviewResult, $unselectedResult)) { Write-JsonFixture (Join-Path $workspace $path) @{ status = 'after' } }
+    Invoke-FixtureGit $workspace @('add', '-u', '--', $reviewResult, $unselectedResult) | Out-Null
+    Invoke-Control 'Refresh Git status'
+    Wait-Control '1 changed files' | Out-Null
+    Wait-Control '0 comparison files selected' | Out-Null
+    if ($null -ne (Find-Control "Select $reviewResult")) { throw 'Comparison Changes must start collapsed.' }
+    Invoke-Control "Review $reviewSuite"
+    Wait-Control '1000 ms' | Out-Null
+    Wait-Control '2500 ms' | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            Capture-Window ('git-structured-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+        }
+    }
+    Invoke-Control 'Source Diff'
+    Wait-SourceText '2500' 'Git diff'
+    Capture-Window 'git-structured-source-diff'
+    Invoke-Control 'Changes'
+    Wait-Control '2500 ms' | Out-Null
+    Invoke-Control 'All' -Within 'Git changes'
+    Wait-Control '0 comparison files selected' | Out-Null
+    Write-FixtureControlText 'Git commit message' 'Review configuration without comparison results'
+    Invoke-Control 'Commit selected files'
+    Invoke-Control 'Commit selected files' -Within 'Git confirmation'
+    Wait-Control 'Committed 1 selected file(s)' | Out-Null
+    foreach ($path in @($reviewResult, $unselectedResult)) {
+        $committed = (Invoke-FixtureGit $workspace @('show', "HEAD:$path")) -join "`n"
+        $staged = (Invoke-FixtureGit $workspace @('show', ":$path")) -join "`n"
+        if ($committed -notmatch 'before' -or $staged -notmatch 'after') { throw 'Ordinary All included comparison changes in the commit.' }
+    }
+    Invoke-Control 'Comparison Changes'
+    Invoke-Control "Select $reviewResult"
+    Wait-Control '1 comparison files selected' | Out-Null
+    Capture-Window 'git-comparison-changes-selected'
+    Write-FixtureControlText 'Git commit message' 'Explicitly include reviewed comparison result'
+    Invoke-Control 'Commit selected files'
+    Capture-Window 'git-comparison-commit-confirmation'
+    Invoke-Control 'Commit selected files' -Within 'Git confirmation'
+    Wait-WindowState { ((Invoke-FixtureGit $workspace @('show', "HEAD:$reviewResult")) -join "`n") -match 'after' } 'Explicitly selected comparison file was not committed.'
+    Wait-Control '0 comparison files selected' | Out-Null
+    Wait-Control 'Committed 1 selected file(s)' | Out-Null
+    if (((Invoke-FixtureGit $workspace @('show', "HEAD:$unselectedResult")) -join "`n") -notmatch 'before') { throw 'An unchecked comparison result was committed.' }
+    Invoke-FixtureGit $workspace @('commit', '--only', '-m', 'Finish comparison fixture', '--', $unselectedResult) | Out-Null
+    Invoke-Control 'Comparison Changes'
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     $remote = Join-Path $artifacts ('git-remote-' + [guid]::NewGuid().ToString('N'))
     [System.IO.Directory]::CreateDirectory($remote) | Out-Null
     Invoke-FixtureGit $remote @('init', '--bare', '-b', 'main') | Out-Null

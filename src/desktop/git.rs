@@ -12,6 +12,7 @@ use anyhow::{Context, Result, bail, ensure};
 use sha2::{Digest, Sha256};
 
 mod process;
+pub mod review;
 
 #[derive(Clone, Default)]
 pub struct Cancellation(Arc<AtomicBool>);
@@ -43,6 +44,17 @@ pub struct Change {
 }
 
 impl Change {
+    pub fn is_comparison(&self) -> bool {
+        std::iter::once(self.path.as_str())
+            .chain(self.original_path.as_deref())
+            .any(|path| {
+                path.split('/').any(|component| {
+                    component.eq_ignore_ascii_case(".regressify")
+                        || component.to_ascii_lowercase().starts_with(".regressify__")
+                })
+            })
+    }
+
     pub fn label(&self) -> &'static str {
         if self.conflict {
             "Conflict"
@@ -414,7 +426,7 @@ impl Request {
                     "Enter a commit message (maximum 64 KiB)"
                 );
                 let mut selected = std::collections::BTreeSet::new();
-                let mut staging = std::collections::BTreeSet::new();
+                let mut staging = BTreeMap::new();
                 for path in paths {
                     let change = current
                         .changes
@@ -428,7 +440,7 @@ impl Request {
                     ensure!(!change.submodule, "Use VS Code to commit submodule changes");
                     selected.insert(change.path.clone());
                     if change.untracked || change.worktree != '.' {
-                        staging.insert(change.path.clone());
+                        staging.insert(change.path.clone(), change.untracked);
                     }
                     if let Some(original) = &change.original_path {
                         selected.insert(original.clone());
@@ -448,15 +460,26 @@ impl Request {
                         .to_str()
                         .context("Git pathspec file must be UTF-8")?
                 );
-                if !staging.is_empty() {
+                for untracked in [false, true] {
                     let mut input = Vec::new();
-                    for path in staging {
+                    for (path, is_untracked) in &staging {
+                        if *is_untracked != untracked {
+                            continue;
+                        }
                         input.extend_from_slice(path.as_bytes());
                         input.push(0);
                     }
+                    if input.is_empty() {
+                        continue;
+                    }
                     process::run(
                         &repository.root,
-                        ["add", "-A", "--pathspec-from-file=-", "--pathspec-file-nul"],
+                        [
+                            "add",
+                            if untracked { "-A" } else { "-u" },
+                            "--pathspec-from-file=-",
+                            "--pathspec-file-nul",
+                        ],
                         Some(input),
                         cancellation,
                         Duration::from_secs(30),
@@ -877,6 +900,164 @@ mod tests {
             action,
         }
         .execute(&Cancellation::default())
+    }
+
+    #[test]
+    fn structured_review_handles_viewports_formatting_binary_and_large_files() {
+        let root = repository();
+        fs::write(
+            root.path().join("_viewports.yaml"),
+            "- label: Tablet\n  width: 768\n  height: 1024\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("settings.yaml"), "delay: 1000\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(
+            root.path().join("_viewports.yaml"),
+            "- label: Tablet\n  width: 820\n  height: 1180\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("settings.yaml"),
+            "# QA note\ndelay: 1000\n",
+        )
+        .unwrap();
+        fs::write(root.path().join("binary.json"), [0_u8, 1, 2]).unwrap();
+        let large = fs::File::create(root.path().join("large.yaml")).unwrap();
+        large
+            .set_len(crate::desktop::document::MAX_DOCUMENT_BYTES as u64 + 1)
+            .unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        let viewports =
+            review::load(&snapshot, "_viewports.yaml", &Cancellation::default()).unwrap();
+        assert_eq!(viewports.groups.len(), 1);
+        assert_eq!(viewports.groups[0].title, "Viewport: Tablet");
+        assert_eq!(viewports.groups[0].fields.len(), 2);
+        let formatting =
+            review::load(&snapshot, "settings.yaml", &Cancellation::default()).unwrap();
+        assert!(formatting.source_only && formatting.groups.is_empty());
+        assert!(
+            review::load(&snapshot, "binary.json", &Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("Binary")
+        );
+        assert!(
+            review::load(&snapshot, "large.yaml", &Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("4 MiB")
+        );
+    }
+
+    #[test]
+    fn review_versions_compare_head_to_saved_file_without_modifying_the_index() {
+        let root = repository();
+        let original = "scenarios:\n  - id: checkout\n    url: https://example.test/checkout\n    delay: 1000\n";
+        let staged = original.replace("1000", "2000");
+        let current = original.replace("1000", "3000");
+        fs::write(root.path().join("suite [qa].tests.yaml"), original).unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(root.path().join("suite [qa].tests.yaml"), &staged).unwrap();
+        git(root.path(), &["add", "."]);
+        fs::write(root.path().join("suite [qa].tests.yaml"), &current).unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        let versions =
+            review::versions(&snapshot, "suite [qa].tests.yaml", &Cancellation::default()).unwrap();
+        assert_eq!(versions.before.as_deref(), Some(original));
+        assert_eq!(versions.after.as_deref(), Some(current.as_str()));
+        assert_eq!(
+            git(root.path(), &["show", ":suite [qa].tests.yaml"]),
+            staged
+        );
+        git(
+            root.path(),
+            &["mv", "suite [qa].tests.yaml", "renamed.tests.yaml"],
+        );
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        let versions =
+            review::versions(&snapshot, "renamed.tests.yaml", &Cancellation::default()).unwrap();
+        assert_eq!(versions.before.as_deref(), Some(original));
+        assert_eq!(versions.after.as_deref(), Some(current.as_str()));
+        fs::remove_file(root.path().join("renamed.tests.yaml")).unwrap();
+        let versions = review::versions(
+            &status(root.path(), &Cancellation::default()).unwrap(),
+            "renamed.tests.yaml",
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(versions.after.is_none());
+        fs::write(root.path().join("new.tests.yaml"), "scenarios: []\n").unwrap();
+        let versions = review::versions(
+            &status(root.path(), &Cancellation::default()).unwrap(),
+            "new.tests.yaml",
+            &Cancellation::default(),
+        )
+        .unwrap();
+        assert!(versions.before.is_none());
+        assert_eq!(versions.after.as_deref(), Some("scenarios: []\n"));
+    }
+
+    #[test]
+    fn comparison_changes_are_committed_only_when_explicitly_included() {
+        let root = repository();
+        fs::create_dir(root.path().join(".regressify")).unwrap();
+        fs::write(root.path().join(".gitignore"), ".regressify/\n").unwrap();
+        fs::write(root.path().join("suite.tests.yaml"), "scenarios: []\n").unwrap();
+        fs::write(root.path().join(".regressify/report.json"), "old\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["add", "-f", "--", ".regressify/report.json"]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        fs::write(
+            root.path().join("suite.tests.yaml"),
+            "scenarios: []\n# reviewed\n",
+        )
+        .unwrap();
+        fs::write(root.path().join(".regressify/report.json"), "new\n").unwrap();
+        git(root.path(), &["add", "-u", "--", ".regressify/report.json"]);
+        fs::write(root.path().join(".regressify/ignored.json"), "ignored\n").unwrap();
+        execute(
+            root.path(),
+            Action::Commit {
+                paths: vec!["suite.tests.yaml".into()],
+                message: "configuration only".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(root.path(), &["show", "HEAD:.regressify/report.json"]),
+            "old\n"
+        );
+        assert_eq!(
+            git(root.path(), &["show", ":.regressify/report.json"]),
+            "new\n"
+        );
+        fs::write(
+            root.path().join(".regressify/report.json"),
+            "latest saved\n",
+        )
+        .unwrap();
+        execute(
+            root.path(),
+            Action::Commit {
+                paths: vec![".regressify/report.json".into()],
+                message: "include reviewed results".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(root.path(), &["show", "HEAD:.regressify/report.json"]),
+            "latest saved\n"
+        );
+        assert!(git(root.path(), &["ls-files", "--", ".regressify/ignored.json"]).is_empty());
+        assert!(
+            status(root.path(), &Cancellation::default())
+                .unwrap()
+                .changes
+                .is_empty()
+        );
     }
 
     #[test]
@@ -1387,6 +1568,32 @@ mod tests {
             git(server.path(), &["rev-parse", "refs/heads/main"]),
             remote_head
         );
+    }
+
+    #[test]
+    fn comparison_changes_include_nested_environment_outputs_and_renames() {
+        for (path, original, expected) in [
+            (".regressify/shop/report.json", None, true),
+            (".regressify__staging/shop/current.png", None, true),
+            ("nested/.regressify/shop/reference.png", None, true),
+            ("nested/.REGRESSIFY/report.json", None, true),
+            ("visual_tests/shop.tests.yaml", None, false),
+            (".regressify.yaml", None, false),
+            ("docs/.regressify-notes.md", None, false),
+            ("reference.png", Some(".regressify/old.png"), true),
+            (".regressify/new.png", Some("reference.png"), true),
+        ] {
+            let change = Change {
+                path: path.into(),
+                original_path: original.map(str::to_string),
+                index: '.',
+                worktree: 'M',
+                untracked: false,
+                conflict: false,
+                submodule: false,
+            };
+            assert_eq!(change.is_comparison(), expected, "{path}");
+        }
     }
 
     #[test]

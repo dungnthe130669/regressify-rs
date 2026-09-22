@@ -38,10 +38,15 @@ pub(super) struct GitPanel {
     diff_generation: u64,
     diff: Entity<EditorState>,
     diff_text: String,
+    structured: Option<std::result::Result<model::review::StructuredReview, String>>,
+    source_diff: bool,
+    collapsed_review: BTreeSet<usize>,
     message: Entity<TextareaState>,
     remote_url: Entity<InputState>,
     status: String,
     rows: Vec<view::TreeRow>,
+    comparison_rows: Vec<view::TreeRow>,
+    comparison_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -88,10 +93,15 @@ impl GitPanel {
                     .line_number(false)
             }),
             diff_text: String::new(),
+            structured: None,
+            source_diff: false,
+            collapsed_review: BTreeSet::new(),
             message,
             remote_url,
             status: String::new(),
             rows: Vec::new(),
+            comparison_rows: Vec::new(),
+            comparison_open: false,
             _subscriptions: vec![message_subscription, remote_subscription],
         }
     }
@@ -130,7 +140,12 @@ impl GitPanel {
         self.collapsed.clear();
         self.active_file = None;
         self.rows.clear();
+        self.comparison_rows.clear();
+        self.comparison_open = false;
         self.diff_text.clear();
+        self.structured = None;
+        self.source_diff = false;
+        self.collapsed_review.clear();
         self.status.clear();
         self.diff
             .update(cx, |state, cx| state.set_value("", window, cx));
@@ -206,10 +221,18 @@ impl GitPanel {
             self.remote_error = None;
         }
         self.selection.retain(|path| {
-            snapshot
-                .changes
-                .iter()
-                .any(|change| &change.path == path && !change.conflict && !change.submodule)
+            snapshot.changes.iter().any(|change| {
+                &change.path == path
+                    && !change.conflict
+                    && !change.submodule
+                    && (!change.is_comparison()
+                        || self.snapshot.as_ref().is_some_and(|previous| {
+                            previous
+                                .changes
+                                .iter()
+                                .any(|previous| &previous.path == path && previous.is_comparison())
+                        }))
+            })
         });
         if self
             .active_file
@@ -222,6 +245,8 @@ impl GitPanel {
                 cancellation.cancel();
             }
             self.set_diff(String::new(), window, cx);
+            self.structured = None;
+            self.collapsed_review.clear();
         }
         self.snapshot = Some(snapshot);
         self.error = None;
@@ -424,22 +449,29 @@ impl GitPanel {
         }
         if self.active_file.as_ref() != Some(&path) {
             self.set_diff("Loading diff...".into(), window, cx);
+            self.structured = None;
+            self.source_diff = false;
+            self.collapsed_review.clear();
         }
         self.active_file = Some(path.clone());
         self.diff_generation += 1;
         let generation = self.diff_generation;
         let cancellation = Cancellation::default();
         self.diff_cancel = Some(cancellation.clone());
-        let task = cx
-            .background_executor()
-            .spawn(async move { model::diff(&snapshot, &path, &cancellation) });
+        let task = cx.background_executor().spawn(async move {
+            let structured = model::review::load(&snapshot, &path, &cancellation)
+                .map_err(|error| format!("{error:#}"));
+            let diff = model::diff(&snapshot, &path, &cancellation);
+            (structured, diff)
+        });
         cx.spawn_in(window, async move |panel, cx| {
-            let result = task.await;
+            let (structured, result) = task.await;
             let _ = panel.update_in(cx, |this, window, cx| {
                 if this.diff_generation != generation {
                     return;
                 }
                 this.diff_cancel = None;
+                this.structured = Some(structured);
                 this.set_diff(
                     result.unwrap_or_else(|error| format!("{error:#}")),
                     window,
@@ -538,11 +570,24 @@ impl Workbench {
                 "Initialize Git in {}? No files will be staged automatically.",
                 display_path(&request.workspace)
             ),
-            model::Action::Commit { paths, .. } => format!(
-                "Commit the current contents of {} selected file(s) on '{}'? Other staged files will not be committed.",
-                paths.len(),
-                request.expected.branch
-            ),
+            model::Action::Commit { paths, .. } => {
+                let comparisons = request
+                    .expected
+                    .changes
+                    .iter()
+                    .filter(|change| change.is_comparison() && paths.contains(&change.path))
+                    .count();
+                format!(
+                    "Commit the current contents of {} selected file(s) on '{}'? Other staged files will not be committed.{}",
+                    paths.len(),
+                    request.expected.branch,
+                    if comparisons == 0 {
+                        String::new()
+                    } else {
+                        format!(" Includes {comparisons} explicitly selected comparison file(s).")
+                    },
+                )
+            }
             model::Action::Discard { paths } => format!(
                 "Discard all staged and unstaged changes in {} selected file(s)? Tracked files will be restored to the last commit. New files, including staged additions, will be permanently deleted. This cannot be undone.",
                 paths.len()

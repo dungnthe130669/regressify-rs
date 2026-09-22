@@ -349,7 +349,7 @@ fn priority(key: &str) -> usize {
     }
 }
 
-fn label(key: &str) -> String {
+pub(crate) fn label(key: &str) -> String {
     match key {
         "misMatchThreshold" => return "Mismatch threshold (%)".into(),
         "url" => return "URL".into(),

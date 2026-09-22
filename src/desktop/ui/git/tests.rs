@@ -197,6 +197,182 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn structured_git_review_shows_readable_values_and_retains_source_diff(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    for (key, value) in [
+        ("user.name", "Git UI fixture"),
+        ("user.email", "fixture@example.test"),
+        ("commit.gpgsign", "false"),
+        ("core.hooksPath", "disabled-hooks"),
+        ("core.autocrlf", "false"),
+    ] {
+        git(directory.path(), &["config", key, value]);
+    }
+    let path = "visual_tests/ui-test.tests.yaml";
+    let before = "scenarios:\n- id: checkout\n  label: Checkout\n  url: /checkout\n  actions:\n  - wait: 1000\n";
+    std::fs::write(directory.path().join(path), before).unwrap();
+    git(directory.path(), &["add", "."]);
+    git(directory.path(), &["commit", "-m", "initial"]);
+    std::fs::write(directory.path().join(path), before.replace("1000", "2500")).unwrap();
+    std::fs::write(directory.path().join("invalid.yaml"), "scenarios: [}").unwrap();
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    let index = snapshot
+        .changes
+        .iter()
+        .position(|change| change.path == path)
+        .unwrap();
+    let invalid = snapshot
+        .changes
+        .iter()
+        .position(|change| change.path == "invalid.yaml")
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().into());
+                panel.install_snapshot(snapshot, window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("git-file", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(15), |window, _| {
+        window.try_find("git-structured-review").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("git-before-0-0").label(), Some("1000 ms"));
+        assert_eq!(window.find("git-after-0-0").label(), Some("2500 ms"));
+        assert_eq!(
+            window.find(("git-review-toggle", 0_usize)).label(),
+            Some("Scenario: Checkout / Step 1: Wait")
+        );
+        window.click(("git-review-toggle", 0_usize), cx);
+        assert!(window.try_find("git-before-0-0").is_none());
+        window.click(("git-review-toggle", 0_usize), cx);
+        window.within("git-review-tabs").click(1_usize, cx);
+        assert!(window.try_find("git-structured-review").is_none());
+        assert!(
+            view.read(cx)
+                .git
+                .read(cx)
+                .diff_text
+                .contains("+  - wait: 2500")
+        );
+        window.within("git-review-tabs").click(0_usize, cx);
+        assert!(window.find("git-after-0-0").visible());
+        window.click(("git-file", invalid), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
+        view.read(cx)
+            .git
+            .read(cx)
+            .structured
+            .as_ref()
+            .is_some_and(Result::is_err)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("git-structured-review").is_none());
+        assert!(window.find("git-review-unavailable").visible());
+        assert!(
+            view.read(cx)
+                .git
+                .read(cx)
+                .diff_text
+                .contains("scenarios: [}")
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn comparison_changes_require_explicit_selection_and_stay_separate(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let paths = [
+        "project/suite.tests.yaml",
+        "project/.regressify/result.json",
+        ".regressify__staging/result.json",
+    ];
+    let snapshot = model::Snapshot {
+        repository: Some(model::Repository {
+            root: directory.path().into(),
+            git_dir: directory.path().join(".git"),
+        }),
+        branch: "main".into(),
+        changes: paths
+            .iter()
+            .map(|path| model::Change {
+                path: (*path).into(),
+                original_path: None,
+                index: 'M',
+                worktree: '.',
+                untracked: false,
+                conflict: false,
+                submodule: false,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().into());
+                panel.install_snapshot(snapshot.clone(), window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+        window.render_frame(cx);
+        let panel = view.read(cx).git.clone();
+        assert!(!panel.read(cx).comparison_open);
+        assert!(panel.read(cx).selection.is_empty());
+        assert!(window.try_find(("git-file", 1_usize)).is_none());
+        assert_eq!(
+            window.find("git-change-count").label(),
+            Some("1 changed files")
+        );
+        window.click("git-select-folder:project", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[0].to_string()].into_iter().collect()
+        );
+        window.click("git-select-all", cx);
+        assert!(panel.read(cx).selection.is_empty());
+        window.click("git-select-all", cx);
+        assert_eq!(panel.read(cx).selection.len(), 1);
+        window.click("git-toggle-comparison", cx);
+        window.render_frame(cx);
+        assert!(window.find(("git-file", 1_usize)).visible());
+        assert!(window.find(("git-file", 2_usize)).visible());
+        window.click(("git-select", 1_usize), cx);
+        assert!(panel.read(cx).selection.contains(paths[1]));
+        window.click("git-select-all", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[1].to_string()].into_iter().collect()
+        );
+        window.click("git-toggle-comparison", cx);
+        assert!(panel.read(cx).selection.contains(paths[1]));
+        panel.update(cx, |panel, cx| panel.install_snapshot(snapshot, window, cx));
+        assert!(!panel.read(cx).selection.contains(paths[2]));
+        window.click("git-toggle-comparison", cx);
+        window.click("git-select-all-comparison", cx);
+        assert_eq!(panel.read(cx).selection.len(), 2);
+        window.click("git-select-all-comparison", cx);
+        assert!(panel.read(cx).selection.is_empty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_state(
     cx: &mut TestAppContext,
 ) {
@@ -530,6 +706,84 @@ async fn pull_refresh_reloads_or_closes_the_current_document_without_leaving_git
         assert_eq!(view.read(cx).main_tab, 3);
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+fn structured_review_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
+    use model::review::{ChangeGroup, ChangeKind, FieldChange, StructuredReview};
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) =
+            super::super::tests::editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            branch: "main".into(),
+                            changes: ["suite.tests.yaml", ".regressify/report.json"]
+                                .into_iter()
+                                .map(|path| model::Change {
+                                    path: path.into(),
+                                    original_path: None,
+                                    index: '.',
+                                    worktree: 'M',
+                                    untracked: false,
+                                    conflict: false,
+                                    submodule: false,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.active_file = Some("suite.tests.yaml".into());
+                    panel.structured = Some(Ok(StructuredReview {
+                        groups: vec![ChangeGroup {
+                            title: "Scenario: A checkout scenario with a long descriptive label"
+                                .repeat(3),
+                            kind: ChangeKind::Changed,
+                            fields: vec![FieldChange {
+                                label: "URL".into(),
+                                before: format!("https://old.test/{}", "a".repeat(500)),
+                                after: format!("https://new.test/{}", "b".repeat(500)),
+                                kind: ChangeKind::Changed,
+                            }],
+                        }],
+                        unchanged: 0,
+                        source_only: false,
+                        renamed_from: None,
+                    }));
+                });
+                this.select_view(3, window, cx);
+            });
+            window.render_frame(cx);
+            let collapsed = window.find("git-comparison-changes").bounds();
+            assert!(collapsed.size.height <= px(40.));
+            window.click("git-toggle-comparison", cx);
+            window.render_frame(cx);
+            let panel = window.find("git-comparison-changes").bounds();
+            let toggle = window.find("git-toggle-comparison").bounds();
+            let all = window.find("git-select-all-comparison").bounds();
+            assert!(toggle.right() <= all.left() && all.right() <= panel.right());
+            assert!(panel.top() >= window.find("git-change-count").bounds().bottom());
+            assert!(panel.bottom() <= window.find("git-commit-message").bounds().top());
+            let before = window.find("git-before-0-0").bounds();
+            let after = window.find("git-after-0-0").bounds();
+            let review = window.find("git-structured-review").bounds();
+            assert!(before.left() >= review.left());
+            assert!(before.right() <= after.left());
+            assert!(after.right() <= review.right());
+            assert!((before.size.width - after.size.width).abs() <= px(1.));
+            assert!(window.find("git-commit").visible());
+        })
+        .unwrap();
+    }
 }
 
 #[gpui_kit::test]
