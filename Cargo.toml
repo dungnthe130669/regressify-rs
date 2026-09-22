@@ -1,6 +1,6 @@
 [package]
 name = "regressify"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2024"
 default-run = "regressify"
 
@@ -18,7 +18,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:tempfile", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:zip", "dep:keyring", "dep:zeroize", "dep:imagequant"]
+desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser", "dep:raw-window-handle"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
@@ -37,6 +37,7 @@ glob = "0.3.3"
 globset = "0.4"
 gpui-kit = { version = "=0.6.1", optional = true, features = ["tree-sitter-yaml"] }
 imagequant = { version = "4.4", optional = true }
+jsonschema = { version = "0.57", default-features = false, optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust", "vendored"] }
 lodepng = "3.12.1"
 lsp-types = { version = "0.97", optional = true }
@@ -54,8 +55,9 @@ serde_json = "1.0.91"
 schemars = "1"
 serde_yaml = "0.9.34"
 sha2 = "0.10.7"
+strsim = { version = "0.11", optional = true }
 tera = "1.20.1"
-tempfile = { version = "3", optional = true }
+tempfile = "3"
 tokio = { version = "1.49.0", features = ["full"] }
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-json = { version = "0.24", optional = true }
@@ -65,7 +67,7 @@ walkdir = "2"
 webbrowser = { version = "1.2", optional = true }
 yaml-edit = { version = "0.3.1", optional = true }
 zeroize = { version = "1", optional = true }
-zip = { version = "8", default-features = false, features = ["deflate"], optional = true }
+zip = { version = "8", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = { version = "0.6", optional = true }
@@ -73,7 +75,6 @@ windows = { version = "0.61", optional = true, features = ["Win32_Foundation", "
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Threading"] }
 
 [dev-dependencies]
-tempfile = "3"
 tiny_http = "0.12"
 
 [build-dependencies]

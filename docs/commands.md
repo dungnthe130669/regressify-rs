@@ -130,6 +130,49 @@ build simultaneously. Only browser binaries are shared; each scenario still uses
 its own temporary browser profile. Old workspace `download/` folders are no longer
 used and are not deleted automatically.
 
+The Windows Desktop installer also prepares this shared cache before launching
+the app, downloading only when the pinned build is missing. Its browser step is
+best-effort: offline/download failures are logged without failing app installation,
+and Reference/Test retains its automatic installation fallback. Setup's
+`/SKIPCHROMIUM=1` option defers this step. CLI `install`, `ref`, and `test` still
+report browser preparation failures as non-zero infrastructure errors.
+
+### Chromium installation diagnostics
+
+Reference, Test, and Install report cache checks, lock waits, connection setup,
+download progress, extraction, and readiness. Status updates appear every five
+seconds while connecting, downloading, extracting, or waiting for the cache lock.
+Download messages include received/total MiB (when the server supplies a size),
+percentage, average speed, elapsed time, and how long no new data has arrived.
+The log also records the download URL, staging/cache paths, limits, and final
+executable path. Desktop shows the current phase in Activity; View Log contains
+the full installation messages before any scenarios start.
+
+Browser downloads honor `--proxy` (Desktop's Proxy run setting), or the HTTP
+client's default proxy configuration when no override is supplied. Proxy
+credentials and server response bodies are not printed.
+
+Network waits are bounded: 15 seconds to connect, 30 seconds for response headers,
+60 seconds without download data, and 15 minutes for the entire download. Cache
+lock waits stop after five minutes. Extraction checks a five-minute deadline
+between archive reads; blocked operating-system disk operations cannot be
+interrupted safely. Download/extraction failures are infrastructure errors, not
+scenario failures. New installations are extracted in a temporary directory and
+only published after extraction and executable validation complete.
+
+If installation fails or appears slow:
+
+- **Connecting or no new bytes:** Check access to `https://storage.googleapis.com`,
+  VPN/firewall rules, proxy authentication, and corporate TLS certificates.
+- **Waiting for cache lock:** Another CLI/Desktop process is preparing Chromium.
+  Let it finish or cancel that run, then retry. Do not delete a live lock file.
+- **Extracting or saving:** Check free space, cache folder permissions, and
+  antivirus/quarantine logs. Do not disable security software as a workaround.
+- **Support report:** Include the Regressify version and Activity's View Log,
+  especially the last phase, bytes received, elapsed time, and complete error.
+  A successful install on another computer does not rule out a QA-specific
+  network or security policy.
+
 For offline runs, install the managed build once for your user account, then
 disable downloads explicitly in any workspace:
 

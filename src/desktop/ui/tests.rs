@@ -623,6 +623,201 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
 }
 
 #[gpui_kit::test]
+fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(1000., 720.), (1600., 1000.)] {
+        for dark in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+            cx.update_window(handle.into(), |_, window, cx| {
+                super::design::apply_theme(dark, None, cx);
+                view.update(cx, |this, cx| {
+                    let source = format!(
+                        "scenarios: []\nbasicAuth:\n{}",
+                        "- username: qa\n  password: synthetic\n".repeat(10)
+                    );
+                    this.session
+                        .open
+                        .as_mut()
+                        .unwrap()
+                        .document
+                        .set_source(source)
+                        .unwrap();
+                    this.tab = 1;
+                    this.sync_editor(window, cx);
+                });
+                window.render_frame(cx);
+                let panel = window.find("diagnostic").bounds();
+                assert!(
+                    panel.bottom() <= px(height) && panel.right() <= px(width),
+                    "{panel:?}"
+                );
+                assert!(panel.left() >= window.find("workspace-navigation").bounds().right());
+                assert_eq!(panel.size.height, px(160.));
+                for index in 0_usize..10 {
+                    let text = window.find(("source-diagnostic-message", index)).bounds();
+                    let jump = window.find(("source-diagnostic", index)).bounds();
+                    assert!(text.left() >= jump.right());
+                    assert!(text.right() <= panel.right(), "{text:?}, {panel:?}");
+                    assert!(text.size.width > px(100.));
+                    if index < 9 {
+                        assert!(
+                            text.bottom()
+                                <= window
+                                    .find(("source-diagnostic-message", index + 1))
+                                    .bounds()
+                                    .top()
+                        );
+                    }
+                }
+                assert!(
+                    window.find(("source-diagnostic", 9_usize)).bounds().top() > panel.bottom()
+                );
+                window.scroll(
+                    "diagnostic",
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-10_000.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                let last = window.find(("source-diagnostic", 9_usize)).bounds();
+                assert!(
+                    last.top() >= panel.top() && last.bottom() <= panel.bottom(),
+                    "{last:?}, {panel:?}"
+                );
+                window.click(("source-diagnostic", 9_usize), cx);
+                assert_eq!(view.read(cx).source.read(cx).cursor_position().line, 20);
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let original = "scenarios: []\n";
+    std::fs::write(&path, original).unwrap();
+    let draft = "scenarios:\n- url: /\n  actions:\n  - press: '#search'\nbasicAuth:\n- username: private-user\n  password: private-password\ndebugg: true\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let entry = this.session.open.as_ref().unwrap().entry.clone();
+            this.session.load(entry).unwrap();
+            this.sync_editor(window, cx);
+            assert!(
+                this.session
+                    .suites
+                    .iter()
+                    .any(|suite| suite.name == "ui-test" && suite.error.is_some())
+            );
+        });
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input(draft, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        view.read(cx).source_issues.len() == 3
+    })
+    .await;
+    let hover = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(window.find("source-issue").label(), Some("3 issues"));
+            assert_eq!(
+                view.read(cx).source.read(cx).diagnostics().unwrap().len(),
+                3
+            );
+            let messages = view.read(cx).diagnostic.as_ref().unwrap();
+            assert!(messages.contains("basicAuth[0].origin"));
+            assert!(messages.contains("Did you mean 'debug'"));
+            assert!(!messages.contains("private-user"));
+            assert!(!messages.contains("private-password"));
+            for (index, line) in [3, 5, 7].into_iter().enumerate() {
+                window.click(("source-diagnostic", index), cx);
+                assert_eq!(view.read(cx).source.read(cx).cursor_position().line, line);
+            }
+            assert_eq!(view.read(cx).source.read(cx).value().as_ref(), draft);
+            window.click("save", cx);
+            assert!(view.read(cx).session.dirty());
+            assert!(!view.read(cx).busy);
+            let source = view.read(cx).source.read(cx);
+            let provider = source.lsp().hover_provider.clone().unwrap();
+            let text = source.text().clone();
+            provider.hover(&text, draft.find("password:").unwrap(), window, cx)
+        })
+        .unwrap()
+        .await
+        .unwrap()
+        .unwrap();
+    let lsp_types::HoverContents::Markup(content) = hover.contents else {
+        panic!("Expected schema hover text")
+    };
+    assert!(content.value.contains("${BASIC_AUTH_PASSWORD}"));
+    assert!(content.value.contains("Required"));
+    assert!(!content.value.contains("private-password"));
+    assert_eq!(hover.range.unwrap().start, lsp_types::Position::new(6, 2));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input(
+            "scenarios:\n- url: https://example.com\n  label: Corrected schema\n",
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        view.read(cx).diagnostic.is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .diagnostics()
+                .unwrap()
+                .is_empty()
+        );
+        window.render_frame(cx);
+        window.click("save", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy && !view.read(cx).session.dirty()
+    })
+    .await;
+    cx.update(|cx| {
+        let suite = view
+            .read(cx)
+            .session
+            .suites
+            .iter()
+            .find(|suite| suite.name == "ui-test")
+            .unwrap();
+        assert!(suite.error.is_none(), "{:?}", suite.error);
+        assert_eq!(suite.scenarios.len(), 1);
+        assert!(
+            !view
+                .read(cx)
+                .runs
+                .read(cx)
+                .artifact_summary("ui-test")
+                .contains("configuration errors")
+        );
+    });
+}
+
+#[gpui_kit::test]
 async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

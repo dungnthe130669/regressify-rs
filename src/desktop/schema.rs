@@ -258,10 +258,7 @@ pub fn fields(scope: &Scope) -> Result<Vec<Field>> {
         fields.push(Field {
             key: key.clone(),
             label: label(key),
-            description: definition["description"]
-                .as_str()
-                .unwrap_or_default()
-                .into(),
+            description: documentation(definition, &root),
             kind: kind(key, definition, &root),
             required,
         });
@@ -270,7 +267,7 @@ pub fn fields(scope: &Scope) -> Result<Vec<Field>> {
     Ok(fields)
 }
 
-fn resolve<'schema>(schema: &'schema Value, root: &'schema Value) -> &'schema Value {
+pub(crate) fn resolve<'schema>(schema: &'schema Value, root: &'schema Value) -> &'schema Value {
     if let Some(reference) = schema["$ref"]
         .as_str()
         .and_then(|reference| reference.strip_prefix('#'))
@@ -279,6 +276,116 @@ fn resolve<'schema>(schema: &'schema Value, root: &'schema Value) -> &'schema Va
     } else {
         schema
     }
+}
+
+pub(crate) fn variants<'schema>(
+    schema: &'schema Value,
+    root: &'schema Value,
+) -> Vec<&'schema Value> {
+    let schema = resolve(schema, root);
+    if let Some(branches) = schema["anyOf"]
+        .as_array()
+        .or_else(|| schema["oneOf"].as_array())
+    {
+        return branches
+            .iter()
+            .flat_map(|branch| variants(branch, root))
+            .collect();
+    }
+    vec![schema]
+}
+
+pub(crate) fn annotation<'schema>(
+    schema: &'schema Value,
+    root: &'schema Value,
+    key: &str,
+) -> Option<&'schema Value> {
+    fn find<'schema>(
+        schema: &'schema Value,
+        root: &'schema Value,
+        key: &str,
+        depth: usize,
+    ) -> Option<&'schema Value> {
+        if depth > 32 {
+            return None;
+        }
+        let resolved = resolve(schema, root);
+        schema.get(key).or_else(|| resolved.get(key)).or_else(|| {
+            resolved["anyOf"]
+                .as_array()?
+                .iter()
+                .find_map(|branch| find(branch, root, key, depth + 1))
+        })
+    }
+    find(schema, root, key, 0)
+}
+
+pub(crate) fn documentation(schema: &Value, root: &Value) -> String {
+    let mut description = annotation(schema, root, "description")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_default();
+    let examples = annotation(schema, root, "examples").and_then(Value::as_array);
+    if let Some(examples) = examples.filter(|examples| !examples.is_empty()) {
+        if !description.is_empty() {
+            description.push_str("\n\n");
+        }
+        description.push_str("Example: ");
+        description.push_str(
+            &examples
+                .iter()
+                .take(3)
+                .map(Value::to_string)
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+    }
+    description
+}
+
+pub(crate) fn examples(schema: &Value, root: &Value) -> Vec<Value> {
+    fn sample(schema: &Value, root: &Value, depth: usize) -> Option<Value> {
+        if depth > 16 {
+            return None;
+        }
+        if let Some(example) = annotation(schema, root, "examples")
+            .and_then(Value::as_array)
+            .and_then(|examples| examples.first())
+        {
+            return Some(example.clone());
+        }
+        let schema = variants(schema, root)
+            .into_iter()
+            .find(|schema| schema["type"] != "null")?;
+        if let Some(choice) = schema["enum"]
+            .as_array()
+            .and_then(|choices| choices.first())
+        {
+            return Some(choice.clone());
+        }
+        if let Some(items) = schema.get("items") {
+            return Some(json!([sample(items, root, depth + 1)?]));
+        }
+        if let Some(properties) = schema["properties"].as_object() {
+            let mut object = serde_json::Map::new();
+            if let Some(required) = schema["required"].as_array() {
+                for key in required.iter().filter_map(Value::as_str) {
+                    object.insert(key.into(), sample(properties.get(key)?, root, depth + 1)?);
+                }
+            }
+            return Some(Value::Object(object));
+        }
+        match types(schema, root).first().map(String::as_str) {
+            Some("string") => Some(json!("text")),
+            Some("integer" | "number") => Some(schema.get("minimum").cloned().unwrap_or(json!(0))),
+            Some("boolean") => Some(json!(false)),
+            _ => None,
+        }
+    }
+    annotation(schema, root, "examples")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| sample(schema, root, 0).into_iter().collect())
 }
 
 fn types(schema: &Value, root: &Value) -> Vec<String> {
@@ -308,17 +415,29 @@ fn kind(key: &str, schema: &Value, root: &Value) -> FieldKind {
     if key == "wait" {
         return FieldKind::Wait;
     }
-    if key == "browser" {
-        return FieldKind::Choice(vec!["chromium".into()]);
-    }
     let types = types(schema, root);
     if types.iter().any(|kind| kind == "array") {
-        if key == "urlReplacements" {
+        if types.iter().any(|kind| kind == "object")
+            || variants(schema, root)
+                .iter()
+                .filter(|variant| variant.get("items").is_some())
+                .any(|variant| resolve(&variant["items"], root)["type"] != "string")
+        {
             return FieldKind::Structured;
         }
         return FieldKind::List {
             single: types.iter().any(|kind| kind == "string"),
         };
+    }
+    let choices = variants(schema, root)
+        .iter()
+        .flat_map(|variant| variant["enum"].as_array())
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if !choices.is_empty() {
+        return FieldKind::Choice(choices);
     }
     if types.iter().any(|kind| kind == "boolean") {
         return FieldKind::Boolean;
@@ -435,6 +554,29 @@ pub fn origin(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn object_collections_are_structured_and_inherit_schema_documentation() {
+        let suite = fields(&Scope::Suite).unwrap();
+        for key in ["basicAuth", "urlReplacements"] {
+            let field = suite.iter().find(|field| field.key == key).unwrap();
+            assert_eq!(field.kind, FieldKind::Structured, "{key}");
+            assert!(!field.description.is_empty(), "{key}");
+        }
+        let auth = suite.iter().find(|field| field.key == "basicAuth").unwrap();
+        let value =
+            json!([{"origin": "https://example.com", "username": "user", "password": "pass"}]);
+        assert_eq!(auth.parse(&auth.display(&value)).unwrap(), value);
+        let scenario = fields(&Scope::Scenario).unwrap();
+        assert_eq!(
+            scenario
+                .iter()
+                .find(|field| field.key == "keyPressSelectors")
+                .unwrap()
+                .kind,
+            FieldKind::Structured
+        );
+    }
 
     #[test]
     fn list_choices_preserve_inheritance_custom_values_and_viewport_all_semantics() {

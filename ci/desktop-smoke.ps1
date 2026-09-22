@@ -19,7 +19,8 @@ param(
     [switch]$GitFlows,
     [switch]$ComparisonFlows,
     [switch]$ErrorImageFlows,
-    [switch]$IconFlows
+    [switch]$IconFlows,
+    [switch]$SchemaFlows
 )
 
 $ErrorActionPreference = 'Stop'
@@ -201,6 +202,9 @@ Write-JsonFixture (Join-Path $workspace 'common/_viewports.yaml') @(
     @{ label = 'desktop'; width = 1280; height = 720 }
 )
 [System.IO.File]::WriteAllText((Join-Path $workspace 'regressify.yaml'), "bypassCsp: true`npostInteractionWait: 1000`nviewportNames: [desktop]`n")
+if ($SchemaFlows) {
+    [System.IO.File]::WriteAllText((Join-Path $workspace 'visual_tests/schema.tests.yaml'), "scenarios: []`n")
+}
 if ($Capture) {
     $page = Join-Path $workspace 'fixture.html'
     [System.IO.File]::WriteAllText($page, '<!doctype html><html><head><title>QA fixture</title></head><body style="font:24px sans-serif;padding:48px;background:#f0f4f3"><h1>Checkout</h1><button id="continue">Continue</button><p>Order total: $42.00</p></body></html>')
@@ -1752,6 +1756,140 @@ function Test-GitFlows {
     Write-Output 'Git init, selected commits, diff/tree review, automatic incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
 }
 
+function Test-SchemaFlows {
+    if (-not ('RegressifySmokeShortcut' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class RegressifySmokeShortcut {
+    [StructLayout(LayoutKind.Sequential)]
+    struct MouseInput { public int dx, dy; public uint data, flags, time; public UIntPtr extra; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct KeyInput { public ushort key, scan; public uint flags, time; public UIntPtr extra; }
+    [StructLayout(LayoutKind.Explicit)]
+    struct InputData { [FieldOffset(0)] public MouseInput mouse; [FieldOffset(0)] public KeyInput keyboard; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct Input { public uint type; public InputData data; }
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern uint SendInput(uint count, Input[] inputs, int size);
+    public static void Control(ushort key) {
+        var inputs = new[] {
+            new Input { type = 1, data = new InputData { keyboard = new KeyInput { key = 0x11 } } },
+            new Input { type = 1, data = new InputData { keyboard = new KeyInput { key = key } } },
+            new Input { type = 1, data = new InputData { keyboard = new KeyInput { key = key, flags = 2 } } },
+            new Input { type = 1, data = new InputData { keyboard = new KeyInput { key = 0x11, flags = 2 } } }
+        };
+        if (SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<Input>()) != inputs.Length)
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+}
+'@
+    }
+    function Send-SchemaShortcut([ushort]$Key) {
+        Focus-Fixture
+        [RegressifySmokeShortcut]::Control($Key)
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    }
+    function Invoke-SchemaClipboard([scriptblock]$Operation) {
+        $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+        do {
+            try { return (& $Operation) } catch {
+                if ($_.Exception.GetBaseException() -isnot [System.Runtime.InteropServices.ExternalException] -or $deadline.Elapsed.TotalSeconds -ge 3) { throw }
+                [RegressifySmokeNative]::DwmFlush() | Out-Null
+            }
+        } while ($true)
+    }
+    function Write-SchemaSource([string]$Text) {
+        Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetText($Text) }
+        Invoke-Control 'Configuration source' -Pointer
+        Send-SchemaShortcut 0x41
+        Send-SchemaShortcut 0x56
+        try {
+            Wait-SourceText $Text
+        } catch {
+            $actual = Read-ControlText 'Configuration source'
+            $offset = 0
+            while ($offset -lt [Math]::Min($actual.Length, $Text.Length) -and $actual[$offset] -eq $Text[$offset]) { $offset++ }
+            $expectedCode = if ($offset -lt $Text.Length) { [int]$Text[$offset] } else { -1 }
+            $actualCode = if ($offset -lt $actual.Length) { [int]$actual[$offset] } else { -1 }
+            $normalizedMatch = $actual.Replace("`r`n", "`n") -ceq $Text.Replace("`r`n", "`n")
+            Write-Output ("Schema paste mismatch: expectedLength={0}, actualLength={1}, expectedLF={2}, actualLF={3}, actualCR={4}, firstDifference={5}, expectedCode={6}, actualCode={7}, normalizedMatch={8}" -f $Text.Length, $actual.Length, ([regex]::Matches($Text, "`n").Count), ([regex]::Matches($actual, "`n").Count), ([regex]::Matches($actual, "`r").Count), $offset, $expectedCode, $actualCode, $normalizedMatch)
+            Capture-Window 'schema-input-mismatch'
+            throw 'The schema fixture paste did not preserve the expected source text.'
+        }
+    }
+    $clipboard = Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    $backup = [System.Windows.Forms.DataObject]::new()
+    if ($null -ne $clipboard) {
+        foreach ($format in $clipboard.GetFormats($false)) {
+            $data = $clipboard.GetData($format, $false)
+            if ($data -is [System.ICloneable]) { $data = $data.Clone() }
+            $backup.SetData($format, $false, $data)
+        }
+    }
+    try {
+    $path = Join-Path $workspace 'visual_tests/schema.tests.yaml'
+    $original = (Get-FileHash -LiteralPath $path).Hash
+    Invoke-Control 'schema.tests.yaml'
+    Wait-Control 'Configuration source' | Out-Null
+    $invalid = "scenarios:`n  - url: https://example.com`n    actions:`n      - press: '#search'`nbasicAuth:`n  - username: qa-user`n    password: synthetic-password`ndebugg: true`n"
+    Write-SchemaSource $invalid
+    Send-FixtureKeys '{ESC}'
+    Wait-Control '3 issues' | Out-Null
+    $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+    $messages = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        ForEach-Object { $_.Current.Name } | Where-Object { $_ -like '*basicAuth[[]0].origin: Missing required field*' })
+    if ($messages.Count -eq 0) { throw 'The native editor did not explain the missing Basic Auth origin.' }
+    foreach ($message in $messages) {
+        if ($message.Contains('synthetic-password') -or $message.Contains('qa-user') -or $message.Contains('BasicAuthConfig')) {
+            throw 'Schema diagnostics exposed entered credentials or an internal enum name.'
+        }
+    }
+    Send-SchemaShortcut 0x53
+    if ((Get-FileHash -LiteralPath $path).Hash -ne $original) { throw 'Saving an invalid draft changed the saved suite.' }
+    Invoke-Control '3 issues'
+    Invoke-Control '3 issues'
+    Wait-WindowState {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+        @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+            Where-Object { $_.Current.Name.StartsWith('Ln 6, Col ') }).Count -gt 0
+    } 'Issue navigation did not reach the missing-origin entry.'
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            Wait-Control '3 issues' | Out-Null
+            Capture-Window ('schema-errors-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+        }
+    }
+    Write-SchemaSource "scenarios: []`nbasicAuth:`n  ori"
+    Send-SchemaShortcut 0x20
+    Wait-Control '1 suggestion' | Out-Null
+    Capture-Window 'schema-origin-completion'
+    Send-FixtureKeys '{ENTER}'
+    Wait-SourceText 'origin:'
+    Send-FixtureKeys '{ESC}'
+    $valid = "scenarios:`n  - url: https://example.com`n    label: Schema example`nbasicAuth:`n  origin: https://example.com`n  username: qa-user`n  password: synthetic-password`n"
+    Write-SchemaSource $valid
+    Send-FixtureKeys '{ESC}'
+    Wait-WindowState { $null -eq (Find-Control '1 issue') -and $null -eq (Find-Control '3 issues') } 'Correcting the source did not clear its issues.'
+    Send-SchemaShortcut 0x53
+    Wait-Control 'Saved' | Out-Null
+    Wait-Control '0 reference images / 0 saved test runs' | Out-Null
+    if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
+    if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
+    Capture-Window 'schema-corrected'
+    Write-Output 'Native schema messages, safe diagnostics, issue navigation, nested completion, corrected save, and compact light/dark layouts passed.'
+    } finally {
+        if ($null -ne $clipboard) {
+            Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }
+        } else {
+            Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::Clear() }
+        }
+    }
+}
+
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
@@ -1767,6 +1905,10 @@ try {
     }
     Wait-Control ($workspace.Replace('\', '/')) | Out-Null
     Test-ApplicationMenus
+    if ($SchemaFlows) {
+        Test-SchemaFlows
+        return
+    }
     if ($GitFlows) {
         Test-GitFlows
         return

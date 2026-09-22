@@ -10,6 +10,17 @@ struct DesktopArgs {
     workspace: Option<std::path::PathBuf>,
     #[arg(long, hide = true)]
     after_install: bool,
+    #[arg(long, hide = true, conflicts_with_all = ["workspace", "after_install"])]
+    install_chromium: bool,
+}
+
+fn install_chromium() -> anyhow::Result<()> {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(regressify::test::fetcher())
+        .map(|_| ())
+        .map_err(|error| anyhow::anyhow!("Cannot prepare Chromium: {error:?}"))
 }
 
 fn main() -> ExitCode {
@@ -30,6 +41,15 @@ fn main() -> ExitCode {
         };
     }
     let args = DesktopArgs::parse();
+    if args.install_chromium {
+        return match install_chromium() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("{error:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     #[cfg(target_os = "windows")]
     if let Err(error) = regressify::desktop::jump_list::initialize() {
         eprintln!("Cannot initialize Windows shell integration: {error:#}");
@@ -71,4 +91,29 @@ fn main() -> ExitCode {
     };
     regressify::desktop::ui::launch(instance);
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DesktopArgs;
+    use clap::Parser;
+
+    #[test]
+    fn installer_browser_mode_does_not_require_a_workspace() {
+        let args =
+            DesktopArgs::try_parse_from(["regressify-desktop", "--install-chromium"]).unwrap();
+        assert!(args.install_chromium);
+        assert!(!args.after_install);
+        assert!(args.workspace.is_none());
+    }
+
+    #[test]
+    fn installer_browser_mode_cannot_also_launch_the_workbench() {
+        for extra in ["--after-install", "qa-workspace", "--internal-worker"] {
+            assert!(
+                DesktopArgs::try_parse_from(["regressify-desktop", "--install-chromium", extra])
+                    .is_err()
+            );
+        }
+    }
 }

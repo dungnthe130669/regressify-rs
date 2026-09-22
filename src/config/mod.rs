@@ -27,29 +27,64 @@ pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
 #[derive(Deserialize, Serialize, Clone, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
+    /// Default HTTP Basic Auth credentials as one object or a list. Every entry requires origin, username, and password.
     pub basic_auth: Option<BasicAuthConfig>,
+    /// Maximum simultaneous browser captures. Positive whole number; default: 5.
+    #[schemars(range(min = 1), example = 5)]
     pub async_capture_limit: Option<usize>,
+    /// Maximum simultaneous image comparisons. Positive whole number; default: 2.
+    #[schemars(range(min = 1), example = 2)]
     pub async_compare_limit: Option<usize>,
+    /// Browser engine. Only "chromium" is supported.
     pub browser: Option<Browser>,
+    /// Bypass the site's Content Security Policy (default: false).
     pub bypass_csp: Option<bool>,
+    /// Default cookie YAML or JSON file loaded before navigation.
+    #[schemars(example = "common/_cookies.yaml")]
     pub cookie_path: Option<String>,
+    /// Default CSS override file injected before screenshots.
+    #[schemars(example = "common/_override.css")]
     pub css_override_path: Option<String>,
+    /// Show the browser while capturing (default: false). Always disabled in CI environments without a display.
     pub debug: Option<bool>,
+    /// Default delay before capture in milliseconds. Non-negative; default: 1000.
+    #[schemars(range(min = 0.0), example = 1000)]
     pub delay: Option<f64>,
     /// Freeze active CSS and Web Animations before capture. Default: true.
     pub freeze_animations: Option<bool>,
+    /// CSS selectors to hide while preserving layout space. Supply a list, even for one selector.
+    #[schemars(example = vec![".timestamp"])]
     pub hide_selectors: Option<Vec<String>>,
+    /// Ignore HTTPS certificate errors (default: false).
     pub ignore_ssl_errors: Option<bool>,
+    /// Default JavaScript file executed when the page is ready, before capture.
+    #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
+    /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
+    #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
+    /// Skip the automatic page scroll used to load lazy content (default: false).
     pub no_scroll_top: Option<bool>,
+    /// Delay after interactions in milliseconds. Non-negative; default: 1000.
+    #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
+    /// CSS selectors to remove, including their layout space. Supply a list, even for one selector.
+    #[schemars(example = vec![".advertisement"])]
     pub remove_selectors: Option<Vec<String>>,
+    /// Login requirement flag exposed to ready scripts. Does not log in automatically (default: false).
     pub required_login: Option<bool>,
+    /// Saved browser state name or list of names, without .json. Created by persist and loaded from the active output directory's states folder.
+    #[schemars(example = "signed-in")]
     pub state: Option<Needs>,
+    /// URL replacement rules applied in order. Each entry requires ref and test; regex and flags are optional.
     pub url_replacements: Option<Vec<UrlReplacement>>,
+    /// Apply the CSS override file before capture (default: true).
     pub use_css_override: Option<bool>,
+    /// Viewport label or list of labels. Matching ignores case; omit or use an empty list to capture all configured viewports.
+    #[schemars(example = vec!["phone", "desktop"])]
     pub viewport_names: Option<Selectors>,
+    /// Workspace-relative viewport YAML file. Default: common/_viewports.yaml. An explicit path must exist inside the workspace.
+    #[schemars(example = "common/_viewports.yaml")]
     pub viewports_path: Option<String>,
     /// Timeout in ms for waiting for an element to exist (default: 30000)
     pub element_timeout: Option<u64>,

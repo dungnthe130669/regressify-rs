@@ -62,12 +62,34 @@ if ($SmokeTest) {
     $installed = Join-Path $destination 'regressify-desktop.exe'
     $originalHash = (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash
     function Invoke-InstallerFixture([string]$Path, [string[]]$Parameters) {
-        $process = Start-Process -FilePath $Path -ArgumentList $Parameters -PassThru
+        $start = [System.Diagnostics.ProcessStartInfo]::new($Path)
+        $start.UseShellExecute = $false
+        $start.Arguments = $Parameters -join ' '
+        foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
+            $start.Environment[$name] = 'http://127.0.0.1:9'
+        }
+        $start.Environment['NO_PROXY'] = ''
+        $process = [System.Diagnostics.Process]::Start($start)
         if (-not $process.WaitForExit(120000)) {
             $process.Kill($true)
             throw 'Installer fixture timed out.'
         }
         return $process.ExitCode
+    }
+    function Assert-ChromiumPreparation([string]$LogPath) {
+        $text = Get-Content -LiteralPath $LogPath -Raw
+        if ([regex]::Matches($text, 'Preparing shared Chromium cache before launching Regressify Desktop\.').Count -ne 1) {
+            throw 'Setup must attempt Chromium preparation exactly once.'
+        }
+        if ($text -notmatch 'Chromium: Checking Chromium cache') { throw 'Setup did not invoke the headless Chromium helper.' }
+        if ($text -match 'Regressify setup is running') { throw 'Chromium preparation incorrectly hit the app startup guard.' }
+        if ($text -match 'Chromium preparation completed successfully\.') {
+            if ($text -notmatch 'Reusing cached Chromium; no download needed' -or $text -match 'Chromium download URL:') {
+                throw 'Offline installer smoke must only succeed by reusing cached Chromium.'
+            }
+        } elseif ($text -notmatch 'Chromium preparation failed' -or $text -notmatch 'Cannot connect to the Chromium download server') {
+            throw 'Setup did not retain a recoverable Chromium network failure in its log.'
+        }
     }
     function Assert-InstallerShellIntegration {
         $shortcuts = New-Object -ComObject WScript.Shell
@@ -98,6 +120,7 @@ if ($SmokeTest) {
         $result = Invoke-InstallerFixture $installer ($arguments + ('/LOG="' + $installLog + '"'))
         if ($result -ne 0) { throw "Fresh installation failed ($result). See $fixture." }
         if ((Get-Content -LiteralPath $installLog -Raw) -match $foregroundPattern) { throw 'Fully silent installation attempted foreground activation.' }
+        Assert-ChromiumPreparation $installLog
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'Installed executable differs from the built payload.' }
         Assert-InstallerShellIntegration
         $sentinel = Join-Path $destination 'user-workspace.txt'
@@ -123,6 +146,7 @@ if ($SmokeTest) {
         $foregroundLog = Join-Path $fixture 'foreground.log'
         $updateArguments = @($arguments | Where-Object { $_ -ne '/VERYSILENT' }) + @('/SILENT', ('/LOG="' + $foregroundLog + '"'))
         if ((Invoke-InstallerFixture $installer $updateArguments) -ne 0) { throw 'Visible update reinstallation failed.' }
+        Assert-ChromiumPreparation $foregroundLog
         $foregroundResult = Get-Content -LiteralPath $foregroundLog -Raw
         if ($foregroundResult -notmatch $foregroundPattern) { throw 'Visible update did not request foreground activation after the app closed.' }
         if ($foregroundResult -match 'Windows denied installer foreground activation\.') {
@@ -130,6 +154,14 @@ if ($SmokeTest) {
         }
         Assert-InstallerShellIntegration
         if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Reinstallation removed user data.' }
+        $skipLog = Join-Path $fixture 'skip-chromium.log'
+        if ((Invoke-InstallerFixture $installer ($arguments + @('/SKIPCHROMIUM=1', ('/LOG="' + $skipLog + '"')))) -ne 0) {
+            throw 'Installation with deferred Chromium preparation failed.'
+        }
+        $skipOutput = Get-Content -LiteralPath $skipLog -Raw
+        if ($skipOutput -notmatch 'Chromium preparation skipped' -or $skipOutput -match 'Chromium: Checking Chromium cache') {
+            throw 'Explicit Chromium skip did not leave preparation to Reference/Test.'
+        }
         $parts = @($Version.Split('.') | ForEach-Object { [int]$_ })
         for ($index = 3; $index -ge 0; $index--) {
             if ($parts[$index] -gt 0) {
@@ -144,7 +176,7 @@ if ($SmokeTest) {
             }
         }
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'An unsuccessful installation changed the executable.' }
-        Write-Output 'Fresh install, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
+        Write-Output 'Fresh install, Chromium cache reuse/network fallback/skip, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
     } finally {
         if (Test-Path -LiteralPath $uninstaller) {
             $result = Invoke-InstallerFixture $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')

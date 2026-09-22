@@ -131,6 +131,26 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("Fully silent installation attempted foreground activation.", smoke)
         self.assertIn("Visible update did not request foreground activation after the app closed.", smoke)
 
+    def test_windows_installer_prepares_chromium_with_run_time_fallback(self):
+        installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
+        desktop = (ROOT / "src/bin/desktop.rs").read_text(encoding="utf-8")
+        smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn("BeforeInstall: PrepareChromium", installer)
+        self.assertIn("if CurStep = ssPostInstall then\n    PrepareChromium;", installer)
+        self.assertIn("if ChromiumPrepared then", installer)
+        self.assertIn("{param:SKIPCHROMIUM|0}", installer)
+        self.assertIn("ExecAndLogOutput(", installer)
+        self.assertIn("'--install-chromium'", installer)
+        self.assertIn("ewWaitUntilTerminated, ResultCode, @ChromiumInstallLog", installer)
+        self.assertIn("app installation remains successful and Reference/Test can retry", installer)
+        self.assertIn("if not WizardSilent then", installer)
+        self.assertLess(desktop.index("if args.install_chromium"), desktop.index("protect_installation(args.after_install)"))
+        self.assertIn("block_on(regressify::test::fetcher())", desktop)
+        self.assertIn("Assert-ChromiumPreparation $installLog", smoke)
+        self.assertIn("Assert-ChromiumPreparation $foregroundLog", smoke)
+        self.assertIn("http://127.0.0.1:9", smoke)
+        self.assertIn("'/SKIPCHROMIUM=1'", smoke)
+
     def test_tuyen_upload_arguments_and_failures(self):
         shell = shutil.which("pwsh")
         self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")

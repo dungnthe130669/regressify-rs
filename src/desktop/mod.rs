@@ -10,6 +10,7 @@ pub mod runner;
 pub mod schema;
 pub mod session;
 pub mod updates;
+pub mod validation;
 pub mod worker;
 pub mod workspace;
 

@@ -1,13 +1,17 @@
 //! Local completions use the same schema as guided fields and parse incomplete source.
 
-use std::{collections::BTreeSet, ops::Range};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    ops::Range,
+};
 
 use anyhow::Result;
+use serde_json::Value;
 use tree_sitter::{Node, Parser};
 
 use super::{
     document::{ACTIONS, DocumentKind, Format, MAX_DOCUMENT_BYTES},
-    schema::{self, Field, FieldKind, Scope},
+    schema, validation,
 };
 
 #[derive(Clone, Debug)]
@@ -20,8 +24,147 @@ pub struct Suggestion {
     pub property: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct Hint {
+    pub range: Range<usize>,
+    pub text: String,
+}
+
+struct SourceField {
+    path: Vec<Segment>,
+    key: String,
+    key_range: Range<usize>,
+    value_range: Option<Range<usize>>,
+    properties: BTreeSet<String>,
+}
+
+#[derive(Default)]
+pub struct SourceIndex {
+    ranges: BTreeMap<String, Range<usize>>,
+    fields: Vec<SourceField>,
+    excluded: Vec<Range<usize>>,
+}
+
+impl SourceIndex {
+    pub fn new(format: Format, source: &str) -> Self {
+        let mut index = Self::default();
+        if source.len() > MAX_DOCUMENT_BYTES {
+            return index;
+        }
+        let mut parser = Parser::new();
+        let language = match format {
+            Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Format::Json => tree_sitter_json::LANGUAGE.into(),
+        };
+        if parser.set_language(&language).is_ok()
+            && let Some(tree) = parser.parse(source, None)
+        {
+            index.visit(tree.root_node(), source, "", &[], 0);
+        }
+        index
+    }
+
+    pub fn range(&self, pointer: &str) -> Range<usize> {
+        let mut parent = pointer;
+        loop {
+            if let Some(range) = self.ranges.get(parent) {
+                return range.clone();
+            }
+            match parent.rsplit_once('/') {
+                Some((prefix, _)) => parent = prefix,
+                None => return 0..0,
+            }
+        }
+    }
+
+    fn visit(
+        &mut self,
+        node: Node<'_>,
+        source: &str,
+        pointer: &str,
+        path: &[Segment],
+        depth: usize,
+    ) {
+        if depth > 128 {
+            return;
+        }
+        if matches!(node.kind(), "comment" | "block_scalar") {
+            self.excluded.push(node.byte_range());
+            return;
+        }
+        self.ranges
+            .entry(pointer.into())
+            .or_insert_with(|| node.byte_range());
+        let mut cursor = node.walk();
+        self.excluded.extend(
+            node.named_children(&mut cursor)
+                .filter(|child| child.kind() == "comment")
+                .map(|comment| comment.byte_range()),
+        );
+        if matches!(node.kind(), "object" | "block_mapping" | "flow_mapping") {
+            let pairs = node
+                .named_children(&mut cursor)
+                .filter(|child| matches!(child.kind(), "pair" | "block_mapping_pair" | "flow_pair"))
+                .collect::<Vec<_>>();
+            let properties = pairs
+                .iter()
+                .filter_map(|pair| scalar(pair.child_by_field_name("key")?, source))
+                .collect::<BTreeSet<_>>();
+            for pair in pairs {
+                let mut pair_cursor = pair.walk();
+                self.excluded.extend(
+                    pair.named_children(&mut pair_cursor)
+                        .filter(|child| child.kind() == "comment")
+                        .map(|comment| comment.byte_range()),
+                );
+                let Some(key_node) = pair.child_by_field_name("key") else {
+                    continue;
+                };
+                let Some(key) = scalar(key_node, source) else {
+                    continue;
+                };
+                let pointer = format!("{pointer}/{}", validation::escape_pointer(&key));
+                let mut nested = path.to_vec();
+                nested.push(Segment::Property(key.clone()));
+                let value = pair.child_by_field_name("value");
+                self.ranges.insert(pointer.clone(), key_node.byte_range());
+                self.fields.push(SourceField {
+                    path: path.to_vec(),
+                    key,
+                    key_range: key_node.byte_range(),
+                    value_range: value.map(|value| value.byte_range()),
+                    properties: properties.clone(),
+                });
+                if let Some(value) = value {
+                    self.visit(value, source, &pointer, &nested, depth + 1);
+                }
+            }
+        } else if matches!(node.kind(), "array" | "block_sequence" | "flow_sequence") {
+            let mut nested = path.to_vec();
+            nested.push(Segment::Item);
+            for (index, item) in node
+                .named_children(&mut cursor)
+                .filter(|node| node.kind() != "comment")
+                .enumerate()
+            {
+                self.visit(
+                    item,
+                    source,
+                    &format!("{pointer}/{index}"),
+                    &nested,
+                    depth + 1,
+                );
+            }
+        } else {
+            for child in node.named_children(&mut cursor) {
+                self.visit(child, source, pointer, path, depth + 1);
+            }
+        }
+    }
+}
+
 pub struct CompletionCatalog {
-    fields: Vec<(Scope, Vec<Field>)>,
+    schemas: Vec<(DocumentKind, &'static Value)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,18 +181,76 @@ struct Location {
 
 impl CompletionCatalog {
     pub fn new() -> Result<Self> {
-        let scopes = [
-            Scope::Workspace,
-            Scope::Suite,
-            Scope::Scenario,
-            Scope::Viewport,
-        ]
-        .into_iter()
-        .chain(ACTIONS.iter().map(|name| Scope::Action((*name).into())));
-        let fields = scopes
-            .map(|scope| Ok((scope.clone(), schema::fields(&scope)?)))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(Self { fields })
+        let mut schemas = Vec::new();
+        for kind in [
+            DocumentKind::Workspace,
+            DocumentKind::Suite,
+            DocumentKind::Viewports,
+        ] {
+            if let Some(schema) = validation::schema(kind)? {
+                schemas.push((kind, schema));
+            }
+        }
+        Ok(Self { schemas })
+    }
+
+    pub fn hint(
+        &self,
+        kind: DocumentKind,
+        format: Format,
+        source: &str,
+        offset: usize,
+    ) -> Option<Hint> {
+        if !source.is_char_boundary(offset) {
+            return None;
+        }
+        let (_, root) = self
+            .schemas
+            .iter()
+            .find(|(candidate, _)| *candidate == kind)?;
+        let index = SourceIndex::new(format, source);
+        if index.excluded.iter().any(|range| range.contains(&offset)) {
+            return None;
+        }
+        let field = index
+            .fields
+            .iter()
+            .filter(|field| {
+                field.key_range.contains(&offset)
+                    || field
+                        .value_range
+                        .as_ref()
+                        .is_some_and(|range| range.contains(&offset))
+            })
+            .min_by_key(|field| {
+                if field.key_range.contains(&offset) {
+                    field.key_range.len()
+                } else {
+                    field.value_range.as_ref().map_or(usize::MAX, Range::len)
+                }
+            })?;
+        let nodes = nodes_at(root, &field.path, &field.properties, true);
+        let (definition, required) = nodes.iter().find_map(|node| {
+            let definition = node["properties"].get(&field.key)?;
+            let required = node["required"]
+                .as_array()
+                .is_some_and(|keys| keys.iter().any(|key| key == &field.key));
+            Some((definition, required))
+        })?;
+        Some(Hint {
+            range: if field.key_range.contains(&offset) {
+                field.key_range.clone()
+            } else {
+                field.value_range.clone()?
+            },
+            text: format!(
+                "{}\n{}; {}\n\n{}",
+                field.key,
+                if required { "Required" } else { "Optional" },
+                validation::expected(definition, root),
+                schema::documentation(definition, root)
+            ),
+        })
     }
 
     pub fn complete(
@@ -132,135 +333,168 @@ impl CompletionCatalog {
             if location.property != property {
                 continue;
             }
-            let mut path = location.path.clone();
-            let key = if property {
-                None
-            } else {
-                if path.last() == Some(&Segment::Item) {
-                    path.pop();
-                }
-                match path.pop() {
-                    Some(Segment::Property(key)) => Some(key),
-                    _ => None,
-                }
+            let Some((_, root)) = self
+                .schemas
+                .iter()
+                .find(|(candidate, _)| *candidate == kind)
+            else {
+                return Vec::new();
             };
-            let Some(scope) = scope(kind, &path, &location.properties) else {
-                continue;
-            };
-            let fields = self.scope_fields(&scope, &location.properties);
+            let nodes = nodes_at(root, &location.path, &location.properties, property);
             if property {
-                return fields
-                    .into_iter()
-                    .filter(|field| {
-                        field.key.to_ascii_lowercase().starts_with(&prefix)
-                            && !location.properties.contains(&field.key)
-                    })
-                    .map(|field| {
-                        let key = if format == Format::Json || quoted.is_some() {
-                            format!("\"{}\"", field.key)
-                        } else {
-                            field.key.clone()
-                        };
-                        Suggestion {
-                            label: field.key.clone(),
-                            detail: field.label.clone(),
-                            description: field.description.clone(),
-                            replacement: replacement.clone(),
-                            text: format!("{key}{}", if colon { "" } else { ": " }),
-                            property: true,
+                let mut fields = BTreeMap::new();
+                let action_object = nodes.iter().any(|node| {
+                    ACTIONS
+                        .iter()
+                        .any(|action| node["properties"].get(*action).is_some())
+                });
+                let no_action = !ACTIONS
+                    .iter()
+                    .any(|action| location.properties.contains(*action));
+                for node in nodes {
+                    if let Some(properties) = node["properties"].as_object() {
+                        for (key, definition) in properties {
+                            if key != "testDate"
+                                && (!action_object || !no_action || ACTIONS.contains(&key.as_str()))
+                            {
+                                let required =
+                                    node["required"].as_array().is_some_and(|required| {
+                                        required.iter().any(|value| value == key)
+                                    });
+                                fields.entry(key).or_insert((definition, required));
+                            }
                         }
-                    })
-                    .collect();
-            }
-            if let Some(field) = fields.iter().find(|field| Some(&field.key) == key.as_ref()) {
-                let values = match &field.kind {
-                    FieldKind::Boolean => vec!["false".into(), "true".into()],
-                    FieldKind::Choice(choices) => choices.clone(),
-                    _ => Vec::new(),
-                };
-                return values
+                    }
+                }
+                let mut suggestions = fields
                     .into_iter()
-                    .filter(|value| value.to_ascii_lowercase().starts_with(&prefix))
-                    .map(|value| Suggestion {
-                        text: if matches!(field.kind, FieldKind::Boolean) {
-                            value.clone()
-                        } else {
-                            format!("\"{value}\"")
-                        },
-                        label: value,
-                        detail: field.label.clone(),
-                        description: field.description.clone(),
-                        replacement: replacement.clone(),
-                        property: false,
+                    .filter(|(key, _)| {
+                        key.to_ascii_lowercase().starts_with(&prefix)
+                            && !location.properties.contains(*key)
                     })
+                    .map(|(name, (definition, required))| {
+                        let key = if format == Format::Json || quoted.is_some() {
+                            format!("\"{name}\"")
+                        } else {
+                            name.clone()
+                        };
+                        (
+                            required,
+                            Suggestion {
+                                label: name.clone(),
+                                detail: format!(
+                                    "{}; {}",
+                                    if required { "Required" } else { "Optional" },
+                                    validation::expected(definition, root)
+                                ),
+                                description: schema::documentation(definition, root),
+                                replacement: replacement.clone(),
+                                text: format!("{key}{}", if colon { "" } else { ": " }),
+                                property: true,
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                suggestions.sort_by(|left, right| {
+                    right
+                        .0
+                        .cmp(&left.0)
+                        .then_with(|| left.1.label.cmp(&right.1.label))
+                });
+                return suggestions
+                    .into_iter()
+                    .map(|(_, suggestion)| suggestion)
                     .collect();
             }
+            let mut suggestions = Vec::new();
+            let mut seen = BTreeSet::new();
+            for node in nodes {
+                let values = if let Some(choices) = node["enum"].as_array() {
+                    choices.clone()
+                } else if node["type"] == "boolean"
+                    || node["type"]
+                        .as_array()
+                        .is_some_and(|types| types.iter().any(|kind| kind == "boolean"))
+                {
+                    vec![Value::Bool(false), Value::Bool(true)]
+                } else if node["type"] == "null" {
+                    Vec::new()
+                } else {
+                    schema::examples(node, root)
+                };
+                for value in values {
+                    let text = value.to_string();
+                    let label = value.as_str().unwrap_or(&text).to_string();
+                    if (prefix.is_empty() || label.to_ascii_lowercase().starts_with(&prefix))
+                        && seen.insert(text.clone())
+                    {
+                        suggestions.push(Suggestion {
+                            label: if value.is_object() {
+                                "Example object".into()
+                            } else if value.is_array() {
+                                "Example list".into()
+                            } else {
+                                label
+                            },
+                            text,
+                            detail: validation::expected(node, root),
+                            description: schema::documentation(node, root),
+                            replacement: replacement.clone(),
+                            property: false,
+                        });
+                    }
+                }
+            }
+            return suggestions;
         }
         Vec::new()
     }
-
-    fn scope_fields(&self, scope: &Scope, properties: &BTreeSet<String>) -> Vec<Field> {
-        let mut fields = if scope == &Scope::Action(String::new()) {
-            self.fields
-                .iter()
-                .filter(|(scope, _)| matches!(scope, Scope::Action(_)))
-                .flat_map(|(scope, fields)| {
-                    fields.iter().filter(
-                        move |field| matches!(scope, Scope::Action(name) if name == &field.key),
-                    )
-                })
-                .cloned()
-                .collect()
-        } else {
-            self.fields
-                .iter()
-                .find(|(candidate, _)| candidate == scope)
-                .map(|(_, fields)| fields.clone())
-                .unwrap_or_default()
-        };
-        let collection = match scope {
-            Scope::Suite => Some(("scenarios", "Scenarios")),
-            Scope::Scenario => Some(("actions", "Actions")),
-            _ => None,
-        };
-        if let Some((key, label)) = collection
-            && !properties.contains(key)
-        {
-            fields.push(Field {
-                key: key.into(),
-                label: label.into(),
-                description: String::new(),
-                kind: FieldKind::Structured,
-                required: false,
-            });
-        }
-        fields
-    }
 }
 
-fn scope(kind: DocumentKind, path: &[Segment], properties: &BTreeSet<String>) -> Option<Scope> {
-    use Segment::{Item, Property};
-    match (kind, path) {
-        (DocumentKind::Workspace, []) => Some(Scope::Workspace),
-        (DocumentKind::Suite, []) => Some(Scope::Suite),
-        (DocumentKind::Suite, [Property(scenarios), Item]) if scenarios == "scenarios" => {
-            Some(Scope::Scenario)
-        }
-        (DocumentKind::Suite, [Property(scenarios), Item, Property(actions), Item])
-            if scenarios == "scenarios" && actions == "actions" =>
-        {
-            Some(Scope::Action(
-                ACTIONS
-                    .iter()
-                    .find(|name| properties.contains(**name))
-                    .copied()
-                    .unwrap_or_default()
-                    .into(),
-            ))
-        }
-        (DocumentKind::Viewports, [Item]) => Some(Scope::Viewport),
-        _ => None,
+fn nodes_at<'schema>(
+    root: &'schema Value,
+    path: &[Segment],
+    properties: &BTreeSet<String>,
+    property: bool,
+) -> Vec<&'schema Value> {
+    let selected = ACTIONS.iter().find(|action| properties.contains(**action));
+    let matches_action = |node: &&Value| {
+        selected.is_none_or(|selected| {
+            !ACTIONS
+                .iter()
+                .any(|action| node["properties"].get(*action).is_some())
+                || node["properties"].get(*selected).is_some()
+        })
+    };
+    let mut nodes = vec![root];
+    for segment in path {
+        nodes = nodes
+            .into_iter()
+            .flat_map(|node| schema::variants(node, root))
+            .filter(matches_action)
+            .filter_map(|node| match segment {
+                Segment::Property(key) => node["properties"].get(key),
+                Segment::Item => node.get("items"),
+            })
+            .collect();
     }
+    let nodes = nodes
+        .into_iter()
+        .flat_map(|node| {
+            if !property
+                && schema::annotation(node, root, "examples").is_some()
+                && node.get("properties").is_none()
+                && path
+                    .last()
+                    .is_some_and(|segment| matches!(segment, Segment::Property(_)))
+            {
+                vec![node]
+            } else {
+                schema::variants(node, root)
+            }
+        })
+        .collect::<Vec<_>>();
+    nodes.into_iter().filter(matches_action).collect()
 }
 
 fn scalar(node: Node<'_>, source: &str) -> Option<String> {
@@ -394,6 +628,140 @@ mod tests {
                 .iter()
                 .any(|item| item.label == "scenarios")
         );
+    }
+
+    #[test]
+    fn generated_schema_completes_nested_objects_lists_and_navigation_choices() {
+        for source in [
+            "scenarios: []\nbasicAuth:\n  ori|",
+            "scenarios: []\nbasicAuth:\n  - ori|",
+            "scenarios:\n  - url: /\n    basicAuth:\n      - ori|",
+        ] {
+            let items = suggestions(source, Format::Yaml);
+            let origin = items
+                .iter()
+                .find(|item| item.label == "origin")
+                .unwrap_or_else(|| panic!("{source}: {items:?}"));
+            assert!(origin.detail.contains("Required"));
+            assert!(origin.description.contains("https://example.com"));
+        }
+        assert!(
+            suggestions(
+                "scenarios: []\nurlReplacements:\n  - ref: old\n    te|",
+                Format::Yaml
+            )
+            .iter()
+            .any(|item| item.label == "test")
+        );
+        let navigation = suggestions(
+            "scenarios:\n  - url: /\n    engineOptions:\n      gotoParameters:\n        waitUntil: dom|",
+            Format::Yaml,
+        );
+        assert_eq!(navigation[0].text, "\"domcontentloaded\"");
+        let nested = suggestions(
+            "{\"scenarios\":[],\"basicAuth\":[{\"ori|\":\"\"}]}",
+            Format::Json,
+        );
+        assert_eq!(nested[0].label, "origin");
+    }
+
+    #[test]
+    fn value_examples_are_valid_and_required_action_fields_are_prioritized() {
+        for format in [Format::Yaml, Format::Json] {
+            let source = if format == Format::Yaml {
+                "scenarios: []\nbasicAuth: |"
+            } else {
+                "{\"scenarios\":[],\"basicAuth\":|}"
+            };
+            let items = suggestions(source, format);
+            let item = items
+                .iter()
+                .find(|item| item.label == "Example object")
+                .unwrap();
+            let mut edited = source.replace('|', "");
+            edited.replace_range(item.replacement.clone(), &item.text);
+            super::super::document::validate_value(
+                DocumentKind::Suite,
+                &format.parse(&edited).unwrap(),
+            )
+            .unwrap();
+        }
+        let items = suggestions(
+            "scenarios:\n- url: /\n  actions:\n  - press: '#search'\n    |",
+            Format::Yaml,
+        );
+        assert_eq!(items[0].label, "key");
+        assert!(items[0].description.contains("Ctrl+A"));
+        assert!(
+            !items
+                .iter()
+                .any(|item| item.label == "click" || item.label == "value")
+        );
+        let items = suggestions(
+            "scenarios: []\nbasicAuth:\n  username: qa\n  |",
+            Format::Yaml,
+        );
+        assert!(!items.iter().any(|item| item.label == "username"));
+        assert!(items.iter().any(|item| item.label == "password"));
+    }
+
+    #[test]
+    fn source_locations_follow_nested_indices_quoted_keys_unicode_and_missing_fields() {
+        let source = "# \u{1f30d}\r\nscenarios:\r\n- url: /\r\n  actions:\r\n    # one step\r\n    - press: '#search'\r\nbasicAuth:\r\n- username: qa\r\n  password: hidden\r\n'other/key~': true\r\n";
+        let index = SourceIndex::new(Format::Yaml, source);
+        assert_eq!(&source[index.range("/scenarios/0/url")], "url");
+        assert!(source[index.range("/scenarios/0/actions/0/key")].contains("press:"));
+        assert!(source[index.range("/basicAuth/0/origin")].contains("username:"));
+        assert_eq!(&source[index.range("/other~1key~0")], "'other/key~'");
+        let source = "{\"scenarios\":[{\"url\":\"/\",\"actions\":[{\"press\":\"#search\"}]}]}";
+        let index = SourceIndex::new(Format::Json, source);
+        assert_eq!(
+            &source[index.range("/scenarios/0/actions/0/press")],
+            "\"press\""
+        );
+        assert_eq!(
+            &source[index.range("/scenarios/0/actions/0/key")],
+            "{\"press\":\"#search\"}"
+        );
+    }
+
+    #[test]
+    fn hover_help_uses_schema_metadata_without_echoing_values_or_comment_contents() {
+        let catalog = CompletionCatalog::new().unwrap();
+        let source = "scenarios: []\nbasicAuth:\n  origin: https://example.com\n  username: private-user\n  password: private-password\n# password comment\n";
+        for offset in [
+            source.find("password:").unwrap(),
+            source.find("private-password").unwrap(),
+        ] {
+            let hint = catalog
+                .hint(DocumentKind::Suite, Format::Yaml, source, offset)
+                .unwrap();
+            assert!(hint.text.contains("Required"));
+            assert!(hint.text.contains("${BASIC_AUTH_PASSWORD}"));
+            assert!(!hint.text.contains("private-password"));
+            assert!(!hint.text.contains("private-user"));
+        }
+        assert!(
+            catalog
+                .hint(
+                    DocumentKind::Suite,
+                    Format::Yaml,
+                    source,
+                    source.find("# password").unwrap() + 3
+                )
+                .is_none()
+        );
+        let source = "{\"scenarios\":[{\"url\":\"/\",\"engineOptions\":{\"gotoParameters\":{\"timeout\":1000}}}]}";
+        let hint = catalog
+            .hint(
+                DocumentKind::Suite,
+                Format::Json,
+                source,
+                source.find("timeout").unwrap(),
+            )
+            .unwrap();
+        assert!(hint.text.contains("milliseconds"));
+        assert_eq!(&source[hint.range], "\"timeout\"");
     }
 
     #[test]

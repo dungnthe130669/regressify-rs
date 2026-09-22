@@ -5,7 +5,7 @@ use anyhow::{Context, anyhow};
 use base64::{Engine as _, engine::general_purpose};
 use chromiumoxide::{
     Browser, BrowserConfig,
-    fetcher::{BrowserFetcher, BrowserFetcherOptions, BrowserKind, BrowserVersion},
+    fetcher::{BrowserHost, BrowserKind, BrowserVersion, BuildInfo, Platform},
     handler::viewport::Viewport,
 };
 use futures::StreamExt;
@@ -16,6 +16,8 @@ use crate::{
     helpers::OnceLockBoolExtensions,
     progress::{self, Event as ProgressEvent},
 };
+
+mod install;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LaunchOptions {
@@ -33,54 +35,108 @@ fn browser_cache_dir() -> anyhow::Result<PathBuf> {
         .ok_or_else(|| anyhow!("Cannot determine the shared Chromium cache directory"))
 }
 
-fn managed_browser(cache_dir: &Path) -> anyhow::Result<(BrowserFetcher, PathBuf)> {
+struct ManagedBrowser {
+    directory: PathBuf,
+    executable: PathBuf,
+    url: String,
+}
+
+fn managed_browser(cache_dir: &Path) -> anyhow::Result<ManagedBrowser> {
     let version = BrowserVersion::current(BrowserKind::Chromium);
     let BrowserVersion::Revision(revision) = version else {
         return Err(anyhow!(
             "Managed Chromium requires a fixed browser revision"
         ));
     };
-    let fetcher = BrowserFetcher::new(
-        BrowserFetcherOptions::builder()
-            .with_path(cache_dir)
-            .with_kind(BrowserKind::Chromium)
-            .with_version(version)
-            .build()?,
-    );
-    let (platform, executable) = match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("linux", "x86_64") => ("linux", "chrome-linux/chrome"),
-        ("macos", "x86_64") => ("mac", "chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
-        ("macos", "aarch64") => ("mac_arm", "chrome-mac/Chromium.app/Contents/MacOS/Chromium"),
-        ("windows", "x86") => ("win32", "chrome-win/chrome.exe"),
-        ("windows", "x86_64" | "aarch64") => ("win64", "chrome-win/chrome.exe"),
+    let (platform, folder, executable) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => (Platform::Linux, "linux", "chrome-linux/chrome"),
+        ("macos", "x86_64") => (
+            Platform::Mac,
+            "mac",
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        ),
+        ("macos", "aarch64") => (
+            Platform::MacArm,
+            "mac_arm",
+            "chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+        ),
+        ("windows", "x86") => (Platform::Win32, "win32", "chrome-win/chrome.exe"),
+        ("windows", "x86_64" | "aarch64") => (Platform::Win64, "win64", "chrome-win/chrome.exe"),
         (os, arch) => return Err(anyhow!("Managed Chromium is not supported on {os}/{arch}")),
     };
-    let executable = cache_dir
-        .join(format!("{platform}-{revision}"))
-        .join(executable);
-    Ok((fetcher, executable))
+    let directory = cache_dir.join(format!("{folder}-{revision}"));
+    Ok(ManagedBrowser {
+        executable: directory.join(executable),
+        directory,
+        url: BrowserKind::Chromium.download_url(
+            platform,
+            &BuildInfo::revision(revision),
+            &BrowserHost::current(BrowserKind::Chromium),
+        ),
+    })
+}
+
+const BROWSER_LOG_INTERVAL: Duration = Duration::from_secs(5);
+const BROWSER_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+fn browser_status(message: impl Into<String>) {
+    let message = message.into();
+    crate::progress::scenario_log!("{message}");
+    progress::emit(ProgressEvent::Phase { name: message });
 }
 
 async fn lock_browser_cache(cache_dir: &Path) -> anyhow::Result<std::fs::File> {
+    lock_browser_cache_with_timeout(cache_dir, BROWSER_LOCK_TIMEOUT).await
+}
+
+async fn lock_browser_cache_with_timeout(
+    cache_dir: &Path,
+    timeout: Duration,
+) -> anyhow::Result<std::fs::File> {
     let lock_path = cache_dir.join(".install.lock");
-    tokio::task::spawn_blocking(move || {
-        let lock = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .with_context(|| {
-                format!(
-                    "Cannot open shared Chromium cache lock: {}",
-                    lock_path.display()
-                )
-            })?;
-        lock.lock()
-            .context("Cannot lock the shared Chromium cache")?;
-        Ok::<_, anyhow::Error>(lock)
-    })
-    .await?
+    let lock = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .await
+        .with_context(|| {
+            format!(
+                "Cannot open shared Chromium cache lock: {}. Check cache folder permissions.",
+                lock_path.display()
+            )
+        })?
+        .into_std()
+        .await;
+    let started = tokio::time::Instant::now();
+    let deadline = started + timeout;
+    let mut next_log = started;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).context("Cannot lock the shared Chromium cache");
+            }
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(anyhow!(
+                "Timed out after {:.0}s waiting for the Chromium cache lock: {}. Another Regressify process may still be installing Chromium. Close or cancel that run, then retry; do not delete the lock file while a run is active.",
+                started.elapsed().as_secs_f64(),
+                lock_path.display()
+            ));
+        }
+        if now >= next_log {
+            browser_status(format!(
+                "Waiting for Chromium cache lock ({:.0}s elapsed; another Regressify process is preparing the browser)",
+                started.elapsed().as_secs_f64()
+            ));
+            next_log = now + BROWSER_LOG_INTERVAL;
+        }
+        tokio::time::sleep_until((now + Duration::from_millis(100)).min(deadline)).await;
+    }
 }
 
 pub(super) async fn prepare_browser(fetch_browser: Option<bool>) -> anyhow::Result<PathBuf> {
@@ -91,27 +147,39 @@ async fn prepare_browser_in(
     cache_dir: &Path,
     fetch_browser: Option<bool>,
 ) -> anyhow::Result<PathBuf> {
-    let (fetcher, cached_executable) = managed_browser(cache_dir)?;
-    if fetch_browser == Some(false) && !cached_executable.is_file() {
-        return resolve_executable(&Some(cached_executable));
-    }
-    tokio::fs::create_dir_all(cache_dir).await?;
-    let _cache_lock = lock_browser_cache(cache_dir).await?;
-    let executable = if fetch_browser.unwrap_or(true) {
-        if !cached_executable.is_file() {
-            progress::emit(ProgressEvent::Phase {
-                name: "Installing Chromium".into(),
-            });
+    browser_status("Checking Chromium cache");
+    let browser = managed_browser(cache_dir)?;
+    let cached_executable = &browser.executable;
+    crate::progress::scenario_log!(
+        "Shared Chromium cache: {} (downloads {})",
+        cache_dir.display(),
+        if fetch_browser == Some(false) {
+            "disabled"
+        } else {
+            "enabled"
         }
-        fetcher
-            .fetch()
-            .await
-            .map_err(|error| anyhow!("Failed to fetch managed Chromium: {error}"))?
-            .executable_path
+    );
+    if fetch_browser == Some(false) && !cached_executable.is_file() {
+        return resolve_executable(&Some(cached_executable.clone()));
+    }
+    tokio::fs::create_dir_all(cache_dir)
+        .await
+        .with_context(|| {
+            format!(
+                "Cannot create Chromium cache: {}. Check disk space and folder permissions.",
+                cache_dir.display()
+            )
+        })?;
+    let cache_lock = std::sync::Arc::new(lock_browser_cache(cache_dir).await?);
+    browser_status("Checking cached Chromium executable");
+    if cached_executable.is_file() {
+        crate::progress::scenario_log!("Reusing cached Chromium; no download needed");
+    } else if fetch_browser.unwrap_or(true) {
+        install::install_browser(&browser, cache_lock.clone()).await?;
     } else {
-        cached_executable
-    };
-    let exe = resolve_executable(&Some(executable))?;
+        return resolve_executable(&Some(cached_executable.clone()));
+    }
+    let exe = resolve_executable(&Some(cached_executable.clone()))?;
 
     // Ensure the binary is executable on Unix
     #[cfg(unix)]
@@ -125,6 +193,7 @@ async fn prepare_browser_in(
         }
     }
 
+    browser_status("Chromium ready");
     crate::progress::scenario_log!("Managed Chromium executable: {}", exe.display());
     Ok(exe)
 }
@@ -289,8 +358,8 @@ pub async fn launch_browser(
 #[cfg(test)]
 mod tests {
     use super::{
-        browser_cache_dir, lock_browser_cache, managed_browser, prepare_browser_in,
-        resolve_executable,
+        browser_cache_dir, lock_browser_cache, lock_browser_cache_with_timeout, managed_browser,
+        prepare_browser_in, resolve_executable,
     };
 
     #[test]
@@ -318,9 +387,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_browser_cache_lock_times_out_without_leaving_a_waiter() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = lock_browser_cache(directory.path()).await.unwrap();
+        let error =
+            lock_browser_cache_with_timeout(directory.path(), std::time::Duration::from_millis(20))
+                .await
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("Timed out"));
+        assert!(error.contains("another Regressify") || error.contains("Another Regressify"));
+        assert!(error.contains(&directory.path().display().to_string()));
+        drop(lock);
+        lock_browser_cache_with_timeout(directory.path(), std::time::Duration::ZERO)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn all_download_settings_use_the_same_managed_chromium() {
         let directory = tempfile::tempdir().unwrap();
-        let (fetcher, executable) = managed_browser(directory.path()).unwrap();
+        let browser = managed_browser(directory.path()).unwrap();
+        let executable = browser.executable;
+        let fetcher = chromiumoxide::fetcher::BrowserFetcher::new(
+            chromiumoxide::fetcher::BrowserFetcherOptions::builder()
+                .with_path(directory.path())
+                .build()
+                .unwrap(),
+        );
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         std::fs::write(&executable, "cached Chromium fixture").unwrap();
         assert_eq!(fetcher.fetch().await.unwrap().executable_path, executable);
@@ -342,7 +436,7 @@ mod tests {
     #[tokio::test]
     async fn downloads_disabled_requires_the_pinned_cached_browser() {
         let directory = tempfile::tempdir().unwrap();
-        let (_, executable) = managed_browser(directory.path()).unwrap();
+        let executable = managed_browser(directory.path()).unwrap().executable;
         let error = prepare_browser_in(directory.path(), Some(false))
             .await
             .unwrap_err()

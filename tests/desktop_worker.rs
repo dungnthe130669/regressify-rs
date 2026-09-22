@@ -13,6 +13,99 @@ fn invoke(executable: &Path, request: &RunRequest) -> Output {
     invoke_with_events(executable, request, None)
 }
 
+#[cfg(windows)]
+#[test]
+#[ignore = "requires cached managed Chromium and no running installer"]
+fn installer_browser_mode_reuses_cache_without_network_during_setup() {
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+    use windows_sys::Win32::{
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
+        System::Threading::CreateMutexW,
+    };
+
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let chromiumoxide::fetcher::BrowserVersion::Revision(revision) =
+        chromiumoxide::fetcher::BrowserVersion::current(
+            chromiumoxide::fetcher::BrowserKind::Chromium,
+        )
+    else {
+        panic!("Expected a pinned Chromium revision");
+    };
+    let platform = if cfg!(target_arch = "x86") {
+        "win32"
+    } else {
+        "win64"
+    };
+    let browser = directories::BaseDirs::new()
+        .unwrap()
+        .cache_dir()
+        .join(format!(
+            "regressify/chromium/{platform}-{revision}/chrome-win/chrome.exe"
+        ));
+    let before =
+        std::fs::metadata(&browser).expect("Run regressify install before this opt-in test");
+    let workspace = tempfile::tempdir().unwrap();
+    let name: Vec<u16> = "Local\\Regressify.Desktop.Setup.ED6F0908-7E11-4608-A532-E43482AA117B"
+        .encode_utf16()
+        .chain(Some(0))
+        .collect();
+    let mutex = unsafe { CreateMutexW(std::ptr::null(), 0, name.as_ptr()) };
+    assert!(!mutex.is_null());
+    let already_running = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+    let _setup_mutex = unsafe { OwnedHandle::from_raw_handle(mutex) };
+    assert!(
+        !already_running,
+        "Do not run this test during an actual installation"
+    );
+
+    let mut child = Command::new(executable)
+        .arg("--install-chromium")
+        .current_dir(workspace.path())
+        .env("HTTP_PROXY", "http://127.0.0.1:9")
+        .env("HTTPS_PROXY", "http://127.0.0.1:9")
+        .env("ALL_PROXY", "http://127.0.0.1:9")
+        .env("NO_PROXY", "")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("Installer browser preparation did not finish from cache");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    let log = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{log}");
+    assert!(
+        log.contains("Reusing cached Chromium; no download needed"),
+        "{log}"
+    );
+    assert!(log.contains("Chromium ready"), "{log}");
+    assert!(!log.contains("Chromium download URL:"), "{log}");
+    let after = std::fs::metadata(&browser).unwrap();
+    assert_eq!(before.len(), after.len());
+    assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+    assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);
+
+    let blocked = invoke(
+        executable,
+        &RunRequest {
+            root: workspace.path().to_path_buf(),
+            command: RunCommand::Init,
+            options: RunOptions::default(),
+        },
+    );
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stderr).contains("Regressify setup is running"));
+    assert_eq!(std::fs::read_dir(workspace.path()).unwrap().count(), 0);
+}
+
 #[test]
 #[ignore = "requires managed Chromium; run regressify install"]
 fn capture_workspaces_share_managed_chromium() {
@@ -58,13 +151,35 @@ fn capture_workspaces_share_managed_chromium() {
                     ..Default::default()
                 },
             };
-            let output = invoke(executable, &request);
+            let events = tempfile::NamedTempFile::new().unwrap();
+            let output = invoke_with_events(executable, &request, Some(events.path()));
             let log = format!(
                 "{}\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
             assert!(output.status.success(), "{log}");
+            let mut phases = Vec::new();
+            let mut reader = regressify::progress::EventReader::open(events.path()).unwrap();
+            reader
+                .drain(|record| {
+                    if let regressify::progress::Event::Phase { name } = record.event {
+                        phases.push(name);
+                    }
+                })
+                .unwrap();
+            reader.complete().unwrap();
+            let ready = phases
+                .iter()
+                .position(|phase| phase == "Chromium ready")
+                .unwrap();
+            let capture = phases
+                .iter()
+                .position(|phase| phase == "Capturing scenarios")
+                .unwrap();
+            assert!(ready < capture, "{phases:?}");
+            assert!(log.contains("Checking Chromium cache"), "{log}");
+            assert!(log.contains("Shared Chromium cache:"), "{log}");
             let browser = log
                 .lines()
                 .find_map(|line| line.strip_prefix("Managed Chromium executable: "))

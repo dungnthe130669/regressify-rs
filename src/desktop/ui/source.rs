@@ -2,14 +2,18 @@
 
 use std::{rc::Rc, sync::Arc};
 
-use gpui_kit::component::input::{CompletionProvider, Rope};
+use gpui_kit::component::input::{CompletionProvider, HoverProvider, Rope};
 use lsp_types::{
     CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
     Documentation, Position, TextEdit,
 };
 
 use super::*;
-use crate::desktop::{completion::CompletionCatalog, document::Format};
+use crate::desktop::{
+    completion::{CompletionCatalog, SourceIndex},
+    document::{Document, Format, validate_semantics},
+    validation,
+};
 
 #[derive(Clone)]
 struct SourceCompletions {
@@ -26,8 +30,16 @@ impl SourceCompletions {
             .map(|item| CompletionItem {
                 label: item.label,
                 detail: Some(item.detail),
-                documentation: (!item.description.is_empty())
-                    .then_some(Documentation::String(item.description)),
+                documentation: (!item.description.is_empty()).then(|| {
+                    Documentation::String(
+                        item.description
+                            .lines()
+                            .map(str::trim)
+                            .filter(|line| !line.is_empty())
+                            .collect::<Vec<_>>()
+                            .join(" "),
+                    )
+                }),
                 kind: Some(if item.property {
                     CompletionItemKind::PROPERTY
                 } else {
@@ -69,6 +81,107 @@ impl CompletionProvider for SourceCompletions {
             && text.chars().all(|character| {
                 character.is_ascii_alphanumeric() || matches!(character, '_' | '"' | ':' | ' ')
             })
+    }
+}
+
+impl HoverProvider for SourceCompletions {
+    fn hover(
+        &self,
+        text: &Rope,
+        offset: usize,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Task<Result<Option<lsp_types::Hover>>> {
+        let provider = self.clone();
+        let text = text.clone();
+        cx.background_executor().spawn(async move {
+            let text = text.to_string();
+            Ok(provider
+                .catalog
+                .hint(provider.kind, provider.format, &text, offset)
+                .map(|hint| lsp_types::Hover {
+                    range: Some(lsp_types::Range::new(
+                        position(&text, hint.range.start),
+                        position(&text, hint.range.end),
+                    )),
+                    contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                        kind: lsp_types::MarkupKind::PlainText,
+                        value: hint.text,
+                    }),
+                }))
+        })
+    }
+}
+
+pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Diagnostic>) {
+    let text = document.source();
+    let value = document.value();
+    let result = value
+        .as_ref()
+        .map_err(|error| anyhow!("{error:#}"))
+        .and_then(|value| {
+            let issues = validation::diagnostics(document.kind, value)?;
+            if issues.is_empty() {
+                validate_semantics(document.kind, value)?;
+                return Ok(Vec::new());
+            }
+            let index = SourceIndex::new(document.format, text);
+            let mut diagnostics = issues
+                .into_iter()
+                .map(|issue| {
+                    let range = index.range(&issue.pointer);
+                    source_diagnostic(
+                        lsp_types::Range::new(
+                            position(text, range.start),
+                            position(text, range.end),
+                        ),
+                        issue.message,
+                    )
+                })
+                .collect::<Vec<_>>();
+            diagnostics.sort_by_key(|issue| (issue.range.start, issue.range.end));
+            Ok(diagnostics)
+        });
+    let issues = match result {
+        Ok(issues) => issues,
+        Err(error) => {
+            let syntax_error = value.as_ref().err();
+            let line = syntax_error.and_then(error_line).unwrap_or(0);
+            let length = text
+                .lines()
+                .nth(line as usize)
+                .unwrap_or_default()
+                .encode_utf16()
+                .count()
+                .max(1) as u32;
+            let hint = if syntax_error.is_some() {
+                match document.format {
+                    Format::Yaml => {
+                        "\nUse spaces for YAML indentation, ': ' after field names, and quotes around selectors beginning with #."
+                    }
+                    Format::Json => {
+                        "\nUse double quotes for JSON field names and text, commas between fields, and no trailing commas."
+                    }
+                }
+            } else {
+                ""
+            };
+            vec![source_diagnostic(
+                lsp_types::Range::new(Position::new(line, 0), Position::new(line, length)),
+                format!("{error:#}{hint}"),
+            )]
+        }
+    };
+    (value.unwrap_or(Value::Null), issues)
+}
+
+fn source_diagnostic(range: lsp_types::Range, message: String) -> lsp_types::Diagnostic {
+    lsp_types::Diagnostic {
+        range,
+        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+        message,
+        source: Some("Regressify".into()),
+        ..Default::default()
     }
 }
 
@@ -201,37 +314,22 @@ impl Workbench {
             if state.language_name().as_ref() != language {
                 state.set_highlighter(language, cx);
             }
-            state.lsp_mut().completion_provider = Some(provider);
+            state.clear_hover_state(cx);
+            state.lsp_mut().completion_provider = Some(provider.clone());
+            state.lsp_mut().hover_provider = Some(provider);
             state.lsp_mut().completion_menu.max_width = px(440.);
         });
     }
 
     pub(super) fn update_source_diagnostics(&mut self, cx: &mut Context<Self>) {
-        let message = self.diagnostic.clone();
-        let line = self.source_issue_line;
+        let issues = self.source_issues.clone();
         self.source.update(cx, |state, cx| {
+            state.clear_hover_state(cx);
             let text = state.text().clone();
             if let Some(diagnostics) = state.diagnostics_mut() {
                 diagnostics.reset(&text);
-                if let (Some(line), Some(message)) = (line, message) {
-                    let length = text
-                        .to_string()
-                        .lines()
-                        .nth(line as usize)
-                        .unwrap_or_default()
-                        .encode_utf16()
-                        .count()
-                        .max(1) as u32;
-                    diagnostics.push(lsp_types::Diagnostic {
-                        range: lsp_types::Range::new(
-                            Position::new(line, 0),
-                            Position::new(line, length),
-                        ),
-                        severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-                        message,
-                        source: Some("Regressify".into()),
-                        ..Default::default()
-                    });
+                for issue in issues {
+                    diagnostics.push(issue);
                 }
             }
             cx.notify();
@@ -239,14 +337,95 @@ impl Workbench {
     }
 
     fn jump_to_source_issue(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(line) = self.source_issue_line {
-            self.source.update(cx, |state, cx| {
-                let position = Position::new(line, 0);
-                state.unfold_at(position, cx);
-                state.set_cursor_position(position, window, cx);
-                window.focus(&state.focus_handle(cx), cx);
-            });
+        let cursor = self.source.read(cx).cursor_position();
+        if let Some(issue) = self
+            .source_issues
+            .iter()
+            .find(|issue| issue.range.start > cursor)
+            .or_else(|| self.source_issues.first())
+        {
+            self.go_to_source_position(issue.range.start, window, cx);
         }
+    }
+
+    fn go_to_source_position(
+        &mut self,
+        position: Position,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || (self.tab != 1 && !self.select_editor_tab(1, window, cx)) {
+            return;
+        }
+        self.source.update(cx, |state, cx| {
+            state.unfold_at(position, cx);
+            state.set_cursor_position(position, window, cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+    }
+
+    pub(super) fn render_source_diagnostics(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let summary = self.diagnostic.as_ref()?;
+        Some(
+            div()
+                .id("diagnostic")
+                .role(Role::Alert)
+                .aria_label(summary.clone())
+                .test_support()
+                .h(px(if self.source_issues.len() == 1 {
+                    112.
+                } else {
+                    160.
+                }))
+                .flex_shrink_0()
+                .border_t_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().danger.opacity(0.04))
+                .child(
+                    div()
+                        .id("source-issues-scroll")
+                        .size_full()
+                        .overflow_y_scrollbar()
+                        .child(div().flex().flex_col().gap_3().px_4().py_2().children(
+                            self.source_issues.iter().enumerate().map(|(index, issue)| {
+                                let position = issue.range.start;
+                                div()
+                                    .flex()
+                                    .items_start()
+                                    .gap_2()
+                                    .w_full()
+                                    .min_w_0()
+                                    .child(
+                                        Button::new(("source-diagnostic", index))
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(gpui_kit::assets::IconName::ArrowRight)
+                                            .label(format!("Ln {}", position.line + 1))
+                                            .accessibility_label(format!(
+                                                "Go to issue on line {}",
+                                                position.line + 1
+                                            ))
+                                            .tooltip("Go to this issue")
+                                            .disabled(self.busy)
+                                            .on_click(cx.listener(move |this, _, window, cx| {
+                                                this.go_to_source_position(position, window, cx)
+                                            })),
+                                    )
+                                    .child(
+                                        div()
+                                            .id(("source-diagnostic-message", index))
+                                            .test_support()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_sm()
+                                            .text_color(cx.theme().danger)
+                                            .child(issue.message.clone()),
+                                    )
+                            }),
+                        )),
+                )
+                .into_any_element(),
+        )
     }
 
     pub(super) fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -465,10 +644,18 @@ impl Workbench {
                                 .ghost()
                                 .xsmall()
                                 .icon(gpui_kit::assets::IconName::CircleAlert)
-                                .label("1 issue")
+                                .label(format!(
+                                    "{} {}",
+                                    self.source_issues.len(),
+                                    if self.source_issues.len() == 1 {
+                                        "issue"
+                                    } else {
+                                        "issues"
+                                    }
+                                ))
                                 .text_color(cx.theme().danger)
-                                .tooltip("Go to syntax error")
-                                .disabled(self.source_issue_line.is_none())
+                                .tooltip("Go to next issue")
+                                .disabled(self.source_issues.is_empty() || self.busy)
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.jump_to_source_issue(window, cx)
                                 })),
@@ -498,4 +685,34 @@ pub(super) fn error_line(error: &anyhow::Error) -> Option<u32> {
                 .filter(|line| *line > 0)
         })
         .map(|line| line.saturating_sub(1) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::SourceCompletions;
+    use crate::desktop::{
+        completion::CompletionCatalog,
+        document::{DocumentKind, Format},
+    };
+
+    #[test]
+    fn compact_completion_documentation_keeps_the_example_and_full_explanation() {
+        let provider = SourceCompletions {
+            catalog: Arc::new(CompletionCatalog::new().unwrap()),
+            kind: DocumentKind::Suite,
+            format: Format::Yaml,
+        };
+        let source = "scenarios: []\nbasicAuth:\n  ori";
+        let items = provider.items(source, source.len());
+        let origin = items.iter().find(|item| item.label == "origin").unwrap();
+        let Some(lsp_types::Documentation::String(documentation)) = &origin.documentation else {
+            panic!("Expected completion documentation");
+        };
+        assert_eq!(documentation.lines().count(), 1);
+        assert!(documentation.contains("https://example.com"));
+        assert!(documentation.contains("Required for every entry"));
+        assert!(documentation.contains("Example:"));
+    }
 }

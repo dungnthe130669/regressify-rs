@@ -248,6 +248,34 @@ mod tests {
                 .get("readySelector")
                 .is_some()
         );
+        let auth = &schema["$defs"]["BasicAuth"];
+        assert!(
+            auth["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("origin"))
+        );
+        assert_eq!(
+            auth["properties"]["origin"]["examples"][0],
+            "https://example.com"
+        );
+        assert!(
+            auth["properties"]["password"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("${BASIC_AUTH_PASSWORD}")
+        );
+        assert_eq!(schema["properties"]["misMatchThreshold"]["maximum"], 100.0);
+        assert_eq!(
+            schema["$defs"]["Browser"]["enum"],
+            serde_json::json!(["chromium"])
+        );
+        fs::write(root.join("common/test-schema.json"), "custom-schema\n").unwrap();
+        init_workspace(root).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("common/test-schema.json")).unwrap(),
+            "custom-schema\n"
+        );
     }
 
     #[test]

@@ -74,6 +74,25 @@ Uninstall removes these shortcuts and context-menu entries. Workspaces and deskt
 preferences are preserved by updates and uninstall. The release executable links
 the MSVC runtime statically.
 
+Setup also prepares the pinned Chromium build in
+`%LOCALAPPDATA%\regressify\chromium` before launching the app. It checks the same
+shared cache used by CLI, Reference, and Test and downloads only when that build
+is missing. Reinstallation or an app update does not download Chromium again
+unless the required browser revision changes or the cache was removed. Installed
+Chrome/Edge are not substitutes for this managed build. The browser cache remains
+available after app uninstall.
+
+Interactive setup shows browser download/extraction progress and writes detailed
+messages to its setup log. If browser preparation fails, the app installation
+still succeeds; setup reports the problem, and Reference/Test can retry later.
+Silent setup records the failure without opening a dialog. Pass `/SKIPCHROMIUM=1`
+to defer preparation explicitly. Setup uses the HTTP client's default proxy
+configuration, not a workspace's saved Proxy setting; for a workspace-specific
+proxy, finish setup and choose Install Chromium from the app after configuring
+Run settings. The same network time limits and diagnostics described under
+[Chromium installation diagnostics](commands.md#chromium-installation-diagnostics)
+apply during setup.
+
 Right-click the app's taskbar icon to open a workspace from **Recent Workspaces**.
 The Jump List uses saved workspace history, refreshes as workspaces are opened,
 and skips missing folders and duplicates. Windows removals are remembered until
@@ -513,6 +532,9 @@ The installer smoke test refuses to run over an existing per-user installation,
 shortcut group or context-menu registration. It installs only under a generated
 `target/installer-smoke-*` directory, suppresses relaunch, verifies both shortcuts
 and their Jump List identity, and checks the folder context-menu commands.
+Chromium requests in the smoke child processes use an unreachable loopback proxy:
+setup must reuse an existing cached build or log a non-fatal network failure,
+without downloading a browser. The fixture also checks `/SKIPCHROMIUM=1`.
 Uninstall must remove the fixture shortcuts, context menus and installation
 registration. The native UI smoke requires an unconfigured development build and
 temporarily backs up/restores preferences, like the other desktop smoke modes.
@@ -687,8 +709,8 @@ and receive unique labels; suite copies omit the suite ID to avoid sharing outpu
 artifacts. Renaming preserves IDs.
 
 All serialized configuration and action fields are represented by generated
-controls. Scenarios/actions have dedicated collection editors; complex URL
-replacement objects use structured YAML/JSON input. Generated runtime `testDate`
+controls. Scenarios/actions have dedicated collection editors; Basic Auth,
+URL replacements, and other object collections use structured YAML/JSON input. Generated runtime `testDate`
 metadata remains available in Source. Frame chains, selector lists, dependencies,
 restore state, and uploads retain the existing serialization shapes.
 
@@ -722,22 +744,61 @@ diagnostic retained. File-menu actions use the same availability rules as comman
 search, including disabling suite deletion for unsaved documents.
 
 Source has local YAML/JSON schema completion. Suggestions appear while typing
-property names and supported boolean/browser values; Ctrl+Space opens the menu
+property names, supported values, and documented examples; Ctrl+Space opens the menu
 explicitly (also Ctrl+Space on macOS). Arrow keys choose an item, Enter accepts,
-and Escape dismisses. Keys are scoped to workspace, suite, scenario, action, or
-viewport context, and existing sibling keys are excluded. Accepting a suggestion
-replaces the partial token without reformatting surrounding source.
+and Escape dismisses. Keys follow the schema through nested objects and lists,
+including Basic Auth, URL replacements, iframe settings, and navigation options.
+Required fields appear first; existing sibling keys and unrelated action fields
+are excluded. Suggestions include the expected type, descriptions, units, and
+safe examples. Structured examples insert valid YAML flow notation or JSON.
+Accepting a suggestion replaces only the partial token, preserving surrounding source.
 
-Completions use the Rust field schema and an error-tolerant syntax tree; no
-network service or language-server installation is required. Arbitrary data
-files, free-text values, JavaScript, and live-page CSS selectors are not completed.
-JSON files and the Effective view use JSON highlighting; YAML files use YAML.
+Hover over a field or value for its schema description, required/optional status,
+expected type, and examples. These hints contain schema metadata, not entered
+credential values. Arbitrary data files, JavaScript, and live-page CSS selectors
+are not completed. JSON files and Effective use JSON highlighting; YAML uses YAML.
+
+Schemas are generated automatically from the Rust types with `schemars`.
+Field documentation, examples, and constraints live beside those types and feed
+both the desktop editor and schemas exported by `regressify init` for VS Code.
+There is no separately maintained desktop schema, network schema lookup, or
+language-server installation. Validation uses an offline, cached JSON Schema
+validator plus the existing semantic checks. Tests check field-help coverage and
+validate documented examples against the generated schemas.
+
+For example, a Basic Auth entry without `origin` reports
+`basicAuth[0].origin: Missing required field`, followed by an origin example and
+an explanation. A complete entry is:
+
+```yaml
+basicAuth:
+  - origin: https://example.com
+    username: "${BASIC_AUTH_USERNAME}"
+    password: "${BASIC_AUTH_PASSWORD}"
+```
+
+Set those environment variables before launching Regressify. The origin includes
+the scheme and optional port, not a page path. Each entry needs all three fields;
+the single-object form is also supported. In the editor, indices such as `[0]`
+refer to the first list item. Generated-schema diagnostics never echo entered
+values. Runtime checks still determine whether files, environment variables,
+websites, and elements actually exist or work. `init` remains non-destructive:
+it does not overwrite existing exported schemas or VS Code settings. The desktop
+uses the schema built into its current version, independent of those files.
 
 The source toolbar provides Find, Replace, and Suggest, plus word wrapping and
 text sizes from 10 to 24 pixels. These presentation changes preserve source and
-undo history. The status strip shows the language and cursor position. Syntax
-errors underline their source line; the issue button unfolds and focuses that
-line. Schema errors without a source location remain in the diagnostic panel.
+undo history. The status strip shows the language, cursor position, and issue
+count. Syntax errors underline their source line; schema errors identify the
+field and offer corrections for missing fields, misspellings, types, supported
+choices, and numeric limits. Up to 50 issues are reported together in a scrollable
+panel. Each line link unfolds and focuses the affected field, or its enclosing
+object when a required field is missing. The issue button moves to the next
+issue, wrapping to the first. Fixing the draft clears resolved diagnostics.
+
+`./ci/desktop-smoke.ps1 -SchemaFlows` verifies missing-origin guidance, credential-safe
+messages, issue jumps, nested completion acceptance, save guards, and compact/large
+light/dark layouts in a synthetic workspace on an unlocked Windows desktop.
 
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
@@ -818,6 +879,14 @@ if the shared cache is empty. Captures never auto-detect installed Chrome or Edg
 and missing or invalid managed executables fail the run instead of switching
 browsers. Use the same Regressify version across QA machines and review baselines
 again when changing browser revisions.
+During installation, Activity distinguishes cache-lock waits, connecting,
+downloading (MiB, percentage when known, speed, elapsed time, and idle time),
+extraction, and readiness. Status refreshes every five seconds during long steps;
+View Log includes the download URL, cache/staging paths, limits, and error details.
+The Proxy run setting also applies to Chromium downloads. Network stalls fail
+with recovery guidance instead of waiting indefinitely. See
+[Chromium installation diagnostics](commands.md#chromium-installation-diagnostics)
+for time limits and QA troubleshooting checks.
 Invalid settings block only commands that use them. Other drafts stay visible
 and retained, and unrelated options are omitted from the execution request.
 

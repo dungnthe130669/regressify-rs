@@ -131,7 +131,7 @@ pub struct Workbench {
     busy: bool,
     status: String,
     diagnostic: Option<String>,
-    source_issue_line: Option<u32>,
+    source_issues: Vec<lsp_types::Diagnostic>,
     source_wrap: bool,
     source_line_numbers: bool,
     source_font_size: f32,
@@ -322,7 +322,7 @@ impl Workbench {
             busy: false,
             status,
             diagnostic: None,
-            source_issue_line: None,
+            source_issues: Vec::new(),
             source_wrap: preferences.source_wrap,
             source_line_numbers: preferences.source_line_numbers,
             source_font_size: f32::from(preferences.source_font_size),
@@ -1018,12 +1018,26 @@ impl Workbench {
                 "Saving...",
                 move || {
                     workspace.save(&mut snapshot)?;
-                    Ok(snapshot.document.source().to_string())
+                    Ok((
+                        snapshot.document.source().to_string(),
+                        workspace.suite_catalog(),
+                    ))
                 },
-                move |this, written, window, cx| {
+                move |this, (written, catalog), window, cx| {
                     if let Some(open) = &mut this.session.open {
                         open.document.acknowledge_saved(written);
                     }
+                    match catalog {
+                        Ok(suites) => {
+                            this.session.suites = suites;
+                            this.session.suite_error = None;
+                        }
+                        Err(error) => {
+                            this.session.suites.clear();
+                            this.session.suite_error = Some(format!("{error:#}"));
+                        }
+                    }
+                    this.sync_suites(cx);
                     this.status = if this.unsaved() {
                         "Saved snapshot; newer edits are still unsaved"
                     } else {
@@ -1152,14 +1166,19 @@ impl Workbench {
     }
 
     fn refresh_value(&mut self) {
-        self.value = self.session.value().unwrap_or(Value::Null);
-        let error = self
+        (self.value, self.source_issues) = self
             .session
             .open
             .as_ref()
-            .and_then(|open| open.document.validate().err());
-        self.source_issue_line = error.as_ref().and_then(source::error_line);
-        self.diagnostic = error.map(|error| format!("{error:#}"));
+            .map(|open| source::inspect_document(&open.document))
+            .unwrap_or_default();
+        self.diagnostic = (!self.source_issues.is_empty()).then(|| {
+            self.source_issues
+                .iter()
+                .map(|issue| issue.message.as_str())
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        });
     }
 
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1699,6 +1718,11 @@ impl Workbench {
             .w_full();
         let action = matches!(self.session.selection, Selection::Action { .. });
         let query = self.field_search.read(cx).value().trim().to_lowercase();
+        let exact = self
+            .bindings
+            .iter()
+            .any(|binding| binding.field.key.eq_ignore_ascii_case(&query))
+            || (query == "actions" && matches!(self.session.selection, Selection::Scenario(_)));
         let mut bindings: Vec<_> = self.bindings.iter().enumerate().collect();
         bindings.sort_by_key(|(index, binding)| {
             (
@@ -1725,14 +1749,18 @@ impl Workbench {
                 design::group(&field.key)
             };
             if !query.is_empty()
-                && ![
-                    field.key.as_str(),
-                    field.label.as_str(),
-                    field.description.as_str(),
-                    group.1,
-                ]
-                .iter()
-                .any(|text| text.to_lowercase().contains(&query))
+                && (if exact {
+                    !field.key.eq_ignore_ascii_case(&query)
+                } else {
+                    ![
+                        field.key.as_str(),
+                        field.label.as_str(),
+                        field.description.as_str(),
+                        group.1,
+                    ]
+                    .iter()
+                    .any(|text| text.to_lowercase().contains(&query))
+                })
             {
                 continue;
             }
@@ -2371,20 +2399,7 @@ impl Workbench {
                 )
             })
             .child(div().flex_1().min_h_0().child(content))
-            .children(self.diagnostic.as_ref().map(|diagnostic| {
-                div().max_h(px(92.)).overflow_y_scrollbar().child(
-                    div()
-                        .id("diagnostic")
-                        .role(Role::Alert)
-                        .aria_label(diagnostic.clone())
-                        .test_support()
-                        .px_4()
-                        .py_2()
-                        .text_sm()
-                        .text_color(cx.theme().danger)
-                        .child(diagnostic.clone()),
-                )
-            }))
+            .children(self.render_source_diagnostics(cx))
             .into_any_element()
     }
 

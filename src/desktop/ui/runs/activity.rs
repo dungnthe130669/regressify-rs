@@ -106,6 +106,8 @@ impl RunPanel {
                         .gap_3()
                         .child(
                             div()
+                                .flex_1()
+                                .min_w_0()
                                 .flex()
                                 .flex_col()
                                 .gap_1()
@@ -154,6 +156,7 @@ impl RunPanel {
                                         .role(Role::Status)
                                         .aria_label(phase.to_string())
                                         .test_support()
+                                        .w_full()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(phase.to_string()),
                                 ),
@@ -164,6 +167,7 @@ impl RunPanel {
                                 .role(Role::Status)
                                 .aria_label(elapsed_label.clone())
                                 .test_support()
+                                .flex_shrink_0()
                                 .text_sm()
                                 .font_family(cx.theme().mono_font_family.clone())
                                 .child(elapsed_label),
@@ -1009,6 +1013,76 @@ mod tests {
         assert_eq!(lines[10], "Step 29");
         assert_eq!(lines[11].len(), 515);
         assert!(lines[11].ends_with("..."));
+    }
+
+    #[gpui_kit::test]
+    fn chromium_install_phases_fit_and_logs_remain_accessible(cx: &mut TestAppContext) {
+        let phases = [
+            "Waiting for Chromium cache lock (120s elapsed; another Regressify process is preparing the browser)",
+            "Connecting to Chromium download server (25s elapsed; waiting for response)",
+            "Downloading Chromium: 128.0/300.0 MiB (43%), 1.25 MiB/s, 102s elapsed; no data for 55s",
+            "Downloading Chromium: 128.0 MiB (total size unknown), 1.25 MiB/s, 102s elapsed; no data for 55s",
+            "Extracting Chromium (120s elapsed; unpacking files)",
+            "Verifying and saving Chromium installation",
+            "Chromium ready",
+            "Capturing scenarios",
+        ];
+        for (width, height) in [(1080., 720.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = super::super::super::tests::editor_at_size(
+                cx,
+                directory.path(),
+                size(px(width), px(height)),
+            );
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.main_tab = 1;
+                    this.runs.update(cx, |panel, cx| {
+                        panel.manager.request = Some(RunRequest {
+                            root: directory.path().to_path_buf(),
+                            command: RunCommand::Reference,
+                            options: RunOptions::default(),
+                        });
+                        cx.notify();
+                    });
+                    cx.notify();
+                });
+                for dark in [false, true] {
+                    super::super::super::design::apply_theme(dark, Some(window), cx);
+                    for phase in phases {
+                        view.update(cx, |this, cx| {
+                            this.runs.update(cx, |panel, cx| {
+                                panel.manager.progress.apply(Record {
+                                    version: 1,
+                                    elapsed_ms: 102_000,
+                                    event: Event::Phase { name: phase.into() },
+                                });
+                                panel.manager.logs.push_back(LogLine {
+                                    stderr: true,
+                                    text: format!("{phase}\n"),
+                                });
+                                cx.notify();
+                            });
+                        });
+                        window.render_frame(cx);
+                        assert_eq!(window.find("live-phase").label(), Some(phase));
+                        let bounds = window.find("live-phase").bounds();
+                        let elapsed = window.find("run-elapsed").bounds();
+                        let log = window.find("activity-view-log").bounds();
+                        assert!(bounds.size.width > px(0.));
+                        assert!(bounds.size.height > px(0.));
+                        assert!(bounds.origin.x + bounds.size.width <= elapsed.origin.x);
+                        assert!(elapsed.origin.x + elapsed.size.width <= px(width));
+                        assert!(bounds.origin.y + bounds.size.height <= log.origin.y);
+                        assert!(log.origin.y + log.size.height <= px(height));
+                    }
+                }
+                window.click("activity-view-log", cx);
+                window.render_frame(cx);
+                assert_eq!(window.find("run-log-heading").label(), Some("All run logs"));
+            })
+            .unwrap();
+        }
     }
 
     #[gpui_kit::test]

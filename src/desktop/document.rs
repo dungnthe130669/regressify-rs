@@ -475,6 +475,20 @@ fn insert_yaml_item(
 }
 
 pub fn validate_value(kind: DocumentKind, value: &Value) -> Result<()> {
+    let issues = super::validation::diagnostics(kind, value)?;
+    ensure!(
+        issues.is_empty(),
+        "{}",
+        issues
+            .iter()
+            .map(|issue| issue.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    );
+    validate_semantics(kind, value)
+}
+
+pub(crate) fn validate_semantics(kind: DocumentKind, value: &Value) -> Result<()> {
     match kind {
         DocumentKind::Workspace => {
             let config: WorkspaceConfig = serde_json::from_value(value.clone())?;
@@ -896,6 +910,19 @@ mod tests {
             validate_value(DocumentKind::Suite, &value).unwrap();
         }
         assert!(action_template("unknown").is_err());
+    }
+
+    #[test]
+    fn basic_auth_validation_explains_the_missing_origin_without_exposing_credentials() {
+        let document = suite(
+            "scenarios: []\nbasicAuth:\n  - username: private-user\n    password: private-password\n",
+        );
+        let error = document.validate().unwrap_err().to_string();
+        assert!(error.contains("basicAuth[0].origin"), "{error}");
+        assert!(error.contains("https://example.com"), "{error}");
+        assert!(!error.contains("BasicAuthConfig"), "{error}");
+        assert!(!error.contains("private-user"), "{error}");
+        assert!(!error.contains("private-password"), "{error}");
     }
 
     #[test]
