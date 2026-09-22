@@ -5520,6 +5520,69 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+async fn failed_reference_uses_error_placeholder_in_image_views(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join(".regressify/ui-test");
+    let run = output.join("bitmaps_test/run-1");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::create_dir_all(output.join("html_report")).unwrap();
+    let placeholder = include_bytes!("../../snapshot/data/error-icon.png");
+    let image = lodepng::decode32(placeholder).unwrap();
+    std::fs::write(run.join("failed.png"), placeholder).unwrap();
+    let report = serde_json::json!({"id": "ui-test", "tests": [{
+        "status": "fail",
+        "pair": {
+            "label": "Failed reference",
+            "reference": "../bitmaps_reference/failed.png",
+            "test": "../bitmaps_test/run-1/failed.png",
+            "engineErrorMsg": "Capture failed: missing selector #pay"
+        }
+    }]});
+    std::fs::write(
+        run.join("report.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    let (handle, _) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(2_usize, cx);
+        window.within("image-modes").click(3_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find(("image-details", 0_usize)).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let dimensions = format!("{} x {}", image.width, image.height);
+        assert_eq!(
+            window.find(("image-details", 0_usize)).label(),
+            Some(format!("Reference {dimensions}").as_str())
+        );
+        assert_eq!(
+            window.find(("image-details", 1_usize)).label(),
+            Some(format!("Test {dimensions}").as_str())
+        );
+        assert_eq!(
+            window.find("capture-error").label(),
+            Some("Capture failed: missing selector #pay")
+        );
+        assert_eq!(
+            window.find(("image-content", 0_usize)).bounds().size,
+            window.find(("image-content", 1_usize)).bounds().size
+        );
+        window.within("image-modes").click(0_usize, cx);
+        assert!(window.find(("image-content", 0_usize)).visible());
+        assert!(window.find(("image-details", 0_usize)).visible());
+        window.right_click(("image-content", 0_usize), cx);
+        assert!(window.try_find("popup-menu").is_none());
+    })
+    .unwrap();
+    assert!(!output.join("bitmaps_reference/failed.png").exists());
+}
+
+#[gpui_kit::test]
 async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let output = directory.path().join(".regressify");

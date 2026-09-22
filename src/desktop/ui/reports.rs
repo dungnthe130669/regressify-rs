@@ -2,12 +2,15 @@
 
 use std::{
     cell::{Cell, RefCell},
+    path::Path,
     rc::Rc,
     sync::Arc,
 };
 
 use super::*;
-use crate::desktop::results::{Catalog, Outcome, Pair, ReportEntry, ReportSelection};
+use crate::desktop::results::{
+    Catalog, Outcome, Pair, ReportArtifacts, ReportEntry, ReportSelection,
+};
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
@@ -81,7 +84,50 @@ struct LoadedImage {
     image: Arc<Image>,
     width: usize,
     height: usize,
-    path: PathBuf,
+    path: Option<PathBuf>,
+}
+
+impl LoadedImage {
+    fn load(
+        artifacts: &ReportArtifacts,
+        root: &Path,
+        label: &'static str,
+        path: Option<&str>,
+    ) -> Result<Self> {
+        match path.map(|path| artifacts.read_image(root, path)) {
+            Some(Ok((image, bytes))) => Ok(Self {
+                image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
+                width: image.width,
+                height: image.height,
+                path: Some(image.path),
+            }),
+            Some(Err(error))
+                if label == "Reference"
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Self::error_placeholder()
+            }
+            None if label == "Reference" => Self::error_placeholder(),
+            Some(Err(error)) => Err(error),
+            None => Err(anyhow!("No {} image", label.to_lowercase())),
+        }
+    }
+
+    fn error_placeholder() -> Result<Self> {
+        let bytes = include_bytes!("../../snapshot/data/error-icon.png");
+        let (width, height) = crate::helpers::png::read_bounded_png_dimensions_from_reader(
+            bytes.as_slice(),
+            Path::new("error-icon.png"),
+        )?;
+        Ok(Self {
+            image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes.to_vec())),
+            width,
+            height,
+            path: None,
+        })
+    }
 }
 
 struct ImageMenu {
@@ -749,18 +795,8 @@ impl ResultsPanel {
                 let gate = load_gate.clone();
                 let task = cx.background_executor().spawn(async move {
                     let _permit = gate.lock().await;
-                    let result = (|| -> Result<LoadedImage> {
-                        let path =
-                            path.ok_or_else(|| anyhow!("No {} image", label.to_lowercase()))?;
-                        let (image, bytes) = artifacts.read_image(&root, &path)?;
-                        Ok(LoadedImage {
-                            image: Arc::new(Image::from_bytes(ImageFormat::Png, bytes)),
-                            width: image.width,
-                            height: image.height,
-                            path: image.path,
-                        })
-                    })()
-                    .map_err(|error| format!("{error:#}"));
+                    let result = LoadedImage::load(&artifacts, &root, label, path.as_deref())
+                        .map_err(|error| format!("{error:#}"));
                     Preview { label, result }
                 });
                 previews.push(task.await);
@@ -843,9 +879,12 @@ impl ResultsPanel {
         else {
             return;
         };
-        let viewer_path = image.path.clone();
-        let reveal_path = image.path.clone();
-        let browser_url = reqwest::Url::from_file_path(&image.path).ok();
+        let Some(path) = &image.path else {
+            return;
+        };
+        let viewer_path = path.clone();
+        let reveal_path = path.clone();
+        let browser_url = reqwest::Url::from_file_path(path).ok();
         let page_url = self.selected_report().and_then(|report| {
             self.capture
                 .and_then(|capture| report.report.tests.get(capture))
@@ -1972,6 +2011,60 @@ mod pointer_tests {
     use gpui_kit::{Bounds, point, px, size};
 
     #[test]
+    fn reference_placeholder_only_replaces_missing_reference_images() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join(".regressify");
+        let suite = root.join("shop");
+        let html = suite.join("html_report");
+        let run = suite.join("bitmaps_test/run-1");
+        std::fs::create_dir_all(&html).unwrap();
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("report.json"), r#"{"id":"shop","tests":[]}"#).unwrap();
+        let png = lodepng::encode32(&[30_u8, 150, 180, 255], 1, 1).unwrap();
+        std::fs::write(html.join("valid.png"), &png).unwrap();
+        std::fs::write(html.join("invalid.png"), "not a PNG").unwrap();
+        std::fs::write(directory.path().join("outside.png"), &png).unwrap();
+        let catalog = super::Catalog::load(&root).unwrap();
+        let artifacts = catalog.reports[0].artifacts();
+        let placeholder =
+            lodepng::decode32(include_bytes!("../../snapshot/data/error-icon.png")).unwrap();
+
+        for path in [None, Some("../bitmaps_reference/missing.png")] {
+            let image = super::LoadedImage::load(&artifacts, &root, "Reference", path).unwrap();
+            assert_eq!(
+                (image.width, image.height),
+                (placeholder.width, placeholder.height)
+            );
+            assert!(image.path.is_none());
+            for label in ["Test", "Diff"] {
+                assert!(super::LoadedImage::load(&artifacts, &root, label, path).is_err());
+            }
+        }
+        for label in ["Reference", "Test", "Diff"] {
+            let image =
+                super::LoadedImage::load(&artifacts, &root, label, Some("valid.png")).unwrap();
+            assert_eq!((image.width, image.height), (1, 1));
+            assert_eq!(
+                image.path,
+                Some(html.join("valid.png").canonicalize().unwrap())
+            );
+        }
+        for (path, message) in [
+            ("invalid.png", "PNG header"),
+            ("/absolute.png", "relative file path"),
+            ("../../../outside.png", "escapes the output directory"),
+        ] {
+            let error = match super::LoadedImage::load(&artifacts, &root, "Reference", Some(path)) {
+                Ok(_) => panic!("Invalid reference must not become a placeholder: {path}"),
+                Err(error) => error,
+            };
+            assert!(format!("{error:#}").contains(message));
+        }
+        assert!(!suite.join("bitmaps_reference").exists());
+        assert_eq!(std::fs::read(html.join("valid.png")).unwrap(), png);
+    }
+
+    #[test]
     fn image_urls_use_each_recorded_initial_url_without_cross_fallback() {
         let mut pair: crate::desktop::results::Pair = serde_json::from_value(serde_json::json!({
             "referenceUrl": "https://production.example.test/start?source=reference",
@@ -2375,7 +2468,7 @@ mod pointer_tests {
                             image: encoded.clone(),
                             width: 1,
                             height: 1,
-                            path: directory.path().join("fixture.png"),
+                            path: Some(directory.path().join("fixture.png")),
                         }),
                     })
                 });

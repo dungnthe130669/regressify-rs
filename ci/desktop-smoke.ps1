@@ -984,7 +984,49 @@ public static class RegressifySmokeZoomKeys {
     Capture-Window 'comparison-empty-suite'
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Test 1280 x 1800' | Out-Null
+    $process.CloseMainWindow() | Out-Null
+    if (-not $process.WaitForExit(10000)) { throw 'Comparison fixture did not close before the failed-reference check.' }
+    $failedOutput = Join-Path $workspace '.regressify/account'
+    $failedRun = Join-Path $failedOutput 'bitmaps_test/failed-reference'
+    $failedReference = Join-Path $failedOutput 'bitmaps_reference/failed.png'
+    [System.IO.Directory]::CreateDirectory((Join-Path $failedOutput 'html_report')) | Out-Null
+    Write-JsonFixture (Join-Path $failedRun 'report.json') @{
+        id = 'account'
+        tests = @(@{
+            status = 'fail'
+            pair = @{
+                label = 'Failed reference'
+                reference = '../bitmaps_reference/failed.png'
+                test = '../bitmaps_test/failed-reference/failed.png'
+                engineErrorMsg = 'Capture failed: missing selector #pay'
+            }
+        })
+    }
+    $errorImage = Join-Path $repository 'src/snapshot/data/error-icon.png'
+    Copy-Item -LiteralPath $errorImage -Destination (Join-Path $failedRun 'failed.png')
+    $image = [System.Drawing.Bitmap]::FromFile($errorImage)
+    try { $dimensions = "$($image.Width) x $($image.Height)" } finally { $image.Dispose() }
+    Start-Fixture -Name 'failed-reference'
+    Invoke-Control 'account.tests.json'
+    Invoke-Control 'Results'
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($windowSize in @(@(1600, 1000), @(1080, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $windowSize[0], $windowSize[1], 0x0040) | Out-Null
+            Invoke-Control 'Side by side'
+            Wait-Control "Reference $dimensions" | Out-Null
+            Wait-Control "Test $dimensions" | Out-Null
+            Wait-Control 'Capture failed: missing selector #pay' | Out-Null
+            $name = 'comparison-failed-reference-' + $theme.ToLowerInvariant() + '-' + $windowSize[0]
+            Capture-Window "$name-side-by-side"
+            Invoke-Control 'Reference'
+            Wait-Control "Reference $dimensions" | Out-Null
+            Capture-Window "$name-reference"
+            if (Test-Path -LiteralPath $failedReference) { throw 'Previewing a failed reference created a baseline file.' }
+        }
+    }
     Write-Output 'Three-pane Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, and crosshairs passed native checks in light/dark desktop and compact windows.'
+    Write-Output 'Failed references show the error image in both preview modes without creating a baseline.'
 }
 
 function Test-ArtifactFlows {

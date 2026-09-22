@@ -1002,12 +1002,17 @@ any pane. Moving the pointer over an image draws horizontal and vertical guides
 in all comparison panes at the same image coordinate. Guides disappear when the pointer leaves the
 images, and selecting another capture resets the shared scroll position.
 Image dimensions are bounded
-with the CLI's PNG helper before decoding. Missing images are recoverable errors.
+with the CLI's PNG helper before decoding. When a reference capture failed and
+no baseline image exists, Reference displays the same error image used for failed
+Test captures. This is an in-memory placeholder, not a promoted or generated
+baseline. Existing reference images and the capture's error message remain intact.
+Other missing images, invalid PNGs, and unsafe paths retain their diagnostics.
 Paths resolve relative to `html_report` and must remain inside the output root.
 
-Right-click any Reference, Test, or Diff image, including in Side by side, to open
+Right-click any saved Reference, Test, or Diff image, including in Side by side, to open
 it in the default browser, open it in the default image viewer, or reveal it in
-the OS file manager. Reference also offers Open Reference URL and Copy Reference
+the OS file manager. The in-memory reference placeholder has no file context menu.
+Reference also offers Open Reference URL and Copy Reference
 URL; Test offers Open Test URL and Copy Test URL. These actions use that capture's
 recorded initial scenario URL: Reference uses `referenceUrl`, while Test uses
 `url`, which includes the replacements applied when the test ran. These URLs do
