@@ -322,12 +322,11 @@ svg {
 .metrics > div {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  text-align: center;
   gap: 9px;
   padding: 0 28px;
   border-right: 1px solid var(--border);
-}
-.metrics > div:first-child {
-  padding-left: 0;
 }
 .metrics > div:last-child {
   border-right: 0;
@@ -415,6 +414,8 @@ svg {
   border-top: 1px solid var(--border);
 }
 .results-table {
+  --suite-cell-padding: 16px;
+  --suite-name-gap: 12px;
   width: 100%;
   border-collapse: collapse;
   text-align: left;
@@ -436,9 +437,15 @@ svg {
   padding: 0;
   text-align: left;
 }
+.results-table :is(th, td):nth-child(n + 2):nth-child(-n + 4) {
+  text-align: center;
+}
+.results-table :where(th:nth-child(3), th:nth-child(4)) button {
+  margin-inline: auto;
+}
 .results-table th:first-child {
   width: 37%;
-  padding-left: 0;
+  padding-left: calc(var(--suite-cell-padding) + 7px + var(--suite-name-gap));
 }
 .results-table th:last-child {
   width: 44px;
@@ -452,7 +459,7 @@ svg {
   background: var(--surface);
 }
 .results-table td:first-child {
-  padding-left: 16px;
+  padding-left: var(--suite-cell-padding);
 }
 .results-table tr:hover td {
   background: var(--subtle);
@@ -460,7 +467,7 @@ svg {
 .suite-name {
   display: inline-flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--suite-name-gap);
   font-size: 15px;
   font-weight: 500;
 }
@@ -1266,9 +1273,6 @@ figcaption {
   .metrics > div {
     padding: 0 20px;
   }
-  .metrics > div:nth-child(odd) {
-    padding-left: 0;
-  }
   .metrics > div:nth-child(even) {
     border-right: 0;
   }
@@ -1290,6 +1294,10 @@ figcaption {
   .status-filters > button > span {
     font-size: 11px;
   }
+  .results-table {
+    --suite-cell-padding: 8px;
+    --suite-name-gap: 8px;
+  }
   .results-table th {
     font-size: 12px;
     padding: 12px 6px;
@@ -1297,12 +1305,8 @@ figcaption {
   .results-table td {
     padding: 17px 6px;
   }
-  .results-table td:first-child {
-    padding-left: 8px;
-  }
   .suite-name {
     font-size: 14px;
-    gap: 8px;
   }
   .results-table th:last-child {
     width: 34px;

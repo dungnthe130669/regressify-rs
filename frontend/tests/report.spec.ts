@@ -44,6 +44,54 @@ test("overview is responsive, accessible, sortable, and theme-aware", async ({ p
   expect(errors).toEqual([]);
 });
 
+test("overview centers metrics and result columns with aligned suite labels", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
+  await page.evaluate(() => document.fonts.ready);
+  const offsets = await page.evaluate(() => {
+    const center = (bounds: DOMRect) => bounds.left + bounds.width / 2;
+    const metrics = Array.from(document.querySelectorAll(".metrics > div")).flatMap((column) =>
+      Array.from(column.children).map((content) =>
+        Math.abs(center(content.getBoundingClientRect()) - center(column.getBoundingClientRect())),
+      ),
+    );
+    const cells = Array.from(document.querySelectorAll(".results-table tr")).flatMap((row) =>
+      Array.from(row.children)
+        .slice(1, 4)
+        .filter((cell) => cell.getBoundingClientRect().width > 0)
+        .map((cell) => {
+          const content = cell.querySelector("button, .status-badge");
+          const range = document.createRange();
+          range.selectNodeContents(cell);
+          return Math.abs(
+            center(content?.getBoundingClientRect() || range.getBoundingClientRect()) -
+              center(cell.getBoundingClientRect()),
+          );
+        }),
+    );
+    const heading = document.querySelector(".results-table th:first-child button");
+    const names = Array.from(document.querySelectorAll(".suite-name")).map((name) => {
+      const text = Array.from(name.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
+      );
+      if (!text || !heading) throw new Error("Suite label is missing");
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      return Math.abs(
+        (range.getClientRects()[0]?.left || 0) - heading.getBoundingClientRect().left,
+      );
+    });
+    return { metrics, cells, names };
+  });
+  for (const [group, values] of Object.entries(offsets)) {
+    expect(values.length).toBeGreaterThan(0);
+    for (const offset of values) expect(offset, `${group} alignment offset`).toBeLessThan(1);
+  }
+  await screenshot(page, info.project.name, "overview-alignment");
+});
+
 test("navigation stays in the SPA, preserves filters, and refreshes deep links", async ({
   page,
   isMobile,
