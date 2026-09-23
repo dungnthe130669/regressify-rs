@@ -1,0 +1,7 @@
+/*.*
+/_snapshot/
+bitmaps_reference/*
+bitmaps_test/
+html_report/
+!bitmaps_reference/*.png
+!bitmaps_reference/*.PNG

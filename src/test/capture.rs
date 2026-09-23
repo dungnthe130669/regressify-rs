@@ -926,7 +926,7 @@ fn selector_capture_script(selector: &str) -> Result<String> {
 /// Shared rounded error artwork for captures and report previews. Capture failure
 /// detection uses the JSON sidecar, not the displayed pixels.
 pub(crate) fn error_icon_png() -> &'static [u8] {
-    include_bytes!("../snapshot/data/error-icon.png")
+    include_bytes!("data/error-icon.png")
 }
 
 /// Sidecar JSON marker recording that a screenshot is a capture failure.
@@ -1109,7 +1109,7 @@ mod tests {
         );
         assert!(lodepng::decode32(bytes).is_ok());
         assert!(
-            bytes == include_bytes!("../snapshot/data/error-icon.png"),
+            bytes == include_bytes!("data/error-icon.png"),
             "Capture failures must use the same rounded error artwork as the report"
         );
     }

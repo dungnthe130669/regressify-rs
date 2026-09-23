@@ -576,6 +576,7 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         !destination.exists(),
         "Deployment staging directory must be new"
     );
+    let dependencies = crate::snapshot::artifact_paths(&output, suite_ids)?;
     fs::create_dir_all(destination)?;
     phase("Staging selected report dependencies");
     let mut copied = BTreeSet::new();
@@ -590,7 +591,13 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         }
         let target = destination.join(relative);
         fs::create_dir_all(target.parent().context("Staging path has no parent")?)?;
-        copied_bytes += fs::copy(source, target)?;
+        let expected_bytes = fs::metadata(&source)?.len();
+        let bytes = fs::copy(source, target)?;
+        ensure!(
+            bytes == expected_bytes,
+            "Report changed during deployment staging"
+        );
+        copied_bytes += bytes;
         if copied.len() == 1
             || copied.len().is_multiple_of(50)
             || last_update.elapsed().as_secs() >= 1
@@ -604,66 +611,21 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         }
         Ok(())
     };
-    for name in [
-        "index.html",
-        "styles.css",
-        "script.js",
-        "index_bundle.js",
-        "staticwebapp.config.json",
-        "_headers",
-        "diff.js",
-        "diverged.js",
-        "divergedWorker.js",
-        "lato-bold-webfont.woff",
-        "lato-bold-webfont.woff2",
-        "lato-regular-webfont.woff",
-        "lato-regular-webfont.woff2",
-        "favicon.ico",
-        "favicon.svg",
-        "favicon-16x16.png",
-        "favicon-32x32.png",
-        "apple-touch-icon.png",
-    ] {
-        if output.join(name).is_file() {
-            copy(Path::new(name), false)?;
+    let staged = (|| -> Result<()> {
+        for relative in dependencies {
+            copy(&relative, false)?;
         }
-    }
-    ensure!(
-        destination.join("index.html").is_file(),
-        "Run snapshot before deploying reports"
-    );
-    let mut selected = BTreeSet::new();
-    for suite in suite_ids {
-        validate_suite_id(suite)?;
-        ensure!(selected.insert(suite), "Duplicate deployment suite ID");
-        let report = Path::new(suite).join("html_report");
-        copy(&report.join("index.html"), false)?;
-        copy(&report.join("config.js"), false)?;
-        let data = read_report_configuration(&destination.join(&report).join("config.js"))?;
-        ensure!(
-            data["id"].as_str() == Some(suite),
-            "Report suite identity changed"
-        );
-        let tests = data["tests"].as_array().context("Report has no tests")?;
-        for test in tests {
-            ensure!(
-                test["pair"]["test"]
-                    .as_str()
-                    .is_some_and(|value| !value.is_empty()),
-                "Report entry has no current screenshot"
-            );
-            for key in ["reference", "test", "diffImage"] {
-                if let Some(image) = test["pair"][key].as_str().filter(|value| !value.is_empty()) {
-                    let relative = report_image_relative(suite, key, image)?;
-                    copy(&relative, key == "reference")?;
-                }
-            }
-        }
+        crate::snapshot::artifact_paths(destination, suite_ids)?;
+        Ok(())
+    })();
+    if let Err(error) = staged {
+        let _ = fs::remove_dir_all(destination);
+        return Err(error);
     }
     phase(&format!(
         "Staging complete: {} files for {} suites",
         copied.len(),
-        selected.len()
+        suite_ids.len()
     ));
     Ok(())
 }
@@ -933,69 +895,95 @@ mod tests {
         );
     }
 
+    fn snapshot_fixture(output: &Path) -> BTreeSet<String> {
+        for path in [
+            "one/html_report",
+            "one/bitmaps_reference",
+            "one/bitmaps_test/older",
+        ] {
+            fs::create_dir_all(output.join(path)).unwrap();
+        }
+        let mut expected: BTreeSet<String> = crate::snapshot::FRONTEND_FILES
+            .iter()
+            .filter(|(name, _)| *name != "gitignore")
+            .map(|(name, _)| (*name).to_owned())
+            .collect();
+        expected.insert("index.html".into());
+        for (path, pixels) in [
+            ("one/bitmaps_reference/home.png", "reference"),
+            ("one/bitmaps_test/older/home.png", "test"),
+            ("one/bitmaps_test/older/home_diff.png", "diff"),
+        ] {
+            let bytes = [b"\x89PNG\r\n\x1a\n".as_slice(), pixels.as_bytes()].concat();
+            fs::write(output.join(path), &bytes).unwrap();
+            expected.insert(format!(
+                "_snapshot/images/one/{pixels}/{}",
+                Path::new(path).file_name().unwrap().to_str().unwrap()
+            ));
+        }
+        let report = serde_json::json!({ "id": "one", "tests": [{ "status": "fail", "pair": {
+            "label": "Home", "test": "../bitmaps_test/older/home.png", "reference": "../bitmaps_reference/home.png", "diffImage": "../bitmaps_test/older/home_diff.png"
+        }}] });
+        fs::write(
+            output.join("one/html_report/config.js"),
+            format!("report({report});"),
+        )
+        .unwrap();
+        fs::write(
+            output.join("one/bitmaps_test/older/report.json"),
+            report.to_string(),
+        )
+        .unwrap();
+        crate::snapshot::generate_site(
+            output,
+            &["one".into()],
+            &crate::cli::args::SnapshotArgs {
+                test_suite: Vec::new(),
+                title: None,
+                heading: None,
+                subheading: None,
+            },
+            &crate::config::WorkspaceConfig::default(),
+        )
+        .unwrap();
+        expected.extend([
+            "_snapshot/data/manifest.json".into(),
+            "_snapshot/data/suites/one.json".into(),
+        ]);
+        expected
+    }
+
     #[test]
-    fn staging_rejects_missing_captures_and_escaping_or_nonimage_dependencies() {
+    fn staging_rejects_missing_images_tampering_and_wrong_suite_selection() {
         let root = tempfile::tempdir().unwrap();
         let output = root.path().join("output");
-        fs::create_dir_all(output.join("one/html_report")).unwrap();
-        fs::write(output.join("index.html"), "one").unwrap();
-        fs::write(output.join("one/html_report/index.html"), "report").unwrap();
-        for (index, image) in [
-            "../bitmaps_test/run/missing.png",
-            "../bitmaps_test/../../outside.png",
-            "../bitmaps_test/run/state.json",
-            "../bitmaps_test/run/image.png:stream",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let report = serde_json::json!({"id": "one", "tests": [{"pair": {"test": image}}]});
-            fs::write(
-                output.join("one/html_report/config.js"),
-                format!("report({report});"),
-            )
+        let expected = snapshot_fixture(&output);
+        let image = expected
+            .iter()
+            .find(|path| path.starts_with("_snapshot/images/"))
             .unwrap();
-            assert!(
-                stage_reports(
-                    &output,
-                    &["one".into()],
-                    &root.path().join(format!("stage-{index}"))
-                )
-                .is_err()
-            );
+        let original = fs::read(output.join(image)).unwrap();
+        fs::remove_file(output.join(image)).unwrap();
+        assert!(stage_reports(&output, &["one".into()], &root.path().join("missing")).is_err());
+        fs::write(output.join(image), b"tampered").unwrap();
+        assert!(stage_reports(&output, &["one".into()], &root.path().join("changed")).is_err());
+        fs::write(output.join(image), original).unwrap();
+        for selection in [
+            vec![],
+            vec!["../outside".into()],
+            vec!["two".into()],
+            vec!["one".into(), "one".into()],
+        ] {
+            assert!(stage_reports(&output, &selection, &root.path().join("wrong")).is_err());
         }
+        assert!(!root.path().join("missing").exists());
     }
 
     #[test]
     fn staging_includes_only_selected_report_dependencies() {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("output");
-        let expected = BTreeSet::from([
-            "index.html",
-            "styles.css",
-            "script.js",
-            "index_bundle.js",
-            "staticwebapp.config.json",
-            "_headers",
-            "diff.js",
-            "diverged.js",
-            "divergedWorker.js",
-            "lato-bold-webfont.woff",
-            "lato-bold-webfont.woff2",
-            "lato-regular-webfont.woff",
-            "lato-regular-webfont.woff2",
-            "favicon.ico",
-            "favicon.svg",
-            "favicon-16x16.png",
-            "favicon-32x32.png",
-            "apple-touch-icon.png",
-            "one/html_report/index.html",
-            "one/html_report/config.js",
-            "one/bitmaps_reference/nested/image.png",
-            "one/bitmaps_test/run/nested/image.png",
-            "one/bitmaps_test/run/nested/image.diff.png",
-            "one/bitmaps_test/older/still-reported.png",
-        ]);
+        let expected = snapshot_fixture(&output);
         let skipped = [
             "Lato-Bold.ttf",
             "Lato-Regular.ttf",
@@ -1015,28 +1003,11 @@ mod tests {
             "two/bitmaps_test/run/image.png",
             "states/private.json",
         ];
-        for relative in expected.iter().copied().chain(skipped) {
+        for relative in skipped {
             let path = output.join(relative);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, b"fixture").unwrap();
         }
-        let report = serde_json::json!({
-            "id": "one",
-            "tests": [
-                {"pair": {
-                    "reference": "../bitmaps_reference/nested/image.png?v=reference",
-                    "test": "../bitmaps_test/run/nested/image.png?v=current",
-                    "diffImage": "../bitmaps_test/run/nested/image.diff.png?v=diff"
-                }},
-                {"pair": {"test": "../bitmaps_test/older/still-reported.png"}},
-                {"pair": {"test": "../bitmaps_test/run/nested/image.png?v=duplicate"}}
-            ]
-        });
-        fs::write(
-            output.join("one/html_report/config.js"),
-            format!("report({report});"),
-        )
-        .unwrap();
         let destination = directory.path().join("publish");
         stage_reports(&output, &["one".into()], &destination).unwrap();
         for relative in skipped {
@@ -1045,8 +1016,14 @@ mod tests {
         }
         let package = package::Package::create(&destination, expected.len() as u64).unwrap();
         let archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
-        assert_eq!(archive.file_names().collect::<BTreeSet<_>>(), expected);
-        for relative in expected {
+        assert_eq!(
+            archive
+                .file_names()
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>(),
+            expected
+        );
+        for relative in &expected {
             assert_eq!(
                 fs::read(destination.join(relative)).unwrap(),
                 fs::read(output.join(relative)).unwrap()

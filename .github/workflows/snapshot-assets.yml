@@ -1,0 +1,125 @@
+name: Snapshot frontend assets
+
+on:
+  push:
+    branches: [release]
+    paths: ['frontend/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: snapshot-frontend-assets
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      source: ${{ steps.source.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'push' && github.sha || 'release' }}
+          persist-credentials: false
+      - id: source
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: frontend/.bun-version
+      - name: Install locked dependencies
+        working-directory: frontend
+        run: bun install --frozen-lockfile
+      - name: Lint frontend
+        working-directory: frontend
+        run: bun run lint
+      - name: Test report contract and asset generation
+        working-directory: frontend
+        run: bun run test
+      - name: Build embedded snapshot assets
+        working-directory: frontend
+        run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snapshot-assets
+          path: src/snapshot/data/
+          if-no-files-found: error
+          retention-days: 3
+
+  pull-request:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # A clean master checkout prevents release-only source commits entering the PR.
+      - uses: actions/checkout@v6
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.SNAPSHOT_ASSETS_TOKEN || github.token }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: snapshot-assets
+          path: ${{ runner.temp }}/snapshot-assets
+      - name: Replace generated assets only
+        run: |
+          set -euo pipefail
+          test -f "$RUNNER_TEMP/snapshot-assets/index.html"
+          test -f "$RUNNER_TEMP/snapshot-assets/assets.rs"
+          mkdir -p src/snapshot/data
+          rsync -a --delete "$RUNNER_TEMP/snapshot-assets/" src/snapshot/data/
+          git add -- src/snapshot/data
+          if git diff --cached --name-only | grep -v '^src/snapshot/data/'; then
+            echo 'Unexpected file outside the generated snapshot assets' >&2
+            exit 1
+          fi
+      - name: Open or update generated-assets PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.SNAPSHOT_ASSETS_TOKEN || github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.build.outputs.source }}
+        run: |
+          set -euo pipefail
+          branch=automation/snapshot-frontend-assets
+          ref="refs/heads/$branch"
+          title='build(snapshot): refresh generated frontend assets'
+          pr_number="$(gh pr list --repo "$GH_REPO" --base master --head "$branch" \
+            --state open --json number --jq '.[0].number // empty')"
+          remote_sha="$(git ls-remote --heads origin "$ref" | cut -f1)"
+
+          if git diff --cached --quiet; then
+            if [ -n "$pr_number" ]; then
+              gh pr close "$pr_number" --repo "$GH_REPO" \
+                --comment 'Generated snapshot assets already match master.'
+            fi
+            if [ -n "$remote_sha" ]; then
+              git push --force-with-lease="$ref:$remote_sha" origin ":$ref"
+            fi
+            echo 'Generated snapshot assets already match master; no commit needed.'
+            exit 0
+          else
+            diff_status=$?
+            if [ "$diff_status" -ne 1 ]; then
+              exit "$diff_status"
+            fi
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "$title"
+          git push --force-with-lease="$ref:$remote_sha" origin "HEAD:$ref"
+
+          printf -v body 'Generated with `bun run build` from release commit `%s`.\n\nThis PR contains only the generated assets in `src/snapshot/data`.\nFrontend source changes remain on `release`. Review and merge this PR\ninto `master` when the snapshot assets are ready for a Rust build.\n' "$SOURCE_SHA"
+          if [ -n "$pr_number" ]; then
+            gh pr edit "$pr_number" --repo "$GH_REPO" --base master \
+              --title "$title" --body "$body"
+          else
+            gh pr create --repo "$GH_REPO" --base master --head "$branch" \
+              --title "$title" --body "$body"
+          fi

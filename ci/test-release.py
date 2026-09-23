@@ -37,6 +37,138 @@ TARGETS = {
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_snapshot_frontend_workflow_builds_release_with_locked_dependencies(self):
+        workflow = yaml.load(
+            (ROOT / ".github/workflows/snapshot-assets.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.assertEqual(workflow["on"]["push"]["branches"], ["release"])
+        self.assertEqual(workflow["on"]["push"]["paths"], ["frontend/**"])
+        self.assertEqual(workflow["permissions"], {"contents": "read"})
+        self.assertEqual(workflow["concurrency"]["group"], "snapshot-frontend-assets")
+        steps = workflow["jobs"]["build"]["steps"]
+        checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertIn("github.sha", checkout["with"]["ref"])
+        self.assertIn("'release'", checkout["with"]["ref"])
+        self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        commands = [step["run"] for step in steps if step.get("working-directory") == "frontend"]
+        self.assertEqual(commands, ["bun install --frozen-lockfile", "bun run lint", "bun run test", "bun run build"])
+        upload = next(step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@"))
+        self.assertEqual(upload["with"]["path"], "src/snapshot/data/")
+
+    def test_snapshot_frontend_pr_contains_generated_assets_only(self):
+        workflow = yaml.load(
+            (ROOT / ".github/workflows/snapshot-assets.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        job = workflow["jobs"]["pull-request"]
+        self.assertEqual(job["needs"], "build")
+        self.assertEqual(job["permissions"], {"contents": "write", "pull-requests": "write"})
+        checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
+        self.assertEqual(checkout["with"]["ref"], "master")
+        copy = next(step for step in job["steps"] if step.get("name") == "Replace generated assets only")
+        self.assertIn('rsync -a --delete "$RUNNER_TEMP/snapshot-assets/" src/snapshot/data/', copy["run"])
+        self.assertIn("git diff --cached --name-only", copy["run"])
+        pr = next(step for step in job["steps"] if step.get("name") == "Open or update generated-assets PR")
+        self.assertNotIn("uses", pr)
+        self.assertEqual(pr["shell"], "bash")
+        self.assertEqual(pr["env"]["GH_TOKEN"], "${{ secrets.SNAPSHOT_ASSETS_TOKEN || github.token }}")
+        self.assertEqual(pr["env"]["GH_REPO"], "${{ github.repository }}")
+        self.assertEqual(pr["env"]["SOURCE_SHA"], "${{ needs.build.outputs.source }}")
+        self.assertIn("branch=automation/snapshot-frontend-assets", pr["run"])
+        self.assertIn('gh pr create --repo "$GH_REPO" --base master --head "$branch"', pr["run"])
+        self.assertIn('gh pr edit "$pr_number" --repo "$GH_REPO" --base master', pr["run"])
+        self.assertIn('git push --force-with-lease="$ref:$remote_sha" origin "HEAD:$ref"', pr["run"])
+        self.assertIn("git diff --cached --quiet", pr["run"])
+        self.assertNotIn("gh pr merge", pr["run"])
+        self.assertNotIn("${{", pr["run"])
+
+    def snapshot_pr(self, *, changed=True, pr_number="", remote_sha="", failure=""):
+        bash = shutil.which("bash")
+        if not bash:
+            self.skipTest("Bash is required for the offline snapshot workflow checks")
+        workflow = yaml.load(
+            (ROOT / ".github/workflows/snapshot-assets.yml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        script = next(step["run"] for step in workflow["jobs"]["pull-request"]["steps"]
+                      if step.get("name") == "Open or update generated-assets PR")
+        stub = r'''
+set -euo pipefail
+export GH_TOKEN=synthetic-offline-token GH_REPO=example/report SOURCE_SHA=abc123
+record() { printf '%s ' "$1" >&2; shift; printf '<%s>' "$@" >&2; printf '\n' >&2; }
+git() {
+  record git "$@"
+  if [ "$1" = "$failure" ]; then return 23; fi
+  case "$1" in
+    ls-remote) if [ -n "$remote_sha_fixture" ]; then printf '%s\trefs/heads/automation/snapshot-frontend-assets\n' "$remote_sha_fixture"; fi ;;
+    diff) return "$diff_status" ;;
+    config|commit|push) ;;
+    *) return 97 ;;
+  esac
+}
+gh() {
+  record gh "$@"
+  if [ "$failure" = "gh" ]; then return 24; fi
+  case "$1 $2" in
+    'pr list') printf '%s' "$pr_number_fixture" ;;
+    'pr create'|'pr edit'|'pr close') ;;
+    *) return 98 ;;
+  esac
+}
+'''
+        # Feed the script through stdin so Windows checkout line endings and WSL
+        # path conversion cannot change which workflow commands are exercised.
+        values = f"diff_status={1 if changed else 0}\npr_number_fixture={pr_number}\nremote_sha_fixture={remote_sha}\nfailure={failure}\n"
+        result = subprocess.run(
+            [bash, "--noprofile", "--norc", "-s"],
+            input=(values + stub + script).encode("utf-8"), capture_output=True,
+            check=False, timeout=15,
+        )
+        return subprocess.CompletedProcess(
+            result.args, result.returncode,
+            result.stdout.decode("utf-8"), result.stderr.decode("utf-8"),
+        )
+
+    def test_snapshot_frontend_gh_creates_and_updates_prs_after_safe_push(self):
+        for pr_number, remote_sha in [("", ""), ("42", "old-head")]:
+            with self.subTest(pr_number=pr_number):
+                result = self.snapshot_pr(pr_number=pr_number, remote_sha=remote_sha)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("git <commit><-m><build(snapshot): refresh generated frontend assets>", result.stderr)
+                push = f"git <push><--force-with-lease=refs/heads/automation/snapshot-frontend-assets:{remote_sha}><origin><HEAD:refs/heads/automation/snapshot-frontend-assets>"
+                command = "gh <pr><edit><42>" if pr_number else "gh <pr><create>"
+                self.assertIn(push, result.stderr)
+                self.assertIn(command, result.stderr)
+                self.assertLess(result.stderr.index(push), result.stderr.index(command))
+                self.assertIn("<--base><master>", result.stderr)
+                self.assertIn("release commit `abc123`", result.stderr)
+                self.assertNotIn("<merge>", result.stderr)
+                self.assertNotIn("synthetic-offline-token", result.stderr)
+
+    def test_snapshot_frontend_gh_skips_empty_updates_and_cleans_stale_prs(self):
+        for pr_number, remote_sha in [("", ""), ("42", "old-head"), ("", "merged-head")]:
+            with self.subTest(pr_number=pr_number, remote_sha=remote_sha):
+                result = self.snapshot_pr(changed=False, pr_number=pr_number, remote_sha=remote_sha)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("git <commit>", result.stderr)
+                self.assertNotIn("gh <pr><create>", result.stderr)
+                self.assertNotIn("gh <pr><edit>", result.stderr)
+                self.assertEqual("gh <pr><close><42>" in result.stderr, bool(pr_number))
+                self.assertEqual("git <push>" in result.stderr, bool(remote_sha))
+                if remote_sha:
+                    self.assertIn(f"<--force-with-lease=refs/heads/automation/snapshot-frontend-assets:{remote_sha}><origin><:refs/heads/automation/snapshot-frontend-assets>", result.stderr)
+
+    def test_snapshot_frontend_gh_stops_on_lookup_commit_or_push_failure(self):
+        for failure in ["gh", "ls-remote", "diff", "commit", "push"]:
+            with self.subTest(failure=failure):
+                result = self.snapshot_pr(pr_number="42", remote_sha="old-head", failure=failure)
+                self.assertEqual(result.returncode, 24 if failure == "gh" else 23, result.stderr)
+                for action in ["create", "edit", "close"]:
+                    self.assertNotIn(f"gh <pr><{action}>", result.stderr)
+                if failure != "push":
+                    self.assertNotIn("git <push>", result.stderr)
+
     def matrix(self, build, selected, event="workflow_dispatch", ref_type="branch"):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "output"

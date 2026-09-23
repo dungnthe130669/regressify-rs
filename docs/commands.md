@@ -48,7 +48,7 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                               |
 | `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                                                                                       |
 | `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                                                                                       |
-| `snapshot` | Generate the HTML summary report from existing comparison data.                                                                                                                                                          |
+| `snapshot` | Generate the static snapshot SPA from existing comparison data.                                                                                                                                                          |
 | `optimize` | Optimize PNG files in the project output tree.                                                                                                                                                                           |
 
 All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
@@ -61,6 +61,42 @@ regressify snapshot --test-suite 'shop*' --test-suite account
 
 The summary contains only the selected suites. Excluded suite reports and
 capture directories are not rewritten or cleaned up.
+
+## Snapshot Site
+
+The generated site provides an overview at `/`, suite results at
+`/suites/<suite-id>`, and individual comparisons at
+`/suites/<suite-id>/images/<capture-id>`. Navigation stays in the same application;
+suite pages have a collapsible quick-switch index, and phones use a modal index.
+Search, result filters, grid/list selection, and image mode are reflected in the URL.
+The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
+pan/zoom, downloads, and safe links to the captured pages. Side-by-side includes
+three aligned lanes when a diff exists. Wipe follows mouse movement; keyboard and
+touch users can also use its slider. Image review hides the suite panel by default
+and collapses secondary capture details to maximize screenshot space. Theme selection supports
+light, dark, or system appearance and is remembered in the browser.
+
+Snapshot generation preserves capture runs, baseline images, `config.js`, and
+`report.json`. It publishes copies of referenced images and JSON under `_snapshot`,
+with stable filenames and `?v=...` on every script, stylesheet, font, manifest,
+suite JSON, and reference/test/diff image URL. Versions use `get_asset_version`
+(SHA-384, base64url, 20 characters), never a hash in the filename. A full report
+is validated in staging before publication; HTML is replaced last. Obsolete
+generated files are removed, and desktop deployment stages only the active
+manifest's dependencies. Legacy entry pages are removed. Comparison data remains
+compatible with the desktop app.
+
+`optimize` skips `_snapshot` so already-published image versions stay valid. Run it
+before `snapshot`, or regenerate the snapshot after optimizing source captures.
+
+Host at the origin root over HTTP(S), not by opening `index.html` as a local file.
+Azure `staticwebapp.config.json` and Netlify `_headers`/`_redirects` are generated.
+Other static hosts must serve `/index.html` for `/suites/*`, return real 404s for
+missing `/_snapshot/*`, revalidate HTML, and cache versioned assets immutably.
+CDN cache keys must include `v`; do not cache HTML indefinitely. Publish the whole
+site atomically and reload an old report after deployment because origin files
+contain the latest version, not historical copies.
+See the [frontend guide](../frontend/README.md) for local preview and build commands.
 
 ## Snapshot Report Text
 
@@ -78,7 +114,8 @@ the defaults remain `Visual Tests Summary | Regressify`, `Visual Tests Summary`,
 and `Snapshot regression test results`, respectively.
 
 `snapshotTitle` controls the HTML page title; `snapshotHeading` is the visible
-heading. Both are plain text. `snapshotSubheading` supports Markdown. An empty
+heading. Both are plain text. `snapshotSubheading` supports safe Markdown text,
+emphasis, lists, code, and HTTP(S) links; raw HTML and embedded images are omitted. An empty
 string is an explicit value, while `null` falls back to the built-in default.
 
 Workspace settings also apply to reports generated automatically by `test` and

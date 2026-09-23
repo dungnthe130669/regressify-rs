@@ -63,6 +63,12 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Snapshot overview, suite results, and image review now share a responsive React
+  SPA with clean URLs, light/dark themes, and quick suite navigation. Generated
+  JS, CSS, fonts, JSON, and every image use stable filenames with `?v=` versions.
+  Snapshot generation preserves capture history; deployment packages only the
+  active manifest and refreshes versions after compression without renaming files.
+  Frontend, Rust, worker, and local browser tests cover it.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate

@@ -1,0 +1,149 @@
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
+import { chromium } from '@playwright/test';
+import pixelmatch from 'pixelmatch';
+import { PNG } from 'pngjs';
+import { type Capture, encodeArtifactPath, type Manifest, manifestSchema, type SuiteReport, suiteReportSchema } from '../src/data/report';
+import { getAssetVersion } from './version-assets';
+
+export const fixtureRoot = resolve(import.meta.dir, '../.fixtures');
+
+export function browserExecutable(): string | undefined {
+  return process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || ['C:/Program Files/Google/Chrome/Application/chrome.exe', 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/chromium', '/usr/bin/google-chrome'].find(existsSync);
+}
+
+async function artifact(path: string, bytes: Uint8Array) {
+  await mkdir(dirname(join(fixtureRoot, path)), { recursive: true });
+  await writeFile(join(fixtureRoot, path), bytes);
+  return `${encodeArtifactPath(path)}?v=${getAssetVersion(bytes)}`;
+}
+
+export async function createFixture() {
+  await rm(join(fixtureRoot, '_snapshot'), { recursive: true, force: true });
+  const html = await readFile(resolve(import.meta.dir, '../tests/fixtures/dashboard.html'), 'utf8');
+  const browser = await chromium.launch({ executablePath: browserExecutable(), headless: true });
+  const captures: {
+    reference: string;
+    test: string;
+    diff: string;
+    mismatch: number;
+    bytes: Buffer[];
+  }[] = [];
+  try {
+    for (const width of [1080, 600]) {
+      const page = await browser.newPage({
+        viewport: { width, height: 760 },
+        deviceScaleFactor: 1,
+      });
+      await page.setContent(html);
+      const reference = await page.screenshot({ fullPage: true });
+      await page.evaluate(() => document.body.classList.add('changed'));
+      const changed = await page.screenshot({ fullPage: true });
+      const before = PNG.sync.read(reference);
+      const after = PNG.sync.read(changed);
+      const difference = new PNG({ width: before.width, height: before.height });
+      const pixels = pixelmatch(before.data, after.data, difference.data, before.width, before.height, { threshold: 0.1 });
+      const diff = PNG.sync.write(difference);
+      captures.push({
+        reference: await artifact(`_snapshot/images/preview/reference-${width}.png`, reference),
+        test: await artifact(`_snapshot/images/preview/test-${width}.png`, changed),
+        diff: await artifact(`_snapshot/images/preview/diff-${width}.png`, diff),
+        mismatch: (pixels / (before.width * before.height)) * 100,
+        bytes: [reference, changed, diff],
+      });
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
+  const manifest: Manifest = {
+    version: 2,
+    title: 'Northstar | Visual review',
+    heading: 'A clear view of every change.',
+    subheading: '**Northstar** / Production baseline compared with staging',
+    generatedAt: '2026-09-23T09:42:00Z',
+    suites: [],
+  };
+  const names = ['workspace-overview', 'orders-and-checkout', 'customer-accounts', 'product-catalog', 'search-and-navigation', 'mobile-experience', 'empty-suite'];
+  for (const [suiteIndex, id] of names.entries()) {
+    const tests: Capture[] = [];
+    const rawTests: object[] = [];
+    const suiteDir = join(fixtureRoot, 'workspace/.regressify', id);
+    await mkdir(join(suiteDir, 'html_report'), { recursive: true });
+    await mkdir(join(suiteDir, 'bitmaps_test/20260923-094200'), { recursive: true });
+    await mkdir(join(suiteDir, 'bitmaps_reference'), { recursive: true });
+    for (let captureIndex = 0; captureIndex < (id === 'empty-suite' ? 0 : 4); captureIndex++) {
+      const images = captures[captureIndex % 2];
+      if (!images) throw new Error('Fixture image missing.');
+      const failed = suiteIndex % 3 === 0 || (suiteIndex === 1 && captureIndex === 0);
+      const error = suiteIndex === 3 && captureIndex === 3 ? 'Navigation timed out after 30 seconds. The page did not reach a stable state.' : null;
+      const fileName = `${['overview', 'recent-orders', 'channel-summary', 'full-page'][captureIndex]}__${captureIndex % 2 ? 'mobile' : 'desktop'}.png`;
+      const capture: Capture = {
+        id: fileName,
+        label: `${['Workspace overview', 'Recent orders', 'Sales by channel', 'Full page'][captureIndex]} / ${captureIndex % 2 ? 'Mobile' : 'Desktop'}`,
+        scenario: `Scenario ${captureIndex + 1}`,
+        selector: 'document',
+        status: failed ? 'fail' : 'pass',
+        threshold: 0.05,
+        mismatch: error ? null : failed ? images.mismatch : 0,
+        error,
+        reference: error ? null : images.reference,
+        test: failed ? images.test : images.reference,
+        diff: failed && !error ? images.diff : null,
+        referenceUrl: 'https://example.com/workspace',
+        testUrl: 'https://staging.example.com/workspace',
+        dimensions: { same: true, width: 0, height: 0 },
+      };
+      tests.push(capture);
+      await writeFile(join(suiteDir, 'bitmaps_reference', fileName), images.bytes[0] || new Uint8Array());
+      await writeFile(join(suiteDir, 'bitmaps_test/20260923-094200', fileName), images.bytes[failed ? 1 : 0] || new Uint8Array());
+      const diffName = fileName.replace('.png', '_diff.png');
+      if (capture.diff) await writeFile(join(suiteDir, 'bitmaps_test/20260923-094200', diffName), images.bytes[2] || new Uint8Array());
+      rawTests.push({
+        status: capture.status,
+        pair: {
+          label: capture.label,
+          scenarioId: `scenario-${captureIndex}`,
+          scenarioLabel: capture.scenario,
+          selector: capture.selector,
+          fileName,
+          reference: error ? '../bitmaps_reference/missing.png' : `../bitmaps_reference/${fileName}`,
+          test: `../bitmaps_test/20260923-094200/${fileName}`,
+          ...(capture.diff ? { diffImage: `../bitmaps_test/20260923-094200/${diffName}` } : {}),
+          misMatchThreshold: capture.threshold,
+          referenceUrl: capture.referenceUrl,
+          url: capture.testUrl,
+          ...(error
+            ? { engineErrorMsg: error }
+            : {
+                diff: {
+                  rawMisMatchPercentage: capture.mismatch,
+                  isSameDimensions: true,
+                  dimensionDifference: { width: 0, height: 0 },
+                },
+              }),
+        },
+      });
+    }
+    const suite: SuiteReport = suiteReportSchema.parse({ id, runId: '20260923-094200', tests });
+    const passed = tests.filter((test) => test.status === 'pass').length;
+    manifest.suites.push({
+      id,
+      total: tests.length,
+      passed,
+      failed: tests.length - passed,
+      errors: tests.filter((test) => test.error !== null).length,
+      report: await artifact(`_snapshot/data/suites/${id}.json`, Buffer.from(JSON.stringify(suite))),
+    });
+    const raw = JSON.stringify({ id, tests: rawTests });
+    await writeFile(join(suiteDir, 'html_report/config.js'), `report(${raw});`);
+    await writeFile(join(suiteDir, 'bitmaps_test/20260923-094200/report.json'), raw);
+  }
+  manifestSchema.parse(manifest);
+  await artifact('_snapshot/data/manifest.json', Buffer.from(JSON.stringify(manifest)));
+  await writeFile(join(fixtureRoot, 'workspace/regressify.yaml'), 'snapshotTitle: "Northstar | Visual review"\nsnapshotHeading: "A clear view of every change."\nsnapshotSubheading: "**Northstar** / Production baseline compared with staging"\n');
+  console.log(`Created ${manifest.suites.length} synthetic suites and query-versioned screenshot fixtures.`);
+}
+
+if (import.meta.main) await createFixture();

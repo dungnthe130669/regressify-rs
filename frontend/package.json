@@ -1,0 +1,46 @@
+{
+  "name": "@regressify/snapshot",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run fixtures && bun --bun vite --host 127.0.0.1",
+    "fixtures": "bun scripts/create-fixture.ts",
+    "build": "bun run typecheck && bun --bun vite build && bun scripts/sync-assets.ts",
+    "typecheck": "bun --bun tsc -b",
+    "lint": "biome check --error-on-warnings .",
+    "format": "biome check --write .",
+    "test": "bun test src scripts",
+    "test:e2e": "bun --bun playwright test",
+    "preview": "bun scripts/serve-report.ts"
+  },
+  "dependencies": {
+    "lucide-react": "1.47.0",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-markdown": "10.1.0",
+    "react-router": "8.4.0",
+    "react-zoom-pan-pinch": "4.2.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
+    "@biomejs/biome": "2.5.14",
+    "@playwright/test": "1.63.0",
+    "@tailwindcss/vite": "4.3.3",
+    "@types/bun": "1.4.2",
+    "@types/node": "26.6.2",
+    "@types/pngjs": "6.0.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "parse5": "8.0.1",
+    "pixelmatch": "7.2.0",
+    "pngjs": "7.0.0",
+    "postcss": "8.5.28",
+    "postcss-value-parser": "4.2.0",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8"
+  }
+}

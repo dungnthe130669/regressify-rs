@@ -40,6 +40,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   historical capture selection, and exact ZIP regression checks.
 - [Netlify uploads](deployment-netlify.md): digest manifests, per-file retries,
   sampled progress warnings, and local cancellation semantics.
+- [Snapshot frontend](snapshot-frontend.md): query-versioned SPA assets, build/PR workflow,
+  schema boundaries, and production-fixture browser checks.
 
 ## Checks
 

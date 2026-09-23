@@ -1608,12 +1608,22 @@ mod tests {
             output.join("one/html_report/config.js"),
             format!("report({report});"),
         )?;
-        let headers = include_str!("../../snapshot/data/_headers");
-        std::fs::write(output.join("_headers"), headers)?;
-        std::fs::write(
-            output.join("staticwebapp.config.json"),
-            include_bytes!("../../snapshot/data/staticwebapp.config.json"),
+        crate::snapshot::generate_site(
+            &output,
+            &["one".into()],
+            &crate::cli::args::SnapshotArgs {
+                test_suite: Vec::new(),
+                title: None,
+                heading: None,
+                subheading: None,
+            },
+            &crate::config::WorkspaceConfig::default(),
         )?;
+        let expected_files = crate::snapshot::FRONTEND_FILES
+            .iter()
+            .filter(|(name, _)| *name != "gitignore")
+            .count()
+            + 3;
         let root = directory.path().join("publish");
         super::super::stage_reports(&output, &["one".into()], &root)?;
         assert_eq!(
@@ -1631,12 +1641,12 @@ mod tests {
         assert_eq!(uploads[0].2.as_deref(), Some("application/json"));
         let manifest: serde_json::Value = serde_json::from_slice(&uploads[0].3)?;
         assert_eq!(manifest["async"], true);
-        assert_eq!(manifest["files"].as_object().unwrap().len(), 5);
+        assert_eq!(manifest["files"].as_object().unwrap().len(), expected_files);
         let files = records
             .iter()
             .filter(|record| record.0 == "PUT")
             .collect::<Vec<_>>();
-        assert_eq!(files.len(), 5);
+        assert_eq!(files.len(), expected_files);
         for file in files {
             assert_eq!(file.2.as_deref(), Some("application/octet-stream"));
             let path = file

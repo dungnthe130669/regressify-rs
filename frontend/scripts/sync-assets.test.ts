@@ -1,0 +1,74 @@
+import { afterEach, describe, expect, test } from 'bun:test';
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { collectFiles, syncAssets, validateBuild } from './sync-assets';
+import { getAssetVersion, versionBuild } from './version-assets';
+
+const roots: string[] = [];
+afterEach(async () => {
+  for (const path of roots.splice(0)) await rm(path, { recursive: true, force: true });
+});
+
+function buildFiles() {
+  return new Map([
+    ['index.html', new TextEncoder().encode('<!doctype html><html><head><title>__SNAPSHOT_TITLE__</title><meta name="regressify-manifest" content="__SNAPSHOT_MANIFEST__"><script src="/_snapshot/assets/app.js"></script><link rel="stylesheet" href="/_snapshot/assets/style.css"></head><body></body></html>')],
+    ['_snapshot/assets/app.js', new TextEncoder().encode('export {};')],
+    ['_snapshot/assets/style.css', new TextEncoder().encode('@font-face { src: url("./roboto.woff2"); }')],
+    ['_snapshot/assets/roboto.woff2', new Uint8Array([3])],
+  ]);
+}
+
+describe('Rust asset synchronization', () => {
+  test('requires bundled assets and a complete bootstrap', () => {
+    expect(() => validateBuild(buildFiles())).not.toThrow();
+    const files = buildFiles();
+    files.set('secret.json', new Uint8Array());
+    expect(() => validateBuild(files)).toThrow('Unexpected');
+    files.delete('secret.json');
+    files.delete('index.html');
+    expect(() => validateBuild(files)).toThrow('bootstrap');
+  });
+  test('uses stable filenames and versions final CSS, script, and font bytes', () => {
+    const original = buildFiles();
+    const first = versionBuild(original);
+    const html = new TextDecoder().decode(first.get('index.html'));
+    const css = new TextDecoder().decode(first.get('_snapshot/assets/style.css'));
+    expect(html).toContain(`/app.js?v=${getAssetVersion('export {};')}`);
+    expect(css).toContain(`/roboto.woff2?v=${getAssetVersion(new Uint8Array([3]))}`);
+    expect(html).toContain(`/style.css?v=${getAssetVersion(css)}`);
+    expect(getAssetVersion(css)).toMatch(/^[A-Za-z0-9_-]{20}$/);
+    original.set('_snapshot/assets/roboto.woff2', new Uint8Array([4]));
+    const second = versionBuild(original);
+    expect([...second.keys()]).toEqual([...first.keys()]);
+    expect(second.get('_snapshot/assets/app.js')).toEqual(first.get('_snapshot/assets/app.js'));
+    expect(second.get('_snapshot/assets/style.css')).not.toEqual(first.get('_snapshot/assets/style.css'));
+    expect(second.get('index.html')).not.toEqual(first.get('index.html'));
+    original.set('_snapshot/assets/style.css', new TextEncoder().encode('body { background: url(https://outside.invalid/private.png); }'));
+    expect(() => versionBuild(original)).toThrow('Unbundled');
+  });
+  test('replaces obsolete assets, embeds every dependency, and preserves output on invalid input', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'snapshot-build-'));
+    roots.push(root);
+    const dist = join(root, 'dist');
+    const hosting = join(root, 'hosting');
+    const output = join(root, 'data');
+    await mkdir(join(dist, '_snapshot/assets'), { recursive: true });
+    await mkdir(hosting);
+    await mkdir(output);
+    for (const [path, bytes] of buildFiles()) await writeFile(join(dist, path), bytes);
+    for (const name of ['_headers', '_redirects', 'staticwebapp.config.json', 'gitignore']) await writeFile(join(hosting, name), name);
+    await writeFile(join(output, 'old-bundle.js'), 'old');
+    const directoryIdentity = (await lstat(output)).ino;
+    await syncAssets(dist, hosting, output);
+    expect((await lstat(output)).ino).toBe(directoryIdentity);
+    expect(await readdir(output)).not.toContain('old-bundle.js');
+    expect(await readFile(join(output, 'assets.rs'), 'utf8')).toContain('include_bytes!("_snapshot/assets/roboto.woff2")');
+    const before = await collectFiles(output);
+    await syncAssets(dist, hosting, output);
+    expect(await collectFiles(output)).toEqual(before);
+    await writeFile(join(dist, 'unhashed.js'), 'bad');
+    await expect(syncAssets(dist, hosting, output)).rejects.toThrow('Unexpected');
+    expect(await collectFiles(output)).toEqual(before);
+  });
+});

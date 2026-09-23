@@ -354,11 +354,11 @@ latest report of each selected suite is published. Unsaved changes use the norma
 Save/Cancel guard, and a changed suite catalog requires selection review again.
 
 Deploy validates the token, runs the bundled `snapshot` command for the selected
-suites, and stages only their report pages/configuration, referenced images, and
-shared report assets and hosting policies before publishing. Image selection
-follows each report's `config.js`: only its reference, test, and diff PNG paths
-are included, even when they point to an older run. Entire capture folders are
-never copied.
+suites, and stages the snapshot entry page, versioned JSON, referenced images,
+frontend assets, and hosting policies before publishing. Staging follows the
+generated manifest rather than walking capture folders. Snapshot generation reads
+the run referenced by each suite's `config.js`, including older selected runs,
+without modifying comparison data or deleting capture history.
 
 Snapshot and Deploy use `snapshotTitle`, `snapshotHeading`, and
 `snapshotSubheading` from the workspace configuration unless an explicit override
@@ -400,8 +400,11 @@ quality floors for passed comparisons (99 down to 50), then failed Reference/Tes
 images (99 down to 80). Larger images are tried first at each quality level;
 processing stops when the report fits, with a higher-quality search for the last
 image when possible. Every attempt starts from the original, and replacements
-are kept only if smaller. Dimensions, transparency support, PNG paths, and test
-results remain intact; failed diff images and error placeholders stay lossless.
+are kept only if smaller. Dimensions, transparency support, and test results
+remain intact; failed diff images and error placeholders stay lossless. Any changed
+image bytes receive a new `?v=...` value from `get_asset_version`, and suite JSON
+plus the entry manifest receive updated versions as well. Filenames remain stable,
+and only the temporary staging copy is rewritten.
 The deployment log reports the budget, savings, reduced images, and skipped
 images. If the report cannot fit within these safeguards, deployment stops before
 upload with sizes and recovery steps. Choose fewer suites or a larger plan;
@@ -449,11 +452,13 @@ and `errorDetails` and Netlify's `error_message`. Details are bounded and
 credential/signed-URL redacted; unparseable responses fall back to status-specific
 guidance. The full error is shown in deployment Activity and View Log.
 
-Both providers send `X-Robots-Tag: noindex,nofollow,nocache,nosnippet,noarchive`
-for all report URLs. Snapshots include a Netlify `_headers` file matching the SWA
-global headers, asset caching rules, and content types; it is included in deployment
-automatically. These directives ask search engines not to index reports, but do
-not restrict access to them.
+Both providers send `X-Robots-Tag: noindex,nofollow` for report URLs. Snapshots
+include matching Azure/Netlify security and cache policies, plus clean-URL SPA
+fallback rules. HTML revalidates; `/_snapshot/*` uses immutable one-year caching.
+All resource URLs include `?v=...`; any additional CDN must include that parameter
+in its cache key. Stable origin files contain only the current report version.
+These directives ask search engines not to index reports, but do not restrict
+access. See [snapshot site hosting](commands.md#snapshot-site) for other hosts.
 
 The last selected target is remembered per workspace, and removing a target
 requires confirmation. Deploy and target management are also available from the

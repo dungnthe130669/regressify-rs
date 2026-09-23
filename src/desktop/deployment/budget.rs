@@ -133,6 +133,17 @@ fn check_deadline(deadline: Instant) -> Result<()> {
 }
 
 fn classify_images(root: &Path, files: &mut [ReportFile], deadline: Instant) -> Result<()> {
+    if let Some(roles) = crate::snapshot::image_roles(root)? {
+        for file in files {
+            check_deadline(deadline)?;
+            file.priority = match roles.get(&file.relative) {
+                Some(crate::snapshot::ImageRole::Passed) => Priority::Passed,
+                Some(crate::snapshot::ImageRole::Comparison) => Priority::Comparison,
+                _ => Priority::Protected,
+            };
+        }
+        return Ok(());
+    }
     let mut priorities = BTreeMap::<PathBuf, Priority>::new();
     for file in files
         .iter()
@@ -497,6 +508,15 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
         total as f64 / MIB as f64,
         limit as f64 / MIB as f64
     );
+    if crate::snapshot::image_roles(prepared.path())?.is_some() {
+        check_deadline(deadline)?;
+        crate::snapshot::refresh_site_versions(prepared.path())?;
+        total = inventory(prepared.path())?.1;
+        ensure!(
+            total <= limit,
+            "Updated snapshot metadata exceeds the deployment storage limit"
+        );
+    }
     let reduced = files.iter().filter(|file| file.quality < 100).count();
     phase(&format!(
         "Temporary deployment report: {:.2} -> {:.2} MiB; {reduced} images quality-reduced; {skipped} skipped; original reports and baselines unchanged",

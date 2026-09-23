@@ -669,29 +669,55 @@ fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies()
     let staging = workspace.path().join("staging");
     regressify::desktop::deployment::stage_reports(&output, &["shop".into()], &staging).unwrap();
     let summary = std::fs::read_to_string(staging.join("index.html")).unwrap();
-    for fragment in [
-        "<title>Shop Visual Test Report</title>",
-        "<h1>Shop Visual Tests Summary</h1>",
-        "<a href=\"https://integration.example.com/en\">Integration</a>",
-        "<a href=\"https://preproduction.example.com/en\">Preproduction</a>",
-    ] {
-        assert!(
-            summary.contains(fragment),
-            "Missing report text: {fragment}"
-        );
-    }
-    assert!(summary.contains("shop/html_report/index.html"));
-    assert!(!summary.contains("account/html_report/index.html"));
+    assert!(summary.contains("<title>Shop Visual Test Report</title>"));
+    let manifest_path = summary
+        .split_once("name=\"regressify-manifest\" content=\"")
+        .unwrap()
+        .1
+        .split_once('"')
+        .unwrap()
+        .0;
+    let read_resource = |url: &str| {
+        let (path, version) = url
+            .split_once("?v=")
+            .expect("Every report resource needs a version");
+        let path = percent_encoding::percent_decode_str(path)
+            .decode_utf8()
+            .unwrap();
+        let bytes = std::fs::read(staging.join(path.as_ref())).unwrap();
+        assert_eq!(version, regressify::snapshot::get_asset_version(&bytes, 20));
+        bytes
+    };
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&read_resource(manifest_path)).unwrap();
+    assert_eq!(manifest["heading"], "Shop Visual Tests Summary");
+    assert_eq!(
+        manifest["subheading"],
+        "Compare [Integration](https://integration.example.com/en) and [Preproduction](https://preproduction.example.com/en)"
+    );
+    assert_eq!(manifest["suites"].as_array().unwrap().len(), 1);
+    assert_eq!(manifest["suites"][0]["id"], "shop");
+    let report: serde_json::Value = serde_json::from_slice(&read_resource(
+        manifest["suites"][0]["report"].as_str().unwrap(),
+    ))
+    .unwrap();
+    let capture = &report["tests"][0];
+    assert_ne!(capture["reference"], capture["test"]);
+    assert_eq!(read_resource(capture["test"].as_str().unwrap()), image);
+    assert_eq!(read_resource(capture["reference"].as_str().unwrap()), image);
+    assert_eq!(
+        walkdir::WalkDir::new(staging.join("_snapshot/images"))
+            .into_iter()
+            .map(Result::unwrap)
+            .filter(|entry| entry.file_type().is_file())
+            .count(),
+        2
+    );
+    assert!(!summary.contains("html_report"));
     for name in [
-        "shop/html_report/index.html",
-        "shop/html_report/config.js",
-        "shop/bitmaps_test/run-one/home__FINAL.png",
-        "shop/bitmaps_reference/home__FINAL.png",
-        "index_bundle.js",
-        "styles.css",
-        "script.js",
-        "divergedWorker.js",
-        "lato-regular-webfont.woff2",
+        "index.html",
+        "_headers",
+        "_redirects",
         "staticwebapp.config.json",
     ] {
         assert!(
@@ -701,6 +727,7 @@ fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies()
     }
     for name in [
         "account",
+        "shop",
         "states",
         "shop/bitmaps_test/run-one/unreferenced.png",
         "shop/bitmaps_test/run-one/report.json",

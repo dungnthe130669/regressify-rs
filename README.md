@@ -65,6 +65,15 @@ to verify real windows, screenshot rendering, and GUI-to-CLI execution.
 
 Implemented commands are `init`, `install`, `version`, `ref`, `test`, `compare`, `approve`, `snapshot`, and `optimize`. See [docs/commands.md](docs/commands.md) for command behavior, global flags, output folders, and exit-code semantics.
 
+## Snapshot Frontend
+
+The unified snapshot SPA has overview, suite, and image URLs, light/dark themes,
+responsive suite navigation, and zoomable side-by-side, wipe, overlay, and diff views.
+Develop it in [frontend](frontend/README.md). `bun run build` there regenerates the
+embedded assets in `src/snapshot/data`; Cargo builds need no JavaScript tooling.
+Frontend changes pushed to `release` create a generated-assets-only PR to `master`
+through the [snapshot assets workflow](.github/workflows/snapshot-assets.yml).
+
 ## Release Script Permissions
 
 ```bash

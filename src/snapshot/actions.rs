@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
@@ -8,12 +7,8 @@ use crate::{
     common,
     compare::{compile_suite_filters, require_explicit_filter_match, suite_matches_filters},
     config::load_workspace_config,
-    helpers::{IOExtensions, OnceLockExtensions},
-    snapshot::{
-        helpers::get_asset_version,
-        report::{generate_html_report_summary, generate_shared_files, write_shared_file},
-        transform::process_test_suite,
-    },
+    helpers::OnceLockExtensions,
+    snapshot::site::generate_site,
 };
 
 pub fn snapshot(args: SnapshotArgs) -> Result<()> {
@@ -24,49 +19,12 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     }
 
     let workspace_config = load_workspace_config(common::ROOT_DIR.get_required()?)?;
-    let mut summaries = Vec::new();
-
-    // Using Tera template engine to render the report
-    let mut tera = tera::Tera::default();
-
-    tera.add_raw_template(
-        "report_template.html",
-        include_str!("data/report_template.html"),
-    )?;
-
-    tera.add_raw_template(
-        "test_suite_report.html",
-        include_str!("data/test_suite_report.html"),
-    )?;
-
-    let index_bundle_content = include_str!("data/index_bundle.js");
-    let bundle_hash = get_asset_version(index_bundle_content.as_bytes(), 20);
-
-    for dir_name in selected_snapshot_suites(regressify_dir, &args.test_suite)? {
-        // Hash paths are relative to each suite's html_report directory;
-        // sharing them across suites can apply the wrong cache version.
-        let mut hashes = BTreeMap::new();
-        if let Some(summary) =
-            process_test_suite(regressify_dir, &dir_name, &mut hashes, &tera, &bundle_hash)
-                .map_err(|error| {
-                    anyhow::anyhow!("Failed to process snapshot suite '{}': {}", dir_name, error)
-                })?
-        {
-            summaries.push(summary);
-        }
-    }
-
-    summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(regressify_dir, &tera, &summaries, &args, &workspace_config)?;
-    generate_shared_files(regressify_dir)?;
-
-    write_shared_file(
+    generate_site(
         regressify_dir,
-        "index_bundle.js",
-        index_bundle_content.as_bytes(),
-    )?;
-
-    Ok(())
+        &selected_snapshot_suites(regressify_dir, &args.test_suite)?,
+        &args,
+        &workspace_config,
+    )
 }
 
 /// List all UTF-8 output directories in stable order. Capture validation owns
@@ -86,9 +44,10 @@ fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
     entries.sort_by_key(|entry| entry.file_name());
     let mut directories = Vec::new();
     for entry in entries {
-        let path = entry.path().normalize()?;
-        if path.is_dir()
+        let path = entry.path();
+        if entry.file_type()?.is_dir()
             && let Some(name) = path.file_name().and_then(|name| name.to_str())
+            && name != "_snapshot"
         {
             directories.push(name.to_string());
         }

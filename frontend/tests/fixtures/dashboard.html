@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Northstar workspace</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: #f5f7f8;
+        color: #233333;
+        font: 14px sans-serif;
+      }
+      header {
+        height: 74px;
+        background: white;
+        border-bottom: 1px solid #e0e6e5;
+        display: flex;
+        align-items: center;
+        padding: 0 34px;
+        gap: 38px;
+      }
+      header b {
+        font-size: 23px;
+        color: #18765f;
+      }
+      header span {
+        color: #708580;
+        font-size: 12px;
+      }
+      .avatar {
+        margin-left: auto;
+        border-radius: 50%;
+        width: 32px;
+        height: 32px;
+        background: #e4c985;
+        display: grid;
+        place-items: center;
+        color: #3d432d;
+        font-size: 12px;
+      }
+      main {
+        padding: 36px 42px;
+      }
+      .eyebrow {
+        color: #5e7c70;
+        font-size: 11px;
+        text-transform: uppercase;
+        margin-bottom: 10px;
+      }
+      h1 {
+        font-size: 30px;
+        margin: 0 0 10px;
+        font-weight: 600;
+      }
+      p {
+        color: #6e807a;
+        margin: 0;
+      }
+      .title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+      .button {
+        background: #166b53;
+        color: white;
+        border: 0;
+        border-radius: 5px;
+        padding: 13px 20px;
+        font-size: 12px;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 22px;
+        margin: 32px 0;
+      }
+      .metric {
+        background: white;
+        border: 1px solid #dfe6e4;
+        padding: 22px;
+        border-radius: 6px;
+      }
+      .metric span {
+        display: block;
+        color: #73837f;
+        font-size: 12px;
+      }
+      .metric strong {
+        display: block;
+        font-size: 32px;
+        font-weight: 500;
+        margin: 14px 0 9px;
+      }
+      .metric small {
+        color: #18765f;
+      }
+      .content {
+        display: grid;
+        grid-template-columns: 2fr 1fr;
+        gap: 24px;
+      }
+      article {
+        background: white;
+        border: 1px solid #dfe6e4;
+        border-radius: 6px;
+        overflow: hidden;
+      }
+      h2 {
+        font-size: 15px;
+        margin: 0;
+        padding: 22px;
+        border-bottom: 1px solid #e3e8e6;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      th {
+        text-align: left;
+        font-size: 10px;
+        font-weight: 400;
+        color: #7a8780;
+        padding: 14px 20px;
+        background: #fcfdfc;
+      }
+      td {
+        border-top: 1px solid #e8ecea;
+        padding: 18px 20px;
+      }
+      .badge {
+        padding: 5px 9px;
+        background: #e4f2ea;
+        color: #286849;
+        border-radius: 4px;
+        font-size: 10px;
+      }
+      .pending {
+        background: #fff2cf;
+        color: #856624;
+      }
+      .bar-wrap {
+        padding: 24px 22px 18px;
+      }
+      .bar {
+        height: 9px;
+        display: flex;
+        gap: 3px;
+        margin: 10px 0 20px;
+      }
+      .bar i {
+        height: 100%;
+        background: #6ea993;
+        display: block;
+      }
+      .bar i:nth-child(2) {
+        background: #e3c876;
+      }
+      .bar i:nth-child(3) {
+        background: #a9bfd3;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        margin: 18px 0;
+        font-size: 12px;
+        color: #607a6c;
+      }
+      footer {
+        margin-top: 30px;
+        font-size: 10px;
+        color: #829188;
+      }
+      .changed .button {
+        background: #ad4859;
+        transform: translateY(8px);
+      }
+      .changed .changed-total {
+        color: #ad4859;
+      }
+      .changed tr:nth-child(2) .badge {
+        background: #f8dce2;
+        color: #943e51;
+      }
+      @media (max-width: 650px) {
+        header {
+          padding: 0 20px;
+          gap: 20px;
+        }
+        header span {
+          display: none;
+        }
+        main {
+          padding: 24px 20px;
+        }
+        .summary {
+          gap: 10px;
+        }
+        .metric {
+          padding: 14px;
+        }
+        .metric strong {
+          font-size: 24px;
+        }
+        .content {
+          grid-template-columns: 1fr;
+        }
+        .title {
+          gap: 16px;
+        }
+        h1 {
+          font-size: 24px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <b>northstar.</b><span>Workspace</span><span>Orders</span><span>Customers</span>
+      <div class="avatar">AC</div>
+    </header>
+    <main>
+      <div class="eyebrow">Workspace / Overview</div>
+      <div class="title">
+        <div>
+          <h1>Good morning, Alex</h1>
+          <p>Your workspace at a glance.</p>
+        </div>
+        <button type="button" class="button">New order</button>
+      </div>
+      <section class="summary">
+        <div class="metric"><span>Total revenue</span><strong>$24,680</strong><small>+12.8% this month</small></div>
+        <div class="metric"><span>Orders</span><strong class="changed-total">184</strong><small>+8.2% this month</small></div>
+        <div class="metric"><span>Active customers</span><strong>1,246</strong><small>+4.6% this month</small></div>
+      </section>
+      <div class="content">
+        <article>
+          <h2>Recent orders</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>Order</th>
+                <th>Customer</th>
+                <th>Status</th>
+                <th>Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>#NS-0248</td>
+                <td>Olivia Carter</td>
+                <td><span class="badge">Complete</span></td>
+                <td>$248.00</td>
+              </tr>
+              <tr>
+                <td>#NS-0247</td>
+                <td>Liam Brooks</td>
+                <td><span class="badge">Complete</span></td>
+                <td>$186.00</td>
+              </tr>
+              <tr>
+                <td>#NS-0246</td>
+                <td>Ava Ellis</td>
+                <td><span class="badge pending">Processing</span></td>
+                <td>$324.00</td>
+              </tr>
+              <tr>
+                <td>#NS-0245</td>
+                <td>Noah Reed</td>
+                <td><span class="badge">Complete</span></td>
+                <td>$142.00</td>
+              </tr>
+              <tr>
+                <td>#NS-0244</td>
+                <td>Mia Lane</td>
+                <td><span class="badge">Complete</span></td>
+                <td>$296.00</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+        <article>
+          <h2>Sales by channel</h2>
+          <div class="bar-wrap">
+            <p>Revenue distribution</p>
+            <div class="bar"><i style="width: 62%"></i><i style="width: 24%"></i><i style="width: 14%"></i></div>
+            <div class="row"><span>Online store</span><b>62%</b></div>
+            <div class="row"><span>Retail</span><b>24%</b></div>
+            <div class="row"><span>Wholesale</span><b>14%</b></div>
+          </div>
+        </article>
+      </div>
+      <footer>Northstar Studio / September 2026</footer>
+    </main>
+  </body>
+</html>
