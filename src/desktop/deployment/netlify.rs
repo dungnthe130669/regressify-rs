@@ -1403,6 +1403,113 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "publishes NETLIFY_REPORT_ROOT twice using NETLIFY_PAT and NETLIFY_SITE_ID; replaces site content"]
+    async fn live_publish_netlify_reports() -> Result<()> {
+        let token = zeroize::Zeroizing::new(
+            std::env::var("NETLIFY_PAT").context("Set NETLIFY_PAT for live deployment")?,
+        );
+        let mut target = target();
+        target.site_id =
+            std::env::var("NETLIFY_SITE_ID").context("Set NETLIFY_SITE_ID for live deployment")?;
+        target.validate()?;
+        let output = PathBuf::from(
+            std::env::var_os("NETLIFY_REPORT_ROOT")
+                .context("Set NETLIFY_REPORT_ROOT to existing report output")?,
+        );
+        let mut suites = Vec::new();
+        for entry in std::fs::read_dir(&output)? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir()
+                && entry.path().join("html_report/config.js").is_file()
+            {
+                suites.push(
+                    entry.file_name().into_string()
+                        .map_err(|_| anyhow!("Report suite names must be UTF-8"))?,
+                );
+            }
+        }
+        suites.sort();
+        ensure!(!suites.is_empty(), "No existing report suites found");
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("report");
+        super::super::stage_reports(&output, &suites, &root)?;
+        let manifest = Manifest::create(&root, Instant::now() + Duration::from_secs(300))?;
+        println!(
+            "Live report verification: {} suites, {} files, {:.2} MiB staged; source reports are read-only",
+            suites.len(), manifest.files.len(), manifest.bytes as f64 / (1024.0 * 1024.0)
+        );
+        let client = NetlifyClient::new(&token)?;
+        let published = if let Ok(url) = std::env::var("NETLIFY_VERIFY_URL") {
+            site_url(&url)?
+        } else {
+            let mut published = String::new();
+            for attempt in 1..=2 {
+                let started = Instant::now();
+                published = client.deploy(&root, &target).await?;
+                println!(
+                    "Live report deployment {attempt}/2 ready in {:.1}s: {published}",
+                    started.elapsed().as_secs_f64()
+                );
+            }
+            published
+        };
+        let public = Client::builder()
+            .https_only(true)
+            // This host decorates HTTP/2 HTML with its public toolbar; verify original bytes.
+            .http1_only()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        let base = Url::parse(&published)?;
+        let verified = AtomicUsize::new(0);
+        // Netlify consumes _headers as hosting policy, not a public report asset.
+        let files = manifest.files.iter().filter(|(path, _)| path.as_str() != "/_headers");
+        stream::iter(files)
+            .map(|(path, digest)| {
+                let public = &public;
+                let verified = &verified;
+                let expected = manifest.contents[digest].bytes;
+                let mut url = base.clone();
+                async move {
+                    {
+                        let mut segments = url.path_segments_mut()
+                            .map_err(|_| anyhow!("Invalid published report URL"))?;
+                        segments.pop_if_empty().extend(path.trim_start_matches('/').split('/'));
+                        if path.ends_with("/index.html") {
+                            segments.pop().push("");
+                        }
+                    }
+                    let response = public.get(url.clone()).header("Cache-Control", "no-cache")
+                        .send().await
+                        .map_err(|_| anyhow!("Cannot fetch published report asset {path}"))?;
+                    ensure!(response.status().is_success(), "Published report asset {path} returned HTTP {}", response.status().as_u16());
+                    let mut body = response.bytes_stream();
+                    let mut hasher = Sha1::new();
+                    let mut received = 0;
+                    while let Some(chunk) = body.next().await {
+                        let chunk = chunk.map_err(|_| anyhow!("Cannot read published report asset {path}"))?;
+                        received += chunk.len() as u64;
+                        ensure!(received <= expected, "Published report asset {path} is larger than staged content: {received} bytes received, {expected} expected; URL {url}");
+                        hasher.update(&chunk);
+                    }
+                    ensure!(received == expected && format!("{:x}", hasher.finalize()) == *digest,
+                        "Published report asset {path} differs from staged content");
+                    let completed = verified.fetch_add(1, Ordering::Relaxed) + 1;
+                    if completed == 1 || completed.is_multiple_of(50) {
+                        println!("Verified {completed} published report assets against staged hashes");
+                    }
+                    Ok::<_, anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(UPLOAD_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+        println!("Verified all {} public report assets: {published}", verified.load(Ordering::Relaxed));
+        Ok(())
+    }
+
+    #[tokio::test]
     #[ignore = "requires NETLIFY_PAT and NETLIFY_SITE_ID; validates site access without publishing"]
     async fn live_deployment_netlify_preflight() -> Result<()> {
         let token = zeroize::Zeroizing::new(
