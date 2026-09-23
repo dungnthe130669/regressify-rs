@@ -334,10 +334,18 @@ latest report of each selected suite is published. Unsaved changes use the norma
 Save/Cancel guard, and a changed suite catalog requires selection review again.
 
 Deploy validates the token, runs the bundled `snapshot` command for the selected
-suites, stages only their reports and referenced images, and then publishes.
-Unselected suites, old unreferenced runs, persisted authentication state, source
-YAML, and unrelated files are not uploaded. Symlinked or escaping artifact paths
-are rejected. No external Azure, npm, or Tuyen CLI installation is required.
+suites, and stages only their report pages/configuration, referenced images, and
+shared report assets and hosting policies before publishing. Image selection
+follows each report's `config.js`: only its reference, test, and diff PNG paths
+are included, even when they point to an older run. Entire capture folders are
+never copied.
+
+Unselected suites, unreferenced captures and diffs from any run (including the
+current run), capture metadata, unused TTF fonts, source maps, persisted
+authentication state, source YAML, and unrelated files are not uploaded. Skipped
+files remain unchanged on disk. Referenced web fonts, icons, scripts, and styles
+are retained. Symlinked or escaping artifact paths are rejected. No external
+Azure, npm, or Tuyen CLI installation is required.
 Azure uses Tuyen CLI's SWA deploy handshake: validate token, request
 upload URLs, upload Azure blob blocks, update status, and poll until completion.
 Transient network failures retry within bounds; the entire deployment has a

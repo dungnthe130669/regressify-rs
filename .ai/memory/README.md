@@ -32,6 +32,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 - [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and
   headless regression checks.
+- [Deployment packaging](deployment-packaging.md): dependency-only staging,
+  historical capture selection, and exact ZIP regression checks.
 - [Netlify uploads](deployment-netlify.md): request deadlines, sampled progress
   warnings, and local cancellation semantics.
 

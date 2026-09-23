@@ -63,6 +63,9 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Deployment staging no longer uploads unused TTF fonts. Exact-ZIP regression
+  coverage confirms unreferenced old/current-run captures, diffs, source maps,
+  metadata, and unselected suites are excluded without modifying source files.
 - Native smoke shortcuts use typed `SendInput` events with balanced modifiers and
   extended navigation flags. The complete default authoring and `-SchemaFlows`
   checks pass, including completion, clipboard operations, saves, and preference

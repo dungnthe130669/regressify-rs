@@ -616,10 +616,8 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "divergedWorker.js",
         "lato-bold-webfont.woff",
         "lato-bold-webfont.woff2",
-        "Lato-Bold.ttf",
         "lato-regular-webfont.woff",
         "lato-regular-webfont.woff2",
-        "Lato-Regular.ttf",
         "favicon.ico",
         "favicon.svg",
         "favicon-16x16.png",
@@ -972,27 +970,88 @@ mod tests {
     fn staging_includes_only_selected_report_dependencies() {
         let directory = tempfile::tempdir().unwrap();
         let output = directory.path().join("output");
-        fs::create_dir_all(output.join("one/html_report")).unwrap();
-        fs::create_dir_all(output.join("one/bitmaps_test/run")).unwrap();
-        fs::create_dir_all(output.join("two")).unwrap();
-        fs::create_dir_all(output.join("states")).unwrap();
-        fs::write(output.join("index.html"), "one").unwrap();
-        fs::write(output.join("one/html_report/index.html"), "report").unwrap();
-        fs::write(output.join("one/html_report/config.js"), r#"report({"id":"one","tests":[{"pair":{"test":"../bitmaps_test/run/image.png?v=hash"}}]});"#).unwrap();
-        fs::write(output.join("one/bitmaps_test/run/image.png"), b"png").unwrap();
+        let expected = BTreeSet::from([
+            "index.html",
+            "styles.css",
+            "script.js",
+            "index_bundle.js",
+            "staticwebapp.config.json",
+            "_headers",
+            "diff.js",
+            "diverged.js",
+            "divergedWorker.js",
+            "lato-bold-webfont.woff",
+            "lato-bold-webfont.woff2",
+            "lato-regular-webfont.woff",
+            "lato-regular-webfont.woff2",
+            "favicon.ico",
+            "favicon.svg",
+            "favicon-16x16.png",
+            "favicon-32x32.png",
+            "apple-touch-icon.png",
+            "one/html_report/index.html",
+            "one/html_report/config.js",
+            "one/bitmaps_reference/nested/image.png",
+            "one/bitmaps_test/run/nested/image.png",
+            "one/bitmaps_test/run/nested/image.diff.png",
+            "one/bitmaps_test/older/still-reported.png",
+        ]);
+        let skipped = [
+            "Lato-Bold.ttf",
+            "Lato-Regular.ttf",
+            ".gitignore",
+            "unused.js",
+            "index_bundle.js.map",
+            "old-report.html",
+            "one/bitmaps_reference/unused.png",
+            "one/bitmaps_test/run/unused.png",
+            "one/bitmaps_test/run/unused.diff.png",
+            "one/bitmaps_test/run/private.json",
+            "one/bitmaps_test/older/unused.png",
+            "one/bitmaps_test/older/unused.diff.png",
+            "one/bitmaps_test/oldest/unused.png",
+            "one/html_report/unused.js",
+            "two/html_report/index.html",
+            "two/bitmaps_test/run/image.png",
+            "states/private.json",
+        ];
+        for relative in expected.iter().copied().chain(skipped) {
+            let path = output.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, b"fixture").unwrap();
+        }
+        let report = serde_json::json!({
+            "id": "one",
+            "tests": [
+                {"pair": {
+                    "reference": "../bitmaps_reference/nested/image.png?v=reference",
+                    "test": "../bitmaps_test/run/nested/image.png?v=current",
+                    "diffImage": "../bitmaps_test/run/nested/image.diff.png?v=diff"
+                }},
+                {"pair": {"test": "../bitmaps_test/older/still-reported.png"}},
+                {"pair": {"test": "../bitmaps_test/run/nested/image.png?v=duplicate"}}
+            ]
+        });
         fs::write(
-            output.join("one/bitmaps_test/run/private.json"),
-            b"not published",
+            output.join("one/html_report/config.js"),
+            format!("report({report});"),
         )
         .unwrap();
         let destination = directory.path().join("publish");
         stage_reports(&output, &["one".into()], &destination).unwrap();
-        assert!(destination.join("one/bitmaps_test/run/image.png").exists());
-        assert!(
-            !destination
-                .join("one/bitmaps_test/run/private.json")
-                .exists()
-        );
+        for relative in skipped {
+            assert!(!destination.join(relative).exists(), "{relative}");
+            assert_eq!(fs::read(output.join(relative)).unwrap(), b"fixture");
+        }
+        let package = package::Package::create(&destination, expected.len() as u64).unwrap();
+        let archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
+        assert_eq!(archive.file_names().collect::<BTreeSet<_>>(), expected);
+        for relative in expected {
+            assert_eq!(
+                fs::read(destination.join(relative)).unwrap(),
+                fs::read(output.join(relative)).unwrap()
+            );
+        }
         assert!(!destination.join("two").exists());
         assert!(!destination.join("states").exists());
         assert!(stage_reports(&output, &[], &directory.path().join("empty")).is_err());
