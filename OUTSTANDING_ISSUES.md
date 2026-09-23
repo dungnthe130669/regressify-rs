@@ -63,6 +63,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Native smoke shortcuts use typed `SendInput` events with balanced modifiers and
+  extended navigation flags. The complete default authoring and `-SchemaFlows`
+  checks pass, including completion, clipboard operations, saves, and preference
+  restoration; [headless checks](ci/test-desktop-smoke.ps1) cover key-event generation.
+- Netlify uploads use a one-hour deployment deadline instead of inheriting a three-minute HTTP timeout; unchanged progress produces periodic warnings without aborting or retrying the upload.
 - Results approval is limited to the current scenario/viewport and recalculates the original report; whole-run approval remains in Runs.
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.

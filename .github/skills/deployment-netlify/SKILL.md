@@ -7,20 +7,15 @@ description: 'Use when changing Netlify report deployment, site validation, uplo
 
 ## Start Here
 
-[Netlify client](../../../src/desktop/deployment/netlify.rs),
-[shared diagnostics](../../../src/desktop/deployment/diagnostics.rs), and
-[target orchestration](../../../src/desktop/deployment.rs).
+[Netlify client](../../../src/desktop/deployment/netlify.rs), [shared diagnostics](../../../src/desktop/deployment/diagnostics.rs), and [target orchestration](../../../src/desktop/deployment.rs).
 
 ## Procedure and Invariants
 
-1. Validate the intended site/target before upload. Keep credentials in sensitive
-   headers and preserve the production endpoint/redirect policy.
-1. Bound response bodies, request deadlines, transient retries, and status polling.
-   Treat upload acceptance and completed publication as different states.
-1. Classify terminal provider failures versus retryable states. Preserve useful
-   request/status context without echoing tokens, signed URLs, or raw response bodies.
-1. Validate published URLs before storing or opening them. Cancellation and failed
-   publication must not create a misleading success link in saved run activity.
+1. Validate the intended site/target before upload. Keep credentials in sensitive headers and preserve the production endpoint/redirect policy.
+1. Bound response bodies, request deadlines, transient retries, and status polling. Treat upload acceptance and completed publication as different states.
+1. Keep the upload request timeout aligned with the one-hour deployment deadline; retain short connection/read timeouts. Sample sent bytes every 60 seconds and warn on unchanged samples without aborting or retrying the upload. Distinguish stalled transfers from fully sent ZIPs awaiting provider acceptance. Stop only cancels the local worker, not any deployment already accepted by Netlify.
+1. Classify terminal provider failures versus retryable states. Preserve useful request/status context without echoing tokens, signed URLs, or raw response bodies.
+1. Validate published URLs before storing or opening them. Cancellation and failed publication must not create a misleading success link in saved run activity.
 1. Keep provider file/size restrictions aligned with staging and package validation.
 
 ## Checks
@@ -30,11 +25,8 @@ cargo test --features desktop --lib desktop::deployment::netlify::tests
 cargo test --features desktop --lib desktop::deployment::diagnostics::tests
 ```
 
-Use loopback/mock servers and synthetic tokens, never a live site. Cover malformed
-JSON, oversized responses, invalid URLs, auth errors, throttling, failed publication,
-retry/deadline exhaustion, and secret-free diagnostics.
+Use loopback/mock servers and synthetic tokens, never a live site. Cover malformed JSON, oversized responses, invalid URLs, auth errors, throttling, failed publication, slow uploads exceeding the default HTTP timeout, retry/deadline exhaustion, stalled and resumed byte counts, acceptance waits, and secret-free diagnostics. Keep timing tests short with injected request/deployment deadlines and synthetic progress samples.
 
 ## Maintain
 
-Update [desktop docs](../../../docs/desktop.md) and this skill when provider states
-or target requirements change. Explain retry and credential-forwarding decisions.
+Update [desktop docs](../../../docs/desktop.md) and this skill when provider states or target requirements change. Explain retry and credential-forwarding decisions.

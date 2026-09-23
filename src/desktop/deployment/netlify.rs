@@ -10,6 +10,8 @@ use serde::{Deserialize, de::DeserializeOwned};
 
 use super::{DeployTarget, DeploymentProvider, diagnostics, package::Package, phase};
 
+const UPLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(60);
+
 #[derive(Deserialize)]
 struct Site {
     id: String,
@@ -64,7 +66,7 @@ impl NetlifyClient {
             authorization,
             backoff: Duration::from_secs(1),
             poll_interval: Duration::from_secs(5),
-            deadline: Duration::from_secs(30 * 60),
+            deadline: Duration::from_secs(60 * 60),
         })
     }
 
@@ -181,11 +183,23 @@ impl NetlifyClient {
                     }
                 },
             );
-            let response = self.client.post(self.endpoint.join(&format!("{site_path}/deploys"))?)
+            let upload = self
+                .client
+                .post(self.endpoint.join(&format!("{site_path}/deploys"))?)
                 .header(AUTHORIZATION, self.authorization.clone())
                 .header("Content-Type", "application/zip")
                 .header("Content-Length", length)
-                .body(reqwest::Body::wrap_stream(body)).send().await
+                .timeout(self.deadline)
+                .body(reqwest::Body::wrap_stream(body))
+                .send();
+            let mut progress = UploadStallMonitor::default();
+            let response = super::monitor(upload, UPLOAD_PROGRESS_INTERVAL, |elapsed| {
+                if let Some(warning) = progress.warning(
+                    sent.load(std::sync::atomic::Ordering::Relaxed), length, elapsed,
+                ) {
+                    phase(&warning);
+                }
+            }).await
                 .map_err(|error| anyhow!("Netlify upload {} after sending {} of {} KiB; check the site's deploy history before retrying",
                     if error.is_timeout() { "timed out" } else if error.is_connect() { "could not connect" } else { "did not complete" },
                     sent.load(std::sync::atomic::Ordering::Relaxed) / 1024, length / 1024))?;
@@ -271,8 +285,46 @@ impl NetlifyClient {
         )
         .await
         .context(
-            "Netlify deployment exceeded its 30-minute deadline; check the site's deploy history",
+            "Netlify deployment exceeded its 1-hour deadline; check the site's deploy history",
         )?
+    }
+}
+
+#[derive(Default)]
+struct UploadStallMonitor {
+    last_sent: u64,
+    last_progress: Duration,
+}
+
+impl UploadStallMonitor {
+    fn warning(&mut self, sent: u64, length: u64, elapsed: Duration) -> Option<String> {
+        if sent != self.last_sent {
+            self.last_sent = sent;
+            self.last_progress = elapsed;
+            return None;
+        }
+        let idle = elapsed.saturating_sub(self.last_progress);
+        if idle < UPLOAD_PROGRESS_INTERVAL {
+            return None;
+        }
+        // Body consumption measures local progress, not Netlify's acceptance.
+        let status = if sent == length {
+            format!(
+                "Netlify upload sent all {} KiB; still awaiting provider acceptance after {}s",
+                length / 1024,
+                idle.as_secs()
+            )
+        } else {
+            format!(
+                "Netlify upload has made no progress for {}s ({} of {} KiB sent)",
+                idle.as_secs(),
+                sent / 1024,
+                length / 1024
+            )
+        };
+        Some(format!(
+            "{status}. Keep waiting or choose Stop to cancel locally."
+        ))
     }
 }
 
@@ -481,6 +533,125 @@ mod tests {
         assert!(records.iter().all(|record| !record.1.contains(TOKEN)
             && !String::from_utf8_lossy(&record.3).contains(TOKEN)));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn upload_can_outlast_the_default_request_timeout() -> Result<()> {
+        let uploads = Arc::new(AtomicUsize::new(0));
+        let attempts = uploads.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let response = if request.method().as_str() == "POST" {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
+                std::thread::sleep(Duration::from_millis(300));
+                json!({"id":"deploy-123", "site_id":SITE_ID, "state":"ready",
+                    "ssl_url":"https://qa-reports.netlify.app/"})
+            } else {
+                json!({"id":SITE_ID})
+            };
+            let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
+        })?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        let mut client = client(&site.origin);
+        let default_deadline = client.deadline;
+        client.client = Client::builder()
+            .timeout(Duration::from_millis(25))
+            .build()?;
+        client.deadline = Duration::from_secs(5);
+        assert_eq!(
+            client.deploy(root.path(), &target()).await?,
+            "https://qa-reports.netlify.app/"
+        );
+        assert_eq!(uploads.load(Ordering::SeqCst), 1);
+        assert_eq!(default_deadline, Duration::from_secs(60 * 60));
+        client.deadline = Duration::from_millis(150);
+        let error = client
+            .deploy(root.path(), &target())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("deadline") || error.contains("timed out"),
+            "{error}"
+        );
+        assert_eq!(uploads.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn upload_stall_warnings_repeat_and_reset_when_progress_resumes() {
+        let mut progress = UploadStallMonitor::default();
+        let length = 4 * 1024;
+        for seconds in [0, 59] {
+            assert!(
+                progress
+                    .warning(0, length, Duration::from_secs(seconds))
+                    .is_none()
+            );
+        }
+        for seconds in [60, 120] {
+            let warning = progress
+                .warning(0, length, Duration::from_secs(seconds))
+                .unwrap();
+            assert!(
+                warning.contains(&format!("no progress for {seconds}s")),
+                "{warning}"
+            );
+            assert!(warning.contains("0 of 4 KiB sent"), "{warning}");
+            assert!(warning.contains("Keep waiting or choose Stop"), "{warning}");
+        }
+        assert!(
+            progress
+                .warning(2 * 1024, length, Duration::from_secs(130))
+                .is_none()
+        );
+        assert!(
+            progress
+                .warning(2 * 1024, length, Duration::from_secs(189))
+                .is_none()
+        );
+        let warning = progress
+            .warning(2 * 1024, length, Duration::from_secs(190))
+            .unwrap();
+        assert!(warning.contains("no progress for 60s"), "{warning}");
+        assert!(warning.contains("2 of 4 KiB sent"), "{warning}");
+        assert!(
+            progress
+                .warning(3 * 1024, length, Duration::from_secs(200))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn completed_upload_waits_for_acceptance_without_claiming_a_stalled_transfer() {
+        let mut progress = UploadStallMonitor::default();
+        let length = 4 * 1024;
+        assert!(
+            progress
+                .warning(length, length, Duration::from_secs(1))
+                .is_none()
+        );
+        assert!(
+            progress
+                .warning(length, length, Duration::from_secs(60))
+                .is_none()
+        );
+        for seconds in [61, 121] {
+            let warning = progress
+                .warning(length, length, Duration::from_secs(seconds))
+                .unwrap();
+            assert!(warning.contains("sent all 4 KiB"), "{warning}");
+            assert!(
+                warning.contains(&format!(
+                    "awaiting provider acceptance after {}s",
+                    seconds - 1
+                )),
+                "{warning}"
+            );
+            assert!(!warning.contains("no progress"), "{warning}");
+            assert!(warning.contains("Keep waiting or choose Stop"), "{warning}");
+        }
     }
 
     #[tokio::test]

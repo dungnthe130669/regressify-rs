@@ -12,6 +12,8 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'ci/desktop-smoke.ps1'
+      - 'ci/desktop-smoke/**'
+      - 'ci/test-desktop-smoke.ps1'
       - '.github/workflows/desktop-checks.yml'
   pull_request:
     branches:
@@ -24,6 +26,8 @@ on:
       - 'Cargo.lock'
       - 'build.rs'
       - 'ci/desktop-smoke.ps1'
+      - 'ci/desktop-smoke/**'
+      - 'ci/test-desktop-smoke.ps1'
       - '.github/workflows/desktop-checks.yml'
   workflow_dispatch:
 
@@ -43,6 +47,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Headless smoke harness checks
+        shell: pwsh
+        run: ./ci/test-desktop-smoke.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -63,6 +70,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Headless smoke harness checks
+        shell: pwsh
+        run: ./ci/test-desktop-smoke.ps1
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Shared library and desktop models

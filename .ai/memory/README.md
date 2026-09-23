@@ -30,7 +30,10 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 ## Topic Notes
 
-Add verified topic notes here as new repository knowledge is established.
+- [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and
+  headless regression checks.
+- [Netlify uploads](deployment-netlify.md): request deadlines, sampled progress
+  warnings, and local cancellation semantics.
 
 ## Checks
 

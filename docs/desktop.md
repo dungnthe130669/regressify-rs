@@ -377,8 +377,11 @@ created a deploy. Check Netlify's deploy history before retrying a failed upload
 Locked production deploys and Git-only production restrictions are reported
 before upload. Azure authentication, network restrictions, and restricted role
 rules are rejected instead of silently publishing unprotected reports on Netlify.
-Configure access protection in Netlify itself for private reports. Both providers
-retain the 30-minute deadline and keep tokens out of URLs and logs.
+Configure access protection in Netlify itself for private reports. Netlify allows
+up to one hour for packaging, upload, and publication polling; the upload request
+uses this same budget. Connections retain a 10-second timeout and read/poll
+requests a 30-second timeout. Azure retains its 30-minute deployment deadline.
+Both providers keep tokens out of URLs and logs.
 
 Provider failures include available structured error details, HTTP status,
 request/deployment identifiers, and recovery guidance for access, storage,
@@ -408,8 +411,15 @@ uploads report bytes sent (Netlify) or acknowledged (Azure). Azure block commits
 retry reasons/delays, and each provider polling state are logged. A five-second
 heartbeat continues during long asynchronous operations, without claiming
 unmeasured completion percentages or provider acceptance.
-Stop cancels the local worker
-process tree; it cannot undo a deployment already accepted by Azure. Deployment
+Netlify samples upload progress every 60 seconds. If the byte count has not
+advanced since the previous sample, Activity and View Log show a warning each
+minute with the elapsed time without observed progress and the sent/total bytes.
+The upload keeps running, so users can keep waiting or choose Stop. Once all
+bytes have been sent, warnings describe waiting for Netlify's acceptance instead
+of a stalled transfer.
+Stop cancels the local worker process tree; it cannot undo a deployment already
+accepted by Azure or Netlify. Check the provider's deploy history before retrying
+after cancellation. Deployment
 transport is covered by local mock-server tests; a live Azure smoke deployment
 requires a configured target and is not performed by the test suite.
 
@@ -1191,6 +1201,27 @@ In PowerShell 7 on an interactive Windows desktop:
 ./ci/desktop-smoke.ps1
 ```
 
+The [runner](../ci/desktop-smoke.ps1) keeps the public switches, safety guards,
+build, and flow dispatch. Its dot-sourced modules share the runner's script scope:
+
+| Module                                           | Responsibility                                                              |
+| ------------------------------------------------ | --------------------------------------------------------------------------- |
+| [native.ps1](../ci/desktop-smoke/native.ps1)     | Windows interop, window state, screenshots, and native buttons              |
+| [controls.ps1](../ci/desktop-smoke/controls.ps1) | Accessible controls, input, themes, and application menu assertions         |
+| [fixture.ps1](../ci/desktop-smoke/fixture.ps1)   | Synthetic workspace, process tracking, settings backup, and fixture helpers |
+| [cleanup.ps1](../ci/desktop-smoke/cleanup.ps1)   | Process teardown and restoration of preferences and fixture state           |
+| [flows](../ci/desktop-smoke/flows)               | Feature-specific acceptance flows and shared Results assertions             |
+
+Keep shared cleanup state script-scoped when moving code into flow functions.
+Run [the headless harness checks](../ci/test-desktop-smoke.ps1) with
+`./ci/test-desktop-smoke.ps1` after changing the harness. These checks need only
+PowerShell 7: they parse and load helpers, exercise switch dispatch and cleanup
+with mocked side effects, compile and check native keyboard event sequences
+without sending input, and verify draft cleanup state. They do not build the
+app, open windows, or touch preferences; native acceptance still needs Windows.
+After editing the inline Windows interop code, run native checks in a fresh
+PowerShell session because `Add-Type` definitions are cached for the process.
+
 Add `-Capture` to run direct reference capture, stop a test, rerun the test, and
 open the completed results for three local fixture scenarios across two suites.
 The fixture reuses the shared managed Chromium cache, downloading the browser only
@@ -1251,8 +1282,12 @@ approves a viewed historical run despite a newer capture directory, checks the
 promoted image's checksum, compares that exact run, and opens Run settings in
 both themes. Input steps verify foreground focus and stable control bounds;
 literal fixture text uses Unicode input packets without changing the user's
-keyboard settings. Source-completion setup verifies the caret position between
-navigation keys before entering a new property. Native menu items use enabled
+keyboard settings. Shortcuts use `Send-FixtureKeys` with a `ConsoleKey` and
+explicit `-Control` / `-Shift` switches, not SendKeys strings. Native `SendInput`
+batches press and release modifiers in order and mark navigation keys as extended;
+failed batches attempt to release their keys before reporting the error.
+Source-completion setup verifies the caret position between navigation keys
+before entering a new property. Native menu items use enabled
 state checks and physical clicks rather than assuming an Invoke automation pattern.
 Close existing desktop windows before starting the smoke check because the
 fixture temporarily changes shared preferences, not because the application
@@ -1308,13 +1343,13 @@ capture-only compare-and-open through the draft guard. The Windows smoke locator
 uses Open Report; the saved-artifact native flow above now also verifies the
 comparison handoff from the suite editor and after restarting the app.
 
-The earlier appearance pass completed 28 captures and restart/cleanup checks.
-The broader authoring smoke was attempted again: its first attempt stopped at a
-viewport menu, and its next reached source completion but synthetic input left
-an invalid draft without a suggestion. That full sequence still needs an
-uninterrupted pass; the focused scenario flow is not a claim that the unrelated
-source/restart checks were rerun successfully. All attempts restored original
-preferences and closed only their synthetic fixture.
+The full authoring smoke now passes with native keyboard shortcuts, including
+viewport and dependency controls, document-start navigation, source completion,
+saving, historical-run approval, appearance restoration, and dirty-draft cleanup.
+The schema flow also passes with the shared input helper, including clipboard
+paste, diagnostic-text copying, completion, and corrected saves in compact
+light/dark windows. Both runs restored original preferences and closed only
+their synthetic fixture.
 
 Full IME composition, screen-reader usability, and native macOS/Linux behavior still require testing
 on those environments. The Linux CI model job is not a claim of native GUI

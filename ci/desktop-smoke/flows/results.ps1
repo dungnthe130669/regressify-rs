@@ -1,0 +1,105 @@
+function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 0, [int]$DiffY = 0) {
+    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        Hover-Control 'Scenario information'
+        Wait-Control 'Scenario information details' | Out-Null
+        $label = if ($SameUrl) { 'Account desktop' } else { 'Checkout' }
+        $selector = if ($SameUrl) { 'body .carousel' } else { 'document' }
+        Wait-Control "Label: $label" | Out-Null
+        Wait-Control "Selector: $selector" | Out-Null
+        if ($SameUrl) {
+            Wait-Control 'Same URL' | Out-Null
+            Wait-Control 'Diff %: Unavailable' | Out-Null
+            Wait-Control 'Diff X: Unavailable' | Out-Null
+            Wait-Control 'Diff Y: Unavailable' | Out-Null
+        } else {
+            Wait-Control 'Diff %: 4.20%' | Out-Null
+            Wait-Control "Diff X: $DiffX" | Out-Null
+            Wait-Control "Diff Y: $DiffY" | Out-Null
+        }
+        foreach ($kind in @('Reference', 'Test')) {
+            if (-not (Test-ControlInvokable "Open $kind URL")) { throw "$kind URL must be clickable." }
+            Hover-Control "Copy $kind URL"
+            Invoke-Control "Copy $kind URL" -Pointer
+            $expected = if ($SameUrl) { 'https://example.com/account' } elseif ($kind -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
+            Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "$kind URL was not copied correctly."
+        }
+        Capture-Window $Name
+        Hover-Control 'Help'
+        Wait-WindowState { $null -eq (Find-Control 'Scenario information details') } 'Scenario information did not close after the pointer left.'
+    } finally {
+        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
+}
+
+function Test-ImageContextMenus {
+    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        foreach ($pane in @('Reference', 'Test', 'Diff')) {
+            Hover-Control "$pane image preview"
+            [RegressifySmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
+            [RegressifySmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+            foreach ($name in @('Open in default browser', 'Open in default image viewer', 'Show in file manager')) {
+                if (-not (Test-MenuActionEnabled $name)) { throw "Image action '$name' is unavailable." }
+            }
+            if ($pane -ne 'Diff') {
+                if (-not (Test-MenuActionEnabled "Open $pane URL")) { throw "$pane URL must be available in the image menu." }
+                Invoke-Control "Copy $pane URL" -Pointer
+                $expected = if ($pane -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
+                Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "Image menu copied an incorrect $pane URL."
+            } else {
+                if ($null -ne (Find-Control 'Open Reference URL') -or $null -ne (Find-Control 'Copy Test URL')) { throw 'Diff must not offer scenario URL actions.' }
+                Send-FixtureKeys Escape
+            }
+            Wait-WindowState { $null -eq (Find-Control 'Open in default browser') } 'Image context menu did not close.'
+        }
+    } finally {
+        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
+}
+
+function Test-ReportApproval {
+    $run = Join-Path $output 'bitmaps_test/approval-run'
+    $scenario = '8ac900fea19642cc0000'
+    $captures = [ordered]@{}
+    $tests = @()
+    foreach ($viewport in @('desktop', 'phone')) {
+        $key = "${scenario}_${viewport}__FINAL"
+        Write-TestImage (Join-Path $output "bitmaps_reference/$key.png") ([System.Drawing.Color]::Teal)
+        Write-TestImage (Join-Path $run "$key.png") ([System.Drawing.Color]::RoyalBlue)
+        Write-TestImage (Join-Path $output "bitmaps_test/zz-newer-run/$key.png") ([System.Drawing.Color]::OrangeRed)
+        $captures[$key] = @{ scenarioId = $scenario; scenarioLabel = 'Checkout'; referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout' }
+        $tests += @{ status = 'fail'; pair = @{
+            label = 'Checkout'; scenarioId = $scenario; scenarioLabel = 'Checkout'; selector = 'document'
+            referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout'
+            fileName = "$key.png"; reference = "../bitmaps_reference/$key.png"; test = "../bitmaps_test/approval-run/$key.png"; misMatchThreshold = 0.1
+        } }
+    }
+    Write-JsonFixture (Join-Path $run '.report-urls.json') @{ version = 1; captures = $captures }
+    Write-JsonFixture (Join-Path $run 'report.json') @{ id = 'smoke'; testSuite = 'smoke'; tests = $tests }
+    Invoke-Control 'Editor'
+    Invoke-Control 'Results'
+    Wait-Control 'Mismatch Checkout' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
+    if ($null -ne (Find-Control 'Approve This Run')) { throw 'Results still exposes whole-run approval.' }
+    $sibling = Join-Path $output "bitmaps_reference/${scenario}_phone__FINAL.png"
+    $siblingHash = (Get-FileHash $sibling).Hash
+    Invoke-Control 'Approve This Scenario'
+    Wait-Control 'Run: approval-run' | Out-Null
+    Wait-Control 'Viewport: desktop' | Out-Null
+    Capture-Window 'approve-scenario-viewport-confirmation'
+    Invoke-Control 'Approve This Scenario' -Within 'Run confirmation'
+    Wait-Control 'Passed Checkout' | Out-Null
+    Wait-Control 'Mismatch Checkout' | Out-Null
+    $report = Get-Content (Join-Path $run 'report.json') -Raw | ConvertFrom-Json
+    if ($report.tests.Count -ne 2 -or $report.tests[0].status -ne 'pass' -or $report.tests[1].status -ne 'fail' -or $report.tests[0].pair.diff.rawMisMatchPercentage -ne 0) {
+        throw 'Scenario approval did not recalculate the complete report.'
+    }
+    if ((Get-FileHash $sibling).Hash -ne $siblingHash) { throw 'Approval changed another viewport baseline.' }
+    $approved = Join-Path $output "bitmaps_reference/${scenario}_desktop__FINAL.png"
+    if ((Get-FileHash $approved).Hash -ne (Get-FileHash (Join-Path $run "${scenario}_desktop__FINAL.png")).Hash) {
+        throw 'Approval promoted a different run than the reviewed capture.'
+    }
+    Capture-Window 'approve-scenario-viewport-results'
+    Write-Output 'Current-viewport approval, pinned historical run, preserved sibling baseline, and recalculated report passed native checks.'
+}
