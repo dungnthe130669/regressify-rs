@@ -232,7 +232,23 @@ impl Workbench {
                         this.status = format!("{error:#}");
                     }
                     this.sync_suites(cx);
-                    this.refresh_results(window, cx);
+                    let approval = {
+                        let manager = &this.runs.read(cx).manager;
+                        manager
+                            .request
+                            .as_ref()
+                            .filter(|request| request.options.report_capture.is_some())
+                            .map(|_| manager.outcome.clone())
+                    };
+                    if let Some(outcome) = approval {
+                        let suites = this.session.suites.clone();
+                        this.results.update(cx, |panel, cx| {
+                            panel.set_suites(suites);
+                            panel.approval_finished(outcome.as_ref(), window, cx);
+                        });
+                    } else {
+                        this.refresh_results(window, cx);
+                    }
                     this.git.update(cx, |panel, cx| {
                         panel.set_disabled(this.busy, cx);
                         panel.refresh(window, cx);
@@ -283,9 +299,15 @@ impl Workbench {
                     if this.busy || this.runs.read(cx).running() {
                         return;
                     }
-                    this.main_tab = 1;
-                    this.runs
-                        .update(cx, |panel, cx| panel.approve_report(report, cx));
+                    match this.runs.read(cx).report_approval_intent(report) {
+                        Ok(intent) => this.guard_run(Box::new(intent), window, cx),
+                        Err(error) => {
+                            this.status = format!("{error:#}");
+                            this.results.update(cx, |panel, cx| {
+                                panel.approval_failed(format!("{error:#}"), cx)
+                            });
+                        }
+                    }
                     cx.notify();
                 }
             });
@@ -689,6 +711,7 @@ impl Workbench {
             return;
         }
         let review_after_run = intent.review_after_run;
+        let report_approval = intent.request.options.report_capture.is_some();
         self.task("Validating selected suites...", move || {
             let suites = workspace.suite_catalog()?;
             let request = intent.resolve_for_execution(&suites).map_err(|error| format!("{error:#}"));
@@ -701,6 +724,9 @@ impl Workbench {
                 Ok(request) => this.runs.update(cx, |panel, cx| panel.start(request, review_after_run, window, cx)),
                 Err(error) => {
                     this.status = format!("Selected suites changed or contain errors; review the selection before running: {error:#}");
+                    if report_approval {
+                        this.results.update(cx, |panel, cx| panel.approval_failed(error.clone(), cx));
+                    }
                     cx.notify();
                 }
             }
@@ -752,7 +778,9 @@ impl Workbench {
             cx.notify();
             return;
         }
-        self.main_tab = 1;
+        if intent.request.options.report_capture.is_none() {
+            self.main_tab = 1;
+        }
         self.guard(files::Pending::Run(intent), window, cx);
     }
 

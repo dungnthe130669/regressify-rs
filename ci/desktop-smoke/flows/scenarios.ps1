@@ -78,8 +78,9 @@ function Test-ScenarioFlows {
     Wait-Control 'Approve This Scenario' | Out-Null
     Capture-Window 'scenario-results-dark-compact'
     Invoke-Control 'Approve This Scenario'
-    Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
-    Invoke-Control 'Approve This Scenario' -Within 'Run confirmation'
+    Wait-Control 'Scenario approval confirmation' | Out-Null
+    Wait-Control 'Test image preview' | Out-Null
+    Invoke-Control 'Approve This Scenario' -Within 'Scenario approval confirmation'
     Wait-Control 'Passed Checkout' | Out-Null
     Invoke-Control 'Runs'
     Invoke-Control 'Compare This Run'

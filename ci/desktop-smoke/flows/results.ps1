@@ -81,16 +81,27 @@ function Test-ReportApproval {
     Invoke-Control 'Results'
     Wait-Control 'Mismatch Checkout' | Out-Null
     Wait-Control 'Test 640 x 420' | Out-Null
+    Wait-Control '2 failed / 2 finished' | Out-Null
     if ($null -ne (Find-Control 'Approve This Run')) { throw 'Results still exposes whole-run approval.' }
     $sibling = Join-Path $output "bitmaps_reference/${scenario}_phone__FINAL.png"
     $siblingHash = (Get-FileHash $sibling).Hash
     Invoke-Control 'Approve This Scenario'
+    Wait-Control 'Scenario approval confirmation' | Out-Null
+    Wait-Control 'Test image preview' | Out-Null
     Wait-Control 'Run: approval-run' | Out-Null
     Wait-Control 'Viewport: desktop' | Out-Null
+    if ($null -ne (Find-Control 'Run confirmation')) { throw 'Report approval switched to Runs.' }
     Capture-Window 'approve-scenario-viewport-confirmation'
-    Invoke-Control 'Approve This Scenario' -Within 'Run confirmation'
+    Invoke-Control 'Cancel' -Within 'Scenario approval confirmation'
+    Wait-WindowState { $null -eq (Find-Control 'Scenario approval confirmation') } 'Cancel did not dismiss report approval.'
+    Wait-Control 'Test image preview' | Out-Null
+    Wait-Control '2 failed / 2 finished' | Out-Null
+    Invoke-Control 'Approve This Scenario'
+    Invoke-Control 'Approve This Scenario' -Within 'Scenario approval confirmation'
+    Wait-Control 'Test image preview' | Out-Null
     Wait-Control 'Passed Checkout' | Out-Null
     Wait-Control 'Mismatch Checkout' | Out-Null
+    Wait-Control '1 failed / 2 finished' | Out-Null
     $report = Get-Content (Join-Path $run 'report.json') -Raw | ConvertFrom-Json
     if ($report.tests.Count -ne 2 -or $report.tests[0].status -ne 'pass' -or $report.tests[1].status -ne 'fail' -or $report.tests[0].pair.diff.rawMisMatchPercentage -ne 0) {
         throw 'Scenario approval did not recalculate the complete report.'
@@ -101,5 +112,5 @@ function Test-ReportApproval {
         throw 'Approval promoted a different run than the reviewed capture.'
     }
     Capture-Window 'approve-scenario-viewport-results'
-    Write-Output 'Current-viewport approval, pinned historical run, preserved sibling baseline, and recalculated report passed native checks.'
+    Write-Output 'Inline approval/cancel stayed in Results, refreshed suite failure counts, pinned the historical run, and preserved the sibling viewport baseline.'
 }

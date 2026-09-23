@@ -279,7 +279,17 @@ impl Workbench {
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            let counts = suite.map(|suite| runs.suite_counts(&suite.output_id));
+            let counts = suite.map(|suite| {
+                // Approval can recalculate a report after its activity snapshot was saved.
+                if self.main_tab == 2
+                    && !runs.running()
+                    && let Some(counts) = self.results.read(cx).suite_counts(&suite.entry)
+                {
+                    counts
+                } else {
+                    runs.suite_counts(&suite.output_id)
+                }
+            });
             if error.is_none()
                 && let Some(counts) = &counts
             {

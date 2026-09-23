@@ -1936,33 +1936,28 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window.try_find("run-confirm").is_some()
+        window.try_find("scenario-approval-confirm").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
-            window.find("run-confirm-target").label(),
+            window.find("scenario-approval-run").label(),
             Some("Run: reviewed-run")
         );
         assert_eq!(
-            window.find("run-confirm").label(),
+            window.find("scenario-approval-confirm").label(),
             Some("Approve This Scenario")
         );
         assert_eq!(
-            window.find("run-confirm-viewport").label(),
+            window.find("scenario-approval-viewport").label(),
             Some("Viewport: desktop")
         );
-        assert_eq!(
-            window.find("run-scope").label(),
-            Some(format!("Scenarios: ui-test / {}", scenario.label).as_str())
-        );
-        assert!(
-            view.read(cx)
-                .runs
-                .read(cx)
-                .scenario_selected("ui-test", &scenario.id)
-        );
-        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        assert_eq!(view.read(cx).main_tab, 2);
+        assert!(window.try_find("run-confirm").is_none());
+        window.click("scenario-approval-cancel", cx);
+        assert!(window.try_find("scenario-approval-confirm").is_none());
+        assert_eq!(view.read(cx).main_tab, 2);
+        window.click("approve-scenario", cx);
         assert!(!view.read(cx).runs.read(cx).running());
         let path = directory.path().join("visual_tests/ui-test.tests.yaml");
         std::fs::write(
@@ -1973,7 +1968,8 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
             ),
         )
         .unwrap();
-        window.click("run-confirm", cx);
+        window.click("scenario-approval-confirm", cx);
+        assert_eq!(view.read(cx).main_tab, 2);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
@@ -1984,7 +1980,17 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
         })
     })
     .await;
-    cx.update(|cx| assert!(!view.read(cx).runs.read(cx).running()));
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert_eq!(view.read(cx).main_tab, 2);
+        assert!(
+            window
+                .find("scenario-approval-error")
+                .label()
+                .is_some_and(|label| label.contains("report's suite output changed"))
+        );
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -2275,6 +2281,58 @@ async fn suite_panel_restores_all_saved_statuses_and_keeps_them_during_other_run
             Some("1 passed")
         );
         assert_eq!(view.read(cx).runs.read(cx).progress().counts(None).total, 1);
+    })
+    .unwrap();
+
+    let report = directory
+        .path()
+        .join(".regressify/other/bitmaps_test/second-run/report.json");
+    let mut updated: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&report).unwrap()).unwrap();
+    updated["tests"][0]["status"] = "fail".into();
+    std::fs::write(&report, serde_json::to_vec(&updated).unwrap()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("workbench-tabs").click(2_usize, cx);
+        window.click(("file", indices[1]), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("report-title")
+            .is_some_and(|title| title.label() == Some("other / second-run"))
+            && window
+                .try_find(("capture", 0_usize))
+                .is_some_and(|capture| capture.label() == Some("Mismatch Home"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(
+            window.find(("suite-activity", indices[1])).label(),
+            Some("1 failed / 2 finished")
+        );
+    })
+    .unwrap();
+    updated["tests"][0]["status"] = "pass".into();
+    std::fs::write(&report, serde_json::to_vec(&updated).unwrap()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("refresh-results", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find(("capture", 0_usize))
+            .is_some_and(|capture| capture.label() == Some("Passed Home"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(
+            window.find(("suite-activity", indices[1])).label(),
+            Some("2 passed")
+        );
+        assert_eq!(
+            window.find(("suite-activity", indices[0])).label(),
+            Some("2 failed / 2 finished")
+        );
     })
     .unwrap();
 }

@@ -30,6 +30,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 ## Topic Notes
 
+- [Results review](desktop-results.md): report-versus-activity counts and in-place
+  viewport approval.
 - [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and
   headless regression checks.
 - [Deployment packaging](deployment-packaging.md): dependency-only staging,

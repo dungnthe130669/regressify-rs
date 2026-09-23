@@ -712,69 +712,42 @@ impl RunPanel {
             format!("Suites: {}", self.selected_names().join(", "))
         }
     }
-    pub(super) fn approve_report(
-        &mut self,
+    pub(super) fn report_approval_intent(
+        &self,
         report: &super::reports::ReportApproval,
-        cx: &mut Context<Self>,
-    ) {
-        if self.running() || self.disabled {
-            return;
-        }
-        let result = (|| -> Result<RunIntent> {
-            let name = report
-                .entry
-                .suite_name()
-                .ok_or_else(|| anyhow!("The report's suite is unavailable"))?;
-            let intent = RunIntent {
-                request: RunRequest {
-                    root: self
-                        .root
-                        .clone()
-                        .ok_or_else(|| anyhow!("Open a workspace first"))?,
-                    command: RunCommand::Approve,
-                    options: RunOptions {
-                        regressify_dir: display_path(&report.output),
-                        run_id: report.run_id.clone(),
-                        scenarios: vec![crate::cli::args::ScenarioFilter {
-                            suite: name.clone(),
-                            scenario: report.scenario_id.clone(),
-                        }],
-                        report_capture: Some(report.capture_key.clone()),
-                        ..Default::default()
-                    },
+    ) -> Result<RunIntent> {
+        anyhow::ensure!(
+            !self.running() && !self.disabled,
+            "Finish the active operation before approving"
+        );
+        let name = report
+            .entry
+            .suite_name()
+            .ok_or_else(|| anyhow!("The report's suite is unavailable"))?;
+        let intent = RunIntent {
+            request: RunRequest {
+                root: self
+                    .root
+                    .clone()
+                    .ok_or_else(|| anyhow!("Open a workspace first"))?,
+                command: RunCommand::Approve,
+                options: RunOptions {
+                    regressify_dir: display_path(&report.output),
+                    run_id: report.run_id.clone(),
+                    scenarios: vec![crate::cli::args::ScenarioFilter {
+                        suite: name.clone(),
+                        scenario: report.scenario_id.clone(),
+                    }],
+                    report_capture: Some(report.capture_key.clone()),
+                    ..Default::default()
                 },
-                suite_names: vec![name],
-                expected_output_ids: Some(vec![report.suite_id.clone()]),
-                review_after_run: true,
-            };
-            intent.resolve(&self.suites)?;
-            Ok(intent)
-        })();
-        match result {
-            Ok(intent) => {
-                let mut selection = SuiteSelection::default();
-                for suite in self
-                    .suites
-                    .iter()
-                    .filter(|suite| intent.suite_names.contains(&suite.name))
-                {
-                    let selected = selection.toggle_scenario(suite, &report.scenario_id, true);
-                    if let Err(error) = selected {
-                        self.status = format!("{error:#}");
-                        cx.notify();
-                        return;
-                    }
-                }
-                self.selection = selection;
-                cx.emit(RunEvent::SelectionChanged);
-                self.command = RunCommand::Approve;
-                self.pending_request = Some(intent);
-                self.confirmation = true;
-                self.tab = 0;
-            }
-            Err(error) => self.status = format!("{error:#}"),
-        }
-        cx.notify();
+            },
+            suite_names: vec![name],
+            expected_output_ids: Some(vec![report.suite_id.clone()]),
+            review_after_run: false,
+        };
+        intent.resolve(&self.suites)?;
+        Ok(intent)
     }
     pub(super) fn selected_names(&self) -> Vec<String> {
         self.suites
@@ -1649,11 +1622,7 @@ impl Render for RunPanel {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(if intent.request.options.report_capture.is_some() {
-                                                "Replace this scenario's reference images for this viewport only?"
-                                            } else {
-                                                intent.request.command.confirmation_message()
-                                            }),
+                                            .child(intent.request.command.confirmation_message()),
                                     )
                                     .child(div().text_sm().child(
                                         if intent.request.command.supports_suites() {
@@ -1673,18 +1642,7 @@ impl Render for RunPanel {
                                                     .options
                                                     .output_directory(&intent.request.root),
                                             )),
-                                    )
-                                    .when_some(intent.request.options.report_capture.as_ref(), |details, capture| {
-                                        let viewport = intent.request.options.scenarios.first()
-                                            .and_then(|scenario| capture.strip_prefix(&scenario.scenario))
-                                            .and_then(|suffix| suffix.split_once("__"))
-                                            .map(|(viewport, _)| viewport.trim_start_matches('_'))
-                                            .unwrap_or("Unknown");
-                                        let label = format!("Viewport: {}", if viewport.is_empty() { "Default" } else { viewport });
-                                        details.child(div().id("run-confirm-viewport")
-                                            .role(Role::Status).aria_label(label.clone()).test_support()
-                                            .text_sm().child(label))
-                                    }),
+                                    ),
                             )
                             .child(
                                 div()
@@ -1719,11 +1677,7 @@ impl Render for RunPanel {
                             .child(
                                 Button::new("run-confirm")
                                     .danger()
-                                    .label(if intent.request.options.report_capture.is_some() {
-                                        "Approve This Scenario"
-                                    } else {
-                                        self.command.action_label()
-                                    })
+                                    .label(self.command.action_label())
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.confirmation
                                             && !this.disabled

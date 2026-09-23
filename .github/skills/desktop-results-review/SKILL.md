@@ -15,8 +15,9 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 1. Keep captured human labels separate from immutable capture keys/scenario IDs. Legacy missing metadata is unavailable, not evidence of a pass or zero difference.
 1. Diff dimension offsets are signed test-minus-reference pixels. Preserve raw referenceUrl versus replaced test url; do not share a display URL fallback.
 1. Inventory successful baselines and actual captures, not directories or generated diffs. Select latest captures by the existing metadata/time rules, not lexical UUID.
-1. Results exposes Approve This Scenario for the current viewport, never whole-run approval. Pin the output root, suite, run, scenario, and capture key. Revalidate identity and confirm the viewport before promotion; keep whole-run approval in Runs.
-1. Reopen the same report after scoped approval and recompute its complete original scope, including unapproved failures, without recapturing or changing thresholds.
+1. Results exposes Approve This Scenario for the current viewport, never whole-run approval. Pin the output root, suite, run, scenario, and capture key. Confirm inline in the comparison and retain draft/preflight guards without switching to Runs. Dismiss pending approval on capture changes or refresh; keep whole-run approval in Runs.
+1. Refresh the currently viewed report in place after scoped approval, preserving capture/filter/view state and its output root. Recompute its complete original scope, including unapproved failures, without recapturing or changing thresholds; show approval errors in Results.
+1. Idle Results suite badges use the loaded report's scenario/viewport totals, not stale Activity history or raw screenshot counts. Keep live execution counts while a worker is running.
 1. Keep expensive image/file loading off the UI thread and reject stale completion after selection changes. Own popup menus/subscriptions without retained cycles.
 
 ## Checks

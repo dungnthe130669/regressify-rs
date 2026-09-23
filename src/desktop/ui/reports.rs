@@ -334,6 +334,8 @@ pub(super) struct ResultsPanel {
     generation: u64,
     preferred_run: Option<String>,
     preferred_reports: Option<Vec<(String, String)>>,
+    approval_confirmation: bool,
+    approval_error: Option<String>,
     disabled: bool,
 }
 
@@ -371,6 +373,8 @@ impl ResultsPanel {
     }
 
     fn reset_view(&mut self) {
+        self.approval_confirmation = false;
+        self.approval_error = None;
         self.image_menu = None;
         self.preview_views = Default::default();
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
@@ -409,8 +413,37 @@ impl ResultsPanel {
     pub(super) fn set_disabled(&mut self, disabled: bool, cx: &mut Context<Self>) {
         if self.disabled != disabled {
             self.disabled = disabled;
+            if disabled {
+                self.approval_confirmation = false;
+            }
             cx.notify();
         }
+    }
+
+    pub(super) fn approval_failed(&mut self, error: String, cx: &mut Context<Self>) {
+        self.approval_confirmation = false;
+        self.approval_error = Some(error);
+        cx.notify();
+    }
+
+    pub(super) fn approval_finished(
+        &mut self,
+        outcome: Option<&crate::desktop::runner::RunOutcome>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::desktop::runner::RunOutcome;
+
+        if let Some(root) = self.root.clone() {
+            self.refresh(root, window, cx);
+        }
+        self.approval_error = match outcome {
+            Some(RunOutcome::Completed) => None,
+            Some(RunOutcome::Failed(error)) => Some(format!("Approval failed: {error}")),
+            Some(RunOutcome::Cancelled) => Some("Approval cancelled".into()),
+            None => Some("Approval did not complete".into()),
+        };
+        cx.notify();
     }
 
     pub(super) fn show_run(
@@ -470,6 +503,16 @@ impl ResultsPanel {
 
     pub(super) fn active_suite(&self) -> Option<&PathBuf> {
         self.active_suite.as_ref()
+    }
+
+    pub(super) fn suite_counts(&self, entry: &Entry) -> Option<crate::progress::Counts> {
+        self.catalog.reports.iter().find_map(|report| {
+            report
+                .source
+                .as_ref()
+                .filter(|source| source.path == entry.path)
+                .map(|_| report.report.scenario_counts())
+        })
     }
 
     pub(super) fn select_suite(
@@ -588,6 +631,8 @@ impl ResultsPanel {
             generation: 0,
             preferred_run: None,
             preferred_reports: None,
+            approval_confirmation: false,
+            approval_error: None,
             disabled: false,
         }
     }
@@ -734,6 +779,7 @@ impl ResultsPanel {
     }
 
     fn reset_previews(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
+        self.approval_confirmation = false;
         self.image_menu = None;
         self.image_task = None;
         self.image_loading = false;
@@ -1917,13 +1963,72 @@ impl ResultsPanel {
                             .label("Approve This Scenario")
                             .tooltip("Promote this scenario's successful captures for this viewport only and recalculate the report")
                             .disabled(self.disabled || self.loading || self.image_loading || approval.is_none())
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                if let Some(approval) = &approval {
-                                    cx.emit(ResultEvent::ApproveRun(approval.clone()));
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if !this.disabled && !this.loading && !this.image_loading && this.selected_approval().is_some() {
+                                    this.approval_confirmation = true;
+                                    this.approval_error = None;
+                                    cx.notify();
                                 }
                             })),
                     ),
             )
+            .when_some(approval.filter(|_| self.approval_confirmation), |comparison, approval| {
+                let viewport = approval.capture_key.strip_prefix(&approval.scenario_id)
+                    .and_then(|suffix| suffix.split_once("__"))
+                    .map(|(viewport, _)| viewport.trim_start_matches('_'))
+                    .filter(|viewport| !viewport.is_empty())
+                    .unwrap_or("Default");
+                comparison.child(
+                    div()
+                        .id("scenario-approval-confirmation")
+                        .role(Role::Group)
+                        .aria_label("Scenario approval confirmation")
+                        .test_support()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .flex_shrink_0()
+                        .gap_2()
+                        .px_3()
+                        .py_2()
+                        .bg(cx.theme().warning.opacity(0.12))
+                        .child(div().flex().flex_col().flex_1().min_w_0().gap_1()
+                            .child(div().text_sm().child("Replace this scenario's baseline for this viewport only?"))
+                            .child(div().text_xs().min_w_0().truncate().child(
+                                test.map(|test| test.pair.display.title.clone()).unwrap_or_default()
+                            ))
+                            .child(div().id("scenario-approval-viewport").role(Role::Status)
+                                .aria_label(format!("Viewport: {viewport}")).test_support()
+                                .text_xs().child(format!("Viewport: {viewport}")))
+                            .child(div().id("scenario-approval-run").role(Role::Status)
+                                .aria_label(format!("Run: {}", approval.run_id)).test_support()
+                                .text_xs().min_w_0().truncate().child(format!("Run: {}", approval.run_id))))
+                        .child(Button::new("scenario-approval-cancel").small().label("Cancel")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.approval_confirmation = false;
+                                cx.notify();
+                            })))
+                        .child(Button::new("scenario-approval-confirm").small().danger()
+                            .icon(gpui_kit::assets::IconName::Check)
+                            .label("Approve This Scenario")
+                            .disabled(self.disabled || self.loading || self.image_loading)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                if this.approval_confirmation && !this.disabled && !this.loading && !this.image_loading
+                                    && let Some(approval) = this.selected_approval()
+                                {
+                                    this.approval_confirmation = false;
+                                    cx.emit(ResultEvent::ApproveRun(approval));
+                                    cx.notify();
+                                }
+                            })))
+                )
+            })
+            .children(self.approval_error.as_ref().map(|error| {
+                div().id("scenario-approval-error").role(Role::Alert)
+                    .aria_label(error.clone()).test_support()
+                    .flex_shrink_0().px_3().py_2().text_sm()
+                    .text_color(cx.theme().danger).child(error.clone())
+            }))
             .child(
                 div()
                     .id("image-toolbar")
@@ -2245,6 +2350,196 @@ mod pointer_tests {
 
     #[cfg(feature = "gui-tests")]
     #[gpui_kit::test]
+    async fn approval_completion_preserves_comparison_and_updates_suite_counts(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+        use crate::progress::{Event, LiveProgress, Record};
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let (results, runs, scenario_id, suite_index) = cx.update(|cx| {
+            let editor = view.read(cx);
+            (
+                editor.results.clone(),
+                editor.runs.clone(),
+                editor.session.suites[0].scenarios[0].id.clone(),
+                editor
+                    .session
+                    .entries
+                    .iter()
+                    .position(|entry| entry.suite_name().as_deref() == Some("ui-test"))
+                    .unwrap(),
+            )
+        });
+        let output = directory.path().join("review-output");
+        let suite = output.join("ui-test");
+        let run = suite.join("bitmaps_test/reviewed");
+        let reference = suite.join("bitmaps_reference");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(&reference).unwrap();
+        let mut metadata = serde_json::Map::new();
+        for viewport in ["desktop", "phone"] {
+            let key = format!("{scenario_id}_{viewport}__FINAL");
+            lodepng::encode32_file(run.join(format!("{key}.png")), &[200_u8, 20, 30, 255], 1, 1)
+                .unwrap();
+            lodepng::encode32_file(
+                reference.join(format!("{key}.png")),
+                &[10_u8, 20, 30, 255],
+                1,
+                1,
+            )
+            .unwrap();
+            metadata.insert(key, serde_json::json!({
+                "scenarioId": scenario_id, "scenarioLabel": "Checkout",
+                "referenceUrl": "https://production.example.test", "url": "https://staging.example.test",
+            }));
+        }
+        std::fs::write(
+            run.join(".report-urls.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "captures": metadata,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::compare::report_gen::generate_comparison_report(
+            &suite, "ui-test", "reviewed", 0.1, 1,
+        )
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |editor, _| editor.main_tab = 2);
+            runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root: directory.path().canonicalize().unwrap(),
+                    command: RunCommand::Test,
+                    options: RunOptions {
+                        suites: vec!["ui-test".into()],
+                        ..Default::default()
+                    },
+                });
+                panel.manager.progress = LiveProgress::default();
+                for viewport in ["desktop", "phone"] {
+                    panel.manager.progress.apply(Record {
+                        version: 1,
+                        elapsed_ms: 1,
+                        event: Event::Compared {
+                            suite_id: "ui-test".into(),
+                            capture: format!("{scenario_id}_{viewport}__FINAL"),
+                            label: "Checkout".into(),
+                            scenario_id: Some(scenario_id.clone()),
+                            passed: false,
+                            error: Some("Visual mismatch".into()),
+                        },
+                    });
+                }
+                panel.manager.progress.end(false, None);
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                cx.notify();
+            });
+            let suites = view.read(cx).session.suites.clone();
+            results.update(cx, |panel, cx| {
+                panel.set_suites(suites);
+                panel.show_run(output.clone(), "reviewed".into(), window, cx);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.capture == Some(0) && !panel.image_loading && !panel.previews.is_empty()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(
+                window.find(("suite-activity", suite_index)).label(),
+                Some("2 failed / 2 finished")
+            );
+            window.click(("capture", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.capture == Some(1) && !panel.image_loading
+        })
+        .await;
+        let request = cx
+            .update_window(handle.into(), |_, window, cx| {
+                window.within("image-modes").click(1_usize, cx);
+                window.click("actual-size", cx);
+                window.click("zoom-in", cx);
+                window.click("approve-scenario", cx);
+                assert_eq!(view.read(cx).main_tab, 2);
+                assert_eq!(
+                    window.find("scenario-approval-viewport").label(),
+                    Some("Viewport: phone")
+                );
+                let approval = results.read(cx).selected_approval().unwrap();
+                let intent = runs.read(cx).report_approval_intent(&approval).unwrap();
+                assert!(!intent.review_after_run);
+                window.click("scenario-approval-cancel", cx);
+                intent.resolve(&view.read(cx).session.suites).unwrap()
+            })
+            .unwrap();
+        crate::compare::report_gen::approve_scenario_viewport(
+            &suite,
+            "reviewed",
+            &scenario_id,
+            &format!("{scenario_id}_phone__FINAL"),
+        )
+        .unwrap();
+        cx.update(|cx| {
+            runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(request);
+                panel.manager.progress = LiveProgress::default();
+                panel.manager.progress.end(false, None);
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                cx.emit(crate::desktop::ui::runs::RunEvent::Finished);
+            })
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window
+                .try_find(("suite-activity", suite_index))
+                .is_some_and(|status| status.label() == Some("1 failed / 2 finished"))
+                && window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(view.read(cx).main_tab, 2);
+            assert_eq!(results.read(cx).capture, Some(1));
+            assert_eq!(results.read(cx).root.as_ref(), Some(&output));
+            assert_eq!(
+                window.within("image-modes").find(1_usize).selected(),
+                Some(true)
+            );
+            assert_eq!(window.find("zoom-value").label(), Some("110%"));
+            assert_eq!(
+                window.find(("capture", 1_usize)).label(),
+                Some("Passed Checkout")
+            );
+            runs.update(cx, |panel, cx| {
+                panel.manager.outcome =
+                    Some(RunOutcome::Failed("Report could not be written".into()));
+                cx.emit(crate::desktop::ui::runs::RunEvent::Finished);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window
+                .try_find("scenario-approval-error")
+                .is_some_and(|error| {
+                    error.label() == Some("Approval failed: Report could not be written")
+                })
+                && window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update(|cx| assert_eq!(view.read(cx).main_tab, 2));
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
     async fn scenario_approval_tracks_viewport_and_rejects_unavailable_captures(
         cx: &mut gpui_kit::TestAppContext,
     ) {
@@ -2314,6 +2609,7 @@ mod pointer_tests {
                 results.update(cx, |panel, cx| panel.select_capture(index, window, cx));
                 if index != 0 {
                     assert!(results.read(cx).selected_approval().is_none());
+                    assert!(!results.read(cx).approval_confirmation);
                 }
             })
             .unwrap();
@@ -2334,9 +2630,24 @@ mod pointer_tests {
                         format!("{scenario_id}_{viewport}__FINAL")
                     );
                     assert_eq!(approval.run_id, "reviewed");
+                    window.click("approve-scenario", cx);
+                    assert_eq!(view.read(cx).main_tab, 2);
+                    assert!(window.try_find("scenario-approval-confirm").is_some());
+                    assert_eq!(
+                        window.find("scenario-approval-viewport").label(),
+                        Some(format!("Viewport: {viewport}").as_str())
+                    );
+                    if index == 0 {
+                        results.update(cx, |panel, cx| panel.set_disabled(true, cx));
+                        window.render_frame(cx);
+                        assert!(window.try_find("scenario-approval-confirm").is_none());
+                        results.update(cx, |panel, cx| panel.set_disabled(false, cx));
+                        window.click("approve-scenario", cx);
+                    }
                 } else {
                     window.click("approve-scenario", cx);
                     assert_eq!(view.read(cx).main_tab, 2);
+                    assert!(window.try_find("scenario-approval-confirm").is_none());
                 }
             })
             .unwrap();

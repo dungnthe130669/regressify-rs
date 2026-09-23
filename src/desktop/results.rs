@@ -45,7 +45,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn scenario_counts(&self) -> crate::progress::Counts {
+    pub(super) fn scenario_counts(&self) -> crate::progress::Counts {
         let mut scenarios = std::collections::BTreeMap::new();
         for test in &self.tests {
             let capture = test.pair.capture_key();

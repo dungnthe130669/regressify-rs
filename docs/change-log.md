@@ -31,9 +31,6 @@ This page records notable updates to the testing docs, which is much faster than
 ## 2024-12-04
 
 - Added: Test suite - [ignoreSslErrors](@/optimizely-cms/testing/create-test-suite.md#spoiler--ignoresslerrors)
-
-## 2024-12-04
-
 - Added: Test suite - [viewportNames](@/optimizely-cms/testing/create-test-suite.md#spoiler--viewportnames)
 - Updated: Scenario - [viewportNames](@/optimizely-cms/testing/create-scenario.md#spoiler--viewportnames) - Allow both `string` and `string[]`
 
