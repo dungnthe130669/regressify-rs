@@ -5526,7 +5526,9 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         "id": "ui-test", "tests": [
             {"status": "fail", "pair": {"label": "First viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
             {"status": "fail", "pair": {"label": "Second viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
-            {"status": "pass", "pair": {"label": "Other scenario", "scenarioId": "second", "reference": image, "test": image}}
+            {"status": "pass", "pair": {"label": "Other scenario", "scenarioId": "second", "reference": image, "test": image}},
+            {"status": "pass", "pair": {"label": "Legacy capture", "reference": image, "test": image}},
+            {"status": "pass", "pair": {"label": "Empty scenario ID", "scenarioId": "", "reference": image, "test": image}}
         ]
     })).unwrap()).unwrap();
     let (handle, _) = editor(cx, directory.path());
@@ -5540,6 +5542,10 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("image-modes").find(3_usize).selected(),
+            Some(true)
+        );
         for mode in 0..4 {
             window.within("image-modes").click(mode, cx);
             assert_eq!(window.find("fit-image").checked(), Some(true));
@@ -5571,7 +5577,7 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
             assert_eq!(window.find("zoom-value").label(), Some(label));
             assert_eq!(window.find("fit-width").checked(), Some(index == 0));
         }
-        window.within("image-modes").click(3_usize, cx);
+        window.within("image-modes").click(2_usize, cx);
         window.click("refresh-results", cx);
     })
     .unwrap();
@@ -5579,16 +5585,28 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         window.try_find(("image-details", 2_usize)).is_some()
     })
     .await;
+    cx.update_window(handle.into(), |_, window, _| {
+        assert_eq!(
+            window.within("image-modes").find(2_usize).selected(),
+            Some(true)
+        );
+    })
+    .unwrap();
     for capture in [0_usize, 1] {
         cx.update_window(handle.into(), |_, window, cx| {
+            window.within("image-modes").click(1_usize, cx);
             window.click(("capture", capture), cx);
         })
         .unwrap();
         cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
-            window.try_find(("image-details", 2_usize)).is_some()
+            window.try_find(("image-details", 1_usize)).is_some()
         })
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(
+                window.within("image-modes").find(1_usize).selected(),
+                Some(true)
+            );
             for (mode, label) in [(0_usize, "100%"), (1, "110%"), (2, "90%"), (3, "150%")] {
                 window.within("image-modes").click(mode, cx);
                 assert_eq!(window.find("fit-width").checked(), Some(mode == 0));
@@ -5598,14 +5616,24 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         })
         .unwrap();
     }
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.click(("capture", 2_usize), cx);
-    })
-    .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
-        window.try_find(("image-details", 1_usize)).is_some()
-    })
-    .await;
+    for (mode, capture) in [(0_usize, 2_usize), (1, 0), (2, 2), (0, 3), (1, 4), (2, 2)] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("image-modes").click(mode, cx);
+            window.click(("capture", capture), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, _| {
+            assert_eq!(
+                window.within("image-modes").find(3_usize).selected(),
+                Some(true)
+            );
+        })
+        .unwrap();
+    }
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.try_find(("image-scroll", 2_usize)).is_none());
         window.click(("image-content", 0_usize), cx);

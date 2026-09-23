@@ -1080,6 +1080,10 @@ explicit run requests exclude unrelated reports before applying the discovery
 limit of 1,000 report reads, limited to 16 MiB each.
 
 Reference, Test, Diff, and Side by side display background-loaded PNGs.
+Side by side is selected by default and whenever a different scenario is selected.
+Switching between captures of the same scenario or refreshing its report preserves
+the selected tab. Legacy reports without scenario IDs return to Side by side for
+each different capture.
 Fit and zoom controls sit to the right of these tabs on the same toolbar.
 Fit area is enabled by default and uses the smaller width/height scale so the
 entire image is visible, capped at 100% to keep small images at their original size.

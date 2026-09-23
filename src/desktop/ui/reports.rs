@@ -565,7 +565,7 @@ impl ResultsPanel {
             visible_captures: Vec::new(),
             filter: 0,
             capture_scroll: Default::default(),
-            image_mode: 1,
+            image_mode: 3,
             preview_views: Default::default(),
             preview_scenario: None,
             visible: false,
@@ -773,6 +773,7 @@ impl ResultsPanel {
             ("Diff", test.pair.diff_image.clone()),
         ];
         if self.preview_scenario.as_ref() != Some(&scenario) {
+            self.image_mode = 3;
             self.reset_view();
             self.preview_scenario = Some(scenario);
         }
