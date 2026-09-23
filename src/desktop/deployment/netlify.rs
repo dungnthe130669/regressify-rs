@@ -60,6 +60,7 @@ pub struct NetlifyClient {
     authorization: HeaderValue,
     backoff: Duration,
     poll_interval: Duration,
+    read_timeout: Duration,
     deadline: Duration,
 }
 
@@ -82,6 +83,7 @@ impl NetlifyClient {
             authorization,
             backoff: Duration::from_secs(1),
             poll_interval: Duration::from_secs(5),
+            read_timeout: Duration::from_secs(30),
             deadline: Duration::from_secs(60 * 60),
         })
     }
@@ -93,12 +95,16 @@ impl NetlifyClient {
                 .client
                 .get(url.clone())
                 .header(AUTHORIZATION, self.authorization.clone())
-                .timeout(Duration::from_secs(30))
+                .timeout(self.read_timeout)
                 .send()
                 .await;
             let mut retry_after = None;
             let error = match response {
-                Ok(response) if response.status().is_success() => return read_json(response).await,
+                Ok(response) if response.status().is_success() => match read_json(response).await {
+                    Ok(value) => return Ok(value),
+                    Err(error) if error.is::<ResponseBodyError>() => error,
+                    Err(error) => return Err(error),
+                },
                 Ok(response) => {
                     let status = response.status();
                     retry_after = response
@@ -118,10 +124,15 @@ impl NetlifyClient {
                     }
                     error
                 }
+                Err(error) if error.is_timeout() => {
+                    anyhow!("Netlify read request timed out before receiving response headers")
+                }
                 Err(_) => anyhow!("Cannot reach Netlify; check your connection and try again"),
             };
             if attempt == 5 {
-                return Err(error);
+                bail!(
+                    "Netlify read request failed after 6 attempts: {error}; check your connection, proxy, or firewall and try again"
+                );
             }
             let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
             phase(&format!(
@@ -736,11 +747,38 @@ async fn read_json<Response: DeserializeOwned>(response: reqwest::Response) -> R
         .map_err(|_| anyhow!("Invalid Netlify response"))
 }
 
+#[derive(Debug)]
+struct ResponseBodyError {
+    timed_out: bool,
+    received: usize,
+}
+
+impl std::fmt::Display for ResponseBodyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = if self.timed_out {
+            "timed out"
+        } else {
+            "was interrupted"
+        };
+        write!(
+            formatter,
+            "Netlify response body {reason} after receiving {} bytes",
+            self.received
+        )
+    }
+}
+
+impl std::error::Error for ResponseBodyError {}
+
 async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|_| anyhow!("Cannot read Netlify response"))?;
+        // Keep retry classification without exposing reqwest's URL or provider content.
+        let chunk = chunk.map_err(|error| ResponseBodyError {
+            timed_out: error.is_timeout(),
+            received: bytes.len(),
+        })?;
         ensure!(
             bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES,
             "Netlify response exceeds 2 MiB"
@@ -824,6 +862,96 @@ mod tests {
         client.backoff = Duration::from_millis(1);
         client.poll_interval = Duration::from_millis(1);
         client
+    }
+
+    #[tokio::test]
+    async fn read_requests_retry_interrupted_response_bodies() -> Result<()> {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+
+        for (stalled, recovers) in [(false, true), (false, false), (true, true), (true, false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let origin = format!("http://{}", listener.local_addr()?);
+            let requests = Arc::new(AtomicUsize::new(0));
+            let attempts = requests.clone();
+            let server = tokio::spawn(async move {
+                for attempt in 0..6 {
+                    let (socket, _) = listener.accept().await?;
+                    let mut socket = BufReader::new(socket);
+                    let mut request_line = String::new();
+                    socket.read_line(&mut request_line).await?;
+                    ensure!(
+                        request_line.starts_with("GET "),
+                        "Response fixture only accepts reads"
+                    );
+                    loop {
+                        let mut line = String::new();
+                        ensure!(
+                            socket.read_line(&mut line).await? != 0,
+                            "Missing test request headers"
+                        );
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                    let complete = recovers && attempt > 0;
+                    let body = if complete {
+                        json!({"id":SITE_ID}).to_string()
+                    } else {
+                        format!("{{\"token\":\"{TOKEN}\"")
+                    };
+                    let length = body.len() + if complete { 0 } else { 100 };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n{body}"
+                    );
+                    socket.get_mut().write_all(response.as_bytes()).await?;
+                    if stalled && !complete {
+                        // Keep the body incomplete until the client times out and closes it.
+                        let mut buffer = [0];
+                        let _ = socket.read(&mut buffer).await;
+                    }
+                    socket.get_mut().shutdown().await?;
+                    if complete {
+                        break;
+                    }
+                }
+                Ok::<_, anyhow::Error>(())
+            });
+            let mut client = client(&origin);
+            assert_eq!(client.read_timeout, Duration::from_secs(30));
+            client.read_timeout = Duration::from_millis(250);
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                client.get::<Site>(&format!("sites/{SITE_ID}?token={TOKEN}")),
+            )
+            .await;
+            server.abort();
+            let _ = server.await;
+            let result = result?;
+            if recovers {
+                assert_eq!(result?.id, SITE_ID);
+                assert_eq!(requests.load(Ordering::SeqCst), 2);
+            } else {
+                let error = result.err().context("Expected response body failure")?;
+                let message = format!("{error:#}");
+                assert!(message.contains("after 6 attempts"), "{message}");
+                assert!(
+                    message.contains(if stalled {
+                        "body timed out"
+                    } else {
+                        "body was interrupted"
+                    }),
+                    "{message}"
+                );
+                assert!(message.contains("after receiving"), "{message}");
+                assert!(
+                    !message.contains(TOKEN) && !message.contains(&origin),
+                    "{message}"
+                );
+                assert_eq!(requests.load(Ordering::SeqCst), 6);
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

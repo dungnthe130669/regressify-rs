@@ -14,6 +14,12 @@ Verified: 2026-09-23
   cannot safely be retried automatically. Reqwest can wrap stream read failures
   as transport errors rather than `is_body()`, so an explicit read-failure flag
   prevents retries of changed or unreadable staged files.
+- Safe GET retries include reading successful response bodies. In v0.29.0 the
+  early return from `read_json` skipped retries after headers arrived. A typed
+  `ResponseBodyError` now distinguishes timeout/interruption without retaining
+  raw URLs or content; malformed JSON and oversized bodies remain non-retryable.
+  `read_requests_retry_interrupted_response_bodies` covers recovery and six-attempt
+  exhaustion for both truncated and stalled responses using loopback sockets.
 - Each active file is sampled every 60 seconds. Unchanged counts warn without
   canceling. Sent bytes measure local body consumption, not provider acceptance;
   accepted file/byte totals exclude retries. Stop cancels only the local worker.

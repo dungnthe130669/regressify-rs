@@ -391,7 +391,14 @@ and a 16 MiB manifest; it bounds API response bodies to 2 MiB. File paths and
 content are revalidated when uploading. Authentication, permanent HTTP errors,
 and changed or unreadable staged files fail without automatic retries. File
 uploads and read/poll requests retry transient errors up to six attempts with
-bounded backoff and numeric Retry-After support. Deployment creation is not
+bounded backoff and numeric Retry-After support. Site validation and status reads
+also retry timed-out or interrupted response bodies after successful HTTP headers;
+malformed JSON and oversized bodies still fail immediately. Retry logs distinguish
+response-body timeouts from interruptions, report received byte counts without
+response content, and identify when all six attempts are exhausted. A failure
+during `Validating Netlify deployment target` occurs before any report upload;
+if it persists, check the connection, proxy/firewall, and Netlify's service status.
+Deployment creation is not
 automatically retried because a failed response may still have created a deploy.
 Check Netlify's deploy history before retrying a failed or canceled deployment.
 Locked production deploys and Git-only production restrictions are reported

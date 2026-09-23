@@ -71,6 +71,7 @@ it was risk-focused, not an exhaustive security certification.
   checks pass, including completion, clipboard operations, saves, and preference
   restoration; [headless checks](ci/test-desktop-smoke.ps1) cover key-event generation.
 - Netlify uses asynchronous digest manifests and uploads only missing content, with four concurrent file requests and bounded per-file retries. The one-hour deadline and periodic stall warnings remain; deployment creation is never automatically retried. Live publication and unchanged-content reuse were verified with a synthetic report.
+- Netlify site validation and status reads now retry interrupted or timed-out response bodies after successful headers instead of exiting with `Cannot read Netlify response`. Loopback tests verify recovery, six-attempt exhaustion, and redacted timeout/interruption diagnostics; malformed or oversized responses still fail immediately.
 - Results approval confirms inline for the current scenario/viewport, refreshes suite failure counts from the recalculated report, and stays in Results; whole-run approval remains in Runs.
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.
