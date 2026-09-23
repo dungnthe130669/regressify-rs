@@ -28,7 +28,7 @@ const LOG_QUEUE_CAPACITY: usize = 256;
 const MAX_LOG_CHUNK: usize = 16 * 1024;
 const MAX_LOG_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SAVED_RUN_BYTES: u64 = 32 * 1024 * 1024;
-const SAVED_RUN_VERSION: u8 = 1;
+const SAVED_RUN_VERSION: u8 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -163,9 +163,9 @@ pub struct RunOptions {
     pub async_compare_limit: usize,
     pub speed: u8,
     pub min_size_kb: u64,
-    pub title: String,
-    pub heading: String,
-    pub subheading: String,
+    pub title: Option<String>,
+    pub heading: Option<String>,
+    pub subheading: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -191,9 +191,9 @@ impl Default for RunOptions {
             async_compare_limit: 2,
             speed: 8,
             min_size_kb: 50,
-            title: "Visual Tests Summary | Regressify".into(),
-            heading: "Visual Tests Summary".into(),
-            subheading: "Snapshot regression test results".into(),
+            title: None,
+            heading: None,
+            subheading: None,
         }
     }
 }
@@ -356,7 +356,9 @@ impl RunRequest {
                 ("--heading", &options.heading),
                 ("--subheading", &options.subheading),
             ] {
-                arguments.extend([flag.into(), value.into()]);
+                if let Some(value) = value {
+                    arguments.extend([flag.into(), value.into()]);
+                }
             }
         }
         // Validate with the real clap parser before starting a child process.
@@ -435,8 +437,31 @@ impl RunSnapshot {
             bytes.len() as u64 <= MAX_SAVED_RUN_BYTES,
             "Saved run activity exceeds the 32 MiB limit"
         );
-        let snapshot: Self =
+        let mut snapshot: Self =
             serde_json::from_slice(&bytes).context("Invalid saved run activity")?;
+        if snapshot.version == 1 {
+            // Version 1 persisted prefilled text as overrides. Only migrate that
+            // format so new explicit values equal to the defaults survive.
+            for (value, default) in [
+                (
+                    &mut snapshot.request.options.title,
+                    "Visual Tests Summary | Regressify",
+                ),
+                (
+                    &mut snapshot.request.options.heading,
+                    "Visual Tests Summary",
+                ),
+                (
+                    &mut snapshot.request.options.subheading,
+                    "Snapshot regression test results",
+                ),
+            ] {
+                if value.as_deref() == Some(default) {
+                    *value = None;
+                }
+            }
+            snapshot.version = SAVED_RUN_VERSION;
+        }
         snapshot.validate()?;
         ensure!(
             snapshot.request.root.canonicalize()? == root.canonicalize()?,
@@ -1021,6 +1046,77 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_defaults_leave_workspace_report_text_unset_in_cli() {
+        let request = RunRequest {
+            root: "QA workspace".into(),
+            command: RunCommand::Snapshot,
+            options: RunOptions::default(),
+        };
+        let crate::cli::Command::Snapshot(args) = request.cli().unwrap().command else {
+            panic!("Expected snapshot command");
+        };
+        assert!(args.title.is_none());
+        assert!(args.heading.is_none());
+        assert!(args.subheading.is_none());
+    }
+
+    #[test]
+    fn snapshot_and_deploy_report_text_options_preserve_explicit_overrides() {
+        use crate::desktop::deployment::{DeployTarget, DeploymentJob, DeploymentProvider};
+        use serde_json::json;
+
+        for (command, provider) in [
+            (RunCommand::Snapshot, DeploymentProvider::AzureSwa),
+            (RunCommand::Deploy, DeploymentProvider::AzureSwa),
+            (RunCommand::Deploy, DeploymentProvider::Netlify),
+        ] {
+            for options in [
+                json!({}),
+                json!({"title": null, "heading": null, "subheading": null}),
+                json!({"title": "Project report"}),
+                json!({"heading": "Project summary", "subheading": "**Staging** results"}),
+                json!({
+                    "title": "Visual Tests Summary | Regressify",
+                    "heading": "Visual Tests Summary",
+                    "subheading": "Snapshot regression test results"
+                }),
+                json!({"title": "", "heading": "", "subheading": ""}),
+            ] {
+                let mut request = request(command);
+                request.options = serde_json::from_value(options).unwrap();
+                if command == RunCommand::Deploy {
+                    request.options.suites = vec!["shop".into()];
+                    request.options.deployment = Some(DeploymentJob {
+                        target: DeployTarget {
+                            id: "test".into(),
+                            name: "Test".into(),
+                            credential_id: None,
+                            environment: String::new(),
+                            provider,
+                            site_id: if provider == DeploymentProvider::Netlify {
+                                "11111111-2222-4333-8444-555555555555".into()
+                            } else {
+                                String::new()
+                            },
+                        },
+                        suite_ids: vec!["shop".into()],
+                        catalog_ids: vec!["shop".into()],
+                        partial_confirmed: false,
+                    });
+                }
+                let request: RunRequest =
+                    serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+                let crate::cli::Command::Snapshot(args) = request.cli().unwrap().command else {
+                    panic!("Expected snapshot command");
+                };
+                assert_eq!(args.title, request.options.title);
+                assert_eq!(args.heading, request.options.heading);
+                assert_eq!(args.subheading, request.options.subheading);
+            }
+        }
+    }
+
+    #[test]
     fn saved_reports_recover_the_latest_matching_run_without_modifying_artifacts() {
         use super::super::document::DocumentKind;
         use super::super::workspace::{Entry, ScenarioSummary, SuiteSummary};
@@ -1104,6 +1200,69 @@ mod tests {
         assert!(manager.progress.logs.is_empty());
         for (path, bytes) in files {
             assert_eq!(std::fs::read(path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn saved_activity_migrates_only_legacy_report_defaults() {
+        use serde_json::json;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let path = root.join("run.json");
+        let mut manager = RunManager::default();
+        let mut request = request(RunCommand::Snapshot);
+        request.root = root.clone();
+        manager.request = Some(request);
+        manager.outcome = Some(RunOutcome::Completed);
+        manager.progress.end(false, None);
+        let snapshot = serde_json::to_value(manager.snapshot().unwrap()).unwrap();
+        let old_defaults = json!({
+            "title": "Visual Tests Summary | Regressify",
+            "heading": "Visual Tests Summary",
+            "subheading": "Snapshot regression test results"
+        });
+
+        for (version, options, expected) in [
+            (
+                1,
+                old_defaults.clone(),
+                json!({"title": null, "heading": null, "subheading": null}),
+            ),
+            (
+                1,
+                json!({
+                    "title": "Visual Tests Summary | Regressify",
+                    "heading": "Custom summary",
+                    "subheading": ""
+                }),
+                json!({"title": null, "heading": "Custom summary", "subheading": ""}),
+            ),
+            (2, old_defaults.clone(), old_defaults),
+        ] {
+            let mut saved = snapshot.clone();
+            saved["version"] = json!(version);
+            saved["request"]["options"]
+                .as_object_mut()
+                .unwrap()
+                .extend(options.as_object().unwrap().clone());
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+            let loaded = RunSnapshot::load(&path, &root).unwrap().unwrap();
+            let crate::cli::Command::Snapshot(args) = loaded.request.cli().unwrap().command else {
+                panic!("Expected snapshot command");
+            };
+            assert_eq!(args.title.as_deref(), expected["title"].as_str());
+            assert_eq!(args.heading.as_deref(), expected["heading"].as_str());
+            assert_eq!(args.subheading.as_deref(), expected["subheading"].as_str());
+            assert_eq!(loaded.version, 2);
+            manager.restore(loaded).unwrap();
+            manager.snapshot().unwrap().save(&path).unwrap();
+            let reloaded = RunSnapshot::load(&path, &root).unwrap().unwrap();
+            let options = serde_json::to_value(reloaded.request.options).unwrap();
+            for key in ["title", "heading", "subheading"] {
+                assert_eq!(options[key], expected[key]);
+            }
         }
     }
 

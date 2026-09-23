@@ -12,6 +12,7 @@ description: 'Use when changing desktop RunRequest arguments, bundled worker pro
 ## Procedure and Invariants
 
 1. Construct arguments separately and validate them with the real Clap parser before process launch. Keep command-specific option applicability consistent.
+1. Preserve omitted versus explicit report-text options for Snapshot/Deploy, including empty strings. Follow [snapshot precedence](../snapshot-command/SKILL.md); never turn desktop defaults into CLI overrides of workspace settings.
 1. Use the bundled executable's worker mode and structured stdin payload, not an unrelated CLI on PATH or a shell string. Bound and validate protocol input.
 1. Keep engine work off the UI thread. Track process, readers, event file, scratch data, and activity persistence until their actual work has completed.
 1. Cancellation must terminate and reap descendants. Check cleanup after launch, payload write, event decoding, child failure, and UI/window closure.

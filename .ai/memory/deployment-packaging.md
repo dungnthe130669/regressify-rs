@@ -6,6 +6,12 @@ Verified: 2026-09-23
   passes a fresh staging directory to either provider. Azure's optional
   [optimization copy](../../src/desktop/deployment/budget.rs) inventories only
   that staging directory, not the original output tree.
+- The [runner](../../src/desktop/runner.rs) must keep unchosen report text as
+  `None`, otherwise generated CLI flags override workspace snapshot settings.
+  Saved activity version 1 prefilled built-in text; loading it migrates those
+  strings to inheritance. Version 2 preserves explicit defaults and custom text.
+  The [worker staging test](../../tests/desktop_worker.rs) verifies configured
+  title, heading, and Markdown links in the final staged HTML without publishing.
 - [Staging](../../src/desktop/deployment.rs) reads `reference`, `test`, and
   `diffImage` from selected reports' `html_report/config.js`. Run age is not the
   criterion: referenced older-run images stay, while unreferenced current-run

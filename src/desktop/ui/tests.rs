@@ -4526,6 +4526,59 @@ async fn editor_run_test_preserves_pending_drafts_and_cancel_never_starts_a_work
 }
 
 #[gpui_kit::test]
+fn deployment_preserves_inherited_and_explicit_report_options(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
+        });
+        window.render_frame(cx);
+        window.within("run-tabs").click(2_usize, cx);
+        for key in ["title", "heading", "subheading"] {
+            assert_eq!(window.find(format!("run-field-{key}")).value(), Some(""));
+        }
+        let inherited = view
+            .update(cx, |this, cx| {
+                this.runs
+                    .update(cx, |panel, cx| panel.deployment_intent(cx))
+            })
+            .unwrap();
+        assert!(inherited.request.options.title.is_none());
+        assert!(inherited.request.options.heading.is_none());
+        assert!(inherited.request.options.subheading.is_none());
+
+        window.click("run-field-heading", cx);
+        window.input("Custom summary", cx);
+        let overridden = view
+            .update(cx, |this, cx| {
+                this.runs
+                    .update(cx, |panel, cx| panel.deployment_intent(cx))
+            })
+            .unwrap();
+        assert!(overridden.request.options.title.is_none());
+        assert_eq!(
+            overridden.request.options.heading.as_deref(),
+            Some("Custom summary")
+        );
+        assert!(overridden.request.options.subheading.is_none());
+
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        let empty = view
+            .update(cx, |this, cx| {
+                this.runs
+                    .update(cx, |panel, cx| panel.deployment_intent(cx))
+            })
+            .unwrap();
+        assert_eq!(empty.request.options.heading.as_deref(), Some(""));
+        assert!(!view.read(cx).runs.read(cx).running());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn run_settings_are_available_before_execution_and_validate_only_relevant_commands(
     cx: &mut TestAppContext,
 ) {

@@ -360,6 +360,17 @@ follows each report's `config.js`: only its reference, test, and diff PNG paths
 are included, even when they point to an older run. Entire capture folders are
 never copied.
 
+Snapshot and Deploy use `snapshotTitle`, `snapshotHeading`, and
+`snapshotSubheading` from the workspace configuration unless an explicit override
+was entered in Runs > Settings > Report. The subheading supports Markdown links.
+Untouched report fields inherit workspace values, then the built-in defaults;
+deliberately entered empty strings remain explicit overrides.
+
+Saved activity from v0.32.0 and earlier prefilled these overrides with built-in
+text. On loading that legacy activity, exact built-in strings become inherited
+values while custom text is retained. Newly saved explicit overrides, including
+values equal to the built-in defaults, are preserved when reopening the workspace.
+
 Unselected suites, unreferenced captures and diffs from any run (including the
 current run), capture metadata, unused TTF fonts, source maps, persisted
 authentication state, source YAML, and unrelated files are not uploaded. Skipped

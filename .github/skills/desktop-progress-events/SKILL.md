@@ -15,6 +15,7 @@ description: 'Use when changing structured run events, scenario counts, UI polli
 1. Bound event/log processing per UI tick; do not block on a worker-held progress mutex. Notify views only when their observable revision changes.
 1. Distinguish execution failure, cancellation, visual mismatch, capture error, and successful completion. Keep structural errors out of website-result counts.
 1. Persist only finished, supported activity for the matching workspace. Surface persistence errors and retain ownership until the write completes.
+1. Saved activity version 2 preserves optional report overrides. Loading version 1 converts only exact prefilled title/heading/subheading defaults to unset values; retain custom strings, explicit blanks, and version-2 overrides equal to defaults. Do not infer provenance from text in current-format activity.
 1. Recover reports by suite/output/run identity; do not infer successful execution logs or silently approve missing/ambiguous scenario metadata. Preserve history across later runs and different output directories.
 1. Results badges prefer the loaded report's scenario/viewport counts while idle. Approval can recalculate a report after Activity was saved; do not let that older snapshot override the report being reviewed. Retain live counts during runs.
 

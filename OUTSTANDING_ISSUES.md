@@ -63,6 +63,10 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop Snapshot and Deploy no longer pass built-in report text as explicit
+  CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
+  reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate
+  to inherited values; custom and newly saved explicit overrides are preserved.
 - Desktop update checks now continue every eight hours while windows stay open,
   with one check/download owner per user cache. Every instance observes and
   verifies the shared installer before showing its banner. Child-process and

@@ -616,6 +616,11 @@ fn mixed_report_outcomes_match_html_saved_results_and_live_totals() {
 #[test]
 fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies() {
     let workspace = tempfile::tempdir().unwrap();
+    std::fs::write(
+        workspace.path().join("regressify.yaml"),
+        "snapshotTitle: Shop Visual Test Report\nsnapshotHeading: Shop Visual Tests Summary\nsnapshotSubheading: Compare [Integration](https://integration.example.com/en) and [Preproduction](https://preproduction.example.com/en)\n",
+    )
+    .unwrap();
     let output = workspace.path().join(".regressify");
     let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
     let image = lodepng::encode32(&[20_u8, 40, 60, 255], 1, 1).unwrap();
@@ -664,6 +669,17 @@ fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies()
     let staging = workspace.path().join("staging");
     regressify::desktop::deployment::stage_reports(&output, &["shop".into()], &staging).unwrap();
     let summary = std::fs::read_to_string(staging.join("index.html")).unwrap();
+    for fragment in [
+        "<title>Shop Visual Test Report</title>",
+        "<h1>Shop Visual Tests Summary</h1>",
+        "<a href=\"https://integration.example.com/en\">Integration</a>",
+        "<a href=\"https://preproduction.example.com/en\">Preproduction</a>",
+    ] {
+        assert!(
+            summary.contains(fragment),
+            "Missing report text: {fragment}"
+        );
+    }
     assert!(summary.contains("shop/html_report/index.html"));
     assert!(!summary.contains("account/html_report/index.html"));
     for name in [
