@@ -102,16 +102,19 @@ and skips missing folders and duplicates. Windows removals are remembered until
 the workspace is explicitly reopened. Windows recent-item privacy settings and
 the available Jump List space determine whether these entries are shown.
 
-Official Windows builds check for updates at startup when due, then every eight
-hours while the app remains open, and automatically download and verify newer
-releases in the background. The check timestamp is shared across instances and
-survives restarts, so opening another workspace does not issue a duplicate check.
+Official Windows builds check for updates in the background whenever a new app
+instance opens, then every eight hours while the app remains open. Newer releases
+are automatically downloaded and verified in the background. Each startup check
+refreshes the shared check timestamp even if another instance checked recently;
+scheduled checks in long-running instances use that timestamp and eight-hour interval.
 After sleep, an overdue check runs on the next local poll. No upgrade banner,
 highlighted update button, or installation prompt appears until the entire
 installer is saved locally and matches the manifest's size and SHA-256. Network
 outages and failed preparation do not interrupt editing or announce an upgrade.
 
 Only one instance per user update cache owns checking and downloading at a time.
+If another instance owns the updater, a new instance keeps its startup check pending
+and checks after ownership becomes available, without starting concurrent work.
 Other instances poll the shared cache every five seconds without contacting the
 feed. Once the owner finishes, each instance verifies the same cached installer
 and shows its own notification; it does not download another copy. Notification
@@ -129,9 +132,10 @@ and this app's immutable HTTPS installer URLs are accepted. A missing manifest
 (404) means no release is published.
 
 Release metadata, partial downloads, and checksum retry counts are retained in
-the `updates` directory alongside desktop preferences. Automatic feed checks use
-the persisted eight-hour schedule; manual checks contact the feed immediately
-when no other instance owns preparation. Cache notifications and checksum retries
+the `updates` directory alongside desktop preferences. After startup, scheduled
+feed checks use the persisted eight-hour interval. Startup and manual checks
+contact the feed immediately when no other instance owns preparation; only manual
+checks reset pauses and checksum retry limits. Cache notifications and checksum retries
 within that interval reuse validated metadata without issuing another feed
 request. Feed failures fall back to the newest cached release if available.
 Discovering a newer release discards older partial and complete cached

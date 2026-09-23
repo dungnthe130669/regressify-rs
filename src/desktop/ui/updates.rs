@@ -16,6 +16,7 @@ pub(super) struct UpdatePanel {
     retry: Option<RetryScheduled>,
     retry_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    startup_check_pending: bool,
     lease: Option<UpdateLease>,
     pub(super) install_on_close: bool,
 }
@@ -38,6 +39,7 @@ impl Default for UpdatePanel {
             retry: None,
             retry_task: None,
             poll_task: None,
+            startup_check_pending: true,
             lease: None,
             install_on_close: false,
         }
@@ -353,6 +355,7 @@ impl Workbench {
         let Some(feed) = state.feed.clone() else {
             return;
         };
+        let startup = state.startup_check_pending;
         let prepared = state
             .prepared
             .as_ref()
@@ -376,7 +379,12 @@ impl Workbench {
         });
         let task = cx.background_executor().spawn(async move {
             let cache = cache.ok_or_else(|| anyhow!("Cannot locate the update cache"))?;
-            feed.check_shared(CURRENT_VERSION.parse()?, &cache, manual, prepared.as_ref())
+            let current = CURRENT_VERSION.parse()?;
+            if startup && !manual {
+                feed.check_on_startup(current, &cache, prepared.as_ref())
+            } else {
+                feed.check_shared(current, &cache, manual, prepared.as_ref())
+            }
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
@@ -384,6 +392,9 @@ impl Workbench {
                 let mut prepare = false;
                 this.updates.update(cx, |state, cx| {
                     state.working = false;
+                    if !matches!(&result, Ok(SharedUpdateCheck::Busy)) {
+                        state.startup_check_pending = false;
+                    }
                     state.retry = None;
                     state.retry_task = None;
                     state.message = match result {
@@ -874,6 +885,50 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    async fn startup_check_ignores_recent_shared_deadline(cx: &mut TestAppContext) {
+        use std::{
+            fs,
+            time::{SystemTime, UNIX_EPOCH},
+        };
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        let cache = directory.path().join("updates");
+        PreparedUpdate::cache_for_test(available_release(), &cache).unwrap();
+        let state_path = cache.join("state.json");
+        let mut saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        let previous_check = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(60);
+        saved["last_check_at"] = previous_check.into();
+        fs::write(&state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.preferences_path = Some(directory.path().join("preferences.json"));
+                this.updates.update(cx, |state, _| {
+                    state.feed = Some(UpdateFeed::offline_for_test("regressify").unwrap());
+                });
+                this.check_updates(window, cx);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+        let saved: serde_json::Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        assert!(saved["last_check_at"].as_u64().unwrap() > previous_check);
+        cx.update_window(handle.into(), |_, _, cx| {
+            assert!(!view.read(cx).updates.read(cx).startup_check_pending);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     async fn shared_polling_notifies_every_window_and_preserves_ready_banners(
         cx: &mut TestAppContext,
     ) {
@@ -963,6 +1018,7 @@ mod tests {
         .await;
         cx.update_window(handle.into(), |_, _, cx| {
             let state = view.read(cx).updates.read(cx);
+            assert!(state.startup_check_pending);
             assert!(state.retry.is_none());
             assert!(state.retry_task.is_none());
             assert!(!state.failed);
@@ -973,6 +1029,10 @@ mod tests {
             view.read(cx).updates.read(cx).prepared.is_some()
         })
         .await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            assert!(!view.read(cx).updates.read(cx).startup_check_pending);
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]

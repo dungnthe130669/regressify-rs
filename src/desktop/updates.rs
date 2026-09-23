@@ -197,6 +197,13 @@ pub enum SharedUpdateCheck {
     Checked(UpdateCheck, UpdateLease),
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CheckMode {
+    Scheduled,
+    Startup,
+    Manual,
+}
+
 pub struct UpdateLease {
     _lock: fs::File,
     cache: PathBuf,
@@ -441,16 +448,37 @@ impl UpdateFeed {
         manual: bool,
         prepared: Option<&Release>,
     ) -> Result<SharedUpdateCheck> {
-        self.check_shared_with(current, cache, manual, prepared, unix_timestamp(), || {
+        let mode = if manual {
+            CheckMode::Manual
+        } else {
+            CheckMode::Scheduled
+        };
+        self.check_shared_with(current, cache, mode, prepared, unix_timestamp(), || {
             self.check(current)
         })
+    }
+
+    pub fn check_on_startup(
+        &self,
+        current: Version,
+        cache: &Path,
+        prepared: Option<&Release>,
+    ) -> Result<SharedUpdateCheck> {
+        self.check_shared_with(
+            current,
+            cache,
+            CheckMode::Startup,
+            prepared,
+            unix_timestamp(),
+            || self.check(current),
+        )
     }
 
     fn check_shared_with(
         &self,
         current: Version,
         cache: &Path,
-        manual: bool,
+        mode: CheckMode,
         prepared: Option<&Release>,
         now: u64,
         check: impl FnOnce() -> Result<UpdateCheck>,
@@ -462,7 +490,9 @@ impl UpdateFeed {
             let _lock = lock_cache(cache)?;
             UpdateState::load(cache)?
         };
-        let due = manual
+        let manual = mode == CheckMode::Manual;
+        // Startup bypasses only the feed deadline, not preparation or checksum retries.
+        let due = mode != CheckMode::Scheduled
             || state.last_check_at.is_none_or(|checked| {
                 now < checked || now.saturating_sub(checked) >= CHECK_INTERVAL.as_secs()
             });
@@ -1174,9 +1204,9 @@ mod windows {
 #[cfg(test)]
 mod tests {
     use super::{
-        DownloadControl, DownloadPhase, ManifestFields, PreparedUpdate, SkippedUpdate, UpdateCheck,
-        UpdateFeed, UpdateState, Version, cached_installer, installer_name, lock_cache,
-        verify_payload,
+        CheckMode, DownloadControl, DownloadPhase, ManifestFields, PreparedUpdate, SkippedUpdate,
+        UpdateCheck, UpdateFeed, UpdateState, Version, cached_installer, installer_name,
+        lock_cache, verify_payload,
     };
     use reqwest::StatusCode;
     use sha2::{Digest, Sha256};
@@ -1206,20 +1236,36 @@ mod tests {
             Ok(UpdateCheck::Available(release.clone()))
         };
         let first = feed
-            .check_shared_with(current, cache.path(), false, None, now, check)
+            .check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now,
+                check,
+            )
             .unwrap();
         let SharedUpdateCheck::Checked(UpdateCheck::Available(_), lease) = first else {
             panic!("Expected ownership")
         };
-        assert!(matches!(
-            feed.check_shared_with(current, cache.path(), true, None, now, check)
-                .unwrap(),
-            SharedUpdateCheck::Busy
-        ));
+        for mode in [CheckMode::Scheduled, CheckMode::Startup, CheckMode::Manual] {
+            assert!(matches!(
+                feed.check_shared_with(current, cache.path(), mode, None, now, check)
+                    .unwrap(),
+                SharedUpdateCheck::Busy
+            ));
+        }
         assert_eq!(requests.get(), 1);
         drop(lease);
         let second = feed
-            .check_shared_with(current, cache.path(), false, None, now + 1, check)
+            .check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now + 1,
+                check,
+            )
             .unwrap();
         assert!(matches!(
             second,
@@ -1231,7 +1277,7 @@ mod tests {
             feed.check_shared_with(
                 current,
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 Some(&release),
                 now + CHECK_INTERVAL.as_secs() - 1,
                 check
@@ -1244,7 +1290,7 @@ mod tests {
             .check_shared_with(
                 current,
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 Some(&release),
                 now + CHECK_INTERVAL.as_secs(),
                 check,
@@ -1252,6 +1298,147 @@ mod tests {
             .unwrap();
         assert!(matches!(next, SharedUpdateCheck::Unchanged));
         assert_eq!(requests.get(), 2);
+    }
+
+    #[test]
+    fn startup_checks_refresh_recent_state_and_reschedule_all_outcomes() {
+        use super::{CHECK_INTERVAL, SharedUpdateCheck};
+        use std::cell::Cell;
+
+        for outcome in 0..4 {
+            let cache = tempfile::tempdir().unwrap();
+            let feed = UpdateFeed::new("regressify").unwrap();
+            let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+            let current = "1.0".parse().unwrap();
+            UpdateState {
+                last_check_at: Some(100),
+                ..UpdateState::default()
+            }
+            .save(cache.path())
+            .unwrap();
+            let requests = Cell::new(0);
+            let check = || {
+                requests.set(requests.get() + 1);
+                match outcome {
+                    0 => Ok(UpdateCheck::Available(release.clone())),
+                    1 => Ok(UpdateCheck::Current),
+                    2 => Ok(UpdateCheck::Unpublished),
+                    _ => Err(anyhow::anyhow!("offline")),
+                }
+            };
+            for now in [101, 102] {
+                let result = feed.check_shared_with(
+                    current,
+                    cache.path(),
+                    CheckMode::Startup,
+                    None,
+                    now,
+                    check,
+                );
+                match outcome {
+                    0 => assert!(matches!(
+                        &result,
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Available(_), _))
+                    )),
+                    1 => assert!(matches!(
+                        &result,
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Current, _))
+                    )),
+                    2 => assert!(matches!(
+                        &result,
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Unpublished, _))
+                    )),
+                    _ => assert!(result.is_err()),
+                }
+                drop(result);
+                assert_eq!(
+                    UpdateState::load(cache.path()).unwrap().last_check_at,
+                    Some(now)
+                );
+            }
+            assert_eq!(requests.get(), 2);
+            let prepared = (outcome == 0).then_some(&release);
+            let next_check = 102 + CHECK_INTERVAL.as_secs();
+            assert!(matches!(
+                feed.check_shared_with(
+                    current,
+                    cache.path(),
+                    CheckMode::Scheduled,
+                    prepared,
+                    next_check - 1,
+                    || panic!("Scheduled check ran before eight hours")
+                )
+                .unwrap(),
+                SharedUpdateCheck::Unchanged
+            ));
+            drop(feed.check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                prepared,
+                next_check,
+                check,
+            ));
+            assert_eq!(requests.get(), 3);
+            assert_eq!(
+                UpdateState::load(cache.path()).unwrap().last_check_at,
+                Some(next_check)
+            );
+        }
+    }
+
+    #[test]
+    fn startup_checks_preserve_pause_checksum_backoff_and_skipped_versions() {
+        use super::{CHECK_INTERVAL, RetryScheduled, SharedUpdateCheck};
+        use std::cell::Cell;
+
+        for restriction in 0..3 {
+            let cache = tempfile::tempdir().unwrap();
+            let feed = UpdateFeed::new("regressify").unwrap();
+            let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+            let now = super::unix_timestamp();
+            let mut state = UpdateState {
+                release: Some(ManifestFields::from(&release)),
+                last_check_at: Some(now),
+                ..UpdateState::default()
+            };
+            match restriction {
+                0 => state.preparation_retry_at = Some(now + CHECK_INTERVAL.as_secs()),
+                1 => {
+                    state.hash_failures = 1;
+                    state.next_retry_at = Some(now + 7200);
+                }
+                _ => {
+                    state.hash_failures = 4;
+                    state.skipped_version = Some(release.version.to_string());
+                }
+            }
+            state.save(cache.path()).unwrap();
+            let requested = Cell::new(false);
+            let result = feed.check_shared_with(
+                "1.0".parse().unwrap(),
+                cache.path(),
+                CheckMode::Startup,
+                None,
+                now + 1,
+                || {
+                    requested.set(true);
+                    Ok(UpdateCheck::Available(release.clone()))
+                },
+            );
+            assert!(requested.get());
+            match restriction {
+                0 => assert!(matches!(result, Ok(SharedUpdateCheck::Unchanged))),
+                1 => assert!(result.is_err_and(|error| error.is::<RetryScheduled>())),
+                _ => assert!(result.is_err_and(|error| error.is::<SkippedUpdate>())),
+            }
+            let saved = UpdateState::load(cache.path()).unwrap();
+            assert_eq!(saved.last_check_at, Some(now + 1));
+            assert_eq!(saved.hash_failures, state.hash_failures);
+            assert_eq!(saved.next_retry_at, state.next_retry_at);
+            assert_eq!(saved.skipped_version, state.skipped_version);
+            assert_eq!(saved.preparation_retry_at, state.preparation_retry_at);
+        }
     }
 
     #[test]
@@ -1266,17 +1453,29 @@ mod tests {
                 1 => Ok(UpdateCheck::Unpublished),
                 _ => Err(anyhow::anyhow!("offline")),
             };
-            drop(feed.check_shared_with(current, cache.path(), false, None, 100, check));
+            drop(feed.check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                100,
+                check,
+            ));
             let waiting = feed
-                .check_shared_with(current, cache.path(), false, None, 101, || {
-                    panic!("Duplicate check")
-                })
+                .check_shared_with(
+                    current,
+                    cache.path(),
+                    CheckMode::Scheduled,
+                    None,
+                    101,
+                    || panic!("Duplicate check"),
+                )
                 .unwrap();
             assert!(matches!(waiting, SharedUpdateCheck::Unchanged));
             drop(feed.check_shared_with(
                 current,
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 None,
                 100 + CHECK_INTERVAL.as_secs(),
                 check,
@@ -1284,7 +1483,7 @@ mod tests {
             drop(feed.check_shared_with(
                 current,
                 cache.path(),
-                true,
+                CheckMode::Manual,
                 None,
                 101 + CHECK_INTERVAL.as_secs(),
                 check,
@@ -1307,18 +1506,28 @@ mod tests {
         let current = "1.0".parse().unwrap();
         let now = super::unix_timestamp();
         let first = feed
-            .check_shared_with(current, cache.path(), false, None, now, || {
-                Ok(UpdateCheck::Available(release.clone()))
-            })
+            .check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now,
+                || Ok(UpdateCheck::Available(release.clone())),
+            )
             .unwrap();
         let SharedUpdateCheck::Checked(_, lease) = first else {
             panic!("Expected ownership")
         };
         drop(lease);
         let second = feed
-            .check_shared_with(current, cache.path(), false, None, now, || {
-                panic!("Duplicate feed request")
-            })
+            .check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now,
+                || panic!("Duplicate feed request"),
+            )
             .unwrap();
         let SharedUpdateCheck::Checked(_, lease) = second else {
             panic!("Expected takeover")
@@ -1332,9 +1541,14 @@ mod tests {
         assert_eq!(fs::read(&prepared.installer).unwrap(), payload);
         for _ in 0..2 {
             let checked = feed
-                .check_shared_with(current, cache.path(), false, None, now, || {
-                    panic!("Duplicate feed request")
-                })
+                .check_shared_with(
+                    current,
+                    cache.path(),
+                    CheckMode::Scheduled,
+                    None,
+                    now,
+                    || panic!("Duplicate feed request"),
+                )
                 .unwrap();
             let SharedUpdateCheck::Checked(_, lease) = checked else {
                 panic!("Expected cached release")
@@ -1352,14 +1566,19 @@ mod tests {
         assert!(failure.is_err());
         drop(lease);
         assert!(matches!(
-            feed.check_shared_with(current, cache.path(), false, None, now, || panic!(
-                "Duplicate feed request"
-            ))
+            feed.check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now,
+                || panic!("Duplicate feed request")
+            )
             .unwrap(),
             SharedUpdateCheck::Unchanged
         ));
         let manual = feed
-            .check_shared_with(current, cache.path(), true, None, now, || {
+            .check_shared_with(current, cache.path(), CheckMode::Manual, None, now, || {
                 Ok(UpdateCheck::Available(release))
             })
             .unwrap();
@@ -1382,16 +1601,21 @@ mod tests {
         let current = "1.0".parse().unwrap();
         let now = super::unix_timestamp();
         drop(
-            feed.check_shared_with(current, cache.path(), false, None, now, || {
-                Ok(UpdateCheck::Available(first.clone()))
-            })
+            feed.check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                None,
+                now,
+                || Ok(UpdateCheck::Available(first.clone())),
+            )
             .unwrap(),
         );
         let checked = feed
             .check_shared_with(
                 current,
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 Some(&first),
                 now + CHECK_INTERVAL.as_secs(),
                 || Ok(UpdateCheck::Available(next.clone())),
@@ -1405,7 +1629,7 @@ mod tests {
             .check_shared_with(
                 current,
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 Some(&first),
                 now + CHECK_INTERVAL.as_secs(),
                 || panic!("Duplicate feed request"),
@@ -1416,9 +1640,14 @@ mod tests {
         );
         drop(peer);
         drop(
-            feed.check_shared_with(current, cache.path(), false, Some(&next), now, || {
-                Ok(UpdateCheck::Available(next.clone()))
-            })
+            feed.check_shared_with(
+                current,
+                cache.path(),
+                CheckMode::Scheduled,
+                Some(&next),
+                now,
+                || Ok(UpdateCheck::Available(next.clone())),
+            )
             .unwrap(),
         );
         assert_eq!(
@@ -1508,9 +1737,14 @@ mod tests {
             );
             drop(lease);
             let checked = feed
-                .check_shared_with(current, cache.path(), false, None, now, || {
-                    panic!("Duplicate feed request")
-                })
+                .check_shared_with(
+                    current,
+                    cache.path(),
+                    CheckMode::Scheduled,
+                    None,
+                    now,
+                    || panic!("Duplicate feed request"),
+                )
                 .unwrap();
             assert_eq!(matches!(checked, SharedUpdateCheck::Unchanged), paused);
             assert_eq!(
@@ -1728,7 +1962,7 @@ mod tests {
             feed.check_shared_with(
                 "1.0".parse().unwrap(),
                 cache.path(),
-                false,
+                CheckMode::Scheduled,
                 None,
                 super::unix_timestamp(),
                 || panic!("Peer issued a feed request")

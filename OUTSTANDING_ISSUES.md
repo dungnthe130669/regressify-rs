@@ -77,10 +77,13 @@ it was risk-focused, not an exhaustive security certification.
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate
   to inherited values; custom and newly saved explicit overrides are preserved.
-- Desktop update checks now continue every eight hours while windows stay open,
-  with one check/download owner per user cache. Every instance observes and
-  verifies the shared installer before showing its banner. Child-process and
-  two-window tests cover ownership, cached reuse, pause, and shutdown takeover.
+- Desktop update checks now run in the background for every newly opened instance,
+  even inside a recent check's eight-hour window, then follow the shared eight-hour
+  schedule while windows stay open. One check/download owner per user cache
+  prevents concurrent work; startup preserves pauses and checksum retry limits.
+  Every instance verifies the shared installer before showing its banner.
+  Model and GUI tests cover startup, scheduling, ownership, cached reuse, pause,
+  and shutdown takeover.
 - Deployment staging no longer uploads unused TTF fonts. Exact-ZIP regression
   coverage confirms unreferenced old/current-run captures, diffs, source maps,
   metadata, and unselected suites are excluded without modifying source files.
