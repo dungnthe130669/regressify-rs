@@ -729,6 +729,12 @@ mod tests {
     fn explicit_empty_text_false_and_arrays_round_trip() {
         for (key, value) in [
             ("cookiePath", json!("")),
+            ("snapshotTitle", json!("")),
+            ("snapshotHeading", json!("")),
+            (
+                "snapshotSubheading",
+                json!("**Staging** regression results"),
+            ),
             ("debug", json!(false)),
             ("hideSelectors", json!([])),
             ("state", json!(["one", "two"])),

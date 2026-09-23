@@ -458,6 +458,29 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn snapshot_report_settings_accept_optional_text_and_reject_other_types() {
+        for key in ["snapshotTitle", "snapshotHeading", "snapshotSubheading"] {
+            for value in [json!(null), json!(""), json!("**Staging** <results>")] {
+                let config = json!({key: value});
+                assert!(
+                    diagnostics(DocumentKind::Workspace, &config)
+                        .unwrap()
+                        .is_empty()
+                );
+                assert!(serde_json::from_value::<WorkspaceConfig>(config).is_ok());
+            }
+            for value in [json!(5), json!(true), json!([]), json!({})] {
+                let config = json!({key: value});
+                let issues = diagnostics(DocumentKind::Workspace, &config).unwrap();
+                assert_eq!(issues.len(), 1, "{issues:?}");
+                assert_eq!(issues[0].pointer, format!("/{key}"));
+                assert!(issues[0].message.contains("text in quotes"), "{issues:?}");
+                assert!(serde_json::from_value::<WorkspaceConfig>(config).is_err());
+            }
+        }
+    }
+
+    #[test]
     fn nested_errors_name_the_field_and_repair_without_enum_noise_or_values() {
         for (value, pointer, guidance) in [
             (

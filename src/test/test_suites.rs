@@ -1403,12 +1403,7 @@ fn generate_snapshot_reports() -> Result<()> {
     progress::emit(ProgressEvent::Phase {
         name: "Generating report".into(),
     });
-    snapshot::snapshot(SnapshotArgs {
-        test_suite: Vec::new(),
-        title: "Visual Tests Summary | Regressify".to_string(),
-        heading: "Visual Tests Summary".to_string(),
-        subheading: "Snapshot regression test results".to_string(),
-    })
+    snapshot::snapshot(SnapshotArgs::default())
 }
 
 #[cfg(test)]

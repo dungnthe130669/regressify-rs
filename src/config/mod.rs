@@ -73,6 +73,15 @@ pub struct WorkspaceConfig {
     pub remove_selectors: Option<Vec<String>>,
     /// Login requirement flag exposed to ready scripts. Does not log in automatically (default: false).
     pub required_login: Option<bool>,
+    /// HTML page title for snapshot reports. Default: Visual Tests Summary | Regressify. Overridden by snapshot --title.
+    #[schemars(example = "Shop | Regressify")]
+    pub snapshot_title: Option<String>,
+    /// Heading for snapshot reports. Default: Visual Tests Summary. Overridden by snapshot --heading.
+    #[schemars(example = "Shop results")]
+    pub snapshot_heading: Option<String>,
+    /// Markdown subheading for snapshot reports. Default: Snapshot regression test results. Overridden by snapshot --subheading.
+    #[schemars(example = "**Staging** regression results")]
+    pub snapshot_subheading: Option<String>,
     /// Saved browser state name or list of names, without .json. Created by persist and loaded from the active output directory's states folder.
     #[schemars(example = "signed-in")]
     pub state: Option<Needs>,
@@ -685,6 +694,26 @@ mod tests {
             ),
             DEFAULT_ASYNC_CAPTURE_LIMIT
         );
+    }
+
+    #[test]
+    fn snapshot_report_text_loads_from_workspace_yaml() {
+        for file_name in ["regressify.yaml", "regressify.yml"] {
+            let root = tempfile::tempdir().unwrap();
+            std::fs::write(
+                root.path().join(file_name),
+                "snapshotTitle: Shop | Regressify\nsnapshotHeading: Shop results\nsnapshotSubheading: '**Staging** regression results'\n",
+            )
+            .unwrap();
+
+            let config = super::load_workspace_config(root.path()).unwrap();
+            assert_eq!(config.snapshot_title.as_deref(), Some("Shop | Regressify"));
+            assert_eq!(config.snapshot_heading.as_deref(), Some("Shop results"));
+            assert_eq!(
+                config.snapshot_subheading.as_deref(),
+                Some("**Staging** regression results")
+            );
+        }
     }
 
     #[test]

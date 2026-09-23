@@ -62,6 +62,33 @@ regressify snapshot --test-suite 'shop*' --test-suite account
 The summary contains only the selected suites. Excluded suite reports and
 capture directories are not rewritten or cleaned up.
 
+## Snapshot Report Text
+
+Set report defaults in `regressify.yaml` (or `regressify.yml`) at the project root:
+
+```yaml
+snapshotTitle: "Shop | Regressify"
+snapshotHeading: "Shop Visual Tests"
+snapshotSubheading: "**Staging** regression results"
+```
+
+Each field resolves independently: an explicit `snapshot --title`, `--heading`,
+or `--subheading` overrides its matching workspace setting. If neither is set,
+the defaults remain `Visual Tests Summary | Regressify`, `Visual Tests Summary`,
+and `Snapshot regression test results`, respectively.
+
+`snapshotTitle` controls the HTML page title; `snapshotHeading` is the visible
+heading. Both are plain text. `snapshotSubheading` supports Markdown. An empty
+string is an explicit value, while `null` falls back to the built-in default.
+
+Workspace settings also apply to reports generated automatically by `test` and
+`ref`. Override just one setting for a standalone report without changing the
+others:
+
+```bash
+regressify snapshot --heading "Release Candidate Results"
+```
+
 ## Individual Scenarios
 
 `test` and `ref` accept repeated `--scenario <suite>:<scenario-id>` flags:

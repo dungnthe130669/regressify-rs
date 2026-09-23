@@ -3,6 +3,7 @@ use colored::*;
 use std::path::Path;
 
 use crate::cli::args::SnapshotArgs;
+use crate::config::WorkspaceConfig;
 use crate::helpers::{IOExtensions, write_file_atomically};
 use crate::snapshot::helpers::get_asset_version;
 use crate::types::HtmlReportSummary;
@@ -12,6 +13,7 @@ pub fn generate_html_report_summary(
     tera: &tera::Tera,
     summaries: &[HtmlReportSummary],
     args: &SnapshotArgs,
+    workspace_config: &WorkspaceConfig,
 ) -> Result<()> {
     let mut total_tests = 0;
     let mut total_passed = 0;
@@ -47,10 +49,25 @@ pub fn generate_html_report_summary(
     context.insert("passed_class", passed_class);
     context.insert("failed_class", failed_class);
 
-    context.insert("title", &args.title);
-    context.insert("heading", &args.heading);
+    let title = args
+        .title
+        .as_deref()
+        .or(workspace_config.snapshot_title.as_deref())
+        .unwrap_or("Visual Tests Summary | Regressify");
+    let heading = args
+        .heading
+        .as_deref()
+        .or(workspace_config.snapshot_heading.as_deref())
+        .unwrap_or("Visual Tests Summary");
+    let subheading_markdown = args
+        .subheading
+        .as_deref()
+        .or(workspace_config.snapshot_subheading.as_deref())
+        .unwrap_or("Snapshot regression test results");
+    context.insert("title", title);
+    context.insert("heading", heading);
 
-    let parser = pulldown_cmark::Parser::new(&args.subheading);
+    let parser = pulldown_cmark::Parser::new(subheading_markdown);
     let mut subheading = String::new();
     pulldown_cmark::html::push_html(&mut subheading, parser);
     context.insert("subheading", subheading.trim());
@@ -199,6 +216,109 @@ mod tests {
     use super::*;
 
     #[test]
+    fn snapshot_report_text_respects_cli_workspace_and_default_precedence() {
+        use crate::cli::{Cli, Command};
+        use crate::config::load_workspace_config;
+        use clap::Parser;
+
+        let defaults = [
+            "Visual Tests Summary | Regressify",
+            "Visual Tests Summary",
+            "<p>Snapshot regression test results</p>",
+        ];
+        let workspace_yaml = "snapshotTitle: 'Shop <report>'\nsnapshotHeading: 'Shop & results'\nsnapshotSubheading: '**Staging** regression results'\n";
+        let configured = [
+            "Shop &lt;report&gt;",
+            "Shop &amp; results",
+            "<p><strong>Staging</strong> regression results</p>",
+        ];
+        let cases = [
+            (None, vec![], defaults),
+            (Some(workspace_yaml), vec![], configured),
+            (
+                Some("snapshotHeading: Only heading\n"),
+                vec!["--title", "Only title"],
+                ["Only title", "Only heading", defaults[2]],
+            ),
+            (
+                Some(workspace_yaml),
+                vec!["--title", "CLI <report>"],
+                ["CLI &lt;report&gt;", configured[1], configured[2]],
+            ),
+            (
+                Some(workspace_yaml),
+                vec!["--heading", "CLI & summary"],
+                [configured[0], "CLI &amp; summary", configured[2]],
+            ),
+            (
+                Some(workspace_yaml),
+                vec!["--subheading", "*CLI* notes"],
+                [configured[0], configured[1], "<p><em>CLI</em> notes</p>"],
+            ),
+            (
+                Some(workspace_yaml),
+                vec![
+                    "--title",
+                    defaults[0],
+                    "--heading",
+                    defaults[1],
+                    "--subheading",
+                    "Snapshot regression test results",
+                ],
+                defaults,
+            ),
+            (
+                Some(workspace_yaml),
+                vec!["--title", "", "--heading", "", "--subheading", ""],
+                ["", "", ""],
+            ),
+            (
+                Some("snapshotTitle: ''\nsnapshotHeading: ''\nsnapshotSubheading: ''\n"),
+                vec![],
+                ["", "", ""],
+            ),
+            (
+                Some("snapshotTitle: null\nsnapshotHeading: null\nsnapshotSubheading: null\n"),
+                vec![],
+                defaults,
+            ),
+        ];
+        let mut tera = tera::Tera::default();
+        tera.add_raw_template(
+            "report_template.html",
+            include_str!("data/report_template.html"),
+        )
+        .unwrap();
+
+        for (workspace_yaml, overrides, expected) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            if let Some(workspace_yaml) = workspace_yaml {
+                std::fs::write(directory.path().join("regressify.yaml"), workspace_yaml).unwrap();
+            }
+            let workspace_config = load_workspace_config(directory.path()).unwrap();
+            let mut arguments = vec!["regressify", "snapshot"];
+            arguments.extend(overrides);
+            let Command::Snapshot(args) = Cli::try_parse_from(arguments).unwrap().command else {
+                panic!("Expected snapshot command");
+            };
+            generate_html_report_summary(directory.path(), &tera, &[], &args, &workspace_config)
+                .unwrap();
+
+            let report = std::fs::read_to_string(directory.path().join("index.html")).unwrap();
+            for fragment in [
+                format!("<title>{}</title>", expected[0]),
+                format!("<h1>{}</h1>", expected[1]),
+                format!("<div class=\"subtitle\">{}</div>", expected[2]),
+            ] {
+                assert!(
+                    report.contains(&fragment),
+                    "Missing report text: {fragment}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn netlify_headers_match_azure_configuration() {
         use std::collections::BTreeMap;
 
@@ -208,12 +328,19 @@ mod tests {
             .unwrap();
         let args = SnapshotArgs {
             test_suite: Vec::new(),
-            title: "Report".into(),
-            heading: "Summary".into(),
-            subheading: String::new(),
+            title: Some("Report".into()),
+            heading: Some("Summary".into()),
+            subheading: Some(String::new()),
         };
         std::fs::write(directory.path().join("_headers"), "stale policy").unwrap();
-        generate_html_report_summary(directory.path(), &tera, &[], &args).unwrap();
+        generate_html_report_summary(
+            directory.path(),
+            &tera,
+            &[],
+            &args,
+            &WorkspaceConfig::default(),
+        )
+        .unwrap();
 
         let config: serde_json::Value = serde_json::from_slice(
             &std::fs::read(directory.path().join("staticwebapp.config.json")).unwrap(),

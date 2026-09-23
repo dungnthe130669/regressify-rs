@@ -7,6 +7,7 @@ use crate::{
     cli::args::SnapshotArgs,
     common,
     compare::{compile_suite_filters, require_explicit_filter_match, suite_matches_filters},
+    config::load_workspace_config,
     helpers::{IOExtensions, OnceLockExtensions},
     snapshot::{
         helpers::get_asset_version,
@@ -22,6 +23,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
         bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
+    let workspace_config = load_workspace_config(common::ROOT_DIR.get_required()?)?;
     let mut summaries = Vec::new();
 
     // Using Tera template engine to render the report
@@ -55,7 +57,7 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
     }
 
     summaries.sort_by(|a, b| a.id.cmp(&b.id));
-    generate_html_report_summary(regressify_dir, &tera, &summaries, &args)?;
+    generate_html_report_summary(regressify_dir, &tera, &summaries, &args, &workspace_config)?;
     generate_shared_files(regressify_dir)?;
 
     write_shared_file(

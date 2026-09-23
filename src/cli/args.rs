@@ -41,22 +41,22 @@ pub struct OptimizeArgs {
     pub min_size_kb: u64,
 }
 
-#[derive(clap::Args)]
+#[derive(clap::Args, Default)]
 pub struct SnapshotArgs {
     #[clap(long, short = 's')]
     pub test_suite: Vec<String>,
 
-    /// The title of the report
-    #[clap(long, default_value = "Visual Tests Summary | Regressify")]
-    pub title: String,
+    /// Report title (workspace: snapshotTitle; default: Visual Tests Summary | Regressify)
+    #[clap(long)]
+    pub title: Option<String>,
 
-    /// The heading of the report
-    #[clap(long, default_value = "Visual Tests Summary")]
-    pub heading: String,
+    /// Report heading (workspace: snapshotHeading; default: Visual Tests Summary)
+    #[clap(long)]
+    pub heading: Option<String>,
 
-    /// The subheading of the report. Support Markdown.
-    #[clap(long, default_value = "Snapshot regression test results")]
-    pub subheading: String,
+    /// Markdown subheading (workspace: snapshotSubheading; default: Snapshot regression test results)
+    #[clap(long)]
+    pub subheading: Option<String>,
 }
 
 #[derive(clap::Args)]
