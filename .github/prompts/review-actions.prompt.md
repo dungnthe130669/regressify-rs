@@ -1,15 +1,15 @@
 ---
-mode: agent
-description: Review action implementations using adversarial approach to find correctness bugs
-tools:
-  - read_file
-  - grep_search
-  - semantic_search
+agent: agent
+description: 'Read-only adversarial review of browser actions, with evidence, severity, and regression-test recommendations.'
 ---
 
 # Adversarial Code Review
 
-Review the action implementation code with an adversarial mindset. Assume the code is WRONG until proven otherwise.
+Read [AGENTS.md](../../AGENTS.md), the
+[review skill](../skills/adversarial-review/SKILL.md), and the
+[action skill](../skills/implement-action/SKILL.md). Challenge the implementation
+with concrete failure hypotheses; verify callers and guards before reporting a bug.
+Do not edit source or perform destructive/external operations unless authorized.
 
 ## Review Protocol
 
@@ -31,9 +31,12 @@ For each issue found, report:
 - **Action**: Which action (click, hover, etc.)
 - **Violation**: Which real-user-behavior rule is broken
 - **Current code**: What it does wrong
+- **Trigger**: Reachable input/state and exact source location
 - **Expected behavior**: What it should do
-- **Severity**: Critical (silently wrong) / High (can fail) / Medium (edge case)
+- **Severity**: Based on impact, reachability, and existing mitigations
+- **Regression**: Smallest test that would demonstrate the defect
 
 ## Reference
 
-See `.github/skills/adversarial-review.md` for the full review methodology.
+Keep confirmed defects separate from hypotheses and existing issues. State which
+checks ran and what remains unverified, including when no findings are confirmed.

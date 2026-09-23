@@ -1,0 +1,23 @@
+name: Agent Guidance Checks
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guidance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3 rumdl==0.2.63
+      - run: rumdl check AGENTS.md OUTSTANDING_ISSUES.md .github/copilot-instructions.md .github/skills .github/prompts
+      - run: python .github/skills/maintain-agent-guidance/scripts/validate.py --self-test
+      - run: python .github/skills/maintain-agent-guidance/scripts/validate.py

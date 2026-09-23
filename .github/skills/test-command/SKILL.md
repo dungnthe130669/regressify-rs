@@ -1,0 +1,44 @@
+---
+name: test-command
+description: 'Use when changing regressify test orchestration, scenario isolation, replacements, capture concurrency, progress events, or skip-compare behavior.'
+---
+
+# Test Orchestration
+
+## Start Here
+
+[TestArgs](../../../src/cli/args.rs), [exec_test](../../../src/test/test_suites.rs),
+[scenario execution](../../../src/test/test_scenario.rs), and
+[progress events](../../../src/progress.rs).
+
+## Procedure and Invariants
+
+1. Validate configuration and selection before launching browser jobs. Keep
+   scenario/suite/output IDs distinct when translating exact selections.
+1. Test mode applies validated replacement profiles to initial, goto, and wait
+   URLs. Keep raw reference URLs in capture metadata for later review links.
+1. Bound capture concurrency and launch ramping. Isolate each job's browser and
+   profile; stop subsequent actions only within the failing scenario.
+1. Compare captured output unless `--skip-compare` is set. Missing references,
+   mismatches, and website/action failures are report results, not non-zero exits.
+1. Preserve infrastructure/artifact error classification through spawned tasks
+   and joins. A failed error-placeholder write must not masquerade as page failure.
+1. Keep progress job identities stable across intermediate/target captures; process
+   completion and visual pass/fail are different states in the desktop UI.
+
+## Checks
+
+```sh
+cargo test --lib test::test_suites::tests
+cargo test --lib test::test_suite::tests
+cargo test --lib progress::tests
+```
+
+Use local browser fixtures for sibling failure isolation, timeouts, replacements,
+and cancellation. Cover zero jobs, partial selection, and infrastructure failures.
+
+## Maintain
+
+Update [command docs](../../../docs/commands.md),
+[scenario docs](../../../docs/create-scenario.md), and this skill when orchestration
+changes. Explain non-obvious concurrency and error-classification decisions in code.

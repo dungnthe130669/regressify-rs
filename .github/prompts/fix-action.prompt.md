@@ -1,22 +1,15 @@
 ---
-mode: agent
-description: Fix or implement browser automation actions with proper real-user behavior simulation
-applyTo: 'src/test/test_action.rs'
-tools:
-  - run_in_terminal
-  - read_file
-  - replace_string_in_file
-  - grep_search
-  - semantic_search
+agent: agent
+description: 'Fix or implement a browser action with realistic interaction, a regression test, and maintained docs.'
 ---
 
 # Fix Action Implementation
 
 When working on `src/test/test_action.rs`, always apply the adversarial code review approach:
 
-1. **Read the current implementation** of the action being modified
-1. **Check against the adversarial review checklist** in `.github/skills/adversarial-review.md`
-1. **Verify all pre-action validations** are implemented per `.github/skills/implement-action.md`
+1. Read [AGENTS.md](../../AGENTS.md) and the current implementation.
+1. Use the [review skill](../skills/adversarial-review/SKILL.md) to identify a checkable failure.
+1. Follow the [action skill](../skills/implement-action/SKILL.md) and reuse its validation helpers.
 1. **Never use `.ok()` to swallow errors** — action failures fail the scenario
 1. **Never use JS `.click()` for the click action** — use CDP mouse events
 1. **Never use `panic!` or `.unwrap()` on fallible ops** — use `?` to propagate errors
@@ -29,16 +22,16 @@ When working on `src/test/test_action.rs`, always apply the adversarial code rev
 
 ## Pre-Action Validation Order (MANDATORY for interactive actions)
 
-1. Wait for element to exist (30s timeout, 100ms poll)
+1. Wait for the element using the configured deadlines and bounded polling
 1. Wait for element to be visible (non-zero bbox, not hidden)
 1. Wait for element to be stable (bbox not changing)
 1. Scroll element into viewport
 1. Check element is not obscured (elementFromPoint)
 1. Check element is enabled (form controls)
 
-## Reference
+## Completion
 
-- Implementation guide: `.github/skills/implement-action.md`
-- Adversarial review: `.github/skills/adversarial-review.md`
-- CDP patterns: `.github/skills/chromiumoxide-patterns.md`
-- Node.js reference: `~/git/regressify-ts/.engine_scripts/playwright/actions.js`
+Add a regression test that fails before the fix, run the focused checks, and
+maintain action docs/examples and the relevant skill. Explain non-obvious event
+or platform decisions with concise comments. Consult the
+[CDP skill](../skills/chromiumoxide-patterns/SKILL.md) for browser ownership changes.

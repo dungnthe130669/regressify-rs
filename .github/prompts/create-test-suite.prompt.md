@@ -1,18 +1,13 @@
 ---
-mode: agent
-description: Create new test suite YAML files or modify existing ones
-tools:
-  - read_file
-  - create_file
-  - replace_string_in_file
-  - list_dir
+agent: agent
+description: 'Create or modify visual test suites using the maintained schema and suite-authoring skill.'
 ---
 
 # Create/Modify Test Suite
 
 When creating or modifying test suites in `visual_tests/`:
 
-1. Follow the YAML structure documented in `.github/skills/test-suites.md`
+1. Read [AGENTS.md](../../AGENTS.md) and the [suite skill](../skills/test-suites/SKILL.md).
 1. Always include a `label` for each scenario (auto-generated IDs are cryptic)
 1. Add `wait` actions after clicks that trigger navigation
 1. Use `hide` for non-deterministic content (timestamps, ads, random data)
@@ -30,7 +25,8 @@ visual_tests/{descriptive-name}.tests.yaml
 After creating/modifying, ensure:
 
 - All scenarios have unique IDs (auto-generated from label if not set)
-- URLs are valid and accessible
+- URLs are syntactically valid; contact pages only when authorized for this task
 - Selectors use valid CSS syntax
 - `frame` selectors target actual `<iframe>` elements
 - File paths in `input.file` are relative to `visual_tests/`
+- Run the skill's relevant checks and update docs/examples when behavior changes.

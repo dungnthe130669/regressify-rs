@@ -2,6 +2,65 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Open Review Findings (2026-09-23)
+
+These are unresolved findings, not implemented fixes. The review followed CLI,
+browser, desktop editor/worker, Git/deployment, and update/release boundaries;
+it was risk-focused, not an exhaustive security certification.
+
+### P1: Discard Does Not Detect Content-Only Changes After Review
+
+- Evidence: [Change](src/desktop/git.rs#L36) stores paths and Git status flags, not
+  reviewed content identities. [Discard validation](src/desktop/git.rs#L530)
+  compares only those records before restoring/deleting selected files.
+- Trigger: review an already modified or untracked file, open discard confirmation,
+  then have another editor rewrite that file without changing its status flags.
+  The current/expected comparison still succeeds and the newer edits are removed.
+- Verification: traced through the [confirmation callback](src/desktop/ui/git.rs#L659)
+  and model. Existing stale-discard coverage changes staging status; it does not
+  cover different bytes with the same status. No destructive live-workspace probe ran.
+- Repair/test: retain and revalidate reviewed content/index identities for selected
+  paths, reject changes before any mutation, and preserve all files on rejection.
+  Add tracked, untracked, and same-status staged-content regression cases in the
+  existing Git test module using temporary repositories.
+
+### P2: Process Pipe Joins Escape Timeout and Cancellation
+
+- Evidence: the [Git wait loop](src/desktop/git/process.rs#L122) stops checking its
+  deadline/cancellation when the parent exits, then unconditionally joins stdin,
+  stdout, and stderr threads while still holding the child group. The
+  [desktop worker](src/desktop/runner.rs#L693) has the same reader-join boundary.
+- Trigger: a Git hook/helper or engine descendant outlives its parent and retains
+  an inherited pipe. The reader waits for EOF; the group handle is not released,
+  and subsequent cancellation no longer reaches the finished parent wait loop.
+  Git can remain busy beyond its advertised deadline, and worker close can hang.
+- Verification: static control-flow review plus the pinned command-group 5.0.1
+  parent `try_wait` behavior. Existing cancellation tests keep the parent alive;
+  the parent-exits-first case was not executed during this review.
+- Repair/test: bound writer/reader completion and preserve cancellation/process-tree
+  cleanup until all streams close. Add a fixture whose parent exits while a child
+  retains stdout/stderr; assert bounded completion, cancellation, and no descendants.
+
+### P2: Authorization Header Values Survive Git Error Redaction
+
+- Evidence: [redact](src/desktop/git/process.rs#L167) splits on whitespace and
+  replaces only words containing a URL or the exact text `Authorization:`.
+  The following `Bearer`/`Basic` value remains in returned/displayed Git stderr.
+- Trigger: a Git hook, helper, or diagnostic emits an authorization header. Lowercase
+  header names and values on following tokens are not protected by the current rule.
+- Verification: compiled the actual redactor with a synthetic input;
+  `Authorization: Bearer synthetic-review-token` retained the synthetic token.
+  No real credential or remote response was accessed.
+- Repair/test: redact full header values case-insensitively and bound line parsing;
+  cover Bearer/Basic, mixed case, whitespace, multiline errors, URLs, and surrounding
+  safe text in the existing process tests.
+
+## Review Checks (2026-09-23)
+
+- `cargo test --features desktop --lib`: 516 passed, 9 ignored, no failures.
+- Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
+  provider/update services were not run. Test success does not resolve the gaps above.
+
 ## Resolved In September 2026 Hardening Pass
 
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
