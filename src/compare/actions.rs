@@ -10,8 +10,8 @@ use crate::{
     cli::args::{ApproveArgs, CompareArgs, ScenarioFilter},
     common,
     compare::report_gen::{
-        approve_screenshots_for_scenarios, generate_comparison_report_for_scenarios,
-        select_capture_run, validate_scenario_captures,
+        approve_scenario_viewport, approve_screenshots_for_scenarios,
+        generate_comparison_report_for_scenarios, select_capture_run, validate_scenario_captures,
     },
     helpers::OnceLockExtensions,
 };
@@ -157,12 +157,23 @@ pub fn compare(args: CompareArgs) -> Result<()> {
 /// Entry point for the `approve` CLI command.
 /// Promotes the latest test screenshots to reference images.
 pub fn approve(args: ApproveArgs) -> Result<()> {
+    if args.report_capture.is_some() {
+        anyhow::ensure!(
+            args.scenarios.len() == 1 && common::RUN_ID.get().is_some(),
+            "Report approval requires exactly one scenario and an explicit run ID"
+        );
+    }
     let runs = selected_runs(
         common::REGRESSIFY_DIR.get_required()?,
         &args.test_suite,
         &args.scenarios,
         common::RUN_ID.get().map(String::as_str),
     )?;
+    if let Some(capture) = &args.report_capture {
+        anyhow::ensure!(runs.len() == 1, "The reviewed capture run is unavailable");
+        let run = &runs[0];
+        return approve_scenario_viewport(&run.path, &run.run_id, &run.scenario_ids[0], capture);
+    }
     for run in &runs {
         eprintln!("Approving test suite: {}", run.suite_id.cyan());
         approve_screenshots_for_scenarios(&run.path, Some(&run.run_id), &run.scenario_ids)?;

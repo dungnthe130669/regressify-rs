@@ -26,6 +26,9 @@ description: 'Use when changing desktop RunRequest arguments, bundled worker pro
    joins and persistence completion for hangs beyond cancellation/deadlines.
 1. Exit zero means execution completed, not that visual tests passed. Restore
    saved activity without restarting work and validate workspace identity/version.
+1. Internal report approval carries `reportCapture` through structured options and
+   `--report-capture` through Clap. Require one suite/scenario and an explicit run;
+   clear the capture restriction when constructing a subsequent Compare request.
 
 ## Checks
 

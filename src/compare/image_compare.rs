@@ -20,7 +20,7 @@ pub struct CompareResult {
 }
 
 /// Load a PNG file as RGBA pixels.
-fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
+pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
     let (expected_width, expected_height) = read_bounded_png_dimensions(path)?;
     let mut decoder = lodepng::Decoder::new();
     decoder.color_convert(true);

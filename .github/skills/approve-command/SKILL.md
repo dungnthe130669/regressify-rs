@@ -8,7 +8,7 @@ description: 'Use when changing regressify approve, scenario-scoped baseline pro
 ## Start Here
 
 [Approve routing](../../../src/compare/actions.rs),
-[approve_screenshots_for_scenarios](../../../src/compare/report_gen.rs), and
+[scenario and viewport promotion](../../../src/compare/report_gen.rs), and
 [atomic copying](../../../src/helpers/io.rs).
 
 ## Procedure and Invariants
@@ -21,6 +21,12 @@ description: 'Use when changing regressify approve, scenario-scoped baseline pro
    complete files atomically; preserve good and unselected references.
 1. Clear stale reference error markers only after a successful replacement.
    Report failed I/O as a process error, not an approved visual result.
+1. Results approval pins one scenario and a capture key from the reviewed run.
+   Match exact scenario metadata before deriving its viewport; promote only that
+   viewport's reviewed captures. Preflight all selected PNGs before any promotion.
+1. Recalculate the original report scope with saved thresholds/order/metadata after
+   viewport approval. Keep failed siblings and unapproved viewports visible; ordinary
+   CLI/Runs approval remains separate and does not implicitly recompare.
 
 ## Checks
 

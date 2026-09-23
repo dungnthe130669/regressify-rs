@@ -153,6 +153,9 @@ pub struct RunOptions {
     pub required_login: bool,
     pub suites: Vec<String>,
     pub scenarios: Vec<ScenarioFilter>,
+    #[schemars(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub report_capture: Option<String>,
     pub fetch_browser: Option<bool>,
     pub skip_compare: bool,
     pub mis_match_threshold: f64,
@@ -180,6 +183,7 @@ impl Default for RunOptions {
             required_login: false,
             suites: Vec::new(),
             scenarios: Vec::new(),
+            report_capture: None,
             fetch_browser: None,
             skip_compare: false,
             mis_match_threshold: 0.1,
@@ -207,7 +211,7 @@ impl RunOptions {
 
     pub fn applies(key: &str, command: RunCommand) -> bool {
         match key {
-            "deployment" => false,
+            "deployment" | "reportCapture" => false,
             "suites" => command.supports_suites(),
             "scenarios" => command.supports_scenarios(),
             "fetchBrowser" | "asyncCaptureLimit" | "asyncCaptureRampMs" | "debug"
@@ -298,6 +302,17 @@ impl RunRequest {
             for scenario in &options.scenarios {
                 arguments.extend(["--scenario".into(), scenario.to_string().into()]);
             }
+        }
+        if let Some(capture) = &options.report_capture {
+            ensure!(
+                self.command == RunCommand::Approve
+                    && !options.run_id.is_empty()
+                    && !capture.is_empty()
+                    && options.scenarios.len() == 1
+                    && options.suites == [glob::Pattern::escape(&options.scenarios[0].suite)],
+                "Report approval requires the reviewed run, one suite, one scenario, and a capture"
+            );
+            arguments.extend(["--report-capture".into(), capture.into()]);
         }
         if self.command.captures()
             && let Some(fetch) = options.fetch_browser
@@ -1427,6 +1442,37 @@ mod tests {
         assert!(arguments.contains(&OsString::from("shop & checkout")));
         assert!(arguments.contains(&OsString::from("QA ; profile")));
         assert_eq!(arguments[1], request.root.as_os_str());
+    }
+
+    #[test]
+    fn report_approval_arguments_keep_the_capture_and_reject_broadened_scope() {
+        let mut request = request(RunCommand::Approve);
+        request.options.suites = vec!["shop-output".into()];
+        request.options.scenarios = vec!["shop-output:checkout".parse().unwrap()];
+        request.options.run_id = "reviewed".into();
+        request.options.report_capture = Some("checkout_mobile__$payment".into());
+        let crate::cli::Command::Approve(args) = request.cli().unwrap().command else {
+            panic!("Expected approval");
+        };
+        assert_eq!(args.report_capture, request.options.report_capture);
+        let round_trip: RunRequest =
+            serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+        assert_eq!(
+            round_trip.options.report_capture,
+            request.options.report_capture
+        );
+        request.command = RunCommand::Compare;
+        assert!(request.arguments().is_err());
+        request.command = RunCommand::Approve;
+        request
+            .options
+            .scenarios
+            .push("shop-output:other".parse().unwrap());
+        assert!(request.arguments().is_err());
+        request.options.scenarios.pop();
+        request.options.run_id.clear();
+        assert!(request.arguments().is_err());
+        assert!(!RunOptions::applies("reportCapture", RunCommand::Approve));
     }
 
     #[test]

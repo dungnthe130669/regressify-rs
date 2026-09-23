@@ -95,6 +95,7 @@ impl RunIntent {
             }
         }
         request.command = RunCommand::Compare;
+        request.options.report_capture = None;
         Ok(Self {
             request,
             suite_names: executed_suites
@@ -734,20 +735,17 @@ impl RunPanel {
                     options: RunOptions {
                         regressify_dir: display_path(&report.output),
                         run_id: report.run_id.clone(),
-                        scenarios: report
-                            .scenario_ids
-                            .iter()
-                            .map(|id| crate::cli::args::ScenarioFilter {
-                                suite: name.clone(),
-                                scenario: id.clone(),
-                            })
-                            .collect(),
+                        scenarios: vec![crate::cli::args::ScenarioFilter {
+                            suite: name.clone(),
+                            scenario: report.scenario_id.clone(),
+                        }],
+                        report_capture: Some(report.capture_key.clone()),
                         ..Default::default()
                     },
                 },
                 suite_names: vec![name],
                 expected_output_ids: Some(vec![report.suite_id.clone()]),
-                review_after_run: false,
+                review_after_run: true,
             };
             intent.resolve(&self.suites)?;
             Ok(intent)
@@ -760,14 +758,7 @@ impl RunPanel {
                     .iter()
                     .filter(|suite| intent.suite_names.contains(&suite.name))
                 {
-                    let selected = if report.scenario_ids.is_empty() {
-                        selection.toggle(suite, true)
-                    } else {
-                        report
-                            .scenario_ids
-                            .iter()
-                            .try_for_each(|id| selection.toggle_scenario(suite, id, true))
-                    };
+                    let selected = selection.toggle_scenario(suite, &report.scenario_id, true);
                     if let Err(error) = selected {
                         self.status = format!("{error:#}");
                         cx.notify();
@@ -1658,7 +1649,11 @@ impl Render for RunPanel {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .child(intent.request.command.confirmation_message()),
+                                            .child(if intent.request.options.report_capture.is_some() {
+                                                "Replace this scenario's reference images for this viewport only?"
+                                            } else {
+                                                intent.request.command.confirmation_message()
+                                            }),
                                     )
                                     .child(div().text_sm().child(
                                         if intent.request.command.supports_suites() {
@@ -1678,7 +1673,18 @@ impl Render for RunPanel {
                                                     .options
                                                     .output_directory(&intent.request.root),
                                             )),
-                                    ),
+                                    )
+                                    .when_some(intent.request.options.report_capture.as_ref(), |details, capture| {
+                                        let viewport = intent.request.options.scenarios.first()
+                                            .and_then(|scenario| capture.strip_prefix(&scenario.scenario))
+                                            .and_then(|suffix| suffix.split_once("__"))
+                                            .map(|(viewport, _)| viewport.trim_start_matches('_'))
+                                            .unwrap_or("Unknown");
+                                        let label = format!("Viewport: {}", if viewport.is_empty() { "Default" } else { viewport });
+                                        details.child(div().id("run-confirm-viewport")
+                                            .role(Role::Status).aria_label(label.clone()).test_support()
+                                            .text_sm().child(label))
+                                    }),
                             )
                             .child(
                                 div()
@@ -1713,7 +1719,11 @@ impl Render for RunPanel {
                             .child(
                                 Button::new("run-confirm")
                                     .danger()
-                                    .label(self.command.action_label())
+                                    .label(if intent.request.options.report_capture.is_some() {
+                                        "Approve This Scenario"
+                                    } else {
+                                        self.command.action_label()
+                                    })
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         if this.confirmation
                                             && !this.disabled

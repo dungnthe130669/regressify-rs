@@ -143,6 +143,9 @@ pub struct ApproveArgs {
     /// Approve only this exact <suite-output-id>:<scenario-id> from capture metadata
     #[clap(long = "scenario")]
     pub scenarios: Vec<ScenarioFilter>,
+
+    #[clap(long, hide = true, requires = "scenarios")]
+    pub report_capture: Option<String>,
 }
 
 fn speed_parser(s: &str) -> Result<u8, String> {
@@ -277,6 +280,49 @@ mod tests {
         }
         for value in ["home", ":home", "shop:", "shop: "] {
             assert!(value.parse::<super::ScenarioFilter>().is_err());
+        }
+    }
+
+    #[test]
+    fn report_capture_approval_requires_a_scenario() {
+        use crate::cli::{Command, root::Cli};
+        use clap::Parser;
+
+        let parsed = Cli::try_parse_from([
+            "regressify",
+            "--run-id",
+            "reviewed",
+            "approve",
+            "--scenario",
+            "shop:checkout",
+            "--report-capture",
+            "checkout_mobile__FINAL",
+        ])
+        .unwrap();
+        let Command::Approve(args) = parsed.command else {
+            panic!("Expected approval")
+        };
+        assert_eq!(
+            args.report_capture.as_deref(),
+            Some("checkout_mobile__FINAL")
+        );
+        for arguments in [
+            vec![
+                "regressify",
+                "approve",
+                "--report-capture",
+                "checkout_mobile__FINAL",
+            ],
+            vec![
+                "regressify",
+                "--run-id",
+                "reviewed",
+                "approve",
+                "--report-capture",
+                "checkout_mobile__FINAL",
+            ],
+        ] {
+            assert!(Cli::try_parse_from(arguments).is_err());
         }
     }
 

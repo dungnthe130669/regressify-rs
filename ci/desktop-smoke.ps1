@@ -989,8 +989,55 @@ public static class RegressifySmokeZoomKeys {
     Capture-Window 'comparison-empty-suite'
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Test 1280 x 1800' | Out-Null
+    Test-ReportApproval
     Test-ErrorImageFlows
     Write-Output 'Three-pane Results, fit modes, image-tab navigation, pointer-centered zoom, drag panning, linked scrolling, and crosshairs passed native checks in light/dark desktop and compact windows.'
+}
+
+function Test-ReportApproval {
+    $run = Join-Path $output 'bitmaps_test/approval-run'
+    $scenario = '8ac900fea19642cc0000'
+    $captures = [ordered]@{}
+    $tests = @()
+    foreach ($viewport in @('desktop', 'phone')) {
+        $key = "${scenario}_${viewport}__FINAL"
+        Write-TestImage (Join-Path $output "bitmaps_reference/$key.png") ([System.Drawing.Color]::Teal)
+        Write-TestImage (Join-Path $run "$key.png") ([System.Drawing.Color]::RoyalBlue)
+        Write-TestImage (Join-Path $output "bitmaps_test/zz-newer-run/$key.png") ([System.Drawing.Color]::OrangeRed)
+        $captures[$key] = @{ scenarioId = $scenario; scenarioLabel = 'Checkout'; referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout' }
+        $tests += @{ status = 'fail'; pair = @{
+            label = 'Checkout'; scenarioId = $scenario; scenarioLabel = 'Checkout'; selector = 'document'
+            referenceUrl = 'https://example.com/checkout'; url = 'https://staging.example.com/checkout'
+            fileName = "$key.png"; reference = "../bitmaps_reference/$key.png"; test = "../bitmaps_test/approval-run/$key.png"; misMatchThreshold = 0.1
+        } }
+    }
+    Write-JsonFixture (Join-Path $run '.report-urls.json') @{ version = 1; captures = $captures }
+    Write-JsonFixture (Join-Path $run 'report.json') @{ id = 'smoke'; testSuite = 'smoke'; tests = $tests }
+    Invoke-Control 'Editor'
+    Invoke-Control 'Results'
+    Wait-Control 'Mismatch Checkout' | Out-Null
+    Wait-Control 'Test 640 x 420' | Out-Null
+    if ($null -ne (Find-Control 'Approve This Run')) { throw 'Results still exposes whole-run approval.' }
+    $sibling = Join-Path $output "bitmaps_reference/${scenario}_phone__FINAL.png"
+    $siblingHash = (Get-FileHash $sibling).Hash
+    Invoke-Control 'Approve This Scenario'
+    Wait-Control 'Run: approval-run' | Out-Null
+    Wait-Control 'Viewport: desktop' | Out-Null
+    Capture-Window 'approve-scenario-viewport-confirmation'
+    Invoke-Control 'Approve This Scenario' -Within 'Run confirmation'
+    Wait-Control 'Passed Checkout' | Out-Null
+    Wait-Control 'Mismatch Checkout' | Out-Null
+    $report = Get-Content (Join-Path $run 'report.json') -Raw | ConvertFrom-Json
+    if ($report.tests.Count -ne 2 -or $report.tests[0].status -ne 'pass' -or $report.tests[1].status -ne 'fail' -or $report.tests[0].pair.diff.rawMisMatchPercentage -ne 0) {
+        throw 'Scenario approval did not recalculate the complete report.'
+    }
+    if ((Get-FileHash $sibling).Hash -ne $siblingHash) { throw 'Approval changed another viewport baseline.' }
+    $approved = Join-Path $output "bitmaps_reference/${scenario}_desktop__FINAL.png"
+    if ((Get-FileHash $approved).Hash -ne (Get-FileHash (Join-Path $run "${scenario}_desktop__FINAL.png")).Hash) {
+        throw 'Approval promoted a different run than the reviewed capture.'
+    }
+    Capture-Window 'approve-scenario-viewport-results'
+    Write-Output 'Current-viewport approval, pinned historical run, preserved sibling baseline, and recalculated report passed native checks.'
 }
 
 function Test-ErrorImageFlows {
@@ -1226,12 +1273,13 @@ function Test-ScenarioFlows {
     Wait-Control 'Run log' | Out-Null
     Invoke-Control 'Back to Activity'
     Invoke-Control 'Open Report'
-    Wait-Control 'Approve This Run' | Out-Null
+    Wait-Control 'Approve This Scenario' | Out-Null
     Capture-Window 'scenario-results-dark-compact'
-    Invoke-Control 'Approve This Run'
+    Invoke-Control 'Approve This Scenario'
     Wait-Control 'Scenarios: smoke / Checkout' | Out-Null
-    Invoke-Control 'Approve Results' -Within 'Run confirmation'
-    Wait-Control 'Reference images updated' | Out-Null
+    Invoke-Control 'Approve This Scenario' -Within 'Run confirmation'
+    Wait-Control 'Passed Checkout' | Out-Null
+    Invoke-Control 'Runs'
     Invoke-Control 'Compare This Run'
     Wait-Control 'Last run: Compare Results' | Out-Null
     Wait-Control 'Completed' | Out-Null
@@ -1529,7 +1577,7 @@ function Test-TitlebarFlows {
     Invoke-Control 'Runs' -Pointer
     Wait-Control 'Run settings' | Out-Null
     Invoke-Control 'Results' -Pointer
-    Wait-Control 'Approve This Run' | Out-Null
+    Wait-Control 'Approve This Scenario' | Out-Null
     Invoke-Control 'Editor' -Pointer
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Run Suite Reference' | Out-Null
@@ -2172,22 +2220,7 @@ try {
     Capture-Window 'editor-compact'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
-    Wait-Control 'Approve This Run' | Out-Null
-    $reviewedImage = Join-Path $output 'bitmaps_test/smoke-run/checkout.png'
-    Write-TestImage (Join-Path $output 'bitmaps_test/zz-newer-run/checkout.png') ([System.Drawing.Color]::OrangeRed)
-    Invoke-Control 'Approve This Run'
-    Wait-Control 'Run: smoke-run' | Out-Null
-    Capture-Window 'approve-reviewed-run'
-    Invoke-Control 'Approve Results' -Within 'Run confirmation'
-    Wait-Control 'Reference images updated' | Out-Null
-    if ((Get-FileHash (Join-Path $output 'bitmaps_reference/checkout.png')).Hash -ne (Get-FileHash $reviewedImage).Hash) {
-        throw 'Report approval used the newer directory instead of the viewed run.'
-    }
-    Invoke-Control 'Compare This Run'
-    Wait-Control 'Last run: Compare Results' | Out-Null
-    Wait-Control 'Completed' | Out-Null
-    Wait-Control '1 passed' | Out-Null
-    Capture-Window 'reviewed-run-compared'
+    Test-ReportApproval
     Invoke-Control 'Runs'
     Invoke-Control 'Suites'
     Invoke-Control 'Select all'
@@ -2238,7 +2271,7 @@ try {
             }
         }
         Invoke-Control 'Open Report'
-        Wait-Control 'Approve This Run' | Out-Null
+        Wait-Control 'Approve This Scenario' | Out-Null
         Capture-Window 'completed-run-results'
         Invoke-Control 'Runs'
         $siblingReferences = @(Get-ChildItem (Join-Path $workspace '.regressify') -Recurse -Filter '*.png' |

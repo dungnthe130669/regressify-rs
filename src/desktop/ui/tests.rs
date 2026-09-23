@@ -1913,8 +1913,10 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
         .path()
         .join(".regressify/ui-test/bitmaps_test/reviewed-run");
     std::fs::create_dir_all(&run).unwrap();
+    let filename = format!("{}_desktop__FINAL.png", scenario.id);
+    lodepng::encode32_file(run.join(&filename), &[30_u8, 150, 180, 255], 1, 1).unwrap();
     std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [
-        {"status": "fail", "pair": {"label": "Checkout", "scenarioId": scenario.id, "scenarioLabel": "Checkout", "test": "../bitmaps_test/reviewed-run/checkout.png"}}
+        {"status": "fail", "pair": {"label": "Checkout", "scenarioId": scenario.id, "scenarioLabel": "Checkout", "fileName": filename, "test": format!("../bitmaps_test/reviewed-run/{filename}")}}
     ]})).unwrap()).unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
@@ -1925,10 +1927,12 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
         window
             .try_find("capture-heading")
             .is_some_and(|heading| heading.label() == Some("Checkout"))
+            && window.try_find(("image-details", 1_usize)).is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        window.click("approve-report", cx)
+        assert!(window.try_find("approve-report").is_none());
+        window.click("approve-scenario", cx)
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -1940,7 +1944,14 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
             window.find("run-confirm-target").label(),
             Some("Run: reviewed-run")
         );
-        assert_eq!(window.find("run-confirm").label(), Some("Approve Results"));
+        assert_eq!(
+            window.find("run-confirm").label(),
+            Some("Approve This Scenario")
+        );
+        assert_eq!(
+            window.find("run-confirm-viewport").label(),
+            Some("Viewport: desktop")
+        );
         assert_eq!(
             window.find("run-scope").label(),
             Some(format!("Scenarios: ui-test / {}", scenario.label).as_str())
@@ -5023,7 +5034,7 @@ async fn results_suite_navigation_is_isolated_and_preserves_drafts_during_refres
         assert_eq!(window.find("capture-heading").label(), Some("Comparison"));
         assert!(window.try_find(("capture", 0_usize)).is_none());
         assert!(window.try_find(("image-details", 1_usize)).is_none());
-        window.click("approve-report", cx);
+        window.click("approve-scenario", cx);
         assert_eq!(view.read(cx).main_tab, 2);
         let original = view
             .read(cx)

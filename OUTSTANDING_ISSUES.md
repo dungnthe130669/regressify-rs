@@ -63,6 +63,7 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Results approval is limited to the current scenario/viewport and recalculates the original report; whole-run approval remains in Runs.
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.
 - Report regeneration ignores generated diffs and clears stale diff artifacts when a pair becomes a pass.

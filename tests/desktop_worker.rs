@@ -789,3 +789,97 @@ fn bundled_worker_scopes_scenarios_and_preflights_all_approvals() {
     assert_eq!(report["tests"].as_array().unwrap().len(), 1);
     assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
 }
+
+#[test]
+fn bundled_worker_approves_one_report_viewport_and_recalculates_full_scope() {
+    let workspace = tempfile::tempdir().unwrap();
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let output = workspace.path().join("review-output/shop");
+    let baseline = output.join("bitmaps_reference");
+    std::fs::create_dir_all(&baseline).unwrap();
+    let reference = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    let current = lodepng::encode32(&[200_u8, 20, 30, 255], 1, 1).unwrap();
+    let newer = lodepng::encode32(&[70_u8, 20, 30, 255], 1, 1).unwrap();
+    for (run_id, png) in [("reviewed-run", &current), ("zz-newer-run", &newer)] {
+        let run = output.join("bitmaps_test").join(run_id);
+        std::fs::create_dir_all(&run).unwrap();
+        let mut metadata = serde_json::Map::new();
+        for (key, scenario) in [
+            ("home_desktop__FINAL", "home"),
+            ("home_desktop__$saved", "home"),
+            ("home_mobile__FINAL", "home"),
+            ("other_desktop__FINAL", "other"),
+            ("hidden_desktop__FINAL", "hidden"),
+        ] {
+            std::fs::write(baseline.join(format!("{key}.png")), &reference).unwrap();
+            std::fs::write(run.join(format!("{key}.png")), png).unwrap();
+            metadata.insert(key.into(), serde_json::json!({
+                "scenarioId": scenario, "scenarioLabel": scenario,
+                "referenceUrl": "https://production.example.test", "url": "https://staging.example.test",
+            }));
+        }
+        std::fs::write(
+            run.join(".report-urls.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "version": 1, "captures": metadata,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+    let mut request = RunRequest {
+        root: workspace.path().into(),
+        command: RunCommand::Compare,
+        options: RunOptions {
+            regressify_dir: "review-output".into(),
+            run_id: "reviewed-run".into(),
+            suites: vec!["shop".into()],
+            scenarios: vec!["shop:home".parse().unwrap(), "shop:other".parse().unwrap()],
+            ..Default::default()
+        },
+    };
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    request.command = RunCommand::Approve;
+    request.options.scenarios.truncate(1);
+    request.options.report_capture = Some("home_desktop__FINAL".into());
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    for key in ["home_desktop__FINAL", "home_desktop__$saved"] {
+        assert_eq!(
+            std::fs::read(baseline.join(format!("{key}.png"))).unwrap(),
+            current
+        );
+    }
+    for key in [
+        "home_mobile__FINAL",
+        "other_desktop__FINAL",
+        "hidden_desktop__FINAL",
+    ] {
+        assert_eq!(
+            std::fs::read(baseline.join(format!("{key}.png"))).unwrap(),
+            reference
+        );
+    }
+    let catalog =
+        regressify::desktop::results::Catalog::load(&workspace.path().join("review-output"))
+            .unwrap();
+    assert_eq!(catalog.reports.len(), 1);
+    assert_eq!(catalog.reports[0].run_id, "reviewed-run");
+    assert_eq!(catalog.reports[0].counts(), (2, 2, 0));
+    assert_eq!(catalog.reports[0].report.tests.len(), 4);
+    assert!(
+        !output
+            .join("bitmaps_test/zz-newer-run/report.json")
+            .exists()
+    );
+    assert!(!workspace.path().join(".regressify").exists());
+}

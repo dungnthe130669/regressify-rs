@@ -98,6 +98,11 @@ fail with a recovery message; whole-suite operations remain compatible with olde
 runs. Scoped comparison regenerates the report for the selected captures, while
 scoped approval leaves other reference images untouched and skips failed captures.
 
+Desktop Results also offers **Approve This Scenario** for the displayed viewport
+only. It promotes that scenario/viewport's successful captures and recalculates the
+reviewed report without changing other baselines. CLI `approve --scenario` and
+Approve Results in Runs still include every viewport of the selected scenarios.
+
 ## Exit codes
 
 Regressify separates tool failures from website results.

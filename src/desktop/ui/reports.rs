@@ -72,7 +72,8 @@ pub(super) struct ReportApproval {
     pub output: PathBuf,
     pub suite_id: String,
     pub run_id: String,
-    pub scenario_ids: Vec<String>,
+    pub scenario_id: String,
+    pub capture_key: String,
 }
 
 struct Preview {
@@ -685,6 +686,21 @@ impl ResultsPanel {
                 .source
                 .as_ref()
                 .is_some_and(|entry| self.active_suite.as_ref() == Some(&entry.path))
+        })
+    }
+
+    fn selected_approval(&self) -> Option<ReportApproval> {
+        let report = self.selected_report()?;
+        let test = report.report.tests.get(self.capture?)?;
+        let scenario_id = test.pair.scenario_id.as_ref().filter(|id| !id.is_empty())?;
+        self.previews.get(1)?.result.as_ref().ok()?.path.as_ref()?;
+        Some(ReportApproval {
+            entry: report.source.clone()?,
+            output: self.root.clone()?,
+            suite_id: report.report.id.clone(),
+            run_id: report.run_id.clone(),
+            scenario_id: scenario_id.clone(),
+            capture_key: test.pair.capture_key().to_string(),
         })
     }
 
@@ -1801,6 +1817,7 @@ impl ResultsPanel {
         let source = self
             .selected_report()
             .and_then(|report| report.source.clone());
+        let approval = self.selected_approval();
         div()
             .id("comparison-view")
             .test_support()
@@ -1891,7 +1908,21 @@ impl ResultsPanel {
                                         }
                                     })),
                             )
-                    }),
+                    })
+                    .child(
+                        Button::new("approve-scenario")
+                            .xsmall()
+                            .flex_shrink_0()
+                            .icon(gpui_kit::assets::IconName::Check)
+                            .label("Approve This Scenario")
+                            .tooltip("Promote this scenario's successful captures for this viewport only and recalculate the report")
+                            .disabled(self.disabled || self.loading || self.image_loading || approval.is_none())
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                if let Some(approval) = &approval {
+                                    cx.emit(ResultEvent::ApproveRun(approval.clone()));
+                                }
+                            })),
+                    ),
             )
             .child(
                 div()
@@ -2210,6 +2241,106 @@ mod pointer_tests {
         assert!(guides.position(1, point(px(-101.), px(300.))).is_none());
         guides.active.set(None);
         assert!(guides.position(1, point(px(150.), px(300.))).is_none());
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn scenario_approval_tracks_viewport_and_rejects_unavailable_captures(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let (results, scenario_id) = cx.update(|cx| {
+            (
+                view.read(cx).results.clone(),
+                view.read(cx).session.suites[0].scenarios[0].id.clone(),
+            )
+        });
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/reviewed");
+        std::fs::create_dir_all(&run).unwrap();
+        let mut captures = Vec::new();
+        for (index, viewport) in ["desktop", "mobile", "failed", "legacy", "missing"]
+            .iter()
+            .enumerate()
+        {
+            let filename = format!("{scenario_id}_{viewport}__FINAL.png");
+            if index != 4 {
+                lodepng::encode32_file(run.join(&filename), &[30_u8, 150, 180, 255], 1, 1).unwrap();
+            }
+            if index == 2 {
+                std::fs::write(
+                    crate::test::capture::error_marker_path(&run.join(&filename)),
+                    r#"{"error":true,"message":"Capture failed"}"#,
+                )
+                .unwrap();
+            }
+            captures.push(serde_json::json!({
+                "status": "fail", "pair": {
+                    "label": viewport, "fileName": filename,
+                    "scenarioId": (index != 3).then_some(&scenario_id),
+                    "test": format!("../bitmaps_test/reviewed/{filename}")
+                }
+            }));
+        }
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": captures,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.capture == Some(0) && !panel.image_loading && !panel.previews.is_empty()
+        })
+        .await;
+        for (index, viewport) in ["desktop", "mobile", "failed", "legacy", "missing"]
+            .iter()
+            .enumerate()
+        {
+            cx.update_window(handle.into(), |_, window, cx| {
+                results.update(cx, |panel, cx| panel.select_capture(index, window, cx));
+                if index != 0 {
+                    assert!(results.read(cx).selected_approval().is_none());
+                }
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+                let panel = results.read(cx);
+                panel.capture == Some(index) && !panel.image_loading
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert!(window.try_find("approve-report").is_none());
+                let approval = results.read(cx).selected_approval();
+                assert_eq!(approval.is_some(), index < 2);
+                if let Some(approval) = approval {
+                    assert_eq!(approval.scenario_id, scenario_id);
+                    assert_eq!(
+                        approval.capture_key,
+                        format!("{scenario_id}_{viewport}__FINAL")
+                    );
+                    assert_eq!(approval.run_id, "reviewed");
+                } else {
+                    window.click("approve-scenario", cx);
+                    assert_eq!(view.read(cx).main_tab, 2);
+                }
+            })
+            .unwrap();
+        }
     }
 
     #[cfg(feature = "gui-tests")]
@@ -2563,31 +2694,6 @@ impl Render for ResultsPanel {
                 )
             })
             .unwrap_or_default();
-        let approval = self
-            .selected_report()
-            .filter(|report| {
-                report.report.tests.iter().any(|test| {
-                    test.pair.test.is_some()
-                        && matches!(test.outcome(), Outcome::Passed | Outcome::Mismatch)
-                })
-            })
-            .and_then(|report| {
-                Some(ReportApproval {
-                    entry: report.source.clone()?,
-                    output: self.root.clone()?,
-                    suite_id: report.report.id.clone(),
-                    run_id: report.run_id.clone(),
-                    scenario_ids: report
-                        .report
-                        .tests
-                        .iter()
-                        .map(|test| test.pair.scenario_id.clone())
-                        .collect::<Option<BTreeSet<_>>>()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .collect(),
-                })
-            });
         div()
             .id("results-panel")
             .test_support()
@@ -2644,21 +2750,6 @@ impl Render for ResultsPanel {
                             .on_click(cx.listener(|this, _, window, cx| {
                                 if let Some(root) = this.root.clone() {
                                     this.refresh(root, window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("approve-report")
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::Check)
-                            .label("Approve This Run")
-                            .tooltip(
-                                "Use successful captures from this report run as reference images",
-                            )
-                            .disabled(self.disabled || self.loading || approval.is_none())
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                if let Some(approval) = &approval {
-                                    cx.emit(ResultEvent::ApproveRun(approval.clone()));
                                 }
                             })),
                     )

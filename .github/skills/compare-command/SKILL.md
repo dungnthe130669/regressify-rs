@@ -23,6 +23,8 @@ description: 'Use when changing regressify compare, capture-run selection, image
    Malformed manifests, unreadable files, and report-write failures are process errors.
 1. Preserve PNG safety limits and signed dimension differences. Do not conflate
    a size mismatch with a decoding or I/O failure.
+1. Report-viewport approval recalculates the reviewed capture list, order, and
+   per-pair thresholds, not a narrowed selection or the current workspace settings.
 
 ## Checks
 

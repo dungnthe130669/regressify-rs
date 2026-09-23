@@ -1023,15 +1023,22 @@ area on the right. Only the active suite's captures are shown. A suite without a
 report shows an empty capture list, never another suite's results. The report
 title is read-only; there is no separate report dropdown.
 
-Approve This Run promotes successful captures from the report being viewed,
-including historical runs, after an action-named confirmation. Its output folder,
-run ID, and suite output identity are pinned; if the suite output has changed,
-approval stops for review. For reports with scenario metadata, approval is pinned
-to all scenarios recorded in that report, not just the visible search/filter.
-This preserves the scope of scenario-only comparison reports even when their
-run folder contains other captures. Older reports without scenario metadata
-retain whole-run approval. Failed capture placeholders are still skipped by the
-engine.
+Approve This Scenario promotes the current scenario's successful captures for
+the displayed viewport only, including its saved steps and targets in this report.
+Other viewports and scenarios keep their existing baselines; approve each viewport
+separately when needed. The confirmation identifies the scenario, viewport, and
+exact reviewed run, including historical runs. Its output folder and suite output
+identity are pinned; changes to the suite output or capture metadata stop approval
+for review. Failed or missing test captures and reports without scenario metadata
+cannot use this action. Valid test captures with missing references or changed
+dimensions can be approved; failed sibling captures remain unapproved.
+
+After approval, the same report reopens with recalculated mismatch percentages,
+dimensions, pass/fail counts, and diff images. Recalculation preserves the original
+report scope, order, labels, URLs, and thresholds, including all unapproved failures.
+It does not capture the website again. Results has no whole-run approval button;
+use Approve Results in Runs for suite-wide or all-viewport approval. Ordinary Runs
+approval retains its existing behavior and does not automatically recompare.
 
 Capture rows use scenario labels, with viewport and saved-step/target details on
 the secondary line. Newly captured labels are preserved in report metadata;

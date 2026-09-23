@@ -21,8 +21,11 @@ description: 'Use when changing desktop comparison reports, image previews, nami
    referenceUrl versus replaced test url; do not share a display URL fallback.
 1. Inventory successful baselines and actual captures, not directories or generated
    diffs. Select latest captures by the existing metadata/time rules, not lexical UUID.
-1. Approve the reviewed output root, suite, run, and exact scenarios. Revalidate
-   current suite/output identity and user confirmation before launching promotion.
+1. Results exposes Approve This Scenario for the current viewport, never whole-run
+   approval. Pin the output root, suite, run, scenario, and capture key. Revalidate
+   identity and confirm the viewport before promotion; keep whole-run approval in Runs.
+1. Reopen the same report after scoped approval and recompute its complete original
+   scope, including unapproved failures, without recapturing or changing thresholds.
 1. Keep expensive image/file loading off the UI thread and reject stale completion
    after selection changes. Own popup menus/subscriptions without retained cycles.
 

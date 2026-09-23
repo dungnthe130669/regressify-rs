@@ -1,11 +1,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs::{self, create_dir_all};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use colored::Colorize;
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::compare::image_compare::{CompareResult, compare_images};
 use crate::helpers::{copy_file_atomically, write_file_atomically};
@@ -16,7 +17,7 @@ use crate::test::capture::{
     read_error_marker,
 };
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportConfig {
     test_suite: String,
@@ -24,13 +25,13 @@ struct ReportConfig {
     tests: Vec<ReportTest>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct ReportTest {
     pair: ReportPair,
     status: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportPair {
     label: String,
@@ -74,7 +75,7 @@ enum ComparisonOutcome {
     Failed(anyhow::Error),
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ReportDiff {
     is_same_dimensions: bool,
@@ -84,7 +85,7 @@ struct ReportDiff {
     analysis_time: u128,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct DimensionDiff {
     width: i64,
     height: i64,
@@ -483,6 +484,26 @@ pub(crate) fn generate_comparison_report_for_scenarios(
     max_workers: usize,
     scenario_ids: &[String],
 ) -> Result<()> {
+    generate_selected_report(
+        suite_dir,
+        suite_id,
+        test_date,
+        mis_match_threshold,
+        max_workers,
+        scenario_ids,
+        None,
+    )
+}
+
+fn generate_selected_report(
+    suite_dir: &Path,
+    suite_id: &str,
+    test_date: &str,
+    mis_match_threshold: f64,
+    max_workers: usize,
+    scenario_ids: &[String],
+    reviewed_report: Option<&ReportConfig>,
+) -> Result<()> {
     let tests_dir = suite_dir.join("bitmaps_test").join(test_date);
     if !tests_dir.exists() {
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
@@ -539,6 +560,14 @@ pub(crate) fn generate_comparison_report_for_scenarios(
             .cmp(&screenshot_order_key(b, &order_index))
             .then_with(|| a.cmp(b))
     });
+    if let Some(report) = reviewed_report {
+        // Approval must retain the reviewed scope, including unapproved failures.
+        test_screenshots = report
+            .tests
+            .iter()
+            .map(|test| test.pair.file_name.clone())
+            .collect();
+    }
 
     let mut report_work = Vec::with_capacity(test_screenshots.len());
     for screenshot_name in test_screenshots {
@@ -563,6 +592,21 @@ pub(crate) fn generate_comparison_report_for_scenarios(
             .as_ref()
             .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
         let mut pair = report_pair(label, &screenshot_name, relative_test, threshold, page_urls);
+        if let Some(previous) = reviewed_report.and_then(|report| {
+            report
+                .tests
+                .iter()
+                .find(|test| test.pair.file_name == screenshot_name)
+        }) {
+            let reference = pair.reference;
+            let test = pair.test;
+            pair = previous.pair.clone();
+            pair.reference = reference;
+            pair.test = test;
+            pair.diff = None;
+            pair.diff_image = None;
+            pair.engine_error_msg = None;
+        }
 
         // If either side is flagged as a capture failure (via its JSON error
         // marker), the corresponding scenario never produced a real screenshot.
@@ -804,6 +848,40 @@ fn select_scenario_screenshots(
         .collect())
 }
 
+fn select_scenario_viewport_screenshots(
+    screenshots: Vec<String>,
+    urls: Option<&BTreeMap<String, ReportPageUrls>>,
+    scenario_id: &str,
+    capture_key: &str,
+) -> Result<Vec<String>> {
+    anyhow::ensure!(
+        !scenario_id.is_empty(),
+        "Select a recorded scenario to approve"
+    );
+    let screenshots = select_scenario_screenshots(screenshots, urls, &[scenario_id.to_string()])?;
+    anyhow::ensure!(
+        screenshots
+            .iter()
+            .any(|name| screenshot_key(name) == capture_key),
+        "The selected capture is not part of this scenario's run"
+    );
+    let viewport = |key: &str| {
+        // Scenario IDs may contain the same delimiter as capture targets.
+        key.strip_prefix(scenario_id)
+            .and_then(|suffix| suffix.split_once("__"))
+            .filter(|(viewport, target)| {
+                (viewport.is_empty() || viewport.starts_with('_')) && !target.is_empty()
+            })
+            .map(|(viewport, _)| viewport.to_string())
+    };
+    let selected = viewport(capture_key)
+        .ok_or_else(|| anyhow!("The selected capture has no recognizable viewport metadata"))?;
+    Ok(screenshots
+        .into_iter()
+        .filter(|name| viewport(screenshot_key(name)).as_ref() == Some(&selected))
+        .collect())
+}
+
 pub(crate) fn approve_screenshots_for_scenarios(
     suite_dir: &Path,
     requested_run_id: Option<&str>,
@@ -837,11 +915,20 @@ pub(crate) fn approve_screenshots_for_scenarios(
     };
     let screenshots = select_scenario_screenshots(screenshots, urls.as_ref(), scenario_ids)?;
 
-    create_dir_all(&reference_dir)?;
+    promote_screenshots(&latest_test_dir, &reference_dir, &screenshots)?;
+    Ok(())
+}
+
+fn promote_screenshots(
+    tests_dir: &Path,
+    reference_dir: &Path,
+    screenshots: &[String],
+) -> Result<usize> {
+    create_dir_all(reference_dir)?;
 
     let mut approved_count = 0;
     for file_name in screenshots {
-        let src = latest_test_dir.join(&file_name);
+        let src = tests_dir.join(file_name);
         if read_error_marker(&src).is_some() {
             eprintln!(
                 "    {} Skipped failed capture: {}",
@@ -850,7 +937,7 @@ pub(crate) fn approve_screenshots_for_scenarios(
             );
             continue;
         }
-        let dst = reference_dir.join(&file_name);
+        let dst = reference_dir.join(file_name);
         copy_file_atomically(&src, &dst)?;
 
         // Promote the error-marker sidecar so the reference retains its
@@ -872,7 +959,140 @@ pub(crate) fn approve_screenshots_for_scenarios(
         approved_count.to_string().green()
     );
 
-    Ok(())
+    Ok(approved_count)
+}
+
+pub(crate) fn approve_scenario_viewport(
+    suite_dir: &Path,
+    run_id: &str,
+    scenario_id: &str,
+    capture_key: &str,
+) -> Result<()> {
+    crate::cli::args::run_id_parser(run_id).map_err(anyhow::Error::msg)?;
+    let suite_id = suite_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| anyhow!("The report suite has no valid output ID"))?;
+    let tests_dir = suite_dir.join("bitmaps_test");
+    select_capture_run(&tests_dir, Some(run_id))?;
+    let run = tests_dir.join(run_id);
+    let reference = suite_dir.join("bitmaps_reference");
+    let html = suite_dir.join("html_report");
+    for directory in [suite_dir, &tests_dir, &run, &reference, &html] {
+        match fs::symlink_metadata(directory) {
+            Ok(metadata) => anyhow::ensure!(
+                metadata.file_type().is_dir(),
+                "Report approval requires a real directory: {}",
+                directory.display()
+            ),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && (directory == reference || directory == html) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    let report_path = run.join("report.json");
+    for path in [
+        run.join(REPORT_URLS_FILE),
+        run.join(REPORT_ORDER_FILE),
+        run.join(REPORT_THRESHOLDS_FILE),
+        html.join("config.js"),
+    ] {
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => anyhow::ensure!(
+                metadata.file_type().is_file(),
+                "Report approval requires regular metadata files: {}",
+                path.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    anyhow::ensure!(
+        fs::symlink_metadata(&report_path)?.file_type().is_file(),
+        "The reviewed report must be a regular file"
+    );
+    let mut bytes = Vec::new();
+    fs::File::open(&report_path)?
+        .take(16 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= 16 * 1024 * 1024,
+        "The reviewed report exceeds 16 MiB"
+    );
+    let report: ReportConfig = serde_json::from_slice(&bytes)
+        .context("Cannot approve this report; regenerate its comparison first")?;
+    anyhow::ensure!(
+        report.id == suite_id,
+        "The reviewed report's suite identity changed"
+    );
+    let screenshots = validate_capture_run_inventory(&run)?;
+    let urls = read_report_urls(&run)?.ok_or_else(|| {
+        anyhow!("This run has no scenario metadata; capture it again before approving a viewport")
+    })?;
+    validate_capture_inventory(
+        &run,
+        &urls.keys().cloned().collect::<Vec<_>>(),
+        &screenshots,
+    )?;
+    read_report_thresholds(&run)?;
+    let mut seen = HashSet::new();
+    for test in &report.tests {
+        let pair = &test.pair;
+        anyhow::ensure!(
+            screenshots.contains(&pair.file_name) && seen.insert(&pair.file_name),
+            "The reviewed report contains a missing or duplicate capture"
+        );
+        anyhow::ensure!(
+            pair.test == format!("../bitmaps_test/{run_id}/{}", pair.file_name)
+                && pair.mis_match_threshold.is_finite()
+                && (0.0..=100.0).contains(&pair.mis_match_threshold)
+                && urls
+                    .get(screenshot_key(&pair.file_name))
+                    .is_some_and(|metadata| metadata.scenario_id == pair.scenario_id),
+            "The reviewed report's capture metadata changed; refresh it before approving"
+        );
+        for path in [
+            run.join(&pair.file_name),
+            reference.join(&pair.file_name),
+            crate::test::capture::error_marker_path(&run.join(&pair.file_name)),
+            crate::test::capture::error_marker_path(&reference.join(&pair.file_name)),
+        ] {
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) => anyhow::ensure!(
+                    metadata.file_type().is_file(),
+                    "Report approval requires regular artifact files: {}",
+                    path.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    let selected = select_scenario_viewport_screenshots(
+        report
+            .tests
+            .iter()
+            .map(|test| test.pair.file_name.clone())
+            .collect(),
+        Some(&urls),
+        scenario_id,
+        capture_key,
+    )?;
+    anyhow::ensure!(
+        read_error_marker(&run.join(format!("{capture_key}.png"))).is_none(),
+        "The selected capture failed and cannot be approved"
+    );
+    for filename in &selected {
+        let path = run.join(filename);
+        if read_error_marker(&path).is_none() {
+            super::image_compare::load_png(&path)
+                .with_context(|| format!("Cannot approve invalid capture '{}'", path.display()))?;
+        }
+    }
+    promote_screenshots(&run, &reference, &selected)?;
+    generate_selected_report(suite_dir, suite_id, run_id, 0.0, 2, &[], Some(&report))
+        .context("Selected baselines were promoted, but report recalculation failed")
 }
 
 fn build_diff(result: &CompareResult) -> ReportDiff {
@@ -961,6 +1181,303 @@ mod tests {
         assert!(error.to_string().contains("no scenario metadata"));
         assert!(!suite_dir.join("bitmaps_reference").exists());
         approve_screenshots(suite_dir, Some("run")).unwrap();
+    }
+
+    #[test]
+    fn scenario_viewport_approval_selects_only_matching_steps_and_targets() {
+        let scenario = "shop__checkout";
+        let mut urls = BTreeMap::new();
+        let captures = [
+            ("shop__checkout_desktop__FINAL", scenario),
+            ("shop__checkout_desktop__$payment", scenario),
+            ("shop__checkout_desktop__SELECTOR-form", scenario),
+            ("shop__checkout_mobile__FINAL", scenario),
+            ("shop__checkout__FINAL", scenario),
+            (
+                "shop__checkout_desktop_extra__FINAL",
+                "shop__checkout_desktop_extra",
+            ),
+        ];
+        let mut screenshots = Vec::new();
+        for (key, scenario_id) in captures {
+            screenshots.push(format!("{key}.png"));
+            urls.insert(
+                key.to_string(),
+                ReportPageUrls {
+                    scenario_id: Some(scenario_id.into()),
+                    scenario_label: Some("Checkout".into()),
+                    reference_url: "https://example.test".into(),
+                    url: "https://example.test".into(),
+                },
+            );
+        }
+        assert_eq!(
+            select_scenario_viewport_screenshots(
+                screenshots.clone(),
+                Some(&urls),
+                scenario,
+                "shop__checkout_desktop__$payment",
+            )
+            .unwrap(),
+            screenshots[..3]
+        );
+        assert_eq!(
+            select_scenario_viewport_screenshots(
+                screenshots.clone(),
+                Some(&urls),
+                scenario,
+                "shop__checkout__FINAL",
+            )
+            .unwrap(),
+            ["shop__checkout__FINAL.png"]
+        );
+        for key in [
+            "missing",
+            "../shop__checkout_desktop__FINAL",
+            "shop__checkout_desktop_extra__FINAL",
+        ] {
+            assert!(
+                select_scenario_viewport_screenshots(
+                    screenshots.clone(),
+                    Some(&urls),
+                    scenario,
+                    key,
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            select_scenario_viewport_screenshots(
+                screenshots.clone(),
+                None,
+                scenario,
+                "shop__checkout_desktop__FINAL",
+            )
+            .is_err()
+        );
+        assert!(
+            select_scenario_viewport_screenshots(
+                screenshots,
+                Some(&urls),
+                "",
+                "shop__checkout_desktop__FINAL",
+            )
+            .is_err()
+        );
+    }
+
+    fn viewport_approval_fixture() -> tempfile::TempDir {
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        let run = suite.join("bitmaps_test/reviewed");
+        let reference = suite.join("bitmaps_reference");
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&reference).unwrap();
+        let mut captures = BTreeMap::new();
+        for (key, scenario) in [
+            ("checkout_desktop__FINAL", "checkout"),
+            ("checkout_desktop__$payment", "checkout"),
+            ("checkout_desktop__VIEWPORT", "checkout"),
+            ("checkout_mobile__FINAL", "checkout"),
+            ("other_desktop__FINAL", "other"),
+            ("hidden_desktop__FINAL", "hidden"),
+        ] {
+            fs::write(run.join(format!("{key}.png")), png_bytes(200)).unwrap();
+            fs::write(reference.join(format!("{key}.png")), png_bytes(10)).unwrap();
+            captures.insert(
+                key.to_string(),
+                ReportPageUrls {
+                    scenario_id: Some(scenario.into()),
+                    scenario_label: Some(format!("Recorded {scenario}")),
+                    reference_url: "https://production.example.test".into(),
+                    url: "https://staging.example.test".into(),
+                },
+            );
+        }
+        fs::write(
+            run.join(REPORT_URLS_FILE),
+            serde_json::to_vec(&ReportUrlsManifest {
+                version: REPORT_URLS_VERSION,
+                captures,
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            crate::test::capture::error_marker_path(&run.join("checkout_desktop__VIEWPORT.png")),
+            r#"{"error":true,"message":"Capture failed"}"#,
+        )
+        .unwrap();
+        fs::write(
+            run.join(REPORT_THRESHOLDS_FILE),
+            r#"{"checkout_mobile__FINAL":25.0}"#,
+        )
+        .unwrap();
+        generate_comparison_report_for_scenarios(
+            &suite,
+            "shop",
+            "reviewed",
+            20.0,
+            1,
+            &["checkout".into(), "other".into()],
+        )
+        .unwrap();
+        directory
+    }
+
+    #[test]
+    fn scenario_viewport_approval_promotes_only_one_viewport_and_recalculates_the_report() {
+        let directory = viewport_approval_fixture();
+        let suite = directory.path().join("shop");
+        let run = suite.join("bitmaps_test/reviewed");
+        let reference = suite.join("bitmaps_reference");
+        let before: ReportConfig =
+            serde_json::from_slice(&fs::read(run.join("report.json")).unwrap()).unwrap();
+        let stale_marker =
+            crate::test::capture::error_marker_path(&reference.join("checkout_desktop__FINAL.png"));
+        fs::write(
+            &stale_marker,
+            r#"{"error":true,"message":"Old reference failed"}"#,
+        )
+        .unwrap();
+        fs::write(
+            run.join(REPORT_THRESHOLDS_FILE),
+            r#"{"checkout_mobile__FINAL":100.0}"#,
+        )
+        .unwrap();
+        approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__FINAL")
+            .unwrap();
+        let report_bytes = fs::read(run.join("report.json")).unwrap();
+        let report: ReportConfig = serde_json::from_slice(&report_bytes).unwrap();
+        assert_eq!(report.tests.len(), 5);
+        assert_eq!(
+            report
+                .tests
+                .iter()
+                .filter(|test| test.status == "pass")
+                .count(),
+            2
+        );
+        for (previous, current) in before.tests.iter().zip(&report.tests) {
+            assert_eq!(previous.pair.file_name, current.pair.file_name);
+            assert_eq!(
+                previous.pair.mis_match_threshold,
+                current.pair.mis_match_threshold
+            );
+            assert_eq!(previous.pair.scenario_label, current.pair.scenario_label);
+            assert_eq!(previous.pair.reference_url, current.pair.reference_url);
+            assert_eq!(previous.pair.url, current.pair.url);
+            if current.status == "pass" {
+                assert_eq!(
+                    current.pair.diff.as_ref().unwrap().raw_mis_match_percentage,
+                    0.0
+                );
+                assert!(current.pair.engine_error_msg.is_none());
+                assert!(current.pair.diff_image.is_none());
+                assert!(
+                    !run.join(current.pair.file_name.replace(".png", "_diff.png"))
+                        .exists()
+                );
+            }
+        }
+        for key in ["checkout_desktop__FINAL", "checkout_desktop__$payment"] {
+            assert_eq!(
+                fs::read(reference.join(format!("{key}.png"))).unwrap(),
+                png_bytes(200)
+            );
+        }
+        for key in [
+            "checkout_mobile__FINAL",
+            "checkout_desktop__VIEWPORT",
+            "other_desktop__FINAL",
+            "hidden_desktop__FINAL",
+        ] {
+            assert_eq!(
+                fs::read(reference.join(format!("{key}.png"))).unwrap(),
+                png_bytes(10)
+            );
+        }
+        assert!(!stale_marker.exists());
+        assert_eq!(
+            fs::read_to_string(suite.join("html_report/config.js")).unwrap(),
+            format!("report({});", String::from_utf8(report_bytes).unwrap())
+        );
+        approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_mobile__FINAL")
+            .unwrap();
+        let report: ReportConfig =
+            serde_json::from_slice(&fs::read(run.join("report.json")).unwrap()).unwrap();
+        assert_eq!(
+            report
+                .tests
+                .iter()
+                .filter(|test| test.status == "pass")
+                .count(),
+            3
+        );
+        assert_eq!(
+            fs::read(reference.join("other_desktop__FINAL.png")).unwrap(),
+            png_bytes(10)
+        );
+    }
+
+    #[test]
+    fn scenario_viewport_approval_rejects_stale_invalid_and_failed_selections_before_writing() {
+        let directory = viewport_approval_fixture();
+        let suite = directory.path().join("shop");
+        let run = suite.join("bitmaps_test/reviewed");
+        let original_report = fs::read(run.join("report.json")).unwrap();
+        for (run_id, scenario, key) in [
+            ("missing", "checkout", "checkout_desktop__FINAL"),
+            ("../reviewed", "checkout", "checkout_desktop__FINAL"),
+            ("reviewed", "other", "checkout_desktop__FINAL"),
+            ("reviewed", "checkout", "../checkout_desktop__FINAL"),
+            ("reviewed", "checkout", "checkout_desktop__VIEWPORT"),
+            ("reviewed", "hidden", "hidden_desktop__FINAL"),
+        ] {
+            assert!(approve_scenario_viewport(&suite, run_id, scenario, key).is_err());
+        }
+        let mut invalid: serde_json::Value = serde_json::from_slice(&original_report).unwrap();
+        invalid["tests"][0]["pair"]["scenarioId"] = "changed".into();
+        fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&invalid).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__FINAL")
+                .is_err()
+        );
+        fs::write(run.join("report.json"), &original_report).unwrap();
+        fs::remove_file(run.join(REPORT_URLS_FILE)).unwrap();
+        assert!(
+            approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__FINAL")
+                .is_err()
+        );
+        assert_eq!(fs::read(run.join("report.json")).unwrap(), original_report);
+        for entry in fs::read_dir(suite.join("bitmaps_reference")).unwrap() {
+            assert_eq!(fs::read(entry.unwrap().path()).unwrap(), png_bytes(10));
+        }
+    }
+
+    #[test]
+    fn scenario_viewport_approval_validates_all_selected_pngs_before_promotion() {
+        let directory = viewport_approval_fixture();
+        let suite = directory.path().join("shop");
+        let run = suite.join("bitmaps_test/reviewed");
+        let original_report = fs::read(run.join("report.json")).unwrap();
+        fs::write(
+            run.join("checkout_desktop__FINAL.png"),
+            &png_bytes(200)[..33],
+        )
+        .unwrap();
+        let error =
+            approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__$payment")
+                .unwrap_err();
+        assert!(error.to_string().contains("invalid capture"));
+        assert_eq!(fs::read(run.join("report.json")).unwrap(), original_report);
+        for entry in fs::read_dir(suite.join("bitmaps_reference")).unwrap() {
+            assert_eq!(fs::read(entry.unwrap().path()).unwrap(), png_bytes(10));
+        }
     }
 
     #[test]
