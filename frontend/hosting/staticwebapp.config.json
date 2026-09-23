@@ -1,9 +1,7 @@
 {
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": [
-      "/_snapshot/*"
-    ]
+    "exclude": ["/_snapshot/*"]
   },
   "routes": [
     {
