@@ -14,6 +14,7 @@ export default defineConfig({
     cssCodeSplit: false,
     rolldownOptions: {
       output: {
+        comments: false,
         entryFileNames: "_snapshot/assets/app.js",
         chunkFileNames: "_snapshot/assets/[name].js",
         assetFileNames: "_snapshot/assets/[name][extname]",
