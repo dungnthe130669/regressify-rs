@@ -1419,11 +1419,11 @@ mod tests {
         let mut suites = Vec::new();
         for entry in std::fs::read_dir(&output)? {
             let entry = entry?;
-            if entry.file_type()?.is_dir()
-                && entry.path().join("html_report/config.js").is_file()
-            {
+            if entry.file_type()?.is_dir() && entry.path().join("html_report/config.js").is_file() {
                 suites.push(
-                    entry.file_name().into_string()
+                    entry
+                        .file_name()
+                        .into_string()
                         .map_err(|_| anyhow!("Report suite names must be UTF-8"))?,
                 );
             }
@@ -1436,7 +1436,9 @@ mod tests {
         let manifest = Manifest::create(&root, Instant::now() + Duration::from_secs(300))?;
         println!(
             "Live report verification: {} suites, {} files, {:.2} MiB staged; source reports are read-only",
-            suites.len(), manifest.files.len(), manifest.bytes as f64 / (1024.0 * 1024.0)
+            suites.len(),
+            manifest.files.len(),
+            manifest.bytes as f64 / (1024.0 * 1024.0)
         );
         let client = NetlifyClient::new(&token)?;
         let published = if let Ok(url) = std::env::var("NETLIFY_VERIFY_URL") {
@@ -1464,7 +1466,10 @@ mod tests {
         let base = Url::parse(&published)?;
         let verified = AtomicUsize::new(0);
         // Netlify consumes _headers as hosting policy, not a public report asset.
-        let files = manifest.files.iter().filter(|(path, _)| path.as_str() != "/_headers");
+        let files = manifest
+            .files
+            .iter()
+            .filter(|(path, _)| path.as_str() != "/_headers");
         stream::iter(files)
             .map(|(path, digest)| {
                 let public = &public;
@@ -1505,7 +1510,10 @@ mod tests {
             .buffer_unordered(UPLOAD_CONCURRENCY)
             .try_collect::<Vec<_>>()
             .await?;
-        println!("Verified all {} public report assets: {published}", verified.load(Ordering::Relaxed));
+        println!(
+            "Verified all {} public report assets: {published}",
+            verified.load(Ordering::Relaxed)
+        );
         Ok(())
     }
 
