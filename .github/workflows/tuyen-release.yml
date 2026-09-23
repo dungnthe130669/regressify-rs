@@ -153,7 +153,7 @@ jobs:
 
       - name: Retain Windows installer
         if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: regressify-desktop-windows-${{ needs.set-matrix.outputs.version }}
           path: ${{ steps.installer.outputs.installer }}

@@ -46,7 +46,7 @@ jobs:
     name: Windows Desktop and CLI
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Headless smoke harness checks
         shell: pwsh
         run: ./ci/test-desktop-smoke.ps1
@@ -69,7 +69,7 @@ jobs:
     name: Linux Headless Models
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Headless smoke harness checks
         shell: pwsh
         run: ./ci/test-desktop-smoke.ps1
