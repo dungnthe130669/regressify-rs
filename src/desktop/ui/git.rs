@@ -46,6 +46,9 @@ pub(super) struct GitPanel {
     status: String,
     rows: Vec<view::TreeRow>,
     comparison_rows: Vec<view::TreeRow>,
+    tree_focus: [FocusHandle; 2],
+    tree_current: [Option<String>; 2],
+    tree_scroll: [UniformListScrollHandle; 2],
     comparison_open: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -101,6 +104,9 @@ impl GitPanel {
             status: String::new(),
             rows: Vec::new(),
             comparison_rows: Vec::new(),
+            tree_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0)),
+            tree_current: Default::default(),
+            tree_scroll: Default::default(),
             comparison_open: false,
             _subscriptions: vec![message_subscription, remote_subscription],
         }
@@ -141,6 +147,8 @@ impl GitPanel {
         self.active_file = None;
         self.rows.clear();
         self.comparison_rows.clear();
+        self.tree_current = Default::default();
+        self.tree_scroll = Default::default();
         self.comparison_open = false;
         self.diff_text.clear();
         self.structured = None;

@@ -63,6 +63,10 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop lists now have focus-scoped keyboard selection and navigation. Suite
+  and scenario Ctrl+A/ranges respect filters; run checklists and Git trees retain
+  their selection boundaries. Viewport, capture, workspace-file, and action lists
+  support keyboard navigation without intercepting text-editing shortcuts.
 - Snapshot overview, suite results, and image review now share a responsive React
   SPA with clean URLs, light/dark themes, and quick suite navigation. Generated
   JS, CSS, fonts, JSON, and every image use stable filenames with `?v=` versions.

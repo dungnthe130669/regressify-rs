@@ -1156,7 +1156,30 @@ fn scenario_sequence_supports_reordering_duplication_and_direct_editing(cx: &mut
         window.click(("sequence-copy", 0_usize), cx);
         assert_eq!(window.find("sequence-count").label(), Some("3 actions"));
         assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
-        window.click(("sequence-step", 1_usize), cx);
+        let draft = view.read(cx).session.value().unwrap();
+        window.press("end", cx);
+        assert_eq!(
+            view.read(cx)
+                .sequence_list
+                .current
+                .as_ref()
+                .map(|item| item.2),
+            Some(2)
+        );
+        window.press("up", cx);
+        assert_eq!(
+            view.read(cx)
+                .sequence_list
+                .current
+                .as_ref()
+                .map(|item| item.2),
+            Some(1)
+        );
+        window.press("home", cx);
+        window.press("down", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        assert_eq!(view.read(cx).session.value().unwrap(), draft);
+        window.press("enter", cx);
         assert_eq!(
             view.read(cx).session.selection,
             Selection::Action {
@@ -2841,6 +2864,41 @@ fn navigator_suite_selection_supports_modifiers_filters_and_empty_space(cx: &mut
         assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
         window.click("sidebar-select-none", cx);
         assert!(selected(cx).is_empty());
+        window.click(("file", indices[2]), cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(selected(cx), ["ui-test"]);
+        window.press("ctrl-shift-a", cx);
+        assert!(selected(cx).is_empty());
+        view.update(cx, |this, cx| {
+            this.search
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        });
+        window.render_frame(cx);
+        window.click(("file", indices[1]), cx);
+        window.press("shift-up", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle"]);
+        window.press("shift-down", cx);
+        assert_eq!(selected(cx), ["middle"]);
+        window.press("ctrl-shift-end", cx);
+        assert_eq!(selected(cx), ["middle", "ui-test"]);
+        window.press("ctrl-home", cx);
+        assert_eq!(selected(cx), ["middle", "ui-test"]);
+        window.press("ctrl-space", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        window.press("space", cx);
+        assert_eq!(selected(cx), ["middle", "ui-test"]);
+        window.press("home", cx);
+        assert_eq!(selected(cx), ["a-ui"]);
+        window.press("end", cx);
+        assert_eq!(selected(cx), ["ui-test"]);
+        window.press("ctrl-a", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        window.click("navigator-search", cx);
+        window.press("ctrl-a", cx);
+        window.input("no matching suites", cx);
+        assert_eq!(selected(cx), ["a-ui", "middle", "ui-test"]);
+        window.render_frame(cx);
+        assert!(window.find("navigator-empty").visible());
         assert_eq!(view.read(cx).main_tab, 2);
         assert_eq!(
             view.read(cx)
@@ -2982,6 +3040,31 @@ fn navigator_scenario_selection_supports_modifiers_filters_and_empty_space(
         window.click("sidebar-scenarios-all", cx);
         assert_eq!(selected(cx), [0, 1, 2, 3, 4]);
         assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        window.click(("scenario", 1_usize), cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(selected(cx), [1, 3]);
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        window.press("ctrl-shift-a", cx);
+        assert!(selected(cx).is_empty());
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
+        window.click(("scenario", 1_usize), cx);
+        window.press("shift-end", cx);
+        assert_eq!(selected(cx), [1, 3]);
+        window.press("shift-up", cx);
+        assert_eq!(selected(cx), [1]);
+        window.press("ctrl-end", cx);
+        assert_eq!(selected(cx), [1]);
+        window.press("ctrl-space", cx);
+        assert_eq!(selected(cx), [1, 3]);
+        window.press("space", cx);
+        assert_eq!(selected(cx), [1]);
+        window.press("enter", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Scenario(3));
+        window.press("up", cx);
+        assert_eq!(selected(cx), [1]);
+        window.press("escape", cx);
+        assert!(selected(cx).is_empty());
+        assert!(view.read(cx).runs.read(cx).all_selected("other-suite"));
         assert!(view.read(cx).session.dirty());
     })
     .unwrap();
@@ -3019,6 +3102,155 @@ fn scenario_row_clicks_replace_selection_and_none_all_clear_it(cx: &mut TestAppC
         window.click("sidebar-select-none", cx);
         assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
         assert!(view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn navigator_list_keyboard_select_all_and_clear_scenarios(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            for _ in 0..2 {
+                this.edit(
+                    crate::desktop::session::Session::duplicate_selected,
+                    window,
+                    cx,
+                );
+            }
+        });
+        window.render_frame(cx);
+        window.click(("scenario", 0_usize), cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 3);
+        window.press("escape", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
+        window.render_frame(cx);
+        window.within("workbench-tabs").click(1_usize, cx);
+        window.within("run-tabs").click(1_usize, cx);
+        window.click("select-all-suites", cx);
+        window.press("ctrl-shift-a", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        window.within("workbench-tabs").click(0_usize, cx);
+        window.click(("scenario", 0_usize), cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        assert!(view.read(cx).scenario_list.focus.is_focused(window));
+        window.press("ctrl-a", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 3);
+        window.press("escape", cx);
+        window.click(("scenario", 0_usize), cx);
+        view.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        for key in [
+            "ctrl-a",
+            "ctrl-shift-a",
+            "escape",
+            "shift-end",
+            "ctrl-space",
+        ] {
+            window.press(key, cx);
+            assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+            assert_eq!(view.read(cx).session.selection, Selection::Scenario(0));
+        }
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            this.runs
+                .update(cx, |panel, cx| panel.set_disabled(true, cx));
+            cx.notify();
+        });
+        for key in ["ctrl-a", "ctrl-shift-a", "escape", "ctrl-space"] {
+            window.press(key, cx);
+            assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 1);
+        }
+        assert!(view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn navigator_list_keyboard_scrolls_viewports_and_handles_empty_filters(cx: &mut TestAppContext) {
+    use crate::desktop::{document::DocumentKind, workspace::Entry};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1080.), px(720.)));
+    let viewports = (0..40)
+        .map(|index| {
+            serde_json::json!({
+                "label": format!("Viewport {index}"), "width": 1280, "height": 720
+            })
+        })
+        .collect::<Vec<_>>();
+    std::fs::write(
+        directory.path().join("viewports.yaml"),
+        serde_yaml::to_string(&viewports).unwrap(),
+    )
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open = Some(
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .open_document(Entry {
+                        path: "viewports.yaml".into(),
+                        kind: DocumentKind::Viewports,
+                    })
+                    .unwrap(),
+            );
+            this.session.selection = Selection::Viewport(0);
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        window.click(("scenario", 0_usize), cx);
+        window.press("down", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Viewport(1));
+        window.press("end", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Viewport(39));
+        let pane = window.find("scenario-pane").bounds();
+        assert!(
+            window.find(("scenario-row", 39_usize)).bounds().bottom() <= pane.bottom() + px(1.)
+        );
+        window.press("home", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Viewport(0));
+        assert!(window.find(("scenario-row", 0_usize)).bounds().top() >= pane.top());
+        view.update(cx, |this, cx| {
+            this.scenario_search
+                .update(cx, |state, cx| state.set_value("Viewport 1", window, cx));
+        });
+        window.render_frame(cx);
+        window.press("home", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Viewport(1));
+        window.press("end", cx);
+        assert_eq!(view.read(cx).session.selection, Selection::Viewport(19));
+        view.update(cx, |this, cx| {
+            this.scenario_search.update(cx, |state, cx| {
+                state.set_value("No matching viewport", window, cx)
+            });
+        });
+        window.render_frame(cx);
+        for key in ["up", "down", "home", "end", "ctrl-a", "ctrl-space", "enter"] {
+            window.press(key, cx);
+            assert_eq!(view.read(cx).session.selection, Selection::Viewport(19));
+        }
+        assert!(window.find("scenario-empty").visible());
+        assert_eq!(
+            view.read(cx).session.value().unwrap(),
+            serde_json::json!(viewports)
+        );
+        assert!(!view.read(cx).session.dirty());
     })
     .unwrap();
 }
@@ -3104,6 +3336,14 @@ fn scenario_checklists_select_only_checked_scenarios_and_request_reference_direc
         window.click("suite-check-ui-test", cx);
         assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 2);
         window.click("suite-check-ui-test", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        window.click("scenario-check-ui-test:checkout", cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 2);
+        window.press("ctrl-shift-a", cx);
+        assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
+        window.press("ctrl-a", cx);
+        window.press("escape", cx);
         assert_eq!(view.read(cx).runs.read(cx).selected_scenario_count(), 0);
         window.click("scenario-check-ui-test:checkout", cx);
         window.click("scenario-ref-ui-test:checkout", cx);
@@ -3426,6 +3666,34 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
             })
             .await;
             cx.update_window(handle.into(), |_, window, cx| {
+                let first_index = view
+                    .read(cx)
+                    .session
+                    .entries
+                    .iter()
+                    .position(|entry| entry.kind != DocumentKind::Suite)
+                    .unwrap();
+                let last_index = view.read(cx).session.entries.len() - 1;
+                window.press("home", cx);
+                assert_eq!(
+                    view.read(cx).workspace_list.current.as_ref(),
+                    Some(&view.read(cx).session.entries[first_index].path)
+                );
+                let files = window.find("workspace-files").bounds();
+                assert!(window.find(("file", first_index)).bounds().top() >= files.top());
+                window.press("end", cx);
+                assert_eq!(
+                    view.read(cx).workspace_list.current.as_ref(),
+                    Some(&last_path)
+                );
+                assert!(
+                    window.find(("file", last_index)).bounds().bottom() <= files.bottom() + px(1.)
+                );
+                window.press("enter", cx);
+                assert_eq!(
+                    view.read(cx).session.open.as_ref().unwrap().entry.path,
+                    last_path
+                );
                 let expanded = window.find("scenario-pane").bounds();
                 window.click("workspace-files-toggle", cx);
                 assert!(window.try_find("workspace-files").is_none());
@@ -6233,10 +6501,27 @@ async fn result_capture_list_scrolls_without_pagination_and_preserves_filtered_s
         assert!(window.try_find(("capture", 0_usize)).is_none());
         window.click(("capture", 151_usize), cx);
         assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
+        window.press("home", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 0"));
+        assert!(window.find(("capture", 0_usize)).visible());
+        window.press("down", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 1"));
+        window.press("up", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 0"));
+        window.press("up", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 0"));
+        window.press("end", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
+        assert!(window.find(("capture", 151_usize)).visible());
         window.within("result-filter").click(1_usize, cx);
         assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
         assert!(window.find(("capture", 0_usize)).visible());
         assert!(window.find(("capture", 151_usize)).visible());
+        window.click(("capture", 151_usize), cx);
+        window.press("up", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 0"));
+        window.press("down", cx);
+        assert_eq!(window.find("capture-heading").label(), Some("Capture 151"));
         window.within("result-filter").click(0_usize, cx);
         assert!(window.find(("capture", 151_usize)).visible());
         assert!(window.try_find(("capture", 0_usize)).is_none());
@@ -6250,9 +6535,22 @@ async fn result_capture_list_scrolls_without_pagination_and_preserves_filtered_s
             .is_some_and(|heading| heading.label() == Some("Capture 100"))
     })
     .await;
-    cx.update_window(handle.into(), |_, window, _| {
+    cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.find(("capture", 100_usize)).visible());
         assert!(window.try_find(("capture", 151_usize)).is_none());
+        window.press("ctrl-a", cx);
+        window.input("No such capture", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("capture-empty").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("capture-empty", cx);
+        window.press("down", cx);
+        window.press("end", cx);
+        assert!(window.find("capture-empty").visible());
     })
     .unwrap();
 }

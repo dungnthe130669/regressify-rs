@@ -29,6 +29,29 @@ fn action_group(kind: &str) -> usize {
 }
 
 impl Workbench {
+    fn sequence_items(&self, scenario: usize) -> Vec<(PathBuf, usize, usize)> {
+        let Some(open) = &self.session.open else {
+            return Vec::new();
+        };
+        let count = self.value["scenarios"][scenario]["actions"]
+            .as_array()
+            .map_or(0, Vec::len);
+        (0..count)
+            .map(|index| (open.entry.path.clone(), scenario, index))
+            .collect()
+    }
+
+    fn open_sequence_item(&mut self, scenario: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if self.busy {
+            return;
+        }
+        let items = self.sequence_items(scenario);
+        if let Some((_, scenario, index)) = self.sequence_list.current_item(&items, None) {
+            self.select(Selection::Action { scenario, index }, window, cx);
+            window.focus(&self.focus, cx);
+        }
+    }
+
     fn sequence_edit(
         &mut self,
         scenario: usize,
@@ -88,10 +111,36 @@ impl Workbench {
         let disabled = self.busy || !self.field_errors.is_empty();
         let mut rows = div()
             .id("sequence-steps")
+            .test_support()
+            .key_context("RegressifyList")
+            .track_focus(&self.sequence_list.focus)
+            .track_scroll(&self.sequence_list.scroll)
+            .relative()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.sequence_list.focus, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(move |this, action: &lists::MoveListSelection, _, cx| {
+                    if !this.busy {
+                        let items = this.sequence_items(scenario);
+                        this.sequence_list.move_to(action, &items, None);
+                        cx.notify();
+                    }
+                }),
+            )
+            .on_action(cx.listener(move |this, _: &OpenListItem, window, cx| {
+                this.open_sequence_item(scenario, window, cx);
+            }))
+            .on_action(cx.listener(move |this, _: &ToggleListItem, window, cx| {
+                this.open_sequence_item(scenario, window, cx);
+            }))
             .flex()
             .flex_col()
             .max_h(px(264.))
-            .overflow_y_scrollbar();
+            .overflow_y_scroll();
         for (index, action) in actions.iter().enumerate() {
             let kind = ACTIONS
                 .iter()
@@ -124,6 +173,17 @@ impl Workbench {
                             .accessibility_label(format!("Action {}: {title}", index + 1))
                             .tooltip(target.clone())
                             .disabled(self.busy)
+                            .selected(self.sequence_list.current.as_ref().is_some_and(
+                                |(path, owner, item)| {
+                                    *owner == scenario
+                                        && *item == index
+                                        && self
+                                            .session
+                                            .open
+                                            .as_ref()
+                                            .is_some_and(|open| &open.entry.path == path)
+                                },
+                            ))
                             .child(
                                 div()
                                     .w_6()
@@ -155,7 +215,8 @@ impl Workbench {
                                     ),
                             )
                             .on_click(cx.listener(move |this, _, window, cx| {
-                                this.select(Selection::Action { scenario, index }, window, cx)
+                                this.select(Selection::Action { scenario, index }, window, cx);
+                                window.focus(&this.focus, cx);
                             })),
                     )
                     .child(
@@ -281,7 +342,7 @@ impl Workbench {
                         .child("No actions"),
                 )
             })
-            .child(rows)
+            .child(rows.scrollbar(&self.sequence_list.scroll, scroll::ScrollbarAxis::Vertical))
             .into_any_element()
     }
 }

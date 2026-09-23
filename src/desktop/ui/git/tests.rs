@@ -368,6 +368,42 @@ fn comparison_changes_require_explicit_selection_and_stay_separate(cx: &mut Test
         assert_eq!(panel.read(cx).selection.len(), 2);
         window.click("git-select-all-comparison", cx);
         assert!(panel.read(cx).selection.is_empty());
+        window.click(("git-select", 0_usize), cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[0].to_string()].into_iter().collect()
+        );
+        window.press("end", cx);
+        window.press("space", cx);
+        assert!(panel.read(cx).selection.is_empty());
+        window.press("home", cx);
+        window.press("enter", cx);
+        assert!(window.try_find(("git-file", 0_usize)).is_none());
+        window.press("enter", cx);
+        assert!(window.find(("git-file", 0_usize)).visible());
+        window.press("ctrl-a", cx);
+        window.click(("git-select", 1_usize), cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(panel.read(cx).selection.len(), 3);
+        window.press("ctrl-shift-a", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[0].to_string()].into_iter().collect()
+        );
+        window.press("ctrl-a", cx);
+        window.press("escape", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[0].to_string()].into_iter().collect()
+        );
+        window.click("git-commit-message", cx);
+        window.press("ctrl-a", cx);
+        window.input("Keyboard selection stays scoped", cx);
+        assert_eq!(
+            panel.read(cx).selection,
+            [paths[0].to_string()].into_iter().collect()
+        );
     })
     .unwrap();
 }
@@ -419,12 +455,40 @@ fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_stat
         assert_eq!(view.read(cx).git.read(cx).selection, expected);
         window.click("git-select-folder:blocked", cx);
         assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        window.press("ctrl-a", cx);
+        let allowed = view
+            .read(cx)
+            .git
+            .read(cx)
+            .snapshot
+            .as_ref()
+            .unwrap()
+            .changes
+            .iter()
+            .filter(|change| !change.is_comparison() && !change.conflict && !change.submodule)
+            .map(|change| change.path.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(view.read(cx).git.read(cx).selection, allowed);
+        window.press("escape", cx);
+        assert!(view.read(cx).git.read(cx).selection.is_empty());
+        window.click("git-select-folder:nested", cx);
         view.read(cx).git.clone().update(cx, |panel, cx| {
             panel.set_disabled(true, cx);
         });
         window.render_frame(cx);
         window.click("git-select-folder:nested", cx);
         assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        for key in [
+            "ctrl-a",
+            "ctrl-shift-a",
+            "escape",
+            "ctrl-space",
+            "end",
+            "enter",
+        ] {
+            window.press(key, cx);
+            assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        }
     })
     .unwrap();
 }

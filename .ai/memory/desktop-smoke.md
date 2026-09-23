@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-09-23
+Verified: 2026-09-24
 
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
@@ -25,8 +25,19 @@ Verified: 2026-09-23
 - Inline `Add-Type` definitions are cached for the PowerShell process. Native
   tests of changed C# need a fresh host; rerunning in an old terminal can otherwise
   retain the previous implementation.
-- The complete default and `-SchemaFlows` native checks pass with the shared input
-  helper, including completion, saving, clipboard operations, and preference
-  restoration. These checks do not imply that optional browser captures were run.
+- The [default flow](../../ci/desktop-smoke/flows/default.ps1) includes pointer-focused
+  Ctrl+A, Ctrl+Shift+A, and Escape checks for suite/scenario selection and the Runs
+  checklist. It verifies accessible selection counts without launching a worker.
+- [Pointer clicks](../../ci/desktop-smoke/controls.ps1) flush the compositor after
+  movement and press, with release in `finally`. Back-to-back mouse events missed
+  native scenario clicks despite passing frame-stepped GPUI tests. The complete
+  default native flow passed after synchronization; preferences were restored.
+- [List keyboard state](../../src/desktop/ui/lists.rs) is scoped to each list's
+  focus handle. [Navigator tests](../../src/desktop/ui/tests.rs) cover filters,
+  other-suite preservation, text-input isolation, disabled state, and scrolling.
+- Keyboard-scrolled rows share an explicit `track_scroll`/`scrollbar` handle;
+  append the scrollbar after rows so direct-child indices stay aligned. The
+  convenience scroll wrapper owns a separate handle. [Workspace-file tests](../../src/desktop/ui/tests.rs)
+  exercise both ends in compact/large windows and both themes.
 - Windows interaction prerequisites and native commands remain in the
   [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).

@@ -19,6 +19,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 1. Refresh the currently viewed report in place after scoped approval, preserving capture/filter/view state and its output root. Recompute its complete original scope, including unapproved failures, without recapturing or changing thresholds; show approval errors in Results.
 1. Idle Results suite badges use the loaded report's scenario/viewport totals, not stale Activity history or raw screenshot counts. Keep live execution counts while a worker is running.
 1. Keep expensive image/file loading off the UI thread and reject stale completion after selection changes. Own popup menus/subscriptions without retained cycles.
+1. Capture-list keyboard navigation uses filtered positions and the retained uniform-list scroll handle. Keep capture selection single-item, clear pending approval through the existing selection path, and leave capture-search shortcuts scoped to its text input.
 
 ## Checks
 

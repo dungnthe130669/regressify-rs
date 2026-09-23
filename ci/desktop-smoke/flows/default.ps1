@@ -21,7 +21,39 @@ function Test-DefaultFlows {
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Checkout' | Out-Null
     if ($null -ne (Find-Control 'Profile')) { throw 'The scenario pane did not switch with the selected suite.' }
-    Invoke-Control 'Checkout'
+    Invoke-Control 'smoke.tests.json' -Pointer
+    Send-FixtureKeys A -Control
+    Invoke-Control 'Runs'
+    Invoke-Control 'Suites'
+    Write-Host 'Checking suite-list Ctrl+A'
+    Wait-Control 'account (1/1 scenarios)' | Out-Null
+    Wait-Control 'smoke (2/2 scenarios)' | Out-Null
+    Write-Host 'Checking run-checklist selection shortcuts'
+    Invoke-Control 'Select all' -Pointer
+    Send-FixtureKeys A -Control
+    Wait-Control 'account (1/1 scenarios)' | Out-Null
+    Send-FixtureKeys A -Control -Shift
+    Wait-Control 'account (0/1 scenarios)' | Out-Null
+    Wait-Control 'smoke (0/2 scenarios)' | Out-Null
+    Invoke-Control 'Editor'
+    Invoke-Control 'Checkout' -Pointer
+    Wait-Control 'Choose viewports' | Out-Null
+    Send-FixtureKeys A -Control
+    Invoke-Control 'Runs'
+    Invoke-Control 'Suites'
+    Write-Host 'Checking scenario-list Ctrl+A'
+    Wait-Control 'smoke (2/2 scenarios)' | Out-Null
+    Wait-Control 'account (0/1 scenarios)' | Out-Null
+    Capture-Window 'keyboard-scenario-selection'
+    Invoke-Control 'Editor'
+    Invoke-Control 'Checkout' -Pointer
+    Wait-Control 'Choose viewports' | Out-Null
+    Send-FixtureKeys Escape
+    Invoke-Control 'Runs'
+    Invoke-Control 'Suites'
+    Wait-Control 'smoke (0/2 scenarios)' | Out-Null
+    Invoke-Control 'Editor'
+    Invoke-Control 'Checkout' -Pointer
     Wait-Control 'Document loaded' | Out-Null
     Capture-Window 'editor'
     Invoke-Control 'Add action' -Pointer

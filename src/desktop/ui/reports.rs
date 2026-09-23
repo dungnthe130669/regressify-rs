@@ -319,6 +319,7 @@ pub(super) struct ResultsPanel {
     search: Entity<InputState>,
     _subscription: Subscription,
     focus: FocusHandle,
+    capture_focus: FocusHandle,
     previews: Vec<Preview>,
     image_menu: Option<ImageMenu>,
     preview_textures: [PreviewTexture; 3],
@@ -616,6 +617,7 @@ impl ResultsPanel {
             search,
             _subscription: subscription,
             focus: cx.focus_handle(),
+            capture_focus: cx.focus_handle().tab_index(0),
             previews: Vec::new(),
             image_menu: None,
             preview_textures: Default::default(),
@@ -1104,6 +1106,29 @@ impl ResultsPanel {
         let mut rows = div()
             .id("capture-scroll")
             .test_support()
+            .key_context("RegressifyList")
+            .track_focus(&self.capture_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.focus(&this.capture_focus, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &lists::MoveListSelection, window, cx| {
+                    if this.loading {
+                        return;
+                    }
+                    let current = this.capture.and_then(|capture| {
+                        this.visible_captures
+                            .iter()
+                            .position(|index| *index == capture)
+                    });
+                    if let Some(position) = action.index(current, this.visible_captures.len()) {
+                        this.select_capture(this.visible_captures[position], window, cx);
+                    }
+                }),
+            )
             .flex()
             .flex_col()
             .flex_1()
@@ -1237,7 +1262,8 @@ impl ResultsPanel {
                     )
                     .text_color(color)
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.select_capture(index, window, cx)
+                        window.focus(&this.capture_focus, cx);
+                        this.select_capture(index, window, cx);
                     })),
             )
             .into_any_element()

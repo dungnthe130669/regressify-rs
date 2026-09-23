@@ -90,6 +90,61 @@ try { $keyboardType::KeySequence([ConsoleKey]0, $true, $false) | Out-Null } catc
 }
 Assert-SmokeEqual $invalidKeyRejected $true 'An invalid key must fail before constructing input events'
 
+$pointerTypeName = 'SmokePointerCheck' + [guid]::NewGuid().ToString('N')
+$pointerType = Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+public static class $pointerTypeName {
+    public static readonly List<string> Events = new List<string>();
+    public static bool FailPressedFrame;
+    private static bool pressed;
+    public static void Reset(bool fail) { Events.Clear(); pressed = false; FailPressedFrame = fail; }
+    public static bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags) {
+        Events.Add("activate"); return true;
+    }
+    public static bool SetPhysicalCursorPos(int x, int y) {
+        Events.Add("move:" + x + ":" + y); return true;
+    }
+    public static void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra) {
+        if (flags != 2 && flags != 4) throw new InvalidOperationException("Unexpected pointer event");
+        pressed = flags == 2;
+        Events.Add(pressed ? "down" : "up");
+    }
+    public static int DwmFlush() {
+        Events.Add("frame");
+        if (pressed && FailPressedFrame) throw new InvalidOperationException("Synthetic compositor failure");
+        return 0;
+    }
+}
+"@ -PassThru
+$pointerProbe = $definitions['Invoke-Control'].Extent.Text.
+    Replace('function Invoke-Control(', 'function Invoke-SmokePointerProbe(').
+    Replace('[RegressifySmokeNative]', "[$pointerTypeName]").
+    Replace('[RegressifySmokePointer]', "[$pointerTypeName]")
+
+function Test-SmokePointerClick([bool]$FailPressedFrame) {
+    . ([scriptblock]::Create($pointerProbe))
+    function Wait-Control {
+        [pscustomobject]@{ Current = [pscustomobject]@{
+            BoundingRectangle = [pscustomobject]@{ Left = 10; Top = 20; Width = 100; Height = 40 }
+        } }
+    }
+    function Focus-Fixture { $pointerType::Events.Add('focus') }
+    $originalWindow = $script:window
+    $script:window = [IntPtr]::Zero
+    $pointerType::Reset($FailPressedFrame)
+    $failure = $null
+    try { Invoke-SmokePointerProbe 'Synthetic row' -Pointer } catch {
+        $failure = $_.Exception.GetBaseException().Message
+    } finally { $script:window = $originalWindow }
+    $expected = @('activate', 'focus', 'move:60:40', 'frame', 'down', 'frame', 'up')
+    if (-not $FailPressedFrame) { $expected += 'frame' }
+    Assert-SmokeEqual @($pointerType::Events) $expected 'Native pointer input must settle between events and always release'
+    Assert-SmokeEqual $failure $(if ($FailPressedFrame) { 'Synthetic compositor failure' } else { $null }) 'Pointer failures must propagate after release'
+}
+Test-SmokePointerClick $false
+Test-SmokePointerClick $true
+
 $lifecycle = @($entry.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
 Assert-SmokeEqual $lifecycle.Count 1 'The entry point must own the run/cleanup boundary'
 $runnerTokens = $null
@@ -188,4 +243,4 @@ function Test-SmokeDraftScope([bool]$KeepOpen) {
 Test-SmokeDraftScope $false
 Test-SmokeDraftScope $true
 
-Write-Output "Smoke harness checks passed: $($loaded.Count) modules, $($definitions.Count) helpers, $dispatchChecks dispatch/cleanup cases, native keyboard events, and default-flow draft scope. No UI, app builds, or user settings were touched."
+Write-Output "Smoke harness checks passed: $($loaded.Count) modules, $($definitions.Count) helpers, $dispatchChecks dispatch/cleanup cases, native keyboard/pointer events, and default-flow draft scope. No UI, app builds, or user settings were touched."

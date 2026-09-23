@@ -194,6 +194,7 @@ pub(super) struct RunPanel {
     pub(super) manager: RunManager,
     log: Entity<EditorState>,
     focus: FocusHandle,
+    selection_focus: FocusHandle,
     status: String,
     tab: usize,
     disabled: bool,
@@ -234,6 +235,7 @@ impl RunPanel {
             manager: RunManager::default(),
             log: cx.new(|cx| EditorState::new(window, cx).line_number(false)),
             focus: cx.focus_handle(),
+            selection_focus: cx.focus_handle().tab_index(0),
             status: "No command running".into(),
             tab: 0,
             disabled: false,
@@ -1219,43 +1221,66 @@ impl RunPanel {
                 .filter(|suite| suite.error.is_none())
                 .all(|suite| self.selection.all_selected(suite));
         let panel = cx.entity();
-        let mut list = div().flex().flex_col().gap_2().child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .child(format!(
-                    "{} {} in {} {} selected",
-                    self.selected_scenario_count(),
-                    if self.selected_scenario_count() == 1 {
-                        "scenario"
-                    } else {
-                        "scenarios"
-                    },
-                    self.selection.len(),
-                    if self.selection.len() == 1 {
-                        "suite"
-                    } else {
-                        "suites"
+        let mut list = div()
+            .id("run-selection-list")
+            .test_support()
+            .key_context("RegressifyChecklist")
+            .track_focus(&self.selection_focus)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !this.selection_focus.contains_focused(window, cx) {
+                        window.focus(&this.selection_focus, cx);
                     }
-                ))
-                .child(
-                    design::selection_checkbox(
-                        "select-all-suites",
-                        all_selected,
-                        !self.selection.is_empty() && !all_selected,
-                        disabled || self.suites.is_empty(),
-                        cx,
-                    )
-                    .accessibility_label("Select all")
-                    .child("Select all")
-                    .on_change(move |state, _, _, cx| {
-                        panel.update(cx, |panel, cx| {
-                            panel.select_all(state == gpui_kit::base::CheckboxState::Checked, cx)
-                        });
-                    }),
-                ),
-        );
+                }),
+            )
+            .on_action(cx.listener(|this, _: &SelectAllListItems, _, cx| {
+                this.select_all(true, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ClearListSelection, _, cx| {
+                this.select_all(false, cx);
+            }))
+            .flex()
+            .flex_col()
+            .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child(format!(
+                        "{} {} in {} {} selected",
+                        self.selected_scenario_count(),
+                        if self.selected_scenario_count() == 1 {
+                            "scenario"
+                        } else {
+                            "scenarios"
+                        },
+                        self.selection.len(),
+                        if self.selection.len() == 1 {
+                            "suite"
+                        } else {
+                            "suites"
+                        }
+                    ))
+                    .child(
+                        design::selection_checkbox(
+                            "select-all-suites",
+                            all_selected,
+                            !self.selection.is_empty() && !all_selected,
+                            disabled || self.suites.is_empty(),
+                            cx,
+                        )
+                        .accessibility_label("Select all")
+                        .child("Select all")
+                        .on_change(move |state, _, _, cx| {
+                            panel.update(cx, |panel, cx| {
+                                panel
+                                    .select_all(state == gpui_kit::base::CheckboxState::Checked, cx)
+                            });
+                        }),
+                    ),
+            );
         for suite in &self.suites {
             let name = suite.name.clone();
             let report_name = name.clone();

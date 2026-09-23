@@ -25,6 +25,10 @@ and [Git UI](../../../src/desktop/ui/git.rs).
    push, auto-stash, resolve conflicts, or contact real remotes without authorization.
 1. Preserve dirty-editor guards and confirmation cancellation when context changes.
    Use no-ext-diff/no-textconv for previews and safe remote URL validation.
+1. Keep keyboard selection scoped to the focused Changes or Comparison Changes
+   tree. Select All and folder toggles exclude conflicts/submodules and must not
+   include the other group implicitly. Focus/navigation never executes Git writes;
+   commit-message inputs retain their text shortcuts.
 
 ## Checks
 

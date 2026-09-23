@@ -109,8 +109,14 @@ function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
         if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2))) {
             throw "Cannot position the mouse over '$Name'."
         }
+        # Let native hit-testing and pressed state settle between pointer events.
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
         [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-        [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        try {
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        } finally {
+            [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+        }
     }
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }

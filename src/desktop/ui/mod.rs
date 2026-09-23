@@ -36,6 +36,7 @@ mod deployment;
 mod design;
 mod files;
 mod git;
+mod lists;
 mod navigation;
 mod overview;
 mod reports;
@@ -66,7 +67,11 @@ actions!(
         OpenDeployment,
         OpenGit,
         ShowAbout,
-        OpenCommands
+        OpenCommands,
+        SelectAllListItems,
+        ClearListSelection,
+        ToggleListItem,
+        OpenListItem
     ]
 );
 
@@ -147,6 +152,10 @@ pub struct Workbench {
     main_tab: usize,
     overview: bool,
     scenario_search: Entity<InputState>,
+    suite_list: lists::ListState<PathBuf>,
+    scenario_list: lists::ListState<(PathBuf, usize)>,
+    workspace_list: lists::ListState<PathBuf>,
+    sequence_list: lists::ListState<(PathBuf, usize, usize)>,
     workspace_files_open: bool,
     selected_only: bool,
     field_search: Entity<InputState>,
@@ -360,6 +369,10 @@ impl Workbench {
             main_tab: 0,
             overview: true,
             scenario_search,
+            suite_list: lists::ListState::new(cx),
+            scenario_list: lists::ListState::new(cx),
+            workspace_list: lists::ListState::new(cx),
+            sequence_list: lists::ListState::new(cx),
             workspace_files_open: false,
             selected_only: false,
             field_search,
@@ -2782,6 +2795,7 @@ fn bind_keys(cx: &mut App) {
     } else {
         "ctrl"
     };
+    lists::bind_keys(modifier, cx);
     cx.bind_keys([
         KeyBinding::new(
             &format!("{modifier}-shift-p"),

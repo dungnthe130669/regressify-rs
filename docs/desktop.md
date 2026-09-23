@@ -663,6 +663,38 @@ or every scenario in the open suite, including filtered-out items. Scenario
 selection changes only the open suite's scope, preserving other selected suites.
 Clearing selection does not close the editor or discard its draft.
 
+Click a list row or tab into the list to use its keyboard controls. In the suite
+and scenario lists:
+
+| Shortcut                    | Behavior                                                         |
+| --------------------------- | ---------------------------------------------------------------- |
+| Ctrl+A                      | Select visible rows, excluding filtered-out items                |
+| Ctrl+Shift+A or Escape      | Clear selection without closing the document                     |
+| Up/Down, Home/End           | Move selection to the previous, next, first, or last visible row |
+| Shift + navigation key      | Extend or shrink the selection range                             |
+| Ctrl + navigation key       | Move focus without changing selection                            |
+| Ctrl+Shift + navigation key | Add a range to the existing selection                            |
+| Space or Ctrl+Space         | Toggle the focused row                                           |
+| Enter                       | Open the focused suite or scenario                               |
+
+Use Cmd instead of Ctrl on macOS. Scenario selection remains scoped to the open
+suite; other selected suites are preserved. The toolbar's All button still
+includes filtered-out rows. Shortcuts in search boxes, document fields, and
+source/log editors continue to operate on their text, not the surrounding lists.
+Selection shortcuts respect active-operation locks.
+
+Runs > Suites supports Ctrl+A, Ctrl+Shift+A, and Escape for its checklist. Git's
+Changes and Comparison Changes trees support the same selection shortcuts within
+the focused group, keeping comparison artifacts separate and excluding conflicts
+and submodules. In Git, arrows and Home/End move focus, Space toggles a file or
+folder, and Enter opens a diff or expands/collapses a folder. These keys never
+commit or discard files.
+
+Viewports and Captures remain single-selection lists with Up/Down and Home/End
+navigation. Workspace files and action sequences use these keys to move focus,
+then Enter or Space opens the focused item. Keyboard navigation scrolls off-screen
+rows into view and retains the existing unsaved-draft guards.
+
 In Results, the lower pane becomes Captures for the active suite. Selecting a
 suite there changes the report being reviewed without opening another editor
 document or disturbing an unsaved draft.
