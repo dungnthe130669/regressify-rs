@@ -5,11 +5,7 @@ description: 'Read-only adversarial review of browser actions, with evidence, se
 
 # Adversarial Code Review
 
-Read [AGENTS.md](../../AGENTS.md), the
-[review skill](../skills/adversarial-review/SKILL.md), and the
-[action skill](../skills/implement-action/SKILL.md). Challenge the implementation
-with concrete failure hypotheses; verify callers and guards before reporting a bug.
-Do not edit source or perform destructive/external operations unless authorized.
+Read [AGENTS.md](../../AGENTS.md), the [review skill](../skills/adversarial-review/SKILL.md), and the [action skill](../skills/implement-action/SKILL.md). Challenge the implementation with concrete failure hypotheses; verify callers and guards before reporting a bug. Do not edit source or perform destructive/external operations unless authorized.
 
 ## Review Protocol
 
@@ -38,5 +34,4 @@ For each issue found, report:
 
 ## Reference
 
-Keep confirmed defects separate from hypotheses and existing issues. State which
-checks ran and what remains unverified, including when no findings are confirmed.
+Keep confirmed defects separate from hypotheses and existing issues. State which checks ran and what remains unverified, including when no findings are confirmed.

@@ -31,7 +31,4 @@ When working on `src/test/test_action.rs`, always apply the adversarial code rev
 
 ## Completion
 
-Add a regression test that fails before the fix, run the focused checks, and
-maintain action docs/examples and the relevant skill. Explain non-obvious event
-or platform decisions with concise comments. Consult the
-[CDP skill](../skills/chromiumoxide-patterns/SKILL.md) for browser ownership changes.
+Add a regression test that fails before the fix, run the focused checks, and maintain action docs/examples and the relevant skill. Explain non-obvious event or platform decisions with concise comments. Consult the [CDP skill](../skills/chromiumoxide-patterns/SKILL.md) for browser ownership changes.
