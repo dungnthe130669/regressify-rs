@@ -377,18 +377,31 @@ upload with sizes and recovery steps. Choose fewer suites or a larger plan;
 Azure may also reject a fitting report if other environments exhaust total app
 storage. Optimization shares the deployment deadline and does not affect Netlify.
 
-Netlify verifies site access, streams a disk-backed ZIP to its HTTPS deploy API,
-and waits for the deploy to become ready. ZIPs are limited to 25,000 files and
-2 GiB. Read/poll requests retry transient errors within bounds; deployment
-creation is not automatically retried because a failed response may still have
-created a deploy. Check Netlify's deploy history before retrying a failed upload.
+Netlify verifies site access, hashes the staged files, and creates an asynchronous
+file-digest deployment; it does not build or upload a ZIP. The manifest includes
+every selected report path and its SHA-1, as required by Netlify's API. Only
+content Netlify requests is uploaded, with at most four file requests in flight.
+Identical content is uploaded once even when used at multiple paths. Existing
+reference images and shared assets can therefore be reused across deployments.
+Netlify still publishes the complete report atomically, after every required
+file is accepted and the deployment becomes ready.
+
+The client limits Netlify deployments to 25,000 paths, 2 GiB of staged content,
+and a 16 MiB manifest; it bounds API response bodies to 2 MiB. File paths and
+content are revalidated when uploading. Authentication, permanent HTTP errors,
+and changed or unreadable staged files fail without automatic retries. File
+uploads and read/poll requests retry transient errors up to six attempts with
+bounded backoff and numeric Retry-After support. Deployment creation is not
+automatically retried because a failed response may still have created a deploy.
+Check Netlify's deploy history before retrying a failed or canceled deployment.
 Locked production deploys and Git-only production restrictions are reported
 before upload. Azure authentication, network restrictions, and restricted role
 rules are rejected instead of silently publishing unprotected reports on Netlify.
 Configure access protection in Netlify itself for private reports. Netlify allows
-up to one hour for packaging, upload, and publication polling; the upload request
-uses this same budget. Connections retain a 10-second timeout and read/poll
-requests a 30-second timeout. Azure retains its 30-minute deployment deadline.
+up to one hour for hashing, uploads, retries, and publication polling. Each file
+request uses that timeout but cannot outlive the overall deadline. Connections
+retain a 10-second timeout; manifest creation and read/poll requests use 30 seconds.
+Azure retains its ZIP/block-upload protocol and 30-minute deployment deadline.
 Both providers keep tokens out of URLs and logs.
 
 Provider failures include available structured error details, HTTP status,
@@ -415,16 +428,18 @@ offer Open Site.
 Activity also shows the 12 most recent nonempty worker log lines, bounded for
 responsive rendering; View Log retains the full bounded run log. Staging and
 packaging report file/byte counts, optimization reports actual savings, and
-uploads report bytes sent (Netlify) or acknowledged (Azure). Azure block commits,
+Netlify reports reused paths, per-file bytes sent, and accepted file/byte counts;
+Azure reports acknowledged bytes. Azure block commits,
 retry reasons/delays, and each provider polling state are logged. A five-second
 heartbeat continues during long asynchronous operations, without claiming
 unmeasured completion percentages or provider acceptance.
-Netlify samples upload progress every 60 seconds. If the byte count has not
-advanced since the previous sample, Activity and View Log show a warning each
-minute with the elapsed time without observed progress and the sent/total bytes.
-The upload keeps running, so users can keep waiting or choose Stop. Once all
-bytes have been sent, warnings describe waiting for Netlify's acceptance instead
-of a stalled transfer.
+Netlify samples each active file upload every 60 seconds. If its byte count has
+not advanced since the previous sample, Activity and View Log show a warning
+each minute identifying the file number, elapsed time without observed progress,
+and sent/total bytes. The upload keeps running, so users can keep waiting or
+choose Stop. Once a file's bytes have been sent, warnings describe waiting for
+Netlify's acceptance instead of a stalled transfer. Retry attempts restart that
+file's sent counter; accepted totals count each required content only once.
 Stop cancels the local worker process tree; it cannot undo a deployment already
 accepted by Azure or Netlify. Check the provider's deploy history before retrying
 after cancellation. Deployment
@@ -435,6 +450,15 @@ Optional non-publishing API checks use `AZURE_STATIC_WEB_APPS_API_TOKEN`,
 `NETLIFY_PAT`, and `NETLIFY_SITE_ID` from the process environment:
 `cargo test --locked --features desktop --lib live_deployment_ -- --ignored --nocapture --test-threads=1`.
 These tests validate the Azure tier and Netlify site access without creating a deploy.
+
+An explicitly publishing Netlify smoke test is also available after setting
+`NETLIFY_PAT` and `NETLIFY_SITE_ID` in the process environment:
+`cargo test --locked --features desktop --lib live_publish_netlify_digest -- --ignored --nocapture --test-threads=1`.
+Use a dedicated test site: this replaces its current content with a tiny
+synthetic report, publishes twice to exercise content reuse, and checks the
+public page and stylesheet. It is excluded from the `live_deployment_` preflight
+filter and all ordinary test runs. Load credentials privately from a local
+environment file when needed; never print or commit their values.
 
 Native Windows deployment/layout verification uses
 `./ci/desktop-smoke.ps1 -SkipBuild -DeploymentFlows` after building the GUI. It

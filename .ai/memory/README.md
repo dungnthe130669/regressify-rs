@@ -34,8 +34,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   headless regression checks.
 - [Deployment packaging](deployment-packaging.md): dependency-only staging,
   historical capture selection, and exact ZIP regression checks.
-- [Netlify uploads](deployment-netlify.md): request deadlines, sampled progress
-  warnings, and local cancellation semantics.
+- [Netlify uploads](deployment-netlify.md): digest manifests, per-file retries,
+  sampled progress warnings, and local cancellation semantics.
 
 ## Checks
 

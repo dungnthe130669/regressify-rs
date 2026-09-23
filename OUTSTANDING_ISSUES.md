@@ -70,7 +70,7 @@ it was risk-focused, not an exhaustive security certification.
   extended navigation flags. The complete default authoring and `-SchemaFlows`
   checks pass, including completion, clipboard operations, saves, and preference
   restoration; [headless checks](ci/test-desktop-smoke.ps1) cover key-event generation.
-- Netlify uploads use a one-hour deployment deadline instead of inheriting a three-minute HTTP timeout; unchanged progress produces periodic warnings without aborting or retrying the upload.
+- Netlify uses asynchronous digest manifests and uploads only missing content, with four concurrent file requests and bounded per-file retries. The one-hour deadline and periodic stall warnings remain; deployment creation is never automatically retried. Live publication and unchanged-content reuse were verified with a synthetic report.
 - Results approval is limited to the current scenario/viewport and recalculates the original report; whole-run approval remains in Runs.
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.

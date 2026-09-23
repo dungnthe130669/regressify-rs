@@ -1,16 +1,31 @@
-use std::{path::Path, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::Read,
+    path::{Path, PathBuf},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt, stream};
 use reqwest::{
     Client, Url,
     header::{AUTHORIZATION, HeaderValue},
 };
 use serde::{Deserialize, de::DeserializeOwned};
+use sha1::{Digest, Sha1};
 
-use super::{DeployTarget, DeploymentProvider, diagnostics, package::Package, phase};
+use super::{DeployTarget, DeploymentProvider, diagnostics, phase};
 
 const UPLOAD_PROGRESS_INTERVAL: Duration = Duration::from_secs(60);
+const MAX_FILES: usize = 25_000;
+const MAX_CONTENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = 16 * 1024 * 1024;
+const UPLOAD_CONCURRENCY: usize = 4;
 
 #[derive(Deserialize)]
 struct Site {
@@ -29,6 +44,7 @@ struct Deploy {
     id: String,
     site_id: String,
     state: String,
+    required: Option<Vec<String>>,
     ssl_url: Option<String>,
     deploy_ssl_url: Option<String>,
     draft: Option<bool>,
@@ -124,6 +140,7 @@ impl NetlifyClient {
             target.provider == DeploymentProvider::Netlify,
             "Netlify client requires a Netlify target"
         );
+        let deadline = Instant::now() + self.deadline;
         let operation = async {
             validate_static_configuration(root)?;
             phase("Validating Netlify deployment target");
@@ -143,66 +160,31 @@ impl NetlifyClient {
                     .is_some_and(|deploy| deploy.locked == Some(true)),
                 "Unlock the current Netlify deployment before publishing reports"
             );
-            phase("Packaging selected reports for Netlify");
+            phase("Hashing selected report files for Netlify");
             let directory = root.to_path_buf();
-            let package =
-                tokio::task::spawn_blocking(move || Package::create(&directory, 25_000)).await??;
-            phase(&format!(
-                "Uploading {} report files to Netlify",
-                package.files
-            ));
-            let input = tokio::fs::File::open(package.file.path()).await?;
-            let length = package.file.as_file().metadata()?.len();
-            let sent = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
-            let streamed = sent.clone();
-            let body = futures::stream::try_unfold(
-                (input, std::time::Instant::now()),
-                move |(mut input, mut last_update)| {
-                    let streamed = streamed.clone();
-                    async move {
-                        use tokio::io::AsyncReadExt;
-                        let mut buffer = vec![0; 64 * 1024];
-                        let count = input.read(&mut buffer).await?;
-                        if count == 0 {
-                            return Ok::<_, std::io::Error>(None);
-                        }
-                        buffer.truncate(count);
-                        let completed = streamed
-                            .fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed)
-                            + count as u64;
-                        if completed == length || last_update.elapsed().as_secs() >= 1 {
-                            phase(&format!(
-                                "Netlify upload sent: {} of {} KiB ({:.1}%); awaiting provider acceptance",
-                                completed / 1024,
-                                length / 1024,
-                                completed as f64 * 100.0 / length as f64
-                            ));
-                            last_update = std::time::Instant::now();
-                        }
-                        Ok(Some((buffer, (input, last_update))))
-                    }
-                },
+            let manifest =
+                tokio::task::spawn_blocking(move || Manifest::create(&directory, deadline))
+                    .await??;
+            let body =
+                serde_json::to_vec(&serde_json::json!({"async":true, "files":&manifest.files}))?;
+            ensure!(
+                body.len() <= MAX_MANIFEST_BYTES,
+                "Netlify file manifest exceeds 16 MiB"
             );
-            let upload = self
+            phase(&format!(
+                "Creating Netlify deployment for {} files ({:.2} MiB content)",
+                manifest.files.len(),
+                manifest.bytes as f64 / (1024.0 * 1024.0)
+            ));
+            let response = self
                 .client
                 .post(self.endpoint.join(&format!("{site_path}/deploys"))?)
                 .header(AUTHORIZATION, self.authorization.clone())
-                .header("Content-Type", "application/zip")
-                .header("Content-Length", length)
-                .timeout(self.deadline)
-                .body(reqwest::Body::wrap_stream(body))
-                .send();
-            let mut progress = UploadStallMonitor::default();
-            let response = super::monitor(upload, UPLOAD_PROGRESS_INTERVAL, |elapsed| {
-                if let Some(warning) = progress.warning(
-                    sent.load(std::sync::atomic::Ordering::Relaxed), length, elapsed,
-                ) {
-                    phase(&warning);
-                }
-            }).await
-                .map_err(|error| anyhow!("Netlify upload {} after sending {} of {} KiB; check the site's deploy history before retrying",
-                    if error.is_timeout() { "timed out" } else if error.is_connect() { "could not connect" } else { "did not complete" },
-                    sent.load(std::sync::atomic::Ordering::Relaxed) / 1024, length / 1024))?;
+                .header("Content-Type", "application/json")
+                .timeout(Duration::from_secs(30))
+                .body(body)
+                .send().await
+                .map_err(|_| anyhow!("Netlify deployment creation did not complete; check the site's deploy history before retrying"))?;
             if !response.status().is_success() {
                 let error = diagnostics::http_error(
                     response,
@@ -224,8 +206,9 @@ impl NetlifyClient {
             );
             let deploy_id = deploy.id.clone();
             phase(&format!(
-                "Netlify accepted upload; waiting for deployment {deploy_id}"
+                "Netlify created deployment {deploy_id}; checking required files"
             ));
+            let mut uploaded = false;
             let polling_started = std::time::Instant::now();
             let mut polls = 0;
             loop {
@@ -238,6 +221,14 @@ impl NetlifyClient {
                     "Netlify returned a draft instead of a production deployment"
                 );
                 match deploy.state.as_str() {
+                    "prepared" | "uploading" if !uploaded => {
+                        let required = deploy
+                            .required
+                            .as_deref()
+                            .context("Netlify returned no required-file list")?;
+                        self.upload_files(&manifest, required, &deploy_id).await?;
+                        uploaded = true;
+                    }
                     "ready" => {
                         let value = deploy
                             .ssl_url
@@ -288,6 +279,418 @@ impl NetlifyClient {
             "Netlify deployment exceeded its 1-hour deadline; check the site's deploy history",
         )?
     }
+
+    async fn upload_files(
+        &self,
+        manifest: &Manifest,
+        required: &[String],
+        deploy_id: &str,
+    ) -> Result<()> {
+        let files = manifest.required_files(required)?;
+        let count = files.len();
+        let bytes = files.iter().map(|(_, file)| file.bytes).sum::<u64>();
+        phase(&format!(
+            "Netlify needs {count} distinct files ({:.2} MiB); reusing content for {} of {} paths",
+            bytes as f64 / (1024.0 * 1024.0),
+            manifest.files.len() - count,
+            manifest.files.len()
+        ));
+        let accepted = AtomicUsize::new(0);
+        let acknowledged = AtomicU64::new(0);
+        stream::iter(files.into_iter().enumerate())
+            .map(|(index, (digest, file))| {
+                let accepted = &accepted;
+                let acknowledged = &acknowledged;
+                async move {
+                    self.upload_file(manifest, file, digest, deploy_id, index + 1, count)
+                        .await?;
+                    let completed_bytes =
+                        acknowledged.fetch_add(file.bytes, Ordering::Relaxed) + file.bytes;
+                    let completed = accepted.fetch_add(1, Ordering::Relaxed) + 1;
+                    phase(&format!(
+                        "Netlify upload acknowledged: {completed} of {count} files ({} of {} KiB)",
+                        completed_bytes / 1024,
+                        bytes / 1024
+                    ));
+                    Ok::<_, anyhow::Error>(())
+                }
+            })
+            .buffer_unordered(UPLOAD_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+        phase("Netlify required files uploaded; waiting for publication");
+        Ok(())
+    }
+
+    async fn upload_file(
+        &self,
+        manifest: &Manifest,
+        file: &ManifestFile,
+        digest: &str,
+        deploy_id: &str,
+        position: usize,
+        count: usize,
+    ) -> Result<()> {
+        let mut url = self.endpoint.join(&format!("deploys/{deploy_id}/files/"))?;
+        url.path_segments_mut()
+            .map_err(|_| anyhow!("Invalid Netlify endpoint"))?
+            .pop_if_empty()
+            .extend(file.path.split('/'));
+        for attempt in 0..6 {
+            let mut input = manifest.open_file(&file.path)?;
+            ensure!(
+                input.metadata()?.len() == file.bytes,
+                "Deployment file changed after hashing"
+            );
+            let transfer = Arc::new(FileTransfer::default());
+            let body = if file.bytes == 0 {
+                let mut extra = [0];
+                ensure!(
+                    input.read(&mut extra)? == 0 && format!("{:x}", Sha1::digest([])) == digest,
+                    "Deployment file changed after hashing"
+                );
+                transfer.verified.store(true, Ordering::Release);
+                reqwest::Body::from(Vec::new())
+            } else {
+                upload_body(
+                    tokio::fs::File::from_std(input),
+                    digest.to_owned(),
+                    file.bytes,
+                    transfer.clone(),
+                    position,
+                    count,
+                )
+            };
+            let upload = self
+                .client
+                .put(url.clone())
+                .header(AUTHORIZATION, self.authorization.clone())
+                .header("Content-Type", "application/octet-stream")
+                .header("Content-Length", file.bytes)
+                .timeout(self.deadline)
+                .body(body)
+                .send();
+            let mut progress = UploadStallMonitor::default();
+            let response = super::monitor(upload, UPLOAD_PROGRESS_INTERVAL, |elapsed| {
+                if let Some(warning) =
+                    progress.warning(transfer.sent.load(Ordering::Relaxed), file.bytes, elapsed)
+                {
+                    phase(&format!("Netlify file {position}/{count}: {warning}"));
+                }
+            })
+            .await;
+            ensure!(
+                !transfer.read_failed.load(Ordering::Acquire),
+                "Cannot upload changed or unreadable staged content to Netlify"
+            );
+            let mut retry_after = None;
+            let error = match response {
+                Ok(response) if response.status().is_success() => {
+                    response_bytes(response).await?;
+                    ensure!(
+                        transfer.verified.load(Ordering::Acquire),
+                        "Netlify accepted a file before its content was verified"
+                    );
+                    return Ok(());
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    retry_after = response
+                        .headers()
+                        .get("Retry-After")
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .map(|seconds| Duration::from_secs(seconds.min(60)));
+                    let error = diagnostics::http_error(
+                        response,
+                        DeploymentProvider::Netlify,
+                        &self.authorization,
+                    )
+                    .await;
+                    if !status.is_server_error() && !matches!(status.as_u16(), 408 | 429) {
+                        return Err(error);
+                    }
+                    error
+                }
+                Err(error) => {
+                    ensure!(
+                        !error.is_body(),
+                        "Cannot upload changed or unreadable staged content to Netlify"
+                    );
+                    anyhow!(
+                        "Netlify file upload {} after sending {} of {} KiB",
+                        if error.is_timeout() {
+                            "timed out"
+                        } else {
+                            "did not complete"
+                        },
+                        transfer.sent.load(Ordering::Relaxed) / 1024,
+                        file.bytes / 1024
+                    )
+                }
+            };
+            if attempt == 5 {
+                return Err(error);
+            }
+            let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            // File PUTs are idempotent within this deploy; creating another deploy is not.
+            phase(&format!(
+                "Netlify file {position}/{count} retry {}/6 in {:.1}s: {error}",
+                attempt + 2,
+                delay.as_secs_f64()
+            ));
+            tokio::time::sleep(delay).await;
+        }
+        bail!("Netlify file upload retry budget exhausted")
+    }
+}
+
+struct ManifestFile {
+    path: String,
+    bytes: u64,
+}
+
+struct Manifest {
+    root: PathBuf,
+    files: BTreeMap<String, String>,
+    contents: BTreeMap<String, ManifestFile>,
+    bytes: u64,
+}
+
+impl Manifest {
+    fn create(root: &Path, deadline: Instant) -> Result<Self> {
+        Self::create_bounded(root, deadline, MAX_FILES, MAX_CONTENT_BYTES)
+    }
+
+    fn create_bounded(
+        root: &Path,
+        deadline: Instant,
+        file_limit: usize,
+        byte_limit: u64,
+    ) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(root)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Deployment staging root must be a regular directory"
+        );
+        let mut manifest = Self {
+            root: root.canonicalize()?,
+            files: BTreeMap::new(),
+            contents: BTreeMap::new(),
+            bytes: 0,
+        };
+        let mut last_update = Instant::now();
+        for entry in walkdir::WalkDir::new(&manifest.root)
+            .follow_links(false)
+            .sort_by_file_name()
+        {
+            ensure!(
+                Instant::now() < deadline,
+                "Netlify hashing exceeded the deployment deadline"
+            );
+            let entry = entry?;
+            ensure!(
+                !entry.file_type().is_symlink(),
+                "Netlify deployment cannot contain symlinks"
+            );
+            if entry.file_type().is_dir() {
+                continue;
+            }
+            ensure!(
+                entry.file_type().is_file(),
+                "Netlify deployment requires regular files"
+            );
+            ensure!(
+                manifest.files.len() < file_limit,
+                "Netlify deployment exceeds the {file_limit}-file limit"
+            );
+            let relative = entry.path().strip_prefix(&manifest.root)?;
+            let path = relative
+                .components()
+                .map(|component| {
+                    component
+                        .as_os_str()
+                        .to_str()
+                        .context("Deployment paths must be UTF-8")
+                })
+                .collect::<Result<Vec<_>>>()?
+                .join("/");
+            ensure!(
+                !path.contains(['#', '?', '\\']) && !path.chars().any(char::is_control),
+                "Netlify deployment path contains unsupported characters"
+            );
+            let mut input = manifest.open_file(&path)?;
+            let bytes = input.metadata()?.len();
+            manifest.bytes = manifest
+                .bytes
+                .checked_add(bytes)
+                .context("Netlify content size overflow")?;
+            ensure!(
+                manifest.bytes <= byte_limit,
+                "Netlify deployment content exceeds its {} MiB limit",
+                byte_limit as f64 / (1024.0 * 1024.0)
+            );
+            let mut hasher = Sha1::new();
+            let mut read = 0;
+            let mut buffer = [0; 64 * 1024];
+            loop {
+                ensure!(
+                    Instant::now() < deadline,
+                    "Netlify hashing exceeded the deployment deadline"
+                );
+                let count = input.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                read += count as u64;
+                ensure!(read <= bytes, "Deployment file changed while hashing");
+                hasher.update(&buffer[..count]);
+            }
+            ensure!(read == bytes, "Deployment file changed while hashing");
+            // Netlify requires SHA-1 for file identity, not authentication or signatures.
+            let digest = format!("{:x}", hasher.finalize());
+            manifest.files.insert(format!("/{path}"), digest.clone());
+            manifest
+                .contents
+                .entry(digest)
+                .or_insert(ManifestFile { path, bytes });
+            if manifest.files.len() == 1
+                || manifest.files.len().is_multiple_of(50)
+                || last_update.elapsed().as_secs() >= 1
+            {
+                phase(&format!(
+                    "Hashed {} report files ({:.2} MiB)",
+                    manifest.files.len(),
+                    manifest.bytes as f64 / (1024.0 * 1024.0)
+                ));
+                last_update = Instant::now();
+            }
+        }
+        ensure!(
+            manifest.files.contains_key("/index.html"),
+            "Deployment requires index.html"
+        );
+        Ok(manifest)
+    }
+
+    fn open_file(&self, path: &str) -> Result<std::fs::File> {
+        let mut source = self.root.clone();
+        for component in path.split('/') {
+            ensure!(
+                !component.is_empty()
+                    && !matches!(component, "." | "..")
+                    && !component.contains(['\\', ':']),
+                "Unsafe deployment path"
+            );
+            source.push(component);
+            ensure!(
+                !std::fs::symlink_metadata(&source)?.file_type().is_symlink(),
+                "Netlify deployment cannot contain symlinks"
+            );
+        }
+        ensure!(
+            source.canonicalize()?.starts_with(&self.root),
+            "Deployment file escapes staging"
+        );
+        ensure!(
+            std::fs::symlink_metadata(&source)?.is_file(),
+            "Netlify deployment requires regular files"
+        );
+        let file = std::fs::File::open(source)?;
+        ensure!(
+            file.metadata()?.is_file(),
+            "Netlify deployment requires regular files"
+        );
+        Ok(file)
+    }
+
+    fn required_files(&self, required: &[String]) -> Result<Vec<(&str, &ManifestFile)>> {
+        let mut files = Vec::new();
+        let mut seen = BTreeSet::new();
+        for digest in required {
+            ensure!(
+                digest.len() == 40 && digest.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                "Netlify returned an invalid required-file digest"
+            );
+            let digest = digest.to_ascii_lowercase();
+            let (digest, file) = self
+                .contents
+                .get_key_value(&digest)
+                .context("Netlify requested content outside the deployment manifest")?;
+            if seen.insert(digest) {
+                files.push((digest.as_str(), file));
+            }
+        }
+        Ok(files)
+    }
+}
+
+#[derive(Default)]
+struct FileTransfer {
+    sent: AtomicU64,
+    verified: AtomicBool,
+    read_failed: AtomicBool,
+}
+
+fn upload_body(
+    input: tokio::fs::File,
+    digest: String,
+    length: u64,
+    transfer: Arc<FileTransfer>,
+    position: usize,
+    files: usize,
+) -> reqwest::Body {
+    let body = stream::try_unfold(
+        (input, Sha1::new(), 0, Instant::now()),
+        move |(mut input, mut hasher, mut completed, mut last_update)| {
+            let digest = digest.clone();
+            let transfer = transfer.clone();
+            async move {
+                use tokio::io::AsyncReadExt;
+                let mut buffer = vec![0; 64 * 1024];
+                let count = input.read(&mut buffer).await.inspect_err(|_| {
+                    transfer.read_failed.store(true, Ordering::Release);
+                })?;
+                completed += count as u64;
+                hasher.update(&buffer[..count]);
+                if completed > length || (count == 0 && completed != length) {
+                    transfer.read_failed.store(true, Ordering::Release);
+                    return Err(std::io::Error::other(
+                        "Deployment file changed after hashing",
+                    ));
+                }
+                if completed == length {
+                    let mut extra = [0];
+                    let extra_count = input.read(&mut extra).await.inspect_err(|_| {
+                        transfer.read_failed.store(true, Ordering::Release);
+                    })?;
+                    if extra_count != 0 || format!("{:x}", hasher.clone().finalize()) != digest {
+                        transfer.read_failed.store(true, Ordering::Release);
+                        return Err(std::io::Error::other(
+                            "Deployment file changed after hashing",
+                        ));
+                    }
+                    transfer.verified.store(true, Ordering::Release);
+                }
+                if count == 0 {
+                    return Ok(None);
+                }
+                buffer.truncate(count);
+                transfer.sent.store(completed, Ordering::Relaxed);
+                if completed == length || last_update.elapsed().as_secs() >= 1 {
+                    phase(&format!(
+                        "Netlify file {position}/{files} upload sent: {} of {} KiB ({:.1}%); awaiting provider acceptance",
+                        completed / 1024,
+                        length / 1024,
+                        completed as f64 * 100.0 / length as f64
+                    ));
+                    last_update = Instant::now();
+                }
+                Ok(Some((buffer, (input, hasher, completed, last_update))))
+            }
+        },
+    );
+    reqwest::Body::wrap_stream(body)
 }
 
 #[derive(Default)]
@@ -329,17 +732,22 @@ impl UploadStallMonitor {
 }
 
 async fn read_json<Response: DeserializeOwned>(response: reqwest::Response) -> Result<Response> {
+    serde_json::from_slice(&response_bytes(response).await?)
+        .map_err(|_| anyhow!("Invalid Netlify response"))
+}
+
+async fn response_bytes(response: reqwest::Response) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| anyhow!("Cannot read Netlify response"))?;
         ensure!(
-            bytes.len() + chunk.len() <= 1024 * 1024,
-            "Netlify response exceeds 1 MiB"
+            bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES,
+            "Netlify response exceeds 2 MiB"
         );
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| anyhow!("Invalid Netlify response"))
+    Ok(bytes)
 }
 
 fn site_url(value: &str) -> Result<String> {
@@ -391,12 +799,9 @@ fn validate_static_configuration(root: &Path) -> Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::{
-        io::{Cursor, Read},
-        sync::{
-            Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
-        },
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     };
 
     const SITE_ID: &str = "eacbea58-4222-4e16-9611-f3b91082a8aa";
@@ -419,6 +824,454 @@ mod tests {
         client.backoff = Duration::from_millis(1);
         client.poll_interval = Duration::from_millis(1);
         client
+    }
+
+    #[tokio::test]
+    async fn digest_deployment_uploads_only_missing_content_and_waits_for_ready() -> Result<()> {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let method = request.method().as_str().to_owned();
+            let path = request.url().to_owned();
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            captured
+                .lock()
+                .unwrap()
+                .push((method.clone(), path.clone(), body.clone()));
+            let response = if path == format!("/api/v1/sites/{SITE_ID}") {
+                json!({"id":SITE_ID})
+            } else if method == "POST" {
+                let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+                if manifest["async"] != true || !manifest["files"].is_object() {
+                    let _ = request.respond(tiny_http::Response::empty(400));
+                    return;
+                }
+                json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared",
+                    "required":["7c211433f02071597741e6ff5a8ea34789abbf43"]})
+            } else if method == "PUT" {
+                json!({})
+            } else {
+                json!({"id":"deploy-123", "site_id":SITE_ID, "state":"ready",
+                    "ssl_url":"https://qa-reports.netlify.app/"})
+            };
+            let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
+        })?;
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("assets"))?;
+        std::fs::write(root.path().join("index.html"), "hello")?;
+        std::fs::write(root.path().join("assets/first.png"), "world")?;
+        std::fs::write(root.path().join("assets/second.png"), "world")?;
+        assert_eq!(
+            client(&site.origin).deploy(root.path(), &target()).await?,
+            "https://qa-reports.netlify.app/"
+        );
+        let records = requests.lock().unwrap();
+        let posts = records
+            .iter()
+            .filter(|record| record.0 == "POST")
+            .collect::<Vec<_>>();
+        assert_eq!(posts.len(), 1);
+        let manifest: serde_json::Value = serde_json::from_slice(&posts[0].2)?;
+        assert_eq!(
+            manifest["files"],
+            json!({
+                "/index.html":"aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d",
+                "/assets/first.png":"7c211433f02071597741e6ff5a8ea34789abbf43",
+                "/assets/second.png":"7c211433f02071597741e6ff5a8ea34789abbf43"
+            })
+        );
+        let uploads = records
+            .iter()
+            .filter(|record| record.0 == "PUT")
+            .collect::<Vec<_>>();
+        assert_eq!(uploads.len(), 1);
+        assert_eq!(
+            uploads[0].1,
+            "/api/v1/deploys/deploy-123/files/assets/first.png"
+        );
+        assert_eq!(uploads[0].2, b"world");
+        assert!(
+            records
+                .iter()
+                .any(|record| record.0 == "GET" && record.1.ends_with("/deploys/deploy-123"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn file_uploads_retry_transient_failures_without_recreating_deployments() -> Result<()> {
+        for (status, persistent, expected_attempts, succeeds) in [
+            (503, false, 2, true),
+            (429, false, 2, true),
+            (408, false, 2, true),
+            (504, true, 6, false),
+            (401, true, 1, false),
+            (403, true, 1, false),
+            (413, true, 1, false),
+            (302, true, 1, false),
+        ] {
+            let uploads = Arc::new(AtomicUsize::new(0));
+            let attempts = uploads.clone();
+            let creates = Arc::new(AtomicUsize::new(0));
+            let creations = creates.clone();
+            let site = crate::test::browser_tests::Site::new(move |mut request| {
+                let mut body = Vec::new();
+                request.as_reader().read_to_end(&mut body).unwrap();
+                let response = match request.method().as_str() {
+                    "POST" => {
+                        creations.fetch_add(1, Ordering::SeqCst);
+                        json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared",
+                            "required":[format!("{:x}", Sha1::digest(b"hello"))]})
+                    }
+                    "PUT" => {
+                        assert_eq!(body, b"hello");
+                        if attempts.fetch_add(1, Ordering::SeqCst) == 0 || persistent {
+                            let _ = request.respond(
+                                tiny_http::Response::from_string(
+                                    json!({"message":format!("Upload rejected; token={TOKEN}")})
+                                        .to_string(),
+                                )
+                                .with_status_code(status)
+                                .with_header(
+                                    tiny_http::Header::from_bytes("Retry-After", "0").unwrap(),
+                                )
+                                .with_header(
+                                    tiny_http::Header::from_bytes(
+                                        "Location",
+                                        "https://example.com/leak",
+                                    )
+                                    .unwrap(),
+                                ),
+                            );
+                            return;
+                        }
+                        json!({})
+                    }
+                    _ if request.url().ends_with("/deploys/deploy-123") => {
+                        json!({"id":"deploy-123", "site_id":SITE_ID, "state":"ready", "ssl_url":"https://qa-reports.netlify.app/"})
+                    }
+                    _ => json!({"id":SITE_ID}),
+                };
+                let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
+            })?;
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "hello")?;
+            let result = client(&site.origin).deploy(root.path(), &target()).await;
+            assert_eq!(result.is_ok(), succeeds, "HTTP {status}: {result:?}");
+            if let Err(error) = result {
+                assert!(!format!("{error:#}").contains(TOKEN));
+                assert!(error.to_string().contains(&format!("HTTP {status}")));
+            }
+            assert_eq!(
+                uploads.load(Ordering::SeqCst),
+                expected_attempts,
+                "HTTP {status}"
+            );
+            assert_eq!(creates.load(Ordering::SeqCst), 1);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preparing_deployments_support_reuse_empty_files_and_encoded_paths() -> Result<()> {
+        for cached in [false, true] {
+            let files = Arc::new(Mutex::new(serde_json::Value::Null));
+            let manifest = files.clone();
+            let uploads = Arc::new(Mutex::new(Vec::new()));
+            let uploaded = uploads.clone();
+            let polls = Arc::new(AtomicUsize::new(0));
+            let checks = polls.clone();
+            let site = crate::test::browser_tests::Site::new(move |mut request| {
+                let method = request.method().as_str().to_owned();
+                let mut body = Vec::new();
+                request.as_reader().read_to_end(&mut body).unwrap();
+                let response = if method == "POST" {
+                    *manifest.lock().unwrap() = serde_json::from_slice(&body).unwrap();
+                    json!({"id":"deploy-123", "site_id":SITE_ID, "state":"preparing"})
+                } else if method == "PUT" {
+                    uploaded
+                        .lock()
+                        .unwrap()
+                        .push((request.url().to_owned(), body));
+                    json!({})
+                } else if request.url().ends_with("/deploys/deploy-123") {
+                    match checks.fetch_add(1, Ordering::SeqCst) {
+                        0 => json!({"id":"deploy-123", "site_id":SITE_ID, "state":"preparing"}),
+                        1 => {
+                            let required = if cached {
+                                Vec::new()
+                            } else {
+                                manifest.lock().unwrap()["files"]
+                                    .as_object()
+                                    .unwrap()
+                                    .values()
+                                    .cloned()
+                                    .collect::<Vec<_>>()
+                            };
+                            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared", "required":required})
+                        }
+                        _ => {
+                            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"ready", "ssl_url":"https://qa-reports.netlify.app/"})
+                        }
+                    }
+                } else {
+                    json!({"id":SITE_ID})
+                };
+                let _ = request.respond(tiny_http::Response::from_string(response.to_string()));
+            })?;
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "")?;
+            std::fs::write(root.path().join("space % \u{00e9}.png"), "image")?;
+            client(&site.origin).deploy(root.path(), &target()).await?;
+            let records = uploads.lock().unwrap();
+            assert_eq!(records.len(), if cached { 0 } else { 2 });
+            if !cached {
+                assert!(
+                    records
+                        .iter()
+                        .any(|(path, body)| path.ends_with("/index.html") && body.is_empty())
+                );
+                assert!(
+                    records
+                        .iter()
+                        .any(|(path, body)| path.ends_with("/space%20%25%20%C3%A9.png")
+                            && body == b"image")
+                );
+            }
+            assert_eq!(polls.load(Ordering::SeqCst), 3);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unsafe_required_lists_and_wrong_deployments_fail_before_file_uploads() -> Result<()> {
+        for response in [
+            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared"}),
+            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared", "required":["0".repeat(40)]}),
+            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared", "required":[TOKEN]}),
+            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared", "required":TOKEN}),
+            json!({"id":"../escape", "site_id":SITE_ID, "state":"prepared", "required":[]}),
+            json!({"id":"deploy-123", "site_id":"wrong-site", "state":"prepared", "required":[]}),
+            json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared", "draft":true, "required":[]}),
+        ] {
+            let uploads = Arc::new(AtomicUsize::new(0));
+            let attempts = uploads.clone();
+            let site = crate::test::browser_tests::Site::new(move |mut request| {
+                std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
+                if request.method().as_str() == "PUT" {
+                    attempts.fetch_add(1, Ordering::SeqCst);
+                }
+                let body = if request.method().as_str() == "GET" {
+                    json!({"id":SITE_ID})
+                } else {
+                    response.clone()
+                };
+                let _ = request.respond(tiny_http::Response::from_string(body.to_string()));
+            })?;
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "hello")?;
+            let error = client(&site.origin)
+                .deploy(root.path(), &target())
+                .await
+                .unwrap_err();
+            assert!(!format!("{error:#}").contains(TOKEN));
+            assert_eq!(uploads.load(Ordering::SeqCst), 0);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn changed_staged_files_are_rejected_without_upload_retries() -> Result<()> {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let requests = calls.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            requests.fetch_add(1, Ordering::SeqCst);
+            let _ = std::io::copy(request.as_reader(), &mut std::io::sink());
+            let _ = request.respond(tiny_http::Response::empty(200));
+        })?;
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("index.html");
+        let digest = format!("{:x}", Sha1::digest(b"hello"));
+        for changed in ["world", "shorter?", "x"] {
+            std::fs::write(&path, "hello")?;
+            let manifest = Manifest::create(root.path(), Instant::now() + Duration::from_secs(5))?;
+            std::fs::write(&path, changed)?;
+            let error = client(&site.origin)
+                .upload_files(&manifest, std::slice::from_ref(&digest), "deploy-123")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("changed"), "{error:#}");
+        }
+        assert!(calls.load(Ordering::SeqCst) <= 1);
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_validates_paths_deadlines_and_required_digests() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        assert!(Manifest::create(root.path(), deadline).is_err());
+        std::fs::write(root.path().join("index.html"), "hello")?;
+        assert!(Manifest::create(root.path(), Instant::now()).is_err());
+        let manifest = Manifest::create(root.path(), deadline)?;
+        for path in [
+            "",
+            "../outside",
+            "/outside",
+            "C:/outside",
+            "sub\\outside",
+            "./index.html",
+        ] {
+            assert!(manifest.open_file(path).is_err(), "{path}");
+        }
+        let digest = format!("{:x}", Sha1::digest(b"hello"));
+        assert_eq!(
+            manifest
+                .required_files(&[digest.clone(), digest.to_uppercase()])?
+                .len(),
+            1
+        );
+        assert_eq!(manifest.bytes, 5);
+        assert!(Manifest::create_bounded(root.path(), deadline, 1, 5).is_ok());
+        assert!(Manifest::create_bounded(root.path(), deadline, 0, 5).is_err());
+        assert!(Manifest::create_bounded(root.path(), deadline, 1, 4).is_err());
+        std::fs::create_dir(root.path().join("nested"))?;
+        std::fs::write(root.path().join("nested/second.html"), "hello")?;
+        assert!(Manifest::create_bounded(root.path(), deadline, 1, 10).is_err());
+        let manifest = Manifest::create_bounded(root.path(), deadline, 2, 10)?;
+        assert_eq!(manifest.files.len(), 2);
+        assert_eq!(manifest.contents.len(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn required_file_uploads_run_in_parallel_with_a_four_request_bound() -> Result<()> {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let workers = Arc::new(Mutex::new(Vec::new()));
+        let running = active.clone();
+        let peak = maximum.clone();
+        let threads = workers.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let running = running.clone();
+            let peak = peak.clone();
+            let worker = std::thread::spawn(move || {
+                assert_eq!(request.method().as_str(), "PUT");
+                let count = running.fetch_add(1, Ordering::SeqCst) + 1;
+                peak.fetch_max(count, Ordering::SeqCst);
+                std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
+                std::thread::sleep(Duration::from_millis(50));
+                running.fetch_sub(1, Ordering::SeqCst);
+                let _ = request.respond(tiny_http::Response::empty(200));
+            });
+            threads.lock().unwrap().push(worker);
+        })?;
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "hello")?;
+        for index in 0..8 {
+            std::fs::write(
+                root.path().join(format!("file-{index}.txt")),
+                format!("content {index}"),
+            )?;
+        }
+        let manifest = Manifest::create(root.path(), Instant::now() + Duration::from_secs(5))?;
+        let required = manifest.contents.keys().cloned().collect::<Vec<_>>();
+        let result = client(&site.origin)
+            .upload_files(&manifest, &required, "deploy-123")
+            .await;
+        for worker in std::mem::take(&mut *workers.lock().unwrap()) {
+            worker.join().unwrap();
+        }
+        result?;
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+        assert!((2..=UPLOAD_CONCURRENCY).contains(&maximum.load(Ordering::SeqCst)));
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn manifest_rejects_symlink_roots_files_and_changed_parents() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("stage");
+        std::fs::create_dir_all(root.join("assets"))?;
+        std::fs::write(root.join("index.html"), "hello")?;
+        std::fs::write(root.join("assets/image.png"), "image")?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let manifest = Manifest::create(&root, deadline)?;
+        let linked = directory.path().join("linked");
+        std::os::unix::fs::symlink(&root, &linked)?;
+        assert!(Manifest::create(&linked, deadline).is_err());
+        std::os::unix::fs::symlink(root.join("index.html"), root.join("link.html"))?;
+        assert!(Manifest::create(&root, deadline).is_err());
+        std::fs::remove_file(root.join("link.html"))?;
+        std::fs::rename(root.join("assets"), root.join("original"))?;
+        std::os::unix::fs::symlink(root.join("original"), root.join("assets"))?;
+        assert!(manifest.open_file("assets/image.png").is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "publishes twice to NETLIFY_SITE_ID using NETLIFY_PAT; replaces the site's current content"]
+    async fn live_publish_netlify_digest() -> Result<()> {
+        let token = zeroize::Zeroizing::new(
+            std::env::var("NETLIFY_PAT").context("Set NETLIFY_PAT for live deployment")?,
+        );
+        let mut target = target();
+        target.site_id =
+            std::env::var("NETLIFY_SITE_ID").context("Set NETLIFY_SITE_ID for live deployment")?;
+        target.validate()?;
+        let client = NetlifyClient::new(&token)?;
+        let root = tempfile::tempdir()?;
+        std::fs::create_dir(root.path().join("assets"))?;
+        let marker = format!("Regressify digest deployment {}", uuid::Uuid::new_v4());
+        let html = format!(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Regressify Deployment Check</title><link rel=\"stylesheet\" href=\"assets/site.css\"></head><body><h1>Regressify Deployment Check</h1><p>{marker}</p></body></html>"
+        );
+        std::fs::write(root.path().join("index.html"), html)?;
+        let css = "body{font-family:sans-serif;margin:2rem;color:#252525;background:#f7faf9}h1{font-size:1.5rem}";
+        std::fs::write(root.path().join("assets/site.css"), css)?;
+        std::fs::write(root.path().join("assets/duplicate.css"), css)?;
+        std::fs::write(
+            root.path().join("_headers"),
+            include_str!("../../snapshot/data/_headers"),
+        )?;
+        let public = Client::builder()
+            .https_only(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(30))
+            .build()?;
+        for attempt in 1..=2 {
+            let url = client.deploy(root.path(), &target).await?;
+            let response = public
+                .get(&url)
+                .send()
+                .await
+                .context("Cannot retrieve deployed smoke report")?;
+            ensure!(
+                response.status().is_success(),
+                "Deployed smoke report is not reachable"
+            );
+            let body = response_bytes(response).await?;
+            ensure!(
+                String::from_utf8_lossy(&body).contains(&marker),
+                "Published report does not contain the smoke marker"
+            );
+            let response = public
+                .get(Url::parse(&url)?.join("assets/site.css")?)
+                .send()
+                .await?;
+            ensure!(
+                response.status().is_success(),
+                "Deployed smoke asset is not reachable"
+            );
+            ensure!(
+                response_bytes(response).await? == css.as_bytes(),
+                "Published asset content differs from the staged file"
+            );
+            println!("Live Netlify digest deployment {attempt}/2 verified: {url}");
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -447,7 +1300,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn zip_deployment_authenticates_retries_reads_and_waits_for_ready() -> Result<()> {
+    async fn digest_deployment_authenticates_retries_reads_and_preserves_staged_files() -> Result<()>
+    {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
         let reads = Arc::new(AtomicUsize::new(0));
@@ -468,6 +1322,17 @@ mod tests {
                 .map(|header| header.value.to_string());
             let mut body = Vec::new();
             request.as_reader().read_to_end(&mut body).unwrap();
+            let required = if method == "POST" {
+                let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                manifest["files"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             captured
                 .lock()
                 .unwrap()
@@ -479,9 +1344,12 @@ mod tests {
                 }
                 json!({"id": SITE_ID, "prevent_non_git_prod_deploys": null,
                     "published_deploy": {"locked": null}})
+            } else if method == "PUT" {
+                json!({})
             } else {
                 json!({"id":"deploy-123", "site_id": SITE_ID,
-                    "state": if method == "POST" { "processing" } else { "ready" },
+                    "state": if method == "POST" { "prepared" } else { "ready" },
+                    "required":required,
                     "draft": null,
                     "ssl_url": "https://qa-reports.netlify.app/"})
             };
@@ -517,14 +1385,27 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(uploads.len(), 1);
         assert_eq!(uploads[0].1, format!("/api/v1/sites/{SITE_ID}/deploys"));
-        assert_eq!(uploads[0].2.as_deref(), Some("application/zip"));
-        let mut zip = zip::ZipArchive::new(Cursor::new(&uploads[0].3))?;
-        assert_eq!(zip.by_name("index.html")?.size(), 6);
-        assert_eq!(zip.by_name("one/html_report/index.html")?.size(), 12);
-        let mut uploaded_headers = String::new();
-        zip.by_name("_headers")?
-            .read_to_string(&mut uploaded_headers)?;
-        assert_eq!(uploaded_headers, headers);
+        assert_eq!(uploads[0].2.as_deref(), Some("application/json"));
+        let manifest: serde_json::Value = serde_json::from_slice(&uploads[0].3)?;
+        assert_eq!(manifest["async"], true);
+        assert_eq!(manifest["files"].as_object().unwrap().len(), 5);
+        let files = records
+            .iter()
+            .filter(|record| record.0 == "PUT")
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 5);
+        for file in files {
+            assert_eq!(file.2.as_deref(), Some("application/octet-stream"));
+            let path = file
+                .1
+                .strip_prefix("/api/v1/deploys/deploy-123/files/")
+                .unwrap();
+            assert_eq!(file.3, std::fs::read(root.join(path))?);
+            assert_eq!(
+                manifest["files"][format!("/{path}")],
+                format!("{:x}", Sha1::digest(&file.3))
+            );
+        }
         assert!(
             records
                 .iter()
@@ -540,10 +1421,15 @@ mod tests {
         let uploads = Arc::new(AtomicUsize::new(0));
         let attempts = uploads.clone();
         let site = crate::test::browser_tests::Site::new(move |mut request| {
-            let response = if request.method().as_str() == "POST" {
+            std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
+            let response = if request.method().as_str() == "PUT" {
                 attempts.fetch_add(1, Ordering::SeqCst);
-                std::io::copy(request.as_reader(), &mut std::io::sink()).unwrap();
                 std::thread::sleep(Duration::from_millis(300));
+                json!({})
+            } else if request.method().as_str() == "POST" {
+                json!({"id":"deploy-123", "site_id":SITE_ID, "state":"prepared",
+                    "required":[format!("{:x}", Sha1::digest(b"report"))]})
+            } else if request.url().ends_with("/deploys/deploy-123") {
                 json!({"id":"deploy-123", "site_id":SITE_ID, "state":"ready",
                     "ssl_url":"https://qa-reports.netlify.app/"})
             } else {
@@ -655,7 +1541,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_upload_is_not_retried_and_errors_are_redacted() -> Result<()> {
+    async fn failed_deploy_creation_is_not_retried_and_errors_are_redacted() -> Result<()> {
         let uploads = Arc::new(AtomicUsize::new(0));
         let attempts = uploads.clone();
         let site = crate::test::browser_tests::Site::new(move |mut request| {
@@ -699,7 +1585,7 @@ mod tests {
             (404, TOKEN.to_string()),
             (302, TOKEN.to_string()),
             (200, TOKEN.to_string()),
-            (200, "x".repeat(1024 * 1024 + 1)),
+            (200, "x".repeat(MAX_RESPONSE_BYTES + 1)),
             (413, "x".repeat(1024 * 1024 + 1)),
             (200, json!({"id":"wrong-site"}).to_string()),
             (
