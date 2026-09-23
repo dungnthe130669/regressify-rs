@@ -24,6 +24,8 @@ const DOWNLOAD_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const MAX_HASH_RETRIES: u8 = 3;
 const HASH_RETRY_DELAY: Duration = Duration::from_secs(2 * 60 * 60);
+pub const CHECK_INTERVAL: Duration = Duration::from_secs(8 * 60 * 60);
+pub const SHARED_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Version([u16; 4]);
@@ -112,6 +114,10 @@ struct UpdateState {
     skipped_version: Option<String>,
     #[serde(default)]
     next_retry_at: Option<u64>,
+    #[serde(default)]
+    last_check_at: Option<u64>,
+    #[serde(default)]
+    preparation_retry_at: Option<u64>,
 }
 
 impl UpdateState {
@@ -160,6 +166,7 @@ impl UpdateState {
             self.hash_failures = 0;
             self.discard_payload = false;
             self.next_retry_at = None;
+            self.preparation_retry_at = None;
         }
         self.release = Some(ManifestFields::from(release));
         self.save(cache)?;
@@ -180,6 +187,66 @@ impl UpdateState {
         self.hash_failures = 0;
         self.skipped_version = None;
         self.next_retry_at = None;
+        self.preparation_retry_at = None;
+    }
+}
+
+pub enum SharedUpdateCheck {
+    Busy,
+    Unchanged,
+    Checked(UpdateCheck, UpdateLease),
+}
+
+pub struct UpdateLease {
+    _lock: fs::File,
+    cache: PathBuf,
+}
+
+impl UpdateLease {
+    fn acquire(cache: &Path) -> Result<Option<Self>> {
+        fs::create_dir_all(cache).context("Cannot create the update cache")?;
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(cache.join("coordinator.lock"))?;
+        match lock.try_lock() {
+            Ok(()) => Ok(Some(Self {
+                _lock: lock,
+                cache: cache.to_path_buf(),
+            })),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(error) => Err(error).context("Cannot coordinate desktop updates"),
+        }
+    }
+
+    pub fn prepare(self, release: Release, control: DownloadControl) -> Result<PreparedUpdate> {
+        self.prepare_with(&control, || {
+            PreparedUpdate::download_with_control(release, &self.cache, control.clone())
+        })
+    }
+
+    fn prepare_with(
+        &self,
+        control: &DownloadControl,
+        prepare: impl FnOnce() -> Result<PreparedUpdate>,
+    ) -> Result<PreparedUpdate> {
+        // Keep the outer lease across the check/download boundary and every state write.
+        let result = prepare();
+        let _lock = lock_cache(&self.cache)?;
+        let mut state = UpdateState::load(&self.cache)?;
+        state.preparation_retry_at = if result.as_ref().is_err_and(|error| {
+            !error.is::<RetryScheduled>()
+                && !error.is::<SkippedUpdate>()
+                && *control.cancelled.borrow() != DownloadCancellation::Handoff
+        }) {
+            Some(unix_timestamp().saturating_add(CHECK_INTERVAL.as_secs()))
+        } else {
+            None
+        };
+        state.save(&self.cache)?;
+        result
     }
 }
 
@@ -367,6 +434,71 @@ impl UpdateFeed {
         self.check_with_cache(current, cache)
     }
 
+    pub fn check_shared(
+        &self,
+        current: Version,
+        cache: &Path,
+        manual: bool,
+        prepared: Option<&Release>,
+    ) -> Result<SharedUpdateCheck> {
+        self.check_shared_with(current, cache, manual, prepared, unix_timestamp(), || {
+            self.check(current)
+        })
+    }
+
+    fn check_shared_with(
+        &self,
+        current: Version,
+        cache: &Path,
+        manual: bool,
+        prepared: Option<&Release>,
+        now: u64,
+        check: impl FnOnce() -> Result<UpdateCheck>,
+    ) -> Result<SharedUpdateCheck> {
+        let Some(lease) = UpdateLease::acquire(cache)? else {
+            return Ok(SharedUpdateCheck::Busy);
+        };
+        let mut state = {
+            let _lock = lock_cache(cache)?;
+            UpdateState::load(cache)?
+        };
+        let due = manual
+            || state.last_check_at.is_none_or(|checked| {
+                now < checked || now.saturating_sub(checked) >= CHECK_INTERVAL.as_secs()
+            });
+        let result = if due {
+            if manual {
+                let _lock = lock_cache(cache)?;
+                state.reset_retries();
+                state.save(cache)?;
+            }
+            let result = self.reconcile_check(current, cache, check());
+            let _lock = lock_cache(cache)?;
+            state = UpdateState::load(cache)?;
+            state.last_check_at = Some(now);
+            state.save(cache)?;
+            result?
+        } else {
+            let Some(saved) = &state.release else {
+                return Ok(SharedUpdateCheck::Unchanged);
+            };
+            let release = self.parse_manifest(&serde_json::to_string(saved)?)?;
+            if release.version <= current || prepared == Some(&release) {
+                return Ok(SharedUpdateCheck::Unchanged);
+            }
+            state.ensure_retry_due(release.version, now)?;
+            UpdateCheck::Available(release)
+        };
+        if let UpdateCheck::Available(release) = &result
+            && !manual
+            && (prepared == Some(release)
+                || state.preparation_retry_at.is_some_and(|retry| now < retry))
+        {
+            return Ok(SharedUpdateCheck::Unchanged);
+        }
+        Ok(SharedUpdateCheck::Checked(result, lease))
+    }
+
     fn reconcile_check(
         &self,
         current: Version,
@@ -489,10 +621,17 @@ impl DownloadProgress {
     }
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum DownloadCancellation {
+    Running,
+    Paused,
+    Handoff,
+}
+
 #[derive(Clone)]
 pub struct DownloadControl {
     progress: tokio::sync::watch::Sender<DownloadProgress>,
-    cancelled: tokio::sync::watch::Sender<bool>,
+    cancelled: tokio::sync::watch::Sender<DownloadCancellation>,
 }
 
 impl DownloadControl {
@@ -505,7 +644,7 @@ impl DownloadControl {
             started: now,
             last_data: now,
         });
-        let (cancelled, _) = tokio::sync::watch::channel(false);
+        let (cancelled, _) = tokio::sync::watch::channel(DownloadCancellation::Running);
         Self {
             progress,
             cancelled,
@@ -517,11 +656,20 @@ impl DownloadControl {
     }
 
     pub fn cancel(&self) {
-        self.cancelled.send_replace(true);
+        self.cancelled.send_replace(DownloadCancellation::Paused);
+    }
+
+    pub fn cancel_for_handoff(&self) {
+        self.cancelled.send_modify(|state| {
+            // Closing the owner must not postpone another instance or undo an explicit pause.
+            if *state == DownloadCancellation::Running {
+                *state = DownloadCancellation::Handoff;
+            }
+        });
     }
 
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.borrow()
+        *self.cancelled.borrow() != DownloadCancellation::Running
     }
 
     #[cfg(all(test, feature = "gui-tests"))]
@@ -541,7 +689,9 @@ impl DownloadControl {
 
     async fn wait_cancelled(&self) {
         let mut cancelled = self.cancelled.subscribe();
-        let _ = cancelled.wait_for(|cancelled| *cancelled).await;
+        let _ = cancelled
+            .wait_for(|state| *state != DownloadCancellation::Running)
+            .await;
     }
 }
 
@@ -859,6 +1009,10 @@ impl PreparedUpdate {
         self.release.version
     }
 
+    pub fn release(&self) -> &Release {
+        &self.release
+    }
+
     pub fn launch(&mut self, workspace: Option<&Path>) -> Result<()> {
         ensure!(
             cfg!(target_os = "windows"),
@@ -1034,6 +1188,339 @@ mod tests {
             Sha256::digest(payload),
             payload.len()
         )
+    }
+
+    #[test]
+    fn shared_checks_wait_eight_hours_and_hold_ownership_until_preparation_finishes() {
+        use super::{CHECK_INTERVAL, SharedUpdateCheck};
+        use std::cell::Cell;
+
+        let cache = tempfile::tempdir().unwrap();
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let current = "1.0".parse().unwrap();
+        let now = super::unix_timestamp();
+        let requests = Cell::new(0);
+        let check = || {
+            requests.set(requests.get() + 1);
+            Ok(UpdateCheck::Available(release.clone()))
+        };
+        let first = feed
+            .check_shared_with(current, cache.path(), false, None, now, check)
+            .unwrap();
+        let SharedUpdateCheck::Checked(UpdateCheck::Available(_), lease) = first else {
+            panic!("Expected ownership")
+        };
+        assert!(matches!(
+            feed.check_shared_with(current, cache.path(), true, None, now, check)
+                .unwrap(),
+            SharedUpdateCheck::Busy
+        ));
+        assert_eq!(requests.get(), 1);
+        drop(lease);
+        let second = feed
+            .check_shared_with(current, cache.path(), false, None, now + 1, check)
+            .unwrap();
+        assert!(matches!(
+            second,
+            SharedUpdateCheck::Checked(UpdateCheck::Available(_), _)
+        ));
+        drop(second);
+        assert_eq!(requests.get(), 1);
+        assert!(matches!(
+            feed.check_shared_with(
+                current,
+                cache.path(),
+                false,
+                Some(&release),
+                now + CHECK_INTERVAL.as_secs() - 1,
+                check
+            )
+            .unwrap(),
+            SharedUpdateCheck::Unchanged
+        ));
+        assert_eq!(requests.get(), 1);
+        let next = feed
+            .check_shared_with(
+                current,
+                cache.path(),
+                false,
+                Some(&release),
+                now + CHECK_INTERVAL.as_secs(),
+                check,
+            )
+            .unwrap();
+        assert!(matches!(next, SharedUpdateCheck::Unchanged));
+        assert_eq!(requests.get(), 2);
+    }
+
+    #[test]
+    fn shared_checks_throttle_current_unpublished_and_failed_results() {
+        use super::{CHECK_INTERVAL, SharedUpdateCheck};
+        for outcome in [0, 1, 2] {
+            let cache = tempfile::tempdir().unwrap();
+            let feed = UpdateFeed::new("regressify").unwrap();
+            let current = "1.0".parse().unwrap();
+            let check = || match outcome {
+                0 => Ok(UpdateCheck::Current),
+                1 => Ok(UpdateCheck::Unpublished),
+                _ => Err(anyhow::anyhow!("offline")),
+            };
+            drop(feed.check_shared_with(current, cache.path(), false, None, 100, check));
+            let waiting = feed
+                .check_shared_with(current, cache.path(), false, None, 101, || {
+                    panic!("Duplicate check")
+                })
+                .unwrap();
+            assert!(matches!(waiting, SharedUpdateCheck::Unchanged));
+            drop(feed.check_shared_with(
+                current,
+                cache.path(),
+                false,
+                None,
+                100 + CHECK_INTERVAL.as_secs(),
+                check,
+            ));
+            drop(feed.check_shared_with(
+                current,
+                cache.path(),
+                true,
+                None,
+                101 + CHECK_INTERVAL.as_secs(),
+                check,
+            ));
+            assert_eq!(
+                UpdateState::load(cache.path()).unwrap().last_check_at,
+                Some(101 + CHECK_INTERVAL.as_secs())
+            );
+        }
+    }
+
+    #[test]
+    fn shared_checks_reuse_verified_downloads_and_recover_abandoned_work() {
+        use super::{SharedUpdateCheck, UpdateLease};
+
+        let cache = tempfile::tempdir().unwrap();
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let payload = b"installer";
+        let release = feed.parse_manifest(&manifest(payload)).unwrap();
+        let current = "1.0".parse().unwrap();
+        let now = super::unix_timestamp();
+        let first = feed
+            .check_shared_with(current, cache.path(), false, None, now, || {
+                Ok(UpdateCheck::Available(release.clone()))
+            })
+            .unwrap();
+        let SharedUpdateCheck::Checked(_, lease) = first else {
+            panic!("Expected ownership")
+        };
+        drop(lease);
+        let second = feed
+            .check_shared_with(current, cache.path(), false, None, now, || {
+                panic!("Duplicate feed request")
+            })
+            .unwrap();
+        let SharedUpdateCheck::Checked(_, lease) = second else {
+            panic!("Expected takeover")
+        };
+        let installer = cached_installer(&release, cache.path());
+        fs::create_dir_all(installer.parent().unwrap()).unwrap();
+        fs::write(installer.with_extension("exe.part"), payload).unwrap();
+        let prepared = lease
+            .prepare(release.clone(), DownloadControl::new(&release))
+            .unwrap();
+        assert_eq!(fs::read(&prepared.installer).unwrap(), payload);
+        for _ in 0..2 {
+            let checked = feed
+                .check_shared_with(current, cache.path(), false, None, now, || {
+                    panic!("Duplicate feed request")
+                })
+                .unwrap();
+            let SharedUpdateCheck::Checked(_, lease) = checked else {
+                panic!("Expected cached release")
+            };
+            let peer = lease
+                .prepare(release.clone(), DownloadControl::new(&release))
+                .unwrap();
+            assert_eq!(peer.installer, prepared.installer);
+            assert_eq!(peer.release(), prepared.release());
+        }
+        let lease = UpdateLease::acquire(cache.path()).unwrap().unwrap();
+        let failure = lease.prepare_with(&DownloadControl::new(&release), || {
+            Err(anyhow::anyhow!("offline"))
+        });
+        assert!(failure.is_err());
+        drop(lease);
+        assert!(matches!(
+            feed.check_shared_with(current, cache.path(), false, None, now, || panic!(
+                "Duplicate feed request"
+            ))
+            .unwrap(),
+            SharedUpdateCheck::Unchanged
+        ));
+        let manual = feed
+            .check_shared_with(current, cache.path(), true, None, now, || {
+                Ok(UpdateCheck::Available(release))
+            })
+            .unwrap();
+        assert!(matches!(
+            manual,
+            SharedUpdateCheck::Checked(UpdateCheck::Available(_), _)
+        ));
+    }
+
+    #[test]
+    fn shared_checks_observe_newer_versions_and_handle_clock_rollback() {
+        use super::{CHECK_INTERVAL, SharedUpdateCheck};
+
+        let cache = tempfile::tempdir().unwrap();
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let first = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        let next = feed
+            .parse_manifest(&manifest(b"next").replace("1.10.0.0", "1.11.0.0"))
+            .unwrap();
+        let current = "1.0".parse().unwrap();
+        let now = super::unix_timestamp();
+        drop(
+            feed.check_shared_with(current, cache.path(), false, None, now, || {
+                Ok(UpdateCheck::Available(first.clone()))
+            })
+            .unwrap(),
+        );
+        let checked = feed
+            .check_shared_with(
+                current,
+                cache.path(),
+                false,
+                Some(&first),
+                now + CHECK_INTERVAL.as_secs(),
+                || Ok(UpdateCheck::Available(next.clone())),
+            )
+            .unwrap();
+        assert!(
+            matches!(&checked, SharedUpdateCheck::Checked(UpdateCheck::Available(release), _) if release == &next)
+        );
+        drop(checked);
+        let peer = feed
+            .check_shared_with(
+                current,
+                cache.path(),
+                false,
+                Some(&first),
+                now + CHECK_INTERVAL.as_secs(),
+                || panic!("Duplicate feed request"),
+            )
+            .unwrap();
+        assert!(
+            matches!(&peer, SharedUpdateCheck::Checked(UpdateCheck::Available(release), _) if release == &next)
+        );
+        drop(peer);
+        drop(
+            feed.check_shared_with(current, cache.path(), false, Some(&next), now, || {
+                Ok(UpdateCheck::Available(next.clone()))
+            })
+            .unwrap(),
+        );
+        assert_eq!(
+            UpdateState::load(cache.path()).unwrap().last_check_at,
+            Some(now)
+        );
+    }
+
+    #[test]
+    fn shared_update_lease_is_exclusive_across_processes() {
+        use super::UpdateLease;
+        const CHILD_CACHE: &str = "REGRESSIFY_UPDATE_LOCK_TEST_CACHE";
+        const CHILD_EXPECTS_BUSY: &str = "REGRESSIFY_UPDATE_LOCK_TEST_BUSY";
+
+        if let Some(cache) = std::env::var_os(CHILD_CACHE) {
+            let lease = UpdateLease::acquire(std::path::Path::new(&cache)).unwrap();
+            assert_eq!(
+                lease.is_none(),
+                std::env::var_os(CHILD_EXPECTS_BUSY).is_some()
+            );
+            return;
+        }
+        let cache = tempfile::tempdir().unwrap();
+        let lease = UpdateLease::acquire(cache.path()).unwrap().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "desktop::updates::tests::shared_update_lease_is_exclusive_across_processes",
+                "--nocapture",
+            ])
+            .env(CHILD_CACHE, cache.path())
+            .env(CHILD_EXPECTS_BUSY, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        drop(lease);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "desktop::updates::tests::shared_update_lease_is_exclusive_across_processes",
+                "--nocapture",
+            ])
+            .env(CHILD_CACHE, cache.path())
+            .env_remove(CHILD_EXPECTS_BUSY)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(UpdateLease::acquire(cache.path()).unwrap().is_some());
+    }
+
+    #[test]
+    fn shared_owner_shutdown_allows_handoff_but_preserves_explicit_pause() {
+        use super::{SharedUpdateCheck, UpdateLease};
+
+        for paused in [false, true] {
+            let cache = tempfile::tempdir().unwrap();
+            let feed = UpdateFeed::new("regressify").unwrap();
+            let release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+            let current = "1.0".parse().unwrap();
+            let now = super::unix_timestamp();
+            UpdateState {
+                release: Some(ManifestFields::from(&release)),
+                last_check_at: Some(now),
+                ..UpdateState::default()
+            }
+            .save(cache.path())
+            .unwrap();
+            let control = DownloadControl::new(&release);
+            if paused {
+                control.cancel();
+            }
+            control.cancel_for_handoff();
+            assert!(control.is_cancelled());
+            let lease = UpdateLease::acquire(cache.path()).unwrap().unwrap();
+            assert!(
+                lease
+                    .prepare_with(&control, || Err(anyhow::anyhow!("cancelled")))
+                    .is_err()
+            );
+            drop(lease);
+            let checked = feed
+                .check_shared_with(current, cache.path(), false, None, now, || {
+                    panic!("Duplicate feed request")
+                })
+                .unwrap();
+            assert_eq!(matches!(checked, SharedUpdateCheck::Unchanged), paused);
+            assert_eq!(
+                matches!(
+                    checked,
+                    SharedUpdateCheck::Checked(UpdateCheck::Available(_), _)
+                ),
+                !paused
+            );
+        }
     }
 
     #[test]
@@ -1224,6 +1711,58 @@ mod tests {
             futures::future::pending::<()>().await;
         });
         (url, server, request_received)
+    }
+
+    #[tokio::test]
+    async fn shared_download_lease_reuses_one_transfer_across_owners() {
+        use super::{SharedUpdateCheck, UpdateLease};
+
+        let (url, server, request) =
+            download_server("HTTP/1.1 200 OK\r\nContent-Length: 9\r\n\r\ninstaller").await;
+        let feed = UpdateFeed::new("regressify").unwrap();
+        let mut release = feed.parse_manifest(&manifest(b"installer")).unwrap();
+        release.installer = url;
+        let cache = tempfile::tempdir().unwrap();
+        let lease = UpdateLease::acquire(cache.path()).unwrap().unwrap();
+        assert!(matches!(
+            feed.check_shared_with(
+                "1.0".parse().unwrap(),
+                cache.path(),
+                false,
+                None,
+                super::unix_timestamp(),
+                || panic!("Peer issued a feed request")
+            )
+            .unwrap(),
+            SharedUpdateCheck::Busy
+        ));
+        let first = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_secs(2),
+            Duration::from_secs(5),
+        )
+        .await;
+        server.abort();
+        let _ = server.await;
+        assert!(request.await.unwrap().starts_with("GET /installer "));
+        let first = first.unwrap();
+        drop(lease);
+        let _peer = UpdateLease::acquire(cache.path()).unwrap().unwrap();
+        let second = PreparedUpdate::download_with_client(
+            release.clone(),
+            cache.path(),
+            &DownloadControl::new(&release),
+            reqwest::Client::new(),
+            Duration::from_millis(200),
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first.installer, second.installer);
+        assert_eq!(fs::read(second.installer).unwrap(), b"installer");
     }
 
     #[tokio::test]
@@ -1720,6 +2259,7 @@ mod tests {
             discard_payload: true,
             skipped_version: None,
             next_retry_at: None,
+            ..UpdateState::default()
         }
         .save(cache.path())
         .unwrap();

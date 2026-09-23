@@ -1,7 +1,7 @@
 use super::*;
 use crate::desktop::updates::{
-    CURRENT_VERSION, DownloadControl, PreparedUpdate, Release, RetryScheduled, SkippedUpdate,
-    UpdateCheck, UpdateFeed,
+    CURRENT_VERSION, DownloadControl, PreparedUpdate, Release, RetryScheduled,
+    SHARED_POLL_INTERVAL, SharedUpdateCheck, SkippedUpdate, UpdateCheck, UpdateFeed, UpdateLease,
 };
 use futures::FutureExt;
 
@@ -15,6 +15,8 @@ pub(super) struct UpdatePanel {
     failed: bool,
     retry: Option<RetryScheduled>,
     retry_task: Option<Task<()>>,
+    poll_task: Option<Task<()>>,
+    lease: Option<UpdateLease>,
     pub(super) install_on_close: bool,
 }
 
@@ -35,6 +37,8 @@ impl Default for UpdatePanel {
             failed: false,
             retry: None,
             retry_task: None,
+            poll_task: None,
+            lease: None,
             install_on_close: false,
         }
     }
@@ -80,7 +84,7 @@ impl UpdatePanel {
             .is_some_and(|control| control.is_cancelled())
         {
             self.message =
-                "Download paused. Preparation will resume the next time the app opens.".into();
+                "Download paused. Preparation will resume at the next scheduled check; Check for updates retries now.".into();
             return;
         }
         self.message = match result {
@@ -100,7 +104,7 @@ impl UpdatePanel {
             Err(error) => {
                 self.failed = true;
                 format!(
-                    "Update preparation paused: {error:#}. No update was installed. Preparation will resume the next time the app opens."
+                    "Update preparation paused: {error:#}. No update was installed. Preparation will resume at the next scheduled check; Check for updates retries now."
                 )
             }
         };
@@ -110,7 +114,7 @@ impl UpdatePanel {
 impl Drop for UpdatePanel {
     fn drop(&mut self) {
         if let Some(download) = &self.download {
-            download.cancel();
+            download.cancel_for_handoff();
         }
     }
 }
@@ -310,7 +314,35 @@ impl Workbench {
     }
 
     pub(super) fn check_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.watch_shared_updates(SHARED_POLL_INTERVAL, window, cx);
         self.start_update_check(false, window, cx);
+    }
+
+    fn watch_shared_updates(
+        &mut self,
+        interval: std::time::Duration,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.updates.read(cx);
+        if state.feed.is_none() || state.poll_task.is_some() {
+            return;
+        }
+        let task = cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor().timer(interval).await;
+                if view
+                    .update_in(cx, |this, window, cx| {
+                        this.start_update_check(false, window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        self.updates
+            .update(cx, |state, _| state.poll_task = Some(task));
     }
 
     fn start_update_check(&mut self, manual: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -321,27 +353,30 @@ impl Workbench {
         let Some(feed) = state.feed.clone() else {
             return;
         };
+        let prepared = state
+            .prepared
+            .as_ref()
+            .map(|update| update.release().clone());
         let cache = self
             .preferences_path
             .as_ref()
             .map(|path| path.with_file_name("updates"));
         self.updates.update(cx, |state, cx| {
             state.working = true;
-            state.failed = false;
             state.available = None;
-            state.prepared = None;
-            state.retry = None;
-            state.retry_task = None;
-            state.message = "Checking for updates...".into();
+            state.lease = None;
+            if manual {
+                state.failed = false;
+                state.prepared = None;
+                state.retry = None;
+                state.retry_task = None;
+                state.message = "Checking for updates...".into();
+            }
             cx.notify();
         });
         let task = cx.background_executor().spawn(async move {
             let cache = cache.ok_or_else(|| anyhow!("Cannot locate the update cache"))?;
-            if manual {
-                feed.check_manually(CURRENT_VERSION.parse()?, &cache)
-            } else {
-                feed.check_with_cache(CURRENT_VERSION.parse()?, &cache)
-            }
+            feed.check_shared(CURRENT_VERSION.parse()?, &cache, manual, prepared.as_ref())
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
@@ -349,18 +384,43 @@ impl Workbench {
                 let mut prepare = false;
                 this.updates.update(cx, |state, cx| {
                     state.working = false;
+                    state.retry = None;
+                    state.retry_task = None;
                     state.message = match result {
-                        Ok(UpdateCheck::Available(release)) => {
+                        Ok(SharedUpdateCheck::Busy) => {
+                            if state.prepared.is_some() {
+                                state.message.clone()
+                            } else {
+                                "Another Regressify instance is checking or preparing the update..."
+                                    .into()
+                            }
+                        }
+                        Ok(SharedUpdateCheck::Unchanged) => {
+                            if state.message == "Ready to check for updates"
+                                || state.message == "Checking for updates..."
+                                || state.message.starts_with("Another Regressify instance")
+                            {
+                                "No new update is ready to install".into()
+                            } else {
+                                state.message.clone()
+                            }
+                        }
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Available(release), lease)) => {
                             state.available = Some(release);
+                            state.prepared = None;
+                            state.failed = false;
+                            state.lease = Some(lease);
                             prepare = true;
                             "Preparing update...".into()
                         }
-                        Ok(UpdateCheck::Current) => {
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Current, _)) => {
                             state.available = None;
+                            state.failed = false;
                             "You have the latest version".into()
                         }
-                        Ok(UpdateCheck::Unpublished) => {
+                        Ok(SharedUpdateCheck::Checked(UpdateCheck::Unpublished, _)) => {
                             state.available = None;
+                            state.failed = false;
                             "No releases have been published yet".into()
                         }
                         Err(error) if error.is::<SkippedUpdate>() => error.to_string(),
@@ -412,22 +472,17 @@ impl Workbench {
         let Some(release) = state.available.clone() else {
             return;
         };
-        let cache = self
-            .preferences_path
-            .as_ref()
-            .map(|path| path.with_file_name("updates"));
-        let control = self.updates.update(cx, |state, cx| {
+        let (control, lease) = self.updates.update(cx, |state, cx| {
             let control = state.begin_download(&release);
+            let lease = state.lease.take();
             cx.notify();
-            control
+            (control, lease)
         });
         let worker_control = control.clone();
         let task = cx.background_executor().spawn(async move {
-            PreparedUpdate::download_with_control(
-                release,
-                &cache.ok_or_else(|| anyhow!("Cannot locate the update cache"))?,
-                worker_control,
-            )
+            lease
+                .ok_or_else(|| anyhow!("Update preparation ownership was lost"))?
+                .prepare(release, worker_control)
         });
         self.observe_update_download(task, control, window, cx);
     }
@@ -475,7 +530,7 @@ impl Workbench {
                                 cx.notify();
                             }
                         }).is_err() {
-                            control.cancel();
+                            control.cancel_for_handoff();
                             break;
                         }
                     }
@@ -812,6 +867,108 @@ mod tests {
             assert!(view.read(cx).updates.read(cx).prepared.is_none());
         })
         .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+    }
+
+    #[gpui_kit::test]
+    async fn shared_polling_notifies_every_window_and_preserves_ready_banners(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let second_directory = tempfile::tempdir().unwrap();
+        let (first_handle, first) = editor(cx, directory.path());
+        let (second_handle, second) = editor(cx, second_directory.path());
+        let cache = directory.path().join("updates");
+        PreparedUpdate::cache_for_test(available_release(), &cache).unwrap();
+        for (handle, view) in [(first_handle, &first), (second_handle, &second)] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.preferences_path = Some(directory.path().join("preferences.json"));
+                    this.updates.update(cx, |state, _| {
+                        state.feed = Some(UpdateFeed::offline_for_test("regressify").unwrap());
+                    });
+                    this.watch_shared_updates(Duration::from_millis(50), window, cx);
+                });
+            })
+            .unwrap();
+        }
+        cx.wait_for(first_handle.into(), Duration::from_secs(5), |_, cx| {
+            first.read(cx).updates.read(cx).prepared.is_some()
+                && second.read(cx).updates.read(cx).prepared.is_some()
+        })
+        .await;
+        for (handle, view) in [(first_handle, &first), (second_handle, &second)] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    assert!(this.updates.read(cx).poll_task.is_some());
+                    this.start_update_check(false, window, cx);
+                    assert!(this.updates.read(cx).prepared.is_some());
+                });
+                window.render_frame(cx);
+                assert!(window.find("update-banner").visible());
+            })
+            .unwrap();
+        }
+        assert_eq!(
+            std::fs::read_dir(&cache)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().unwrap().is_dir())
+                .count(),
+            1
+        );
+    }
+
+    #[gpui_kit::test]
+    async fn shared_owner_wait_clears_expired_retry_and_prepares_after_release(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::desktop::updates::{CURRENT_VERSION, SharedUpdateCheck};
+
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        let cache = directory.path().join("updates");
+        PreparedUpdate::cache_for_test(available_release(), &cache).unwrap();
+        let feed = UpdateFeed::offline_for_test("regressify").unwrap();
+        let owner = feed
+            .check_shared(CURRENT_VERSION.parse().unwrap(), &cache, false, None)
+            .unwrap();
+        assert!(matches!(owner, SharedUpdateCheck::Checked(_, _)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.preferences_path = Some(directory.path().join("preferences.json"));
+                this.updates.update(cx, |state, _| {
+                    state.feed = Some(feed);
+                    state.complete_download(Err(crate::desktop::updates::RetryScheduled {
+                        version: available_release().version,
+                        retry_at: 0,
+                    }
+                    .into()));
+                });
+                this.watch_shared_updates(Duration::from_millis(50), window, cx);
+                this.schedule_update_retry(window, cx);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .updates
+                .read(cx)
+                .message
+                .starts_with("Another Regressify instance")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, _, cx| {
+            let state = view.read(cx).updates.read(cx);
+            assert!(state.retry.is_none());
+            assert!(state.retry_task.is_none());
+            assert!(!state.failed);
+        })
+        .unwrap();
+        drop(owner);
         cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
             view.read(cx).updates.read(cx).prepared.is_some()
         })

@@ -102,11 +102,22 @@ and skips missing folders and duplicates. Windows removals are remembered until
 the workspace is explicitly reopened. Windows recent-item privacy settings and
 the available Jump List space determine whether these entries are shown.
 
-Official Windows builds check for updates once at startup and automatically
-download and verify a newer release in the background. No upgrade banner,
+Official Windows builds check for updates at startup when due, then every eight
+hours while the app remains open, and automatically download and verify newer
+releases in the background. The check timestamp is shared across instances and
+survives restarts, so opening another workspace does not issue a duplicate check.
+After sleep, an overdue check runs on the next local poll. No upgrade banner,
 highlighted update button, or installation prompt appears until the entire
 installer is saved locally and matches the manifest's size and SHA-256. Network
 outages and failed preparation do not interrupt editing or announce an upgrade.
+
+Only one instance per user update cache owns checking and downloading at a time.
+Other instances poll the shared cache every five seconds without contacting the
+feed. Once the owner finishes, each instance verifies the same cached installer
+and shows its own notification; it does not download another copy. Notification
+normally follows the next local poll plus verification time. Closing the owner
+releases the process lock and allows another instance to resume any partial
+download. Abnormal process termination also releases ownership automatically.
 
 Once preparation succeeds, a banner stays visible below the title bar in every
 view with an Install update button, and the header's Software updates button is
@@ -118,10 +129,12 @@ and this app's immutable HTTPS installer URLs are accepted. A missing manifest
 (404) means no release is published.
 
 Release metadata, partial downloads, and checksum retry counts are retained in
-the `updates` directory alongside desktop preferences. Each startup, manual check,
-and scheduled retry checks the feed before using cached metadata, falling back to
-the newest cached release if the service is unavailable or returns an older
-version. Discovering a newer release discards older partial and complete cached
+the `updates` directory alongside desktop preferences. Automatic feed checks use
+the persisted eight-hour schedule; manual checks contact the feed immediately
+when no other instance owns preparation. Cache notifications and checksum retries
+within that interval reuse validated metadata without issuing another feed
+request. Feed failures fall back to the newest cached release if available.
+Discovering a newer release discards older partial and complete cached
 installers before preparing the replacement. Unrelated cache files are left alone.
 Closing the app or losing
 power does not intentionally discard download progress: the next launch resumes
@@ -129,7 +142,9 @@ from the saved bytes using HTTP range requests. If the server ignores ranges, th
 transfer restarts from byte zero. An interrupted verification rechecks the retained
 file, and an already downloaded installer can be verified and offered even while
 the update service is unavailable. Cached release URLs are validated again before
-use, and cache writes are locked across app instances.
+use. An outer process lock covers the entire check/preparation cycle, in addition
+to the existing lock around cache writes. Idle windows keep their ready banners
+visible during automatic polls and continue to check for newer releases.
 
 If SHA-256 verification fails, the invalid payload is discarded and downloaded
 again, with at most three retries after the initial attempt (four attempts total).
@@ -142,7 +157,9 @@ strictly newer release is published. Network interruptions do not consume checks
 retries.
 
 Manual Check for updates resets the checksum retry count, clears any scheduled
-delay or skipped-version marker, and checks immediately. This is also available
+delay or skipped-version marker, and checks immediately when no peer owns the
+update cycle. If another instance owns it, the dialog reports that preparation
+is underway and observes its result instead of starting duplicate work. This is also available
 when an installer is already ready, so a newer release can replace it. Automatic
 startup checks and scheduled retries never reset the budget for the same version.
 
@@ -153,8 +170,11 @@ total MiB, percentage, average speed, and elapsed seconds. After five seconds
 without data it also shows the inactivity time. Connecting or receiving no data
 for 30 seconds pauses the attempt; each download attempt has a separate 15-minute
 limit. HTTP errors, incomplete transfers, and disk-write failures retain the
-partial download for the next startup or manual Check for updates. Pause download
-also retains progress without installing anything. Closing only the dialog lets
+partial download and defer automatic preparation for eight hours; manual Check
+for updates retries immediately. Pause download also retains progress and applies
+the same shared delay, so another instance does not immediately undo the pause.
+Closing the owner without pausing allows another instance or the next launch to
+resume instead. Closing only the dialog lets
 preparation continue. Diagnostics are shown only in the dialog, where Copy details
 copies the message for troubleshooting. A ready installer still requires an
 explicit Install and restart; there is no automatic installation.

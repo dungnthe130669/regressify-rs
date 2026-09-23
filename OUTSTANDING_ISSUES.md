@@ -63,6 +63,10 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop update checks now continue every eight hours while windows stay open,
+  with one check/download owner per user cache. Every instance observes and
+  verifies the shared installer before showing its banner. Child-process and
+  two-window tests cover ownership, cached reuse, pause, and shutdown takeover.
 - Deployment staging no longer uploads unused TTF fonts. Exact-ZIP regression
   coverage confirms unreferenced old/current-run captures, diffs, source maps,
   metadata, and unselected suites are excluded without modifying source files.

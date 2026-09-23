@@ -34,6 +34,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   viewport approval.
 - [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and
   headless regression checks.
+- [Desktop updates](desktop-updates.md): shared eight-hour scheduling,
+  single-owner downloads, cross-window notifications, and shutdown handoff.
 - [Deployment packaging](deployment-packaging.md): dependency-only staging,
   historical capture selection, and exact ZIP regression checks.
 - [Netlify uploads](deployment-netlify.md): digest manifests, per-file retries,
