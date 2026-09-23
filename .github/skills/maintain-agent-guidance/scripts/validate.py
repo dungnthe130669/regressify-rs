@@ -38,10 +38,14 @@ def validate(root):
     root = root.resolve()
     errors = []
     guide = root / "AGENTS.md"
+    memory_root = root / ".ai/memory"
+    memory_index = memory_root / "README.md"
     skills_root = root / ".github/skills"
     skills = sorted(skills_root.glob("*/SKILL.md"))
     if not guide.is_file():
         errors.append("AGENTS.md is missing")
+    if not memory_index.is_file():
+        errors.append(".ai/memory/README.md is missing")
     if not skills:
         errors.append("no discoverable skills found")
     for entry in sorted(skills_root.iterdir()) if skills_root.is_dir() else []:
@@ -52,6 +56,7 @@ def validate(root):
 
     documents = [guide, root / ".github/copilot-instructions.md", *skills]
     documents.extend(sorted((root / ".github/prompts").rglob("*.prompt.md")))
+    documents.extend(sorted(memory_root.rglob("*.md")))
     for document in documents:
         if not document.is_file():
             continue
@@ -59,6 +64,8 @@ def validate(root):
         source = document.read_text(encoding="utf-8")
         if document == guide and len(source.splitlines()) > 90:
             errors.append(f"{label}: exceeds 90 lines")
+        if document.is_relative_to(memory_root) and len(source.splitlines()) > 120:
+            errors.append(f"{label}: exceeds 120 lines")
         if document in skills:
             if len(source.splitlines()) > 120:
                 errors.append(f"{label}: exceeds 120 lines")
@@ -114,6 +121,9 @@ class GuidanceTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         (self.root / "AGENTS.md").write_text("# Guide\n", encoding="utf-8")
+        self.memory_index = self.root / ".ai/memory/README.md"
+        self.memory_index.parent.mkdir(parents=True)
+        self.memory_index.write_text("# Shared AI Memory\n", encoding="utf-8")
         self.skill = self.root / ".github/skills/sample/SKILL.md"
         self.skill.parent.mkdir(parents=True)
         self.skill.write_text(self.SOURCE, encoding="utf-8")
@@ -170,6 +180,26 @@ class GuidanceTests(unittest.TestCase):
         self.skill.write_text(self.SOURCE + "detail\n" * 121, encoding="utf-8")
         self.assertEqual(len(validate(self.root)), 2)
 
+    def test_shared_memory_index_is_required(self):
+        self.memory_index.unlink()
+        self.assertEqual(validate(self.root), [".ai/memory/README.md is missing"])
+
+    def test_shared_memory_notes_validate_links(self):
+        note = self.memory_index.parent / "topic.md"
+        note.write_text("# Topic\n\n[Guide](../../AGENTS.md)\n", encoding="utf-8")
+        self.assertEqual(validate(self.root), [])
+        for target in ("missing.md", "../../../outside.md", "file:///tmp/private.md"):
+            with self.subTest(target=target):
+                note.write_text(f"# Topic\n\n[Source]({target})\n", encoding="utf-8")
+                self.assertEqual(len(validate(self.root)), 1)
+
+    def test_shared_memory_note_size_boundary(self):
+        note = self.memory_index.parent / "topic.md"
+        note.write_text("detail\n" * 120, encoding="utf-8")
+        self.assertEqual(validate(self.root), [])
+        note.write_text("detail\n" * 121, encoding="utf-8")
+        self.assertEqual(validate(self.root), [".ai/memory/topic.md: exceeds 120 lines"])
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -185,7 +215,7 @@ def main():
             print(error)
         return 1
     count = len(list((arguments.root / ".github/skills").glob("*/SKILL.md")))
-    print(f"Agent guidance valid: {count} discoverable skills; metadata and local links checked.")
+    print(f"Agent guidance valid: {count} discoverable skills; metadata, shared memory, and local links checked.")
     return 0
 
 

@@ -19,9 +19,9 @@ before editing; load only the skills relevant to the task.
 
 ## Required Maintenance
 
-- Maintain this file and the relevant skills in the same change when paths,
-  commands, contracts, or workflows become stale. Add missing reusable knowledge
-  to a small specific skill, not a growing session log or this guide.
+- Maintain this file, relevant skills, and shared memory in the same change when
+  paths, commands, contracts, or workflows become stale. Add missing procedures to
+  specific skills and verified project facts to shared memory, not session logs.
 - Add clear, concise code comments for non-obvious invariants, security decisions,
   concurrency, and platform workarounds. Explain why, not what; update or remove
   stale comments whenever behavior changes.
@@ -33,6 +33,15 @@ before editing; load only the skills relevant to the task.
   [OUTSTANDING_ISSUES.md](OUTSTANDING_ISSUES.md) when confirming or resolving a gap.
 - Run focused checks first, then the affected feature gates. Report commands and
   outcomes honestly, including skipped checks and missing prerequisites.
+
+## Shared Memory
+
+- Read [.ai/memory/README.md](.ai/memory/README.md) and relevant topic notes before
+  work. Store repository-specific AI memory in `.ai/memory/` as Git-trackable
+  Markdown, not in external memory tools, chat history, or machine-local stores.
+- Keep notes concise, verified, source-linked, and current. Never store secrets,
+  personal data, absolute machine paths, or raw session logs. Memory is context,
+  not authority over this guide, task skills, or the current source.
 
 ## Critical Contracts
 
