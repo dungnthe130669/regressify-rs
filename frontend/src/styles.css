@@ -208,7 +208,7 @@ svg {
 .app-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  min-height: calc(100vh - 54px);
+  min-height: calc(100dvh - 54px);
 }
 .app-layout.with-panel {
   grid-template-columns: var(--panel-width, 280px) minmax(0, 1fr);
@@ -225,8 +225,12 @@ svg {
 .review-layout :where(.breadcrumb-bar) {
   flex-shrink: 0;
 }
-.review-scroll {
+.workspace-content {
+  display: flex;
+  flex-direction: column;
   flex: 1;
+}
+.review-scroll {
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;

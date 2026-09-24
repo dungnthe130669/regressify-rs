@@ -15,6 +15,7 @@ description: 'Use when changing desktop YAML/JSON document edits, Source/Fields 
 1. Treat blank/comment-only workspace YAML as defaults through kind-aware document parsing, without rewriting its source. First-field edits and resetting the last field must round-trip and undo exactly. Explicit nulls and blank non-workspace or JSON documents remain invalid.
 1. For YAML structural edits preserve comments, quoting, anchors, and untouched formatting. Compare the resulting parsed value with the expected semantic edit; reject a lossy library rewrite without changing the user's draft.
 1. Apply multi-field operations as one undo entry. Keep history byte/count limits, no-op edits, redo invalidation, and dirty-state behavior consistent.
+1. Source line commands use one native text replacement, not `set_value`, so undo retains the edit. Cover UTF-8 selections, CRLF, reversed ranges, exclusive column-zero ends, empty/final lines, and JSON comment rejection. Native change events are deferred; settle them before checking the session's document text.
 1. An asynchronous save acknowledges the exact bytes written, not the latest source that may have changed while I/O ran. Newer edits must remain dirty.
 1. Guard document/workspace switches and destructive actions with existing session transitions; do not silently discard source when a derived view cannot parse it.
 
@@ -23,6 +24,7 @@ description: 'Use when changing desktop YAML/JSON document edits, Source/Fields 
 ```sh
 cargo test --features desktop --lib desktop::document::tests
 cargo test --features desktop --lib desktop::session::tests
+cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
 ```
 
 Cover invalid drafts, Unicode/comments/line endings, plain selectors, anchors, empty collections, list bounds, undo/redo, all shipped suites, and late save results. Use native UI tests when changing tab/navigation behavior.

@@ -39,6 +39,10 @@ Verified: 2026-09-24
   left/right scroll areas and pointer-captured divider resizing; preferred desktop
   width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,
   so the vertical divider explicitly needs `height: 100%`.
+- The main/footer wrapper in [Shell](../../frontend/src/App.tsx) must be a growing
+  flex column; otherwise `#main` growth and footer auto margins have no effect.
+  `bun run test:e2e --grep footer` covers short/filtered/missing pages and long
+  document/review scrolling on desktop and mobile.
 - [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) has no wheel/pan
   engine. Scaled images reserve their full height in the right page; native wheel
   scrolling leaves the zoom value unchanged. Only explicit controls change scale.

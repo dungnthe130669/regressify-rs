@@ -1018,10 +1018,34 @@ websites, and elements actually exist or work. `init` remains non-destructive:
 it does not overwrite existing exported schemas or VS Code settings. The desktop
 uses the schema built into its current version, independent of those files.
 
-The source toolbar provides Find, Replace, and Suggest, plus word wrapping and
-text sizes from 10 to 24 pixels. These presentation changes preserve source and
-undo history. The status strip shows the language, cursor position, and issue
-count. Syntax errors underline their source line; schema errors identify the
+The source toolbar provides an Edit source lines menu, Find, Replace, and Suggest,
+plus word wrapping and text sizes from 10 to 24 pixels. Wrapping, line-number,
+and text-size changes preserve source and undo history.
+
+Line commands operate on the current line or all lines touched by the selection.
+A selection ending at the start of the next line leaves that line untouched.
+Commands preserve indentation, Unicode, line endings, and selection direction;
+each command is one native undo step. They also work on invalid drafts without
+bypassing save validation. Comment toggling uses YAML `#` comments and is disabled
+for strict JSON. Effective, logs, and Git diffs remain read-only.
+
+| Shortcut                      | Source Operation                                                      |
+| ----------------------------- | --------------------------------------------------------------------- |
+| Ctrl+/                        | Toggle YAML line comments                                             |
+| Tab / Shift+Tab               | Indent / outdent selected lines; Tab accepts an open suggestion first |
+| Ctrl+] / Ctrl+[               | Indent / outdent the current or selected lines                        |
+| Alt+Up / Alt+Down             | Move lines up / down                                                  |
+| Shift+Alt+Up / Shift+Alt+Down | Duplicate lines above / below                                         |
+| Ctrl+Shift+K                  | Delete lines                                                          |
+| Ctrl+Z / Ctrl+Shift+Z         | Undo / redo source edits                                              |
+
+On macOS, use Cmd instead of Ctrl and Option instead of Alt for these shortcuts.
+Ctrl+Y also redoes source edits on Windows and Linux. Clipboard, text selection,
+navigation, and Find/Replace retain the editor's native behavior. Line shortcuts
+do not act on the source while a search box or another input has focus.
+
+The status strip shows the language, cursor position, and issue count. Syntax
+errors underline their source line; schema errors identify the
 field and offer corrections for missing fields, misspellings, types, supported
 choices, and numeric limits. Up to 50 issues are reported together in a scrollable
 panel. Each line link unfolds and focuses the affected field, or its enclosing
@@ -1030,8 +1054,9 @@ issue, wrapping to the first. Fixing the draft clears resolved diagnostics.
 
 `./ci/desktop-smoke.ps1 -SchemaFlows` verifies missing-origin guidance, credential-safe
 messages, issue jumps, Enter/Tab completion and Escape after Alt+Tab away and native
-reactivation, save guards, and compact/large light/dark layouts in a synthetic
-workspace on an unlocked Windows desktop.
+reactivation, selected-line comments/indentation/duplication/movement/deletion,
+Edit menu focus, undo/redo, save guards, and compact/large light/dark layouts in a
+synthetic workspace on an unlocked Windows desktop.
 
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.

@@ -79,6 +79,9 @@ logo/favicon bytes, suite-aware titles, and list preview alignment, missing imag
 conditional diff lanes, and long labels.
 Screenshots are saved under `.fixtures/screenshots`.
 
+Footer checks cover short, filtered, and not-found pages, plus long content in
+both document and review-pane scrolling on desktop and mobile.
+
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
 Rust-generated synthetic report instead of starting the Vite fixture server.
 The tests expect the supplied synthetic workspace, not arbitrary user reports.
@@ -184,6 +187,9 @@ several captures expand into individual image links. Both lists are searchable.
 The left pane and review area scroll independently. Drag the divider to resize it,
 or focus it and use arrow keys, Home, and End. The preferred width is remembered;
 phones use a drawer with the same two lists.
+
+Overview and suite footers stay at the bottom of short pages and follow longer
+content without covering it. Image review remains footer-free.
 
 Images occupy their full scaled height inside the right page, with no inner
 scrollbar or wheel/pan interception. Mouse-wheel, trackpad, and touch scrolling

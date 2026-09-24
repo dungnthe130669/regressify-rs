@@ -170,6 +170,73 @@ test("overview is responsive, accessible, sortable, and theme-aware", async ({ p
   expect(errors).toEqual([]);
 });
 
+test("footer stays at the bottom on short and empty pages", async ({ page }, info) => {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("The viewport is not configured");
+  await page.setViewportSize({ ...viewport, height: 1200 });
+  for (const { path, name, content } of [
+    { path: "/", name: "overview", content: ".results-table tbody tr" },
+    { path: "/suites/workspace-overview", name: "suite", content: ".capture-card" },
+    { path: "/suites/workspace-overview/not-found", name: "not-found", content: null },
+    { path: "/suites/not-a-suite", name: "suite-not-found", content: null },
+  ]) {
+    await page.goto(path);
+    if (content) {
+      await expect(page.locator(content).first()).toBeVisible();
+      await page.locator("#main").getByRole("searchbox").fill("footer-empty-results");
+      await expect(page.locator(content)).toHaveCount(0);
+    } else {
+      await expect(page.locator("#main .state-panel")).toBeVisible();
+    }
+    await page.evaluate(() => document.fonts.ready);
+    const footer = page.getByRole("contentinfo");
+    await expect(footer).toBeVisible();
+    await expect
+      .poll(() =>
+        footer.evaluate((element) =>
+          Math.abs(element.getBoundingClientRect().bottom - window.innerHeight),
+        ),
+      )
+      .toBeLessThanOrEqual(1);
+    const contentBottom = await page
+      .locator("#main")
+      .evaluate((element) => element.getBoundingClientRect().bottom);
+    expect(
+      await footer.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(contentBottom - 1);
+    await screenshot(page, info.project.name, `footer-${name}`);
+  }
+});
+
+test("footer follows long content in document and review scrolling", async ({ page }) => {
+  const viewport = page.viewportSize();
+  if (!viewport) throw new Error("The viewport is not configured");
+  await page.setViewportSize({ ...viewport, height: 480 });
+  for (const { path, content } of [
+    { path: "/", content: ".results-table tbody tr" },
+    { path: "/suites/workspace-overview", content: ".capture-card" },
+  ]) {
+    await page.goto(path);
+    await expect(page.locator(content).first()).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    const footer = page.getByRole("contentinfo");
+    await expect
+      .poll(() => footer.evaluate((element) => element.getBoundingClientRect().top))
+      .toBeGreaterThanOrEqual(480);
+    await footer.scrollIntoViewIfNeeded();
+    await expect
+      .poll(() => footer.evaluate((element) => element.getBoundingClientRect().bottom))
+      .toBeLessThanOrEqual(481);
+    const contentBottom = await page
+      .locator("#main")
+      .evaluate((element) => element.getBoundingClientRect().bottom);
+    expect(
+      await footer.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(contentBottom - 1);
+    if (path !== "/") expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  }
+});
+
 test("logo and favicon use the shared desktop artwork", async ({ page }) => {
   await page.goto("/");
   const logo = page.locator(".brand img");

@@ -254,7 +254,7 @@ function Shell() {
               })}
             </span>
           </section>
-          <div ref={content} className={match ? "review-scroll" : undefined}>
+          <div ref={content} className={`workspace-content${match ? " review-scroll" : ""}`}>
             <main id="main" ref={main} tabIndex={-1}>
               <Routes>
                 <Route path="/" element={<OverviewPage />} />

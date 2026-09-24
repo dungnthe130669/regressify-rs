@@ -2827,6 +2827,7 @@ fn bind_keys(cx: &mut App) {
         "ctrl"
     };
     lists::bind_keys(modifier, cx);
+    source::bind_keys(modifier, cx);
     cx.bind_keys([
         KeyBinding::new(
             &format!("{modifier}-shift-p"),

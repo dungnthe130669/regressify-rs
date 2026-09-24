@@ -94,6 +94,55 @@ function Test-SchemaFlows {
             $switchWindow.Dispose()
         }
     }
+    function Test-SchemaLineCommands {
+        function Wait-SchemaLineText([string]$Expected) {
+            Wait-WindowState {
+                (Read-ControlText 'Configuration source').Replace("`r`n", "`n") -ceq $Expected
+            } 'A source line command did not preserve the expected text.'
+        }
+        function Select-SchemaFirstLines {
+            Send-FixtureKeys Home -Control
+            Send-FixtureKeys DownArrow -Shift
+            Send-FixtureKeys DownArrow -Shift
+            Wait-Control 'Ln 3, Col 1' | Out-Null
+        }
+        $draft = "debug: true`nheadless: true`nscenarios: []`n"
+        $commented = "# debug: true`n# headless: true`nscenarios: []`n"
+        Write-SchemaSource $draft
+        Send-FixtureKeys Escape
+        Select-SchemaFirstLines
+        Send-FixtureKeys Oem2 -Control
+        Wait-SchemaLineText $commented
+        Send-FixtureKeys Oem2 -Control
+        Wait-SchemaLineText $draft
+        Send-FixtureKeys Z -Control
+        Wait-SchemaLineText $commented
+        Send-FixtureKeys Z -Control -Shift
+        Wait-SchemaLineText $draft
+        Select-SchemaFirstLines
+        Send-FixtureKeys Tab
+        Wait-SchemaLineText "  debug: true`n  headless: true`nscenarios: []`n"
+        Send-FixtureKeys Tab -Shift
+        Wait-SchemaLineText $draft
+        Send-FixtureKeys DownArrow -Alt -Shift
+        Wait-SchemaLineText "debug: true`nheadless: true`ndebug: true`nheadless: true`nscenarios: []`n"
+        Send-FixtureKeys Z -Control
+        Wait-SchemaLineText $draft
+        Send-FixtureKeys DownArrow -Alt
+        Wait-SchemaLineText "scenarios: []`ndebug: true`nheadless: true`n"
+        Send-FixtureKeys UpArrow -Alt
+        Wait-SchemaLineText $draft
+        Send-FixtureKeys K -Control -Shift
+        Wait-SchemaLineText "scenarios: []`n"
+        Send-FixtureKeys Z -Control
+        Wait-SchemaLineText $draft
+        Invoke-Control 'Edit source lines' -Pointer
+        Wait-Control 'Toggle Line Comment' | Out-Null
+        Capture-Window 'source-line-menu'
+        Invoke-Control 'Toggle Line Comment' -Pointer
+        Wait-SchemaLineText $commented
+        Capture-Window 'source-line-edits'
+    }
     function Get-SchemaIssueDescription([int]$Line) {
         $row = Wait-Control "Issue on line $Line" 'Source issues'
         $description = $row.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
@@ -247,6 +296,7 @@ function Test-SchemaFlows {
     Wait-SourceText 'origin:'
     Send-FixtureKeys Escape
     Test-SchemaCompletionKeys
+    Test-SchemaLineCommands
     $valid = "scenarios:`n  - url: https://example.com`n    label: Schema example`nbasicAuth:`n  origin: https://example.com`n  username: qa-user`n  password: synthetic-password`n"
     Write-SchemaSource $valid
     Send-FixtureKeys Escape
@@ -257,7 +307,7 @@ function Test-SchemaFlows {
     if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
     Capture-Window 'schema-corrected'
-    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, Enter/Tab completion and Escape after Alt+Tab, corrected save, and compact light/dark layouts passed.'
+    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }

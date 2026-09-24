@@ -4152,6 +4152,309 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
     .unwrap();
 }
 
+#[gpui_kit::test]
+fn source_line_commands_toggle_selected_yaml_comments(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    let original = "debug: true\nheadless: true\nscenarios: []\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press(&format!("{modifier}-a"), cx);
+        window.input(original, cx);
+        let source = view.read(cx).source.clone();
+        source.update(cx, |state, cx| {
+            state.set_selected_range(0..original.find("scenarios").unwrap(), cx);
+        });
+        window.press(&format!("{modifier}-/"), cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "# debug: true\n# headless: true\nscenarios: []\n"
+        );
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            "# debug: true\n# headless: true\nscenarios: []\n"
+        );
+        window.press(&format!("{modifier}-/"), cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_line_commands_use_native_undo_and_redo(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    let original = "debug: true\nheadless: true\nscenarios: []\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+        });
+        let source = view.read(cx).source.clone();
+        for (key, expected) in [
+            (
+                format!("{modifier}-/"),
+                "debug: true\n# headless: true\nscenarios: []\n",
+            ),
+            (
+                "alt-shift-up".into(),
+                "debug: true\nheadless: true\nheadless: true\nscenarios: []\n",
+            ),
+            (
+                "alt-shift-down".into(),
+                "debug: true\nheadless: true\nheadless: true\nscenarios: []\n",
+            ),
+            (
+                "alt-up".into(),
+                "headless: true\ndebug: true\nscenarios: []\n",
+            ),
+            (
+                "alt-down".into(),
+                "debug: true\nscenarios: []\nheadless: true\n",
+            ),
+            (
+                format!("{modifier}-shift-k"),
+                "debug: true\nscenarios: []\n",
+            ),
+        ] {
+            source.update(cx, |state, cx| {
+                state.set_value(original, window, cx);
+                state.set_selected_range(12..26, cx);
+                window.focus(&state.focus_handle(cx), cx);
+            });
+            window.render_frame(cx);
+            window.press(&key, cx);
+            assert_eq!(source.read(cx).value().as_ref(), expected, "{key}");
+            window.press(&format!("{modifier}-z"), cx);
+            assert_eq!(source.read(cx).value().as_ref(), original, "Undo {key}");
+            window.press(&format!("{modifier}-shift-z"), cx);
+            assert_eq!(source.read(cx).value().as_ref(), expected, "Redo {key}");
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_line_commands_preserve_native_unicode_crlf_and_reversed_selection(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "label: caf\u{e9} \u{1f680}\r\ndebug: true\r\nscenarios: []\r\n";
+    let end = original.find("scenarios").unwrap();
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_value(original, window, cx);
+                state.set_selected_range(end..0, cx);
+                window.focus(&state.focus_handle(cx), cx);
+            });
+        });
+        window.render_frame(cx);
+        window.press(&format!("{modifier}-/"), cx);
+        let source = view.read(cx).source.read(cx);
+        assert_eq!(
+            source.value().as_ref(),
+            "# label: caf\u{e9} \u{1f680}\r\n# debug: true\r\nscenarios: []\r\n"
+        );
+        assert_eq!(source.cursor(), source.selected_range().start);
+        window.press(&format!("{modifier}-/"), cx);
+        let source = view.read(cx).source.read(cx);
+        assert_eq!(source.value().as_ref(), original);
+        assert_eq!(source.selected_range(), 0..end);
+        assert_eq!(source.cursor(), 0);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_line_commands_respect_focus_busy_and_read_only_views(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let original = view.read(cx).source.read(cx).value();
+        for key in [
+            format!("{modifier}-/"),
+            "alt-shift-down".into(),
+            format!("{modifier}-shift-k"),
+        ] {
+            window.press(&key, cx);
+            assert_eq!(view.read(cx).source.read(cx).value(), original);
+        }
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            window.focus(&this.search.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        for key in [
+            format!("{modifier}-/"),
+            "alt-down".into(),
+            format!("{modifier}-shift-k"),
+        ] {
+            window.press(&key, cx);
+            assert_eq!(view.read(cx).source.read(cx).value(), original);
+        }
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(2, window, cx));
+            window.focus(&this.resolved.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        let resolved = view.read(cx).resolved.read(cx).value();
+        for key in [
+            format!("{modifier}-/"),
+            "alt-shift-down".into(),
+            format!("{modifier}-shift-k"),
+        ] {
+            window.press(&key, cx);
+            assert_eq!(view.read(cx).source.read(cx).value(), original);
+            assert_eq!(view.read(cx).resolved.read(cx).value(), resolved);
+        }
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_line_commands_keep_json_strict_and_indent_selected_lines(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "{\n  \"scenarios\": []\n}\n";
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.session.open.as_mut().unwrap().document.format =
+                crate::desktop::document::Format::Json;
+            this.configure_source(cx);
+            this.source.update(cx, |state, cx| {
+                state.set_value(original, window, cx);
+                state.set_selected_range(2..original.find('}').unwrap(), cx);
+                window.focus(&state.focus_handle(cx), cx);
+            });
+        });
+        window.render_frame(cx);
+        window.press(&format!("{modifier}-/"), cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press(&format!("{modifier}-]"), cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "{\n    \"scenarios\": []\n}\n"
+        );
+        window.press(&format!("{modifier}-["), cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press("tab", cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "{\n    \"scenarios\": []\n}\n"
+        );
+        window.press("shift-tab", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.click("source-edit-menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("Toggle Line Comment")
+        );
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_some());
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+        window.press("escape", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_line_commands_menu_preserves_selection_and_returns_focus(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "debug: true\nheadless: true\nscenarios: []\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_value(original, window, cx);
+                state.set_selected_range(0..original.find("scenarios").unwrap(), cx);
+                window.focus(&state.focus_handle(cx), cx);
+            });
+        });
+        window.render_frame(cx);
+        window.click("source-edit-menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |window, cx| {
+        let source = view.read(cx).source.read(cx);
+        source.value().as_ref() == "# debug: true\n# headless: true\nscenarios: []\n"
+            && source.focus_handle(cx).is_focused(window)
+            && view.read(cx).session.dirty()
+    })
+    .await;
+}
+
 pub(super) async fn settle_dialog(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
     // GPUI's dialog animation uses wall time, not the test executor's clock.
     std::thread::sleep(Duration::from_millis(300));

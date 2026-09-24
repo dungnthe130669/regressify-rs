@@ -13,6 +13,7 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 
 1. Follow the pinned gpui-kit patterns, icons, themes, and existing control density. Keep blocking work in background tasks and notify dependent views deliberately.
 1. Preserve unsaved-draft guards, tab identity, focus, keyboard selection, and disabled/confirmation states. Stable test IDs may need an outer wrapper when scrollbar helpers replace an element ID.
+1. Keep [Source line commands](../../../src/desktop/ui/source.rs) scoped to `RegressifySource > Input` and the actual source focus handle. Menus restore that handle through `action_context`. Preserve Tab completion, native undo/redo, exclusive end-line bounds, reversed selections, and JSON's no-comments rule. Test disabled menu items by pointer behavior; their wrapper may not expose a disabled-state value.
 1. Scope list shortcuts to a retained list focus handle, excluding search and editor inputs. Reuse the owning selection methods; suite/scenario keyboard ranges and Ctrl+A use visible rows, while scenario selection preserves other suites. Keep single-selection lists single-select and operation locks intact.
 1. For keyboard-scrolled rows, share `track_scroll` with an explicit scrollbar. Append scrollbar overlays after rows because `ScrollHandle::scroll_to_item` indexes direct children; the convenience scroll wrapper owns a separate handle. Virtualized lists use their uniform-list handle and filtered positions.
 1. Use real pointer/keyboard tests for menus/dialogs; model tests alone cannot establish interaction behavior. Settle dialog animations with existing helpers.
@@ -29,10 +30,11 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 For smoke harness edits, run `./ci/test-desktop-smoke.ps1` in PowerShell 7 first. These [headless checks](../../../ci/test-desktop-smoke.ps1) cover module loading, switch dispatch, failure cleanup, native key-event sequences, and draft state without Windows UI or settings changes. Keep shared process and cleanup variables in the runner's script scope; do not replace dot-sourcing with child-scope script invocation or module imports.
 
 ```sh
+cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui -- --test-threads=1
 ```
 
-Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-ComparisonFlows`, or `-GitFlows`; the default flow includes pointer-focused suite/scenario/checklist shortcuts. Use `-SkipBuild` only with a current binary. Capture flows may require managed Chromium. Do not use browser automation as a substitute for this native UI's tests.
+Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-ComparisonFlows`, or `-GitFlows`; the default flow includes pointer-focused suite/scenario/checklist shortcuts. `-SchemaFlows` also covers source line commands and the Edit menu. Use `-SkipBuild` only with a current binary. Capture flows may require managed Chromium. Do not use browser automation as a substitute for this native UI's tests.
 
 `-ArtifactFlows` also exercises F2 rename, independent display-name editing in Rename and Fields, byte-preserving reference/history migration, and Delete cancellation/confirmation. Inputs and the deletion prompt need accessible names, not only visible text or test IDs.
 

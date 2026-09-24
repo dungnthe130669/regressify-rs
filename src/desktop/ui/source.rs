@@ -1,6 +1,6 @@
-//! Adapt local schema suggestions to the editor's native completion menu.
+//! Source editing commands, schema assistance, and diagnostics.
 
-use std::{rc::Rc, sync::Arc};
+use std::{ops::Range, rc::Rc, sync::Arc};
 
 use gpui_kit::component::{
     input::{CompletionProvider, HoverProvider, Rope},
@@ -17,6 +17,263 @@ use crate::desktop::{
     document::{Document, Format, validate_semantics},
     validation,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, serde::Deserialize, schemars::JsonSchema)]
+pub(super) enum LineOperation {
+    ToggleComment,
+    Indent,
+    Outdent,
+    DuplicateUp,
+    DuplicateDown,
+    MoveUp,
+    MoveDown,
+    Delete,
+}
+
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct SourceLineCommand {
+    operation: LineOperation,
+}
+
+pub(super) fn bind_keys(modifier: &str, cx: &mut App) {
+    cx.bind_keys([KeyBinding::new(
+        &format!("{modifier}-shift-z"),
+        gpui_kit::component::input::Redo,
+        Some("RegressifySource > Input"),
+    )]);
+    cx.bind_keys(
+        [
+            (format!("{modifier}-/"), LineOperation::ToggleComment),
+            (format!("{modifier}-]"), LineOperation::Indent),
+            (format!("{modifier}-["), LineOperation::Outdent),
+            ("alt-shift-up".into(), LineOperation::DuplicateUp),
+            ("alt-shift-down".into(), LineOperation::DuplicateDown),
+            ("alt-up".into(), LineOperation::MoveUp),
+            ("alt-down".into(), LineOperation::MoveDown),
+            (format!("{modifier}-shift-k"), LineOperation::Delete),
+        ]
+        .into_iter()
+        .map(|(key, operation)| {
+            KeyBinding::new(
+                &key,
+                SourceLineCommand { operation },
+                Some("RegressifySource > Input"),
+            )
+        }),
+    );
+}
+
+struct LineEdit {
+    range: Range<usize>,
+    text: String,
+    selection: Range<usize>,
+}
+
+fn selected_lines(text: &str, selection: &Range<usize>) -> Range<usize> {
+    let start = text[..selection.start]
+        .rfind('\n')
+        .map_or(0, |offset| offset + 1);
+    // The line at a selection's exclusive column-zero end is not selected.
+    let last = if !selection.is_empty() && text.as_bytes().get(selection.end - 1) == Some(&b'\n') {
+        selection.end - 1
+    } else {
+        selection.end
+    };
+    let end = text[last..]
+        .find('\n')
+        .map_or(text.len(), |offset| last + offset + 1);
+    start..end
+}
+
+fn toggle_line_comments(text: &str, selection: Range<usize>) -> Option<LineEdit> {
+    let range = selected_lines(text, &selection);
+    let block = &text[range.clone()];
+    let lines = if block.is_empty() {
+        vec![""]
+    } else {
+        block.split_inclusive('\n').collect::<Vec<_>>()
+    };
+    let uncomment = lines.iter().any(|line| !line.trim().is_empty())
+        && lines
+            .iter()
+            .filter(|line| !line.trim().is_empty())
+            .all(|line| line.trim_start_matches([' ', '\t']).starts_with('#'));
+    let mut edits = Vec::new();
+    let mut offset = 0;
+    for line in lines {
+        let content = line.trim_end_matches(['\r', '\n']);
+        let trimmed = content.trim_start_matches([' ', '\t']);
+        if !trimmed.is_empty() || selection.is_empty() {
+            let prefix = offset + content.len() - trimmed.len();
+            let removed = if uncomment {
+                if trimmed.starts_with("# ") { 2 } else { 1 }
+            } else {
+                0
+            };
+            edits.push((prefix..prefix + removed, if uncomment { "" } else { "# " }));
+        }
+        offset += line.len();
+    }
+    replace_line_prefixes(text, range, selection, edits)
+}
+
+fn replace_line_prefixes(
+    text: &str,
+    range: Range<usize>,
+    selection: Range<usize>,
+    edits: Vec<(Range<usize>, &str)>,
+) -> Option<LineEdit> {
+    let mut replacement = text[range.clone()].to_string();
+    let mut selection = selection;
+    for (removed, inserted) in edits.into_iter().rev() {
+        replacement.replace_range(removed.clone(), inserted);
+        for endpoint in [&mut selection.start, &mut selection.end] {
+            let start = range.start + removed.start;
+            let end = range.start + removed.end;
+            if *endpoint >= start {
+                *endpoint = start + inserted.len() + endpoint.saturating_sub(end);
+            }
+        }
+    }
+    (replacement != text[range.clone()]).then_some(LineEdit {
+        range,
+        text: replacement,
+        selection,
+    })
+}
+
+// gpui-kit's block indent includes the exclusive end line; use our shared bounds.
+fn indent_lines(text: &str, selection: Range<usize>, outdent: bool) -> Option<LineEdit> {
+    let range = selected_lines(text, &selection);
+    let block = &text[range.clone()];
+    let lines = if block.is_empty() {
+        vec![""]
+    } else {
+        block.split_inclusive('\n').collect::<Vec<_>>()
+    };
+    let width = gpui_kit::component::input::TabSize::default().tab_size;
+    let indent = " ".repeat(width);
+    let mut edits = Vec::new();
+    let mut offset = 0;
+    for line in lines {
+        if outdent {
+            let removed = if line.starts_with('\t') {
+                1
+            } else {
+                line.bytes()
+                    .take(width)
+                    .take_while(|byte| *byte == b' ')
+                    .count()
+            };
+            if removed > 0 {
+                edits.push((offset..offset + removed, ""));
+            }
+        } else if !line.trim().is_empty() || selection.is_empty() {
+            edits.push((offset..offset, indent.as_str()));
+        }
+        offset += line.len();
+    }
+    replace_line_prefixes(text, range, selection, edits)
+}
+
+fn split_line_ending(text: &str) -> (&str, &str) {
+    if let Some(content) = text.strip_suffix("\r\n") {
+        (content, "\r\n")
+    } else if let Some(content) = text.strip_suffix('\n') {
+        (content, "\n")
+    } else {
+        (text, "")
+    }
+}
+
+fn line_edit(text: &str, selection: Range<usize>, operation: LineOperation) -> Option<LineEdit> {
+    let range = selected_lines(text, &selection);
+    let block = &text[range.clone()];
+    let (content, ending) = split_line_ending(block);
+    match operation {
+        LineOperation::DuplicateUp | LineOperation::DuplicateDown => {
+            let separator = if block.contains("\r\n") || text[..range.start].ends_with("\r\n") {
+                "\r\n"
+            } else {
+                "\n"
+            };
+            let down = operation == LineOperation::DuplicateDown;
+            let replacement = if !ending.is_empty() {
+                block.to_string()
+            } else if down {
+                format!("{separator}{block}")
+            } else {
+                format!("{block}{separator}")
+            };
+            let offset = if down { range.end } else { range.start };
+            let shift = if down { replacement.len() } else { 0 };
+            Some(LineEdit {
+                range: offset..offset,
+                text: replacement,
+                selection: selection.start + shift..selection.end + shift,
+            })
+        }
+        LineOperation::MoveUp => {
+            if range.start == 0 {
+                return None;
+            }
+            let previous_start = text[..range.start - 1]
+                .rfind('\n')
+                .map_or(0, |offset| offset + 1);
+            let previous = &text[previous_start..range.start];
+            let (previous_content, previous_ending) = split_line_ending(previous);
+            let replacement = if ending.is_empty() {
+                format!("{block}{previous_ending}{previous_content}")
+            } else {
+                format!("{block}{previous}")
+            };
+            Some(LineEdit {
+                range: previous_start..range.end,
+                text: replacement,
+                selection: selection.start - previous.len()..selection.end - previous.len(),
+            })
+        }
+        LineOperation::MoveDown => {
+            if range.end == text.len() {
+                return None;
+            }
+            let next_end = text[range.end..]
+                .find('\n')
+                .map_or(text.len(), |offset| range.end + offset + 1);
+            let next = &text[range.end..next_end];
+            let (_, next_ending) = split_line_ending(next);
+            let (replacement, shift) = if next_ending.is_empty() {
+                (
+                    format!("{next}{ending}{content}"),
+                    next.len() + ending.len(),
+                )
+            } else {
+                (format!("{next}{block}"), next.len())
+            };
+            Some(LineEdit {
+                range: range.start..next_end,
+                text: replacement,
+                selection: (selection.start + shift).min(next_end)
+                    ..(selection.end + shift).min(next_end),
+            })
+        }
+        LineOperation::Delete => {
+            let start = if range.end == text.len() && ending.is_empty() && range.start > 0 {
+                range.start - split_line_ending(&text[..range.start]).1.len()
+            } else {
+                range.start
+            };
+            (start != range.end).then_some(LineEdit {
+                range: start..range.end,
+                text: String::new(),
+                selection: start..start,
+            })
+        }
+        LineOperation::ToggleComment => toggle_line_comments(text, selection),
+        LineOperation::Indent => indent_lines(text, selection, false),
+        LineOperation::Outdent => indent_lines(text, selection, true),
+    }
+}
 
 #[derive(Clone)]
 struct SourceCompletions {
@@ -201,6 +458,131 @@ fn position(text: &str, offset: usize) -> Position {
 }
 
 impl Workbench {
+    fn source_edit_menu(&self, cx: &App) -> impl IntoElement {
+        let source = self.source.clone();
+        let focus = source.read(cx).focus_handle(cx);
+        let yaml = self
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| open.document.format == Format::Yaml);
+        Button::new("source-edit-menu")
+            .ghost()
+            .small()
+            .icon(gpui_kit::assets::IconName::SquarePen)
+            .accessibility_label("Edit source lines")
+            .tooltip("Edit source lines")
+            .disabled(self.busy || self.session.open.is_none())
+            .dropdown_menu(move |menu, _, cx| {
+                let state = source.read(cx);
+                let text = state.value();
+                let lines = selected_lines(&text, &state.selected_range());
+                menu.action_context(focus.clone())
+                    .menu_with_disabled(
+                        "Toggle Line Comment",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::ToggleComment,
+                        }),
+                        !yaml,
+                    )
+                    .separator()
+                    .menu(
+                        "Indent Lines",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::Indent,
+                        }),
+                    )
+                    .menu(
+                        "Outdent Lines",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::Outdent,
+                        }),
+                    )
+                    .separator()
+                    .menu(
+                        "Duplicate Lines Up",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::DuplicateUp,
+                        }),
+                    )
+                    .menu(
+                        "Duplicate Lines Down",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::DuplicateDown,
+                        }),
+                    )
+                    .menu_with_disabled(
+                        "Move Lines Up",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::MoveUp,
+                        }),
+                        lines.start == 0,
+                    )
+                    .menu_with_disabled(
+                        "Move Lines Down",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::MoveDown,
+                        }),
+                        lines.end == text.len(),
+                    )
+                    .menu_with_disabled(
+                        "Delete Lines",
+                        Box::new(SourceLineCommand {
+                            operation: LineOperation::Delete,
+                        }),
+                        text.is_empty(),
+                    )
+            })
+    }
+
+    fn source_line_command(
+        &mut self,
+        action: &SourceLineCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let state = self.source.read(cx);
+        if !state.focus_handle(cx).is_focused(window) {
+            cx.propagate();
+            return;
+        }
+        if self.busy || !state.is_editable() || self.session.open.is_none() {
+            return;
+        }
+        let text = state.value().to_string();
+        let selection = state.selected_range();
+        let reversed = !selection.is_empty() && state.cursor() == selection.start;
+        if action.operation == LineOperation::ToggleComment
+            && self.session.open.as_ref().unwrap().document.format != Format::Yaml
+        {
+            return;
+        }
+        let Some(edit) = line_edit(&text, selection, action.operation) else {
+            return;
+        };
+        self.source.update(cx, |state, cx| {
+            state.apply_lsp_edits(
+                &vec![TextEdit {
+                    range: lsp_types::Range::new(
+                        position(&text, edit.range.start),
+                        position(&text, edit.range.end),
+                    ),
+                    new_text: edit.text,
+                }],
+                window,
+                cx,
+            );
+            state.set_selected_range(
+                if reversed {
+                    edit.selection.end..edit.selection.start
+                } else {
+                    edit.selection
+                },
+                cx,
+            );
+        });
+    }
+
     pub(super) fn source_window_activation_changed(
         &mut self,
         window: &mut Window,
@@ -584,7 +966,9 @@ impl Workbench {
     }
 
     pub(super) fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_kit::component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp};
+        use gpui_kit::component::input::{
+            Enter, Escape, IndentInline, MoveDown, MoveUp, OutdentInline,
+        };
         let cursor = self.source.read(cx).cursor_position();
         let location = format!("Ln {}, Col {}", cursor.line + 1, cursor.character + 1);
         let language = self.source.read(cx).language_name().to_uppercase();
@@ -607,14 +991,41 @@ impl Workbench {
                 this.route_completion(action, window, cx)
             }))
             .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
-                this.route_completion(
-                    &Enter {
-                        secondary: false,
-                        shift: false,
-                    },
-                    window,
-                    cx,
-                )
+                let state = this.source.read(cx);
+                if !state.focus_handle(cx).is_focused(window) {
+                    return;
+                }
+                if state.completion_menu_state().open {
+                    this.route_completion(
+                        &Enter {
+                            secondary: false,
+                            shift: false,
+                        },
+                        window,
+                        cx,
+                    );
+                } else if !state.selected_range().is_empty() {
+                    this.source_line_command(
+                        &SourceLineCommand {
+                            operation: LineOperation::Indent,
+                        },
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &OutdentInline, window, cx| {
+                if this.source.read(cx).focus_handle(cx).is_focused(window) {
+                    this.source_line_command(
+                        &SourceLineCommand {
+                            operation: LineOperation::Outdent,
+                        },
+                        window,
+                        cx,
+                    );
+                    cx.stop_propagation();
+                }
             }))
             .capture_action(cx.listener(|this, action: &MoveDown, window, cx| {
                 this.route_completion(action, window, cx)
@@ -626,6 +1037,7 @@ impl Workbench {
                 this.route_completion(action, window, cx)
             }))
             .on_action(cx.listener(Self::request_completion))
+            .on_action(cx.listener(Self::source_line_command))
             .flex()
             .flex_col()
             .size_full()
@@ -639,6 +1051,7 @@ impl Workbench {
                     .py_2()
                     .border_b_1()
                     .border_color(cx.theme().border)
+                    .child(self.source_edit_menu(cx))
                     .child(
                         Button::new("source-find")
                             .ghost()
@@ -856,11 +1269,187 @@ pub(super) fn error_line(error: &anyhow::Error) -> Option<u32> {
 mod tests {
     use std::sync::Arc;
 
-    use super::SourceCompletions;
+    use super::{LineOperation, SourceCompletions, line_edit};
     use crate::desktop::{
         completion::CompletionCatalog,
         document::{DocumentKind, Format},
     };
+
+    fn edited_lines(
+        text: &str,
+        selection: std::ops::Range<usize>,
+        operation: LineOperation,
+    ) -> (String, std::ops::Range<usize>) {
+        let edit = line_edit(text, selection, operation).expect("Expected a line edit");
+        let mut result = text.to_string();
+        result.replace_range(edit.range, &edit.text);
+        assert!(result.is_char_boundary(edit.selection.start));
+        assert!(result.is_char_boundary(edit.selection.end));
+        (result, edit.selection)
+    }
+
+    #[test]
+    fn source_line_commands_comments_preserve_indentation_unicode_and_crlf() {
+        let original = "  label: caf\u{e9}\r\n\r\n  debug: true\r\nscenarios: []\r\n";
+        let selection = 2..original.find("scenarios").unwrap();
+        let (commented, selected) =
+            edited_lines(original, selection.clone(), LineOperation::ToggleComment);
+        assert_eq!(
+            commented,
+            "  # label: caf\u{e9}\r\n\r\n  # debug: true\r\nscenarios: []\r\n"
+        );
+        assert_eq!(
+            edited_lines(&commented, selected, LineOperation::ToggleComment),
+            (original.to_string(), selection)
+        );
+        assert_eq!(
+            edited_lines(
+                "#debug: true\n  # headless: true",
+                0..30,
+                LineOperation::ToggleComment
+            )
+            .0,
+            "debug: true\n  headless: true"
+        );
+    }
+
+    #[test]
+    fn source_line_commands_comments_handle_mixed_and_empty_lines() {
+        let original = "# existing\nnew\n";
+        let (commented, selected) =
+            edited_lines(original, 0..original.len(), LineOperation::ToggleComment);
+        assert_eq!(commented, "# # existing\n# new\n");
+        assert_eq!(
+            edited_lines(&commented, selected, LineOperation::ToggleComment).0,
+            original
+        );
+        assert_eq!(
+            edited_lines("", 0..0, LineOperation::ToggleComment),
+            ("# ".into(), 2..2)
+        );
+        assert_eq!(
+            edited_lines("\n", 0..0, LineOperation::ToggleComment),
+            ("# \n".into(), 2..2)
+        );
+        assert!(line_edit(" \n\n", 0..3, LineOperation::ToggleComment).is_none());
+    }
+
+    #[test]
+    fn source_line_commands_indent_only_selected_lines() {
+        let original = "  a\r\n\r\n b\r\nc\r\n";
+        let selection = 0..original.find('c').unwrap();
+        let (indented, selected) = edited_lines(original, selection, LineOperation::Indent);
+        assert_eq!(indented, "    a\r\n\r\n   b\r\nc\r\n");
+        assert_eq!(
+            edited_lines(&indented, selected, LineOperation::Outdent).0,
+            original
+        );
+        assert_eq!(
+            edited_lines("\ta\n b", 0..5, LineOperation::Outdent),
+            ("a\nb".into(), 0..3)
+        );
+        assert_eq!(
+            edited_lines("", 0..0, LineOperation::Indent),
+            ("  ".into(), 2..2)
+        );
+        assert!(line_edit("text", 0..4, LineOperation::Outdent).is_none());
+    }
+
+    #[test]
+    fn source_line_commands_duplicate_selected_blocks_and_unterminated_lines() {
+        for (original, selection, operation, expected, selected) in [
+            (
+                "a\nb\nc",
+                0..4,
+                LineOperation::DuplicateDown,
+                "a\nb\na\nb\nc",
+                4..8,
+            ),
+            (
+                "a\nb\nc",
+                2..4,
+                LineOperation::DuplicateUp,
+                "a\nb\nb\nc",
+                2..4,
+            ),
+            ("a\nb", 2..3, LineOperation::DuplicateDown, "a\nb\nb", 4..5),
+            ("a\nb", 2..3, LineOperation::DuplicateUp, "a\nb\nb", 2..3),
+            (
+                "a\r\nb",
+                3..4,
+                LineOperation::DuplicateDown,
+                "a\r\nb\r\nb",
+                6..7,
+            ),
+            ("", 0..0, LineOperation::DuplicateDown, "\n", 1..1),
+            ("a\n", 2..2, LineOperation::DuplicateUp, "a\n\n", 2..2),
+        ] {
+            assert_eq!(
+                edited_lines(original, selection, operation),
+                (expected.into(), selected),
+                "{operation:?}: {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn source_line_commands_move_blocks_without_changing_line_endings() {
+        for (original, selection, operation, expected, selected) in [
+            (
+                "a\nb\nc\nd\n",
+                2..6,
+                LineOperation::MoveUp,
+                "b\nc\na\nd\n",
+                0..4,
+            ),
+            (
+                "a\nb\nc\nd\n",
+                2..6,
+                LineOperation::MoveDown,
+                "a\nd\nb\nc\n",
+                4..8,
+            ),
+            ("a\nb", 2..3, LineOperation::MoveUp, "b\na", 0..1),
+            ("a\nb", 0..2, LineOperation::MoveDown, "b\na", 2..3),
+            ("a\r\nb", 3..4, LineOperation::MoveUp, "b\r\na", 0..1),
+            ("a\r\nb", 0..3, LineOperation::MoveDown, "b\r\na", 3..4),
+            ("a\n", 2..2, LineOperation::MoveUp, "\na", 0..0),
+            (
+                "\u{e9}\n\u{1f680}",
+                3..7,
+                LineOperation::MoveUp,
+                "\u{1f680}\n\u{e9}",
+                0..4,
+            ),
+        ] {
+            assert_eq!(
+                edited_lines(original, selection, operation),
+                (expected.into(), selected),
+                "{operation:?}: {original:?}"
+            );
+        }
+        assert!(line_edit("a\nb", 0..0, LineOperation::MoveUp).is_none());
+        assert!(line_edit("a\nb\n", 2..2, LineOperation::MoveDown).is_none());
+        assert!(line_edit("", 0..0, LineOperation::MoveDown).is_none());
+    }
+
+    #[test]
+    fn source_line_commands_delete_whole_lines_including_the_last_line() {
+        for (original, selection, expected, selected) in [
+            ("a\nb\nc\n", 2..4, "a\nc\n", 2..2),
+            ("a\nb", 2..2, "a", 1..1),
+            ("a\r\nb", 3..4, "a", 1..1),
+            ("a\nb\n", 4..4, "a\nb", 3..3),
+            ("a\nb\n", 0..4, "", 0..0),
+        ] {
+            assert_eq!(
+                edited_lines(original, selection, LineOperation::Delete),
+                (expected.into(), selected),
+                "{original:?}"
+            );
+        }
+        assert!(line_edit("", 0..0, LineOperation::Delete).is_none());
+    }
 
     #[test]
     fn compact_completion_documentation_keeps_the_example_and_full_explanation() {

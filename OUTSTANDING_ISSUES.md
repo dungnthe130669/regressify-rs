@@ -50,6 +50,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Source now supports selected-line comments, indentation, duplication, movement,
+  and deletion through focused shortcuts and an Edit menu. GUI regressions cover
+  undo/redo, JSON comment rejection, read-only and busy guards, Unicode/CRLF, and
+  reversed selections. Exclusive end-line indentation and Ctrl+Shift+Z routing
+  no longer affect an unselected line or invoke the wrong document history.
 - Test suite rows now expose Rename/Delete context actions and focus-scoped F2/Delete
   keys. Guarded operations update references, historical test runs, local report
   manifests, and desktop selections/activity across known output roots. Optional
@@ -115,6 +120,9 @@ it was risk-focused, not an exhaustive security certification.
   loads, removing light/dark startup flashes. Preferences synchronize across tabs
   without startup writes; desktop/mobile regressions cover system changes, invalid
   or blocked storage, and preference resets.
+- Snapshot footers now stay at the viewport bottom on short, empty, and missing
+  pages and follow long content in normal flow. Desktop/mobile footer regressions
+  cover both document and review-pane scrolling without overlap.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate
