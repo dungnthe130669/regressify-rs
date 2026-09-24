@@ -21,3 +21,7 @@ Verified: 2026-09-24
 - Regression evidence: `suite_panel_restores_all_saved_statuses_and_keeps_them_during_other_runs`
   and `approval_completion_preserves_comparison_and_updates_suite_counts`, run with
   `cargo test --features gui-tests --lib <filter> -- --test-threads=1`.
+- [Zoom readouts](../../src/desktop/ui/reports.rs) defer layout until preview bounds
+  are current; fit percentages use rendered pixel bounds, including layout rounding,
+  while manual percentages use the selected preset. The `image_previews_` GUI tests
+  cover one-decimal labels, independent modes, pointer zoom, and resized previews.

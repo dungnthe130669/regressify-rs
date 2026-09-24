@@ -5765,6 +5765,14 @@ async fn image_context_menus_offer_external_targets_without_switching_tabs(
     }
 }
 
+fn assert_fitted_zoom(window: &gpui_kit::Window, index: usize, canvas_width: f32) {
+    let width = window.find(("image-content", index)).bounds().size.width;
+    assert_eq!(
+        window.find("zoom-value").label(),
+        Some(format!("{:.1}%", width / px(canvas_width) * 100.).as_str())
+    );
+}
+
 #[gpui_kit::test]
 async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
     cx: &mut TestAppContext,
@@ -5803,7 +5811,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
             serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": captures})).unwrap(),
         )
         .unwrap();
-        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window.within("workbench-tabs").click(2_usize, cx);
@@ -5864,6 +5872,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                             .min(viewport.size.width / px(canvas_width))
                             .min(viewport.size.height / px(canvas_height))
                     });
+                    assert_fitted_zoom(window, panes[0], canvas_width);
                     for index in &panes {
                         let content = window.find(("image-content", *index)).bounds();
                         let viewport = window.find(("image-scroll", *index)).bounds();
@@ -5889,7 +5898,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                         assert_eq!(scale, 1.0);
                         window.click("zoom-in", cx);
                         assert_eq!(window.find("fit-image").checked(), Some(false));
-                        assert_eq!(window.find("zoom-value").label(), Some("110%"));
+                        assert_eq!(window.find("zoom-value").label(), Some("110.0%"));
                         for index in &panes {
                             let content = window.find(("image-content", *index)).bounds();
                             let viewport = window.find(("image-scroll", *index)).bounds();
@@ -5911,6 +5920,7 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                     window.click("fit-width", cx);
                     assert_eq!(window.find("fit-width").checked(), Some(true));
                     assert_eq!(window.find("fit-image").checked(), Some(false));
+                    assert_fitted_zoom(window, panes[0], canvas_width);
                     for index in &panes {
                         let content = window.find(("image-content", *index)).bounds();
                         let viewport = window.find(("image-scroll", *index)).bounds();
@@ -5932,10 +5942,42 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                         }
                     }
                     window.click("fit-image", cx);
+                    assert_fitted_zoom(window, panes[0], canvas_width);
                 }
             })
             .unwrap();
         }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(("capture", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window.try_find(("image-details", 1_usize)).is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            for mode in [0_usize, 3] {
+                window.within("image-modes").click(mode, cx);
+                for fit in ["fit-image", "fit-width"] {
+                    window.click(fit, cx);
+                    let before = window.find("zoom-value").label().unwrap().to_string();
+                    for hidden in [true, false] {
+                        view.update(cx, |editor, cx| {
+                            editor.preferences.navigator_hidden = hidden;
+                            cx.notify();
+                        });
+                        window.render_frame(cx);
+                        assert_fitted_zoom(window, 0, 1600.);
+                        if hidden {
+                            assert_ne!(window.find("zoom-value").label(), Some(before.as_str()));
+                        } else {
+                            assert_eq!(window.find("zoom-value").label(), Some(before.as_str()));
+                        }
+                    }
+                }
+            }
+        })
+        .unwrap();
     }
 }
 
@@ -6000,15 +6042,19 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         let middle = window.find(("image-scroll", 1_usize)).bounds();
         let right = window.find(("image-scroll", 2_usize)).bounds();
         assert!(left.right() <= middle.left() && middle.right() <= right.left());
-        for (index, label) in [(0_usize, "100%"), (1, "110%"), (2, "90%")] {
+        for (index, label) in [(0_usize, None), (1, Some("110.0%")), (2, Some("90.0%"))] {
             window.within("image-modes").click(3_usize, cx);
-            assert_eq!(window.find("zoom-value").label(), Some("150%"));
+            assert_eq!(window.find("zoom-value").label(), Some("150.0%"));
             window.click(("image-scroll", index), cx);
             assert_eq!(
                 window.within("image-modes").find(index).selected(),
                 Some(true)
             );
-            assert_eq!(window.find("zoom-value").label(), Some(label));
+            if let Some(label) = label {
+                assert_eq!(window.find("zoom-value").label(), Some(label));
+            } else {
+                assert_fitted_zoom(window, index, 1200.);
+            }
             assert_eq!(window.find("fit-width").checked(), Some(index == 0));
         }
         window.within("image-modes").click(2_usize, cx);
@@ -6041,11 +6087,20 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
                 window.within("image-modes").find(1_usize).selected(),
                 Some(true)
             );
-            for (mode, label) in [(0_usize, "100%"), (1, "110%"), (2, "90%"), (3, "150%")] {
+            for (mode, label) in [
+                (0_usize, None),
+                (1, Some("110.0%")),
+                (2, Some("90.0%")),
+                (3, Some("150.0%")),
+            ] {
                 window.within("image-modes").click(mode, cx);
                 assert_eq!(window.find("fit-width").checked(), Some(mode == 0));
                 assert_eq!(window.find("fit-image").checked(), Some(false));
-                assert_eq!(window.find("zoom-value").label(), Some(label));
+                if let Some(label) = label {
+                    assert_eq!(window.find("zoom-value").label(), Some(label));
+                } else {
+                    assert_fitted_zoom(window, mode, 1200.);
+                }
             }
         })
         .unwrap();
@@ -6078,7 +6133,11 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         for mode in 0..4 {
             window.within("image-modes").click(mode, cx);
             assert_eq!(window.find("fit-image").checked(), Some(true));
-            assert_eq!(window.find("zoom-value").label(), Some("100%"));
+            if mode == 2 {
+                assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
+            } else {
+                assert_fitted_zoom(window, if mode == 3 { 0 } else { mode }, 1200.);
+            }
             window.click("actual-size", cx);
         }
         window.within("workbench-tabs").click(0_usize, cx);
@@ -6093,7 +6152,11 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
         for mode in 0..4 {
             window.within("image-modes").click(mode, cx);
             assert_eq!(window.find("fit-image").checked(), Some(true));
-            assert_eq!(window.find("zoom-value").label(), Some("100%"));
+            if mode == 2 {
+                assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
+            } else {
+                assert_fitted_zoom(window, if mode == 3 { 0 } else { mode }, 1200.);
+            }
         }
     })
     .unwrap();
@@ -6210,7 +6273,7 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                         );
                         assert_eq!(
                             window.find("zoom-value").label(),
-                            Some(format!("{:.0}%", expected_zoom * 100.).as_str())
+                            Some(format!("{:.1}%", expected_zoom * 100.).as_str())
                         );
                         let anchored = after.origin
                             + gpui_kit::point(
@@ -6287,7 +6350,7 @@ async fn failed_reference_uses_error_placeholder_in_image_views(cx: &mut TestApp
     let run = output.join("bitmaps_test/run-1");
     std::fs::create_dir_all(&run).unwrap();
     std::fs::create_dir_all(output.join("html_report")).unwrap();
-    let placeholder = include_bytes!("../../snapshot/data/error-icon.png");
+    let placeholder = crate::test::capture::error_icon_png();
     let image = lodepng::decode32(placeholder).unwrap();
     let legacy = lodepng::encode32(&[214_u8, 40, 40, 255], 1, 1).unwrap();
     std::fs::write(run.join("failed.png"), &legacy).unwrap();
@@ -6408,21 +6471,21 @@ async fn results_filter_errors_and_load_image_comparison_modes(cx: &mut TestAppC
         window.click("zoom-in", cx);
         assert_eq!(
             window.find("zoom-value").label(),
-            Some(format!("{:.0}%", next_fit_zoom * 100.).as_str())
+            Some(format!("{:.1}%", next_fit_zoom * 100.).as_str())
         );
         window.click("actual-size", cx);
         window.click("zoom-in", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("110%"));
+        assert_eq!(window.find("zoom-value").label(), Some("110.0%"));
         window.click("zoom-in", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("125%"));
+        assert_eq!(window.find("zoom-value").label(), Some("125.0%"));
         window.click("zoom-out", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("110%"));
+        assert_eq!(window.find("zoom-value").label(), Some("110.0%"));
         window.click("zoom-out", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("100%"));
+        assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
         window.click("zoom-out", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("90%"));
+        assert_eq!(window.find("zoom-value").label(), Some("90.0%"));
         window.click("actual-size", cx);
-        assert_eq!(window.find("zoom-value").label(), Some("100%"));
+        assert_eq!(window.find("zoom-value").label(), Some("100.0%"));
         assert_eq!(
             window.find(("image-content", 1_usize)).bounds().size.width,
             px(1280.)

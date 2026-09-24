@@ -72,19 +72,20 @@ it was risk-focused, not an exhaustive security certification.
   and assertion were unchanged during the frontend branding/list-view update.
 - Align the hosting policies and rerun both checks; this remains unresolved.
 
-## GUI Test Fixture Check (2026-09-24)
-
-- `cargo test --features gui-tests --lib scenario_names -- --test-threads=1`
-  cannot compile because [comparison tests](src/desktop/ui/reports.rs) and
-  [UI tests](src/desktop/ui/tests.rs) still include the error placeholder from the
-  replaced snapshot asset folder. The existing capture-owned image is
-  [src/test/data/error-icon.png](src/test/data/error-icon.png).
-- These pre-existing test-only includes were left unchanged during scenario
-  naming work. `cargo check --features gui --lib` passes; native interaction tests
-  remain blocked until the includes use the capture-owned fixture.
-
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop now accepts blank and comment-only workspace YAML as defaults, matching
+  the CLI without rewriting the source. Regressions cover first-field edits,
+  resetting the last field, exact undo, and continued rejection of explicit nulls
+  and invalid non-workspace documents.
+- Desktop folder opening now creates missing runtime defaults automatically,
+  including `regressify.yaml`, without generating example suites or external-editor
+  assets. CLI `init` shares workspace-config creation. Focused regressions cover
+  repeat/concurrent setup, alternate YAML formats, preservation, and failed opens.
+- Results Fit area and Fit width now report the rendered zoom to one decimal
+  place. GUI regressions cover image shapes, tabs, both window sizes, preview
+  resizing, and manual zoom. Comparison fixtures now use the shared capture-owned
+  error artwork accessor, resolving the stale includes that blocked GUI tests.
 - URL-only scenarios now share friendly names across desktop catalogs, draft
   headings, Results, and snapshot navigation/capture headings. Complete-suite
   display names are recorded independently of IDs and filenames; older reports

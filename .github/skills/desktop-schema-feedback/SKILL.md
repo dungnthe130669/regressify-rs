@@ -17,6 +17,9 @@ description: 'Use when changing generated JSON Schema, desktop validation messag
 1. Derive constraints from real Rust/serde types and generated schema. Update CLI
    parsing, desktop semantics, and field help together instead of adding a second
    independently maintained schema.
+1. Validate kind-aware `Document::value()` results: omitted workspace YAML uses
+   defaults without loosening the generated object schema. Preserve the
+   [lossless editing contract](../desktop-lossless-editing/SKILL.md).
 1. Preserve useful diagnostics for nested untagged actions: identify the intended
    branch/property and a concrete repair, not every failing enum alternative.
 1. Do not echo secrets or arbitrary values in messages/hover help. Escape literal

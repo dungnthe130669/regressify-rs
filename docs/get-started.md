@@ -73,7 +73,15 @@ If this is your first time working with **Regressify**, follow these steps (only
    regressify init
    ```
 
-   This creates `common/` files and a starter `visual_tests/alloy.tests.yaml` without overwriting existing files.
+   This creates `regressify.yaml`, `common/` files, a starter
+   `visual_tests/alloy.tests.yaml`, and VS Code schema integration without
+   overwriting existing files. An existing `regressify.yml` is preserved instead
+   of creating a competing configuration file.
+
+   In the [desktop app](desktop.md#workspace-and-files), opening the folder
+   automatically creates missing runtime files, including `regressify.yaml`.
+   No separate initialization step is needed; editor-only assets and an example
+   suite are not added automatically.
 
 1. (Optionally) Initialize git in your folder:  
    Ensure you have [Git](https://git-scm.com/downloads) installed locally.

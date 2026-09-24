@@ -30,6 +30,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 ## Topic Notes
 
+- [Workspace initialization](workspace-initialization.md): shared CLI/desktop
+  runtime defaults, automatic folder-open setup, and preservation boundaries.
 - [Results review](desktop-results.md): report-versus-activity counts and in-place
   viewport approval.
 - [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and

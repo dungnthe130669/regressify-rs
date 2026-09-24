@@ -1298,8 +1298,8 @@ impl ResultsPanel {
             })
     }
 
-    fn step_zoom(&mut self, increase: bool, cx: &mut Context<Self>) {
-        let index = if self.image_mode == 3 {
+    fn zoom_preview_index(&self) -> usize {
+        if self.image_mode == 3 {
             self.previews
                 .iter()
                 .take(self.comparison_preview_count())
@@ -1307,7 +1307,59 @@ impl ResultsPanel {
                 .unwrap_or(0)
         } else {
             self.image_mode
-        };
+        }
+    }
+
+    fn render_zoom_value(&self) -> AnyElement {
+        let view = self.preview_views[self.image_mode];
+        let index = self.zoom_preview_index();
+        let canvas_width = self.preview_canvas_size(index).0 as f32;
+        let guides = self.pointer_guides.clone();
+        div()
+            .w(px(56.))
+            .h_full()
+            .flex_shrink_0()
+            // Fitted bounds are only current after the image panes have been laid out.
+            .child(gpui_kit::deferred(
+                canvas(
+                    move |bounds, window, cx| {
+                        let zoom = if view.mode == ZoomMode::Manual {
+                            view.zoom
+                        } else {
+                            guides.bounds[index]
+                                .get()
+                                .map(|bounds| bounds.size.width / px(canvas_width))
+                                .unwrap_or(view.zoom)
+                        };
+                        let label = format!("{:.1}%", zoom * 100.);
+                        let mut display = div()
+                            .id("zoom-value")
+                            .role(Role::Status)
+                            .aria_label(label.clone())
+                            .test_support()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(label)
+                            .into_any_element();
+                        display.prepaint_as_root(
+                            bounds.origin,
+                            bounds.size.map(gpui_kit::AvailableSpace::Definite),
+                            window,
+                            cx,
+                        );
+                        display
+                    },
+                    |_, mut display, window, cx| display.paint(window, cx),
+                )
+                .size_full(),
+            ))
+            .into_any_element()
+    }
+
+    fn step_zoom(&mut self, increase: bool, cx: &mut Context<Self>) {
+        let index = self.zoom_preview_index();
         let view = self.preview_views[self.image_mode];
         let current = if view.mode != ZoomMode::Manual {
             self.pointer_guides.bounds[index]
@@ -2116,16 +2168,7 @@ impl ResultsPanel {
                                 this.step_zoom(false, cx);
                             })),
                     )
-                    .child(
-                        div()
-                            .id("zoom-value")
-                            .role(Role::Status)
-                            .aria_label(format!("{:.0}%", view.zoom * 100.))
-                            .test_support()
-                            .w(px(48.))
-                            .text_center()
-                            .child(format!("{:.0}%", view.zoom * 100.)),
-                    )
+                    .child(self.render_zoom_value())
                     .child(
                         Button::new("zoom-in")
                             .ghost()
@@ -2247,8 +2290,7 @@ mod pointer_tests {
         std::fs::write(directory.path().join("outside.png"), &png).unwrap();
         let catalog = super::Catalog::load(&root).unwrap();
         let artifacts = catalog.reports[0].artifacts();
-        let placeholder =
-            lodepng::decode32(include_bytes!("../../snapshot/data/error-icon.png")).unwrap();
+        let placeholder = lodepng::decode32(crate::test::capture::error_icon_png()).unwrap();
 
         for path in [None, Some("../bitmaps_reference/missing.png")] {
             let image = super::LoadedImage::load(&artifacts, &root, "Reference", path).unwrap();
@@ -2540,7 +2582,7 @@ mod pointer_tests {
                 window.within("image-modes").find(1_usize).selected(),
                 Some(true)
             );
-            assert_eq!(window.find("zoom-value").label(), Some("110%"));
+            assert_eq!(window.find("zoom-value").label(), Some("110.0%"));
             assert_eq!(
                 window.find(("capture", 1_usize)).label(),
                 Some("Passed Checkout")

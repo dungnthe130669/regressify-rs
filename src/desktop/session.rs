@@ -69,6 +69,7 @@ impl Session {
     pub fn connect(&mut self, root: &Path) -> Result<()> {
         ensure!(!self.dirty(), "Save or discard the current document first");
         let workspace = Workspace::open(root)?;
+        crate::init::init_desktop_workspace(&workspace.root)?;
         let entries = workspace.entries()?;
         self.workspace = Some(workspace);
         self.entries = entries;
@@ -417,6 +418,115 @@ fn unique_label(base: &str, items: &[Value]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn connecting_creates_missing_runtime_files_without_editor_assets() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut session = Session::default();
+
+        session.connect(root).unwrap();
+
+        for path in [
+            "regressify.yaml",
+            "common/_viewports.yaml",
+            "common/_cookies.yaml",
+            "common/_override.css",
+            "common/_on-ready.js",
+            "common/_replacement-profiles.yaml",
+        ] {
+            assert!(root.join(path).is_file(), "Missing runtime file: {path}");
+        }
+        assert!(root.join("visual_tests").is_dir());
+        assert!(!root.join(".vscode").exists());
+        for path in [
+            "common/test-schema.json",
+            "common/regressify-schema.json",
+            "common/replacement-profiles-schema.json",
+        ] {
+            assert!(!root.join(path).exists(), "Unexpected editor asset: {path}");
+        }
+        assert!(
+            session
+                .entries
+                .iter()
+                .any(|entry| entry.kind == DocumentKind::Workspace)
+        );
+        assert!(session.suites.is_empty());
+        for entry in &session.entries {
+            session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .open_document(entry.clone())
+                .unwrap()
+                .document
+                .validate()
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn reconnecting_restores_only_missing_runtime_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut session = Session::default();
+        session.connect(root).unwrap();
+        let config = root.join("regressify.yaml");
+        let cookies = root.join("common/_cookies.yaml");
+        let stylesheet = root.join("common/_override.css");
+        std::fs::write(&config, "# custom settings\ndelay: 75\n").unwrap();
+        std::fs::write(&cookies, "# unfinished draft\n[\n").unwrap();
+        let modified = std::fs::metadata(&config).unwrap().modified().unwrap();
+        let original_stylesheet = std::fs::read(&stylesheet).unwrap();
+        std::fs::remove_file(&stylesheet).unwrap();
+
+        session.connect(root).unwrap();
+        session.connect(root).unwrap();
+
+        assert_eq!(std::fs::read(&stylesheet).unwrap(), original_stylesheet);
+        assert_eq!(
+            std::fs::read_to_string(&config).unwrap(),
+            "# custom settings\ndelay: 75\n"
+        );
+        assert_eq!(
+            std::fs::metadata(&config).unwrap().modified().unwrap(),
+            modified
+        );
+        assert_eq!(
+            std::fs::read_to_string(cookies).unwrap(),
+            "# unfinished draft\n[\n"
+        );
+    }
+
+    #[test]
+    fn failed_automatic_setup_preserves_the_current_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let blocked = tempfile::tempdir().unwrap();
+        let mut session = session(directory.path());
+        session.select(Selection::Scenario(0)).unwrap();
+        let original = session.open.as_ref().unwrap().document.source().to_string();
+        let entries: Vec<_> = session.entries.iter().map(Entry::label).collect();
+        std::fs::write(blocked.path().join("common"), "keep this file").unwrap();
+
+        let error = session.connect(blocked.path()).unwrap_err();
+
+        assert!(format!("{error:#}").contains("common"));
+        assert_eq!(
+            session.workspace.as_ref().unwrap().root,
+            directory.path().canonicalize().unwrap()
+        );
+        assert_eq!(session.open.as_ref().unwrap().document.source(), original);
+        assert_eq!(session.selection, Selection::Scenario(0));
+        assert_eq!(
+            session.entries.iter().map(Entry::label).collect::<Vec<_>>(),
+            entries
+        );
+        assert_eq!(
+            std::fs::read_to_string(blocked.path().join("common")).unwrap(),
+            "keep this file"
+        );
+    }
+
     fn session(root: &Path) -> Session {
         let mut session = Session::default();
         session.connect(root).unwrap();
@@ -498,6 +608,9 @@ mod tests {
         let mut session = session(directory.path());
         session.add_scenario().unwrap();
         assert!(session.connect(directory.path()).is_err());
+        let other = tempfile::tempdir().unwrap();
+        assert!(session.connect(other.path()).is_err());
+        assert!(std::fs::read_dir(other.path()).unwrap().next().is_none());
         let before = session.open.as_ref().unwrap().document.source().to_string();
         assert!(
             session

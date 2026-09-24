@@ -62,6 +62,20 @@ regressify snapshot --test-suite 'shop*' --test-suite account
 The summary contains only the selected suites. Excluded suite reports and
 capture directories are not rewritten or cleaned up.
 
+## Workspace Initialization
+
+`regressify init` creates a minimal `regressify.yaml` (`{}`) alongside the common
+runtime files, example suite, generated schemas, and VS Code associations. The
+empty configuration inherits built-in defaults and can be edited by both the CLI
+workflow and the desktop app. Existing `regressify.yaml` or `regressify.yml` files
+are preserved; an existing `.yml` is not shadowed by a generated `.yaml`.
+Default replacement-profile generation also respects an existing `.yml` file.
+
+The [desktop app](desktop.md#workspace-and-files) creates missing runtime defaults
+automatically when opening a folder. It does not automatically generate example
+suites, exported schemas, VS Code settings, or Node-specific helpers. CLI `init`
+retains its explicit editor setup and non-destructive legacy-file migration.
+
 ## Snapshot Site
 
 The generated site provides an overview at `/`, suite results at

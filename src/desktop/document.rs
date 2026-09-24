@@ -132,7 +132,20 @@ impl Document {
         !self.redo.is_empty()
     }
     pub fn value(&self) -> Result<Value> {
-        self.format.parse(&self.source)
+        self.parse_value(&self.source)
+    }
+
+    fn parse_value(&self, source: &str) -> Result<Value> {
+        let value = self.format.parse(source)?;
+        // The CLI parser distinguishes omitted YAML content from an explicit null.
+        if self.kind == DocumentKind::Workspace
+            && self.format == Format::Yaml
+            && value.is_null()
+            && serde_yaml::from_str::<WorkspaceConfig>(source).is_ok()
+        {
+            return Ok(json!({}));
+        }
+        Ok(value)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -191,7 +204,7 @@ impl Document {
         };
         // A CST editor must never silently change the meaning of unrelated YAML.
         ensure!(
-            self.format.parse(&source)? == expected,
+            self.parse_value(&source)? == expected,
             "This YAML construct cannot be edited losslessly. Use the Source editor instead."
         );
         self.set_source(source)
@@ -288,13 +301,23 @@ fn locate(root: YamlNode, path: &str) -> Result<YamlNode> {
 }
 
 fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
-    let (protected, originals) = protect_plain_scalars(source)?;
+    let (mut protected, originals) = protect_plain_scalars(source)?;
     // Keep the stream wrapper: leading comments can belong to it, not the document.
-    let file = YamlFile::from_str(&protected)?;
-    let document = file
-        .documents()
-        .next()
-        .ok_or_else(|| anyhow!("Empty YAML document"))?;
+    let mut file = YamlFile::from_str(&protected)?;
+    if file.document().is_none()
+        && matches!(edit, Edit::Set { value: Some(_), .. })
+        && !protected.is_empty()
+        && !protected.ends_with('\n')
+    {
+        // A new setting must not become part of an unterminated leading comment.
+        protected.push_str(if protected.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        });
+        file = YamlFile::from_str(&protected)?;
+    }
+    let document = file.ensure_document();
     let root = root_node(&document)?;
     match edit {
         Edit::Set { parent, key, value } => {
@@ -593,6 +616,149 @@ mod tests {
 
     fn suite(source: &str) -> Document {
         Document::new(DocumentKind::Suite, Format::Yaml, source.to_string()).unwrap()
+    }
+
+    const BLANK_WORKSPACE_YAML: &[&str] = &[
+        "",
+        "   ",
+        "  \r\n \n",
+        "# Workspace defaults\n",
+        "# No final newline",
+        "# Workspace defaults\r\n\r\n  # Keep this note\r\n",
+        "# Caf\u{e9} settings\r\n  # No final newline",
+    ];
+
+    #[test]
+    fn blank_workspace_yaml_uses_defaults_without_changing_source() {
+        for &source in BLANK_WORKSPACE_YAML {
+            serde_yaml::from_str::<WorkspaceConfig>(source).unwrap();
+            let document =
+                Document::new(DocumentKind::Workspace, Format::Yaml, source.into()).unwrap();
+            assert_eq!(document.value().unwrap(), json!({}), "{source:?}");
+            document.validate().unwrap();
+            assert_eq!(document.source(), source);
+            assert_eq!(document.saved_source(), source);
+            assert!(!document.dirty());
+            assert!(!document.can_undo());
+        }
+    }
+
+    #[test]
+    fn blank_workspace_yaml_supports_field_edits_and_exact_undo() {
+        for &source in BLANK_WORKSPACE_YAML {
+            let mut document =
+                Document::new(DocumentKind::Workspace, Format::Yaml, source.into()).unwrap();
+            document
+                .apply(Edit::Set {
+                    parent: String::new(),
+                    key: "debug".into(),
+                    value: None,
+                })
+                .unwrap();
+            assert_eq!(document.source(), source);
+            assert!(!document.dirty());
+            assert!(!document.can_undo());
+
+            document
+                .apply_many(vec![
+                    Edit::Set {
+                        parent: String::new(),
+                        key: "debug".into(),
+                        value: Some(json!(false)),
+                    },
+                    Edit::Set {
+                        parent: String::new(),
+                        key: "delay".into(),
+                        value: Some(json!(0)),
+                    },
+                ])
+                .unwrap_or_else(|error| panic!("{source:?}: {error:#}"));
+            assert_eq!(
+                document.value().unwrap(),
+                json!({"debug": false, "delay": 0})
+            );
+            assert!(document.source().starts_with(source), "{source:?}");
+            document.validate().unwrap();
+            let edited = document.source().to_string();
+
+            document.undo();
+            assert_eq!(document.source(), source);
+            assert!(!document.dirty());
+            assert!(!document.can_undo());
+            document.validate().unwrap();
+            document.redo();
+            assert_eq!(document.source(), edited);
+            assert!(document.dirty());
+        }
+    }
+
+    #[test]
+    fn blank_workspace_yaml_can_result_from_resetting_the_last_field() {
+        for source in ["debug: true\n", "# Keep this note\ndebug: true\n"] {
+            let mut document =
+                Document::new(DocumentKind::Workspace, Format::Yaml, source.into()).unwrap();
+            document
+                .apply(Edit::Set {
+                    parent: String::new(),
+                    key: "debug".into(),
+                    value: None,
+                })
+                .unwrap();
+            assert_eq!(document.value().unwrap(), json!({}));
+            document.validate().unwrap();
+            if source.starts_with('#') {
+                assert!(document.source().contains("# Keep this note\n"));
+            }
+            document.undo();
+            assert_eq!(document.source(), source);
+        }
+    }
+
+    #[test]
+    fn blank_workspace_yaml_does_not_relax_other_document_validation() {
+        for source in [
+            "null\n",
+            "~\n",
+            "\"\"\n",
+            "[]\n",
+            "false\n",
+            " \t\r\n",
+            "# Defaults\ndebug: [\n",
+            "---\n---\n",
+        ] {
+            assert!(serde_yaml::from_str::<WorkspaceConfig>(source).is_err());
+            let mut document =
+                Document::new(DocumentKind::Workspace, Format::Yaml, source.into()).unwrap();
+            assert!(document.validate().is_err(), "{source:?}");
+            assert!(
+                document
+                    .apply(Edit::Set {
+                        parent: String::new(),
+                        key: "debug".into(),
+                        value: Some(json!(false)),
+                    })
+                    .is_err(),
+                "{source:?}"
+            );
+            assert_eq!(document.source(), source);
+            assert!(!document.dirty());
+        }
+        for kind in [
+            DocumentKind::Suite,
+            DocumentKind::Viewports,
+            DocumentKind::Data,
+        ] {
+            for &source in BLANK_WORKSPACE_YAML {
+                let document = Document::new(kind, Format::Yaml, source.into()).unwrap();
+                assert_eq!(document.value().unwrap(), Value::Null);
+                assert!(document.validate().is_err(), "{kind:?}: {source:?}");
+            }
+        }
+        for source in ["", " \r\n", "null"] {
+            let document =
+                Document::new(DocumentKind::Workspace, Format::Json, source.into()).unwrap();
+            assert!(document.validate().is_err(), "{source:?}");
+        }
     }
 
     #[test]
