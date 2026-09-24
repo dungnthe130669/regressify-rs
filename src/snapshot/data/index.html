@@ -4,8 +4,21 @@
     <meta name="robots" content="noindex,nofollow">
     <meta name="regressify-manifest" content="__SNAPSHOT_MANIFEST__">
     <meta name="color-scheme" content="light dark">
+    <script>
+      (() => {
+        let theme;
+        try {
+          theme = localStorage.getItem("regressify-theme");
+        } catch {}
+        if (theme !== "light" && theme !== "dark") {
+          theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <style>:where(:root){--lightningcss-light:initial;--lightningcss-dark: ;color-scheme:light;background:#f7f8f8}:where(:root[data-theme=dark]){--lightningcss-light: ;--lightningcss-dark:initial;color-scheme:dark;background:#151919}</style>
     <title>__SNAPSHOT_TITLE__</title>
-    <script type="module" crossorigin="" src="/_snapshot/assets/app.js?v=wxRJAAkicl_Ey-ruCupA"></script>
+    <script type="module" crossorigin="" src="/_snapshot/assets/app.js?v=VvXu_aRYmYW6p2otJucp"></script>
     <link rel="stylesheet" crossorigin="" href="/_snapshot/assets/style.css?v=VtN-acVwKdYNQGirtFby">
   </head>
   <body>

@@ -70,7 +70,8 @@ bun run test:e2e
 
 Unit tests cover schemas, safe links, filters, route encoding, and atomic asset
 synchronization. Playwright uses desktop and phone viewports for navigation,
-deep-link refresh, filtering, theme persistence, all image modes, zoom, downloads,
+deep-link refresh, filtering, theme persistence, pre-bundle theme/background
+application, blocked storage, cross-tab theme changes, all image modes, zoom, downloads,
 suite-scoped scenarios, independent pane scrolling, divider drag/keyboard resizing,
 failure jumps, selectable/copyable Info content, errors, hostile content,
 narrow/wide layouts, and axe accessibility checks. They also verify the shared
@@ -157,7 +158,15 @@ Returning to the overview restores the configured report title.
 
 Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
-non-HTTP(S) protocols. Theme preferences are local; no analytics run.
+non-HTTP(S) protocols. No analytics run.
+
+Theme preferences are local. The saved Light, Dark, or System choice and page
+background apply in the document head before the app bundle or report data loads.
+Missing, invalid, or inaccessible preferences fall back to the system theme.
+Explicit theme changes synchronize across report tabs on the same origin; only
+System mode follows operating-system appearance changes. Loading a report does
+not rewrite the preference. When storage is blocked, theme switching still works
+for the current page.
 
 Suite and image pages show a left navigation pane with Test suites and Test
 scenarios. Scenarios belong only to the currently selected suite; scenarios with

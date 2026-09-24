@@ -12,6 +12,26 @@ mod tests;
 const LOCAL_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_INTERVAL: Duration = Duration::from_secs(60);
 
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui_kit::Action)]
+struct ChooseGitRemote {
+    name: String,
+}
+
+#[derive(Clone)]
+enum RemoteEdit {
+    Add,
+    Rename(String),
+    Url { name: String, push: bool },
+}
+
+struct GitActivity {
+    label: String,
+    started: Instant,
+    finished: Option<Duration>,
+    success: Option<bool>,
+    reporter: Cancellation,
+}
+
 pub(super) enum GitEvent {
     Changed,
     Requested(Box<model::Request>),
@@ -42,7 +62,17 @@ pub(super) struct GitPanel {
     source_diff: bool,
     collapsed_review: BTreeSet<usize>,
     message: Entity<TextareaState>,
+    remote_name: Entity<InputState>,
     remote_url: Entity<InputState>,
+    remote_edit: Option<(RemoteEdit, Snapshot)>,
+    focus: FocusHandle,
+    activity: Option<GitActivity>,
+    activity_history: std::collections::VecDeque<String>,
+    activity_open: bool,
+    activity_follow: bool,
+    activity_task: Option<Task<()>>,
+    activity_log: Entity<EditorState>,
+    activity_text: String,
     status: String,
     rows: Vec<view::TreeRow>,
     comparison_rows: Vec<view::TreeRow>,
@@ -68,9 +98,13 @@ impl GitPanel {
                 .rows(3)
                 .placeholder("Commit message")
         });
-        let remote_url = cx.new(|cx| InputState::new(window, cx).placeholder("Remote URL"));
+        let remote_name = cx.new(|cx| InputState::new(window, cx).placeholder("Remote name"));
+        let remote_url = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("HTTPS, SSH URL or local repository path")
+        });
         let message_subscription = cx.subscribe(&message, |_, _, _: &InputEvent, cx| cx.notify());
         let remote_subscription = cx.subscribe(&remote_url, |_, _, _: &InputEvent, cx| cx.notify());
+        let name_subscription = cx.subscribe(&remote_name, |_, _, _: &InputEvent, cx| cx.notify());
         Self {
             root: None,
             snapshot: None,
@@ -100,7 +134,17 @@ impl GitPanel {
             source_diff: false,
             collapsed_review: BTreeSet::new(),
             message,
+            remote_name,
             remote_url,
+            remote_edit: None,
+            focus: cx.focus_handle(),
+            activity: None,
+            activity_history: Default::default(),
+            activity_open: false,
+            activity_follow: true,
+            activity_task: None,
+            activity_log: cx.new(|cx| EditorState::new(window, cx).line_number(false)),
+            activity_text: String::new(),
             status: String::new(),
             rows: Vec::new(),
             comparison_rows: Vec::new(),
@@ -108,7 +152,7 @@ impl GitPanel {
             tree_current: Default::default(),
             tree_scroll: Default::default(),
             comparison_open: false,
-            _subscriptions: vec![message_subscription, remote_subscription],
+            _subscriptions: vec![message_subscription, remote_subscription, name_subscription],
         }
     }
 
@@ -124,6 +168,7 @@ impl GitPanel {
             }
         }
         self.poller = None;
+        self.activity_task = None;
     }
 
     pub(super) fn set_workspace(
@@ -155,6 +200,16 @@ impl GitPanel {
         self.source_diff = false;
         self.collapsed_review.clear();
         self.status.clear();
+        self.remote_edit = None;
+        self.activity = None;
+        self.activity_history.clear();
+        self.activity_open = false;
+        self.activity_follow = true;
+        self.activity_text.clear();
+        self.activity_log
+            .update(cx, |state, cx| state.set_value("", window, cx));
+        self.remote_name
+            .update(cx, |state, cx| state.set_value("", window, cx));
         self.diff
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.message
@@ -202,8 +257,9 @@ impl GitPanel {
     }
 
     pub(super) fn cancel_operation(&mut self, cx: &mut Context<Self>) {
-        if let Some(operation) = &self.action {
+        if let Some(operation) = self.action.as_ref().or(self.fetch.as_ref()) {
             operation.cancel();
+            operation.stage("Cancellation requested; waiting for Git processes to exit");
             self.status = "Cancelling Git operation...".into();
             cx.notify();
         }
@@ -223,6 +279,12 @@ impl GitPanel {
             self.remote_generation += 1;
             if let Some(operation) = self.fetch.take() {
                 operation.cancel();
+                self.finish_activity(
+                    false,
+                    "Remote configuration changed; fetch cancelled",
+                    window,
+                    cx,
+                );
             }
             self.last_fetch = None;
             self.last_fetch_attempt = None;
@@ -343,18 +405,21 @@ impl GitPanel {
         let Some(snapshot) = &self.snapshot else {
             return String::new();
         };
-        if snapshot.remote.as_deref() == Some(".") {
+        if snapshot.selected_remote.is_none() && snapshot.remote.as_deref() == Some(".") {
             return "Local upstream branch; no remote fetch required".into();
         }
         if snapshot.remotes.is_empty() {
             return "No remote configured".into();
         }
+        if snapshot.default_remote().is_none() {
+            return "Select a remote to continue".into();
+        }
         let checked = self
             .last_fetch
             .map(|time| format!("Remote checked {}s ago", time.elapsed().as_secs()))
             .unwrap_or_else(|| "Remote not checked yet".into());
-        if snapshot.upstream.is_none() {
-            format!("No upstream branch | {checked}")
+        if snapshot.comparison_upstream.is_none() {
+            format!("Remote branch not fetched or published | {checked}")
         } else {
             checked
         }
@@ -392,7 +457,7 @@ impl GitPanel {
                             .last_fetch_attempt
                             .is_none_or(|time| time.elapsed() >= REMOTE_INTERVAL)
                         {
-                            this.check_remote(window, cx);
+                            this.check_remote(false, window, cx);
                         }
                     }
                     Err(error) => this.error = Some(format!("{error:#}")),
@@ -405,7 +470,7 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn check_remote(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn check_remote(&mut self, reveal: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.fetch.is_some() || self.action.is_some() || self.disabled {
             return;
         }
@@ -416,7 +481,17 @@ impl GitPanel {
         else {
             return;
         };
-        let cancellation = Cancellation::default();
+        let cancellation = Cancellation::reporting();
+        self.begin_activity(
+            format!(
+                "Fetch from {}",
+                snapshot.default_remote().unwrap_or_default()
+            ),
+            cancellation.clone(),
+            reveal,
+            window,
+            cx,
+        );
         self.fetch = Some(cancellation.clone());
         self.last_fetch_attempt = Some(Instant::now());
         let generation = self.generation;
@@ -435,8 +510,13 @@ impl GitPanel {
                     Ok(()) => {
                         this.last_fetch = Some(Instant::now());
                         this.remote_error = None;
+                        this.finish_activity(true, "Fetch completed", window, cx);
                     }
-                    Err(error) => this.remote_error = Some(format!("{error:#}")),
+                    Err(error) => {
+                        let error = format!("{error:#}");
+                        this.finish_activity(false, &error, window, cx);
+                        this.remote_error = Some(error);
+                    }
                 }
                 this.refresh(window, cx);
                 cx.emit(GitEvent::Changed);
@@ -446,6 +526,208 @@ impl GitPanel {
         .detach();
         cx.emit(GitEvent::Changed);
         cx.notify();
+    }
+
+    fn begin_activity(
+        &mut self,
+        label: String,
+        reporter: Cancellation,
+        reveal: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(previous) = self.activity.take() {
+            self.activity_history.push_back(format!(
+                "{} | {}",
+                previous.label,
+                if previous.success == Some(true) {
+                    "Completed"
+                } else if previous.finished.is_some() {
+                    "Stopped or failed"
+                } else {
+                    "Interrupted"
+                }
+            ));
+            let progress = previous.reporter.progress();
+            self.activity_history.extend(progress.lines);
+            while self.activity_history.len() > 400 {
+                self.activity_history.pop_front();
+            }
+        }
+        self.activity = Some(GitActivity {
+            label,
+            reporter,
+            started: Instant::now(),
+            finished: None,
+            success: None,
+        });
+        self.activity_open |= reveal;
+        self.sync_activity_log(window, cx);
+        let generation = self.generation;
+        self.activity_task = Some(cx.spawn_in(window, async move |panel, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(150))
+                    .await;
+                if !panel
+                    .update_in(cx, |this, window, cx| {
+                        if this.generation != generation
+                            || this
+                                .activity
+                                .as_ref()
+                                .is_none_or(|activity| activity.finished.is_some())
+                        {
+                            return false;
+                        }
+                        this.sync_activity_log(window, cx);
+                        cx.notify();
+                        true
+                    })
+                    .unwrap_or(false)
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn finish_activity(
+        &mut self,
+        success: bool,
+        message: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(activity) = &mut self.activity {
+            activity.finished = Some(activity.started.elapsed());
+            activity.success = Some(success);
+            activity.reporter.stage(message);
+        }
+        self.activity_task = None;
+        self.sync_activity_log(window, cx);
+    }
+
+    fn sync_activity_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut lines = self.activity_history.iter().cloned().collect::<Vec<_>>();
+        if let Some(activity) = &self.activity {
+            lines.push(format!(
+                "{} | {}",
+                activity.label,
+                if activity.finished.is_none() {
+                    "Running"
+                } else if activity.success == Some(true) {
+                    "Completed"
+                } else if activity.reporter.is_cancelled() {
+                    "Cancelled"
+                } else {
+                    "Failed"
+                }
+            ));
+            let progress = activity.reporter.progress();
+            if progress.omitted > 0 {
+                lines.push(format!("[{} earlier log lines omitted]", progress.omitted));
+            }
+            lines.extend(progress.lines);
+        }
+        let text = lines.join("\n");
+        if self.activity_text != text {
+            self.activity_log.update(cx, |state, cx| {
+                let position = if self.activity_follow {
+                    lsp_types::Position::new(
+                        text.bytes().filter(|byte| *byte == b'\n').count() as u32,
+                        text.rsplit('\n')
+                            .next()
+                            .unwrap_or_default()
+                            .encode_utf16()
+                            .count() as u32,
+                    )
+                } else {
+                    state.cursor_position()
+                };
+                state.set_value(text.clone(), window, cx);
+                state.set_cursor_position(position, window, cx);
+            });
+            self.activity_text = text;
+        }
+    }
+
+    fn edit_remote(&mut self, mode: RemoteEdit, window: &mut Window, cx: &mut Context<Self>) {
+        if self.disabled || self.active() || self.error.is_some() {
+            return;
+        }
+        let Some(snapshot) = self.snapshot.clone() else {
+            return;
+        };
+        let name = match &mode {
+            RemoteEdit::Add => {
+                if snapshot.remotes.is_empty() {
+                    "origin"
+                } else {
+                    ""
+                }
+            }
+            RemoteEdit::Rename(name) | RemoteEdit::Url { name, .. } => name,
+        };
+        let url = match &mode {
+            RemoteEdit::Url { name, push } => snapshot
+                .remote_urls
+                .get(name)
+                .and_then(|urls| {
+                    (if *push && !urls.push.is_empty() {
+                        &urls.push
+                    } else {
+                        &urls.fetch
+                    })
+                    .first()
+                    .and_then(Option::as_deref)
+                })
+                .unwrap_or_default(),
+            _ => "",
+        };
+        self.remote_name
+            .update(cx, |state, cx| state.set_value(name, window, cx));
+        self.remote_url
+            .update(cx, |state, cx| state.set_value(url, window, cx));
+        let focus = if matches!(mode, RemoteEdit::Url { .. }) {
+            self.remote_url.read(cx).focus_handle(cx)
+        } else {
+            self.remote_name.read(cx).focus_handle(cx)
+        };
+        self.remote_edit = Some((mode, snapshot));
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    fn save_remote(&mut self, cx: &mut Context<Self>) {
+        if self.disabled || self.active() || self.error.is_some() {
+            return;
+        }
+        let Some((mode, expected)) = &self.remote_edit else {
+            return;
+        };
+        let Some(workspace) = self.root.clone() else {
+            return;
+        };
+        let action = match mode {
+            RemoteEdit::Add => model::Action::AddRemote {
+                name: self.remote_name.read(cx).value().trim().into(),
+                url: self.remote_url.read(cx).value().trim().into(),
+            },
+            RemoteEdit::Rename(name) => model::Action::RenameRemote {
+                name: name.clone(),
+                new_name: self.remote_name.read(cx).value().trim().into(),
+            },
+            RemoteEdit::Url { name, push } => model::Action::UpdateRemote {
+                name: name.clone(),
+                url: self.remote_url.read(cx).value().trim().into(),
+                push: *push,
+            },
+        };
+        cx.emit(GitEvent::Requested(Box::new(model::Request {
+            workspace,
+            expected: expected.clone(),
+            action,
+        })));
     }
 
     fn review(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -601,22 +883,45 @@ impl Workbench {
                 paths.len()
             ),
             model::Action::Pull => format!(
-                "Pull '{}' from {}? Only a fast-forward is allowed; local files must be clean.",
+                "Pull '{}' from '{}' ({})? Only a fast-forward is allowed; local files must be clean.",
                 request.expected.branch,
                 request
                     .expected
-                    .upstream
-                    .as_deref()
-                    .unwrap_or("its upstream")
+                    .pull_remote()
+                    .unwrap_or("no selected remote"),
+                request
+                    .expected
+                    .destination(request.expected.pull_remote().unwrap_or_default()),
             ),
             model::Action::Push => format!(
                 "Push local commits on '{}' to '{}'? Remote history will not be overwritten.",
                 request.expected.branch,
-                request.expected.default_remote().unwrap_or("origin")
+                request
+                    .expected
+                    .default_remote()
+                    .unwrap_or("no selected remote")
             ),
-            model::Action::AddOrigin { .. } => {
-                "Add this URL as the repository's origin remote?".into()
-            }
+            model::Action::SelectRemote { name } => format!(
+                "Select '{name}' for fetch, pull and push in this repository? The current branch and files will not change."
+            ),
+            model::Action::AddRemote { name, .. } => format!(
+                "Add remote '{name}' to this repository? Authentication uses your existing Git configuration."
+            ),
+            model::Action::UpdateRemote { name, push, .. } => format!(
+                "Replace the {} URL for remote '{name}'? Future {} operations will use the new destination.",
+                if *push { "push" } else { "fetch" },
+                if *push {
+                    "push"
+                } else {
+                    "fetch and pull (and push when no separate push URL exists)"
+                }
+            ),
+            model::Action::RenameRemote { name, new_name } => format!(
+                "Rename remote '{name}' to '{new_name}'? Its remote-tracking references and branch configuration will be updated."
+            ),
+            model::Action::RemoveRemote { name } => format!(
+                "Remove remote '{name}' from this repository? Its local remote-tracking references and upstream settings will be removed. Local branches, files and the hosted repository will not be deleted."
+            ),
         };
         let view = cx.entity();
         window.open_dialog(cx, move |dialog, window, _cx| {
@@ -659,7 +964,11 @@ impl Workbench {
                             Button::new("git-operation-confirm")
                                 .primary()
                                 .when(
-                                    matches!(request.action, model::Action::Discard { .. }),
+                                    matches!(
+                                        request.action,
+                                        model::Action::Discard { .. }
+                                            | model::Action::RemoveRemote { .. }
+                                    ),
                                     |button| button.danger(),
                                 )
                                 .label(request.action.label())
@@ -687,7 +996,7 @@ impl Workbench {
         {
             return;
         }
-        let cancellation = Cancellation::default();
+        let cancellation = Cancellation::reporting();
         self.busy = true;
         self.status = format!("{}...", request.action.label());
         self.sync_modal(cx);
@@ -697,6 +1006,13 @@ impl Workbench {
             panel.diff_generation += 1;
             panel.action = Some(cancellation.clone());
             panel.status = self.status.clone();
+            panel.begin_activity(
+                request.action.label().into(),
+                cancellation.clone(),
+                true,
+                window,
+                cx,
+            );
             panel.start_polling(window, cx);
             cx.emit(GitEvent::Changed);
             cx.notify();
@@ -704,6 +1020,7 @@ impl Workbench {
         let action = request.action.clone();
         let task = cx.background_executor().spawn(async move {
             let result = request.execute(&cancellation);
+            cancellation.stage("Refreshing repository status");
             let snapshot = model::status(&request.workspace, &Cancellation::default());
             (result, snapshot)
         });
@@ -716,6 +1033,7 @@ impl Workbench {
                 this.git.update(cx, |panel, cx| {
                     panel.action = None;
                     panel.status = this.status.clone();
+                    panel.finish_activity(success, &this.status, window, cx);
                     panel.disabled = false;
                     match snapshot {
                         Ok(snapshot) => panel.install_snapshot(snapshot, window, cx),
@@ -732,6 +1050,19 @@ impl Workbench {
                     if success && matches!(action, model::Action::Commit { .. }) {
                         panel
                             .message
+                            .update(cx, |state, cx| state.set_value("", window, cx));
+                    }
+                    if success
+                        && matches!(
+                            action,
+                            model::Action::AddRemote { .. }
+                                | model::Action::UpdateRemote { .. }
+                                | model::Action::RenameRemote { .. }
+                        )
+                    {
+                        panel.remote_edit = None;
+                        panel
+                            .remote_url
                             .update(cx, |state, cx| state.set_value("", window, cx));
                     }
                     if matches!(action, model::Action::Pull | model::Action::Push) && success {

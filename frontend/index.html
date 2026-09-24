@@ -6,6 +6,28 @@
     <meta name="robots" content="noindex,nofollow" />
     <meta name="regressify-manifest" content="__SNAPSHOT_MANIFEST__" />
     <meta name="color-scheme" content="light dark" />
+    <script>
+      (() => {
+        let theme;
+        try {
+          theme = localStorage.getItem('regressify-theme');
+        } catch {}
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.dataset.theme = theme;
+      })();
+    </script>
+    <style>
+      :where(:root) {
+        color-scheme: light;
+        background: #f7f8f8;
+      }
+      :where(:root[data-theme='dark']) {
+        color-scheme: dark;
+        background: #151919;
+      }
+    </style>
     <title>__SNAPSHOT_TITLE__</title>
   </head>
   <body>

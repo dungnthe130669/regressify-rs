@@ -19,6 +19,465 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[gpui_kit::test]
+async fn remote_management_forms_menu_confirmation_and_logs_work_in_app(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    for remote in [&first, &second] {
+        git(remote.path(), &["init", "--bare", "-b", "main"]);
+    }
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().canonicalize().unwrap());
+                panel.install_snapshot(snapshot, window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+    })
+    .unwrap();
+    for (name, remote) in [("origin", &first), ("z-team", &second)] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("git-remote-add", cx);
+            window.click("git-remote-name", cx);
+            window.press("ctrl-a", cx);
+            window.input(name, cx);
+            window.click("git-remote-url", cx);
+            window.input(remote.path().to_str().unwrap(), cx);
+            window.click("git-remote-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("git-operation-confirm").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("git-operation-confirm", cx)
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+            let panel = view.read(cx).git.read(cx);
+            !panel.active()
+                && panel
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|snapshot| snapshot.remotes.iter().any(|remote| remote == name))
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-remote-menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.within("popup-menu").try_find(1_usize).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(1_usize).label(),
+            Some("z-team")
+        );
+        window.within("popup-menu").click(1_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("git-operation-confirm").is_some()
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-operation-confirm", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+        let panel = view.read(cx).git.read(cx);
+        !panel.active()
+            && panel
+                .snapshot
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.selected_remote.as_deref() == Some("z-team"))
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    for (button, push, remote) in [
+        ("git-edit-fetch-url", false, &first),
+        ("git-edit-push-url", true, &second),
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(button, cx);
+            window.click("git-remote-url", cx);
+            window.press("ctrl-a", cx);
+            window.input(remote.path().to_str().unwrap(), cx);
+            window.click("git-remote-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("git-operation-confirm").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("git-operation-confirm", cx)
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+            let panel = view.read(cx).git.read(cx);
+            !panel.active()
+                && panel.remote_edit.is_none()
+                && panel.snapshot.as_ref().is_some_and(|snapshot| {
+                    let urls = &snapshot.remote_urls["z-team"];
+                    (if push { &urls.push } else { &urls.fetch })
+                        .first()
+                        .and_then(Option::as_deref)
+                        == remote.path().to_str()
+                })
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-remote-rename", cx);
+        window.click("git-remote-name", cx);
+        window.press("ctrl-a", cx);
+        window.input("mirror", cx);
+        window.click("git-remote-save", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("git-operation-confirm").is_some()
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-operation-confirm", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+        let panel = view.read(cx).git.read(cx);
+        !panel.active()
+            && panel
+                .snapshot
+                .as_ref()
+                .and_then(model::Snapshot::default_remote)
+                == Some("mirror")
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    for confirm in [false, true] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("git-remote-remove", cx)
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("git-operation-confirm").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(
+                if confirm {
+                    "git-operation-confirm"
+                } else {
+                    "git-operation-cancel"
+                },
+                cx,
+            )
+        })
+        .unwrap();
+        if confirm {
+            cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+                let panel = view.read(cx).git.read(cx);
+                !panel.active()
+                    && panel
+                        .snapshot
+                        .as_ref()
+                        .is_some_and(|snapshot| snapshot.remotes == ["origin"])
+            })
+            .await;
+        } else {
+            cx.update_window(handle.into(), |_, _, cx| {
+                assert_eq!(
+                    view.read(cx)
+                        .git
+                        .read(cx)
+                        .snapshot
+                        .as_ref()
+                        .unwrap()
+                        .remotes
+                        .len(),
+                    2
+                )
+            })
+            .unwrap();
+        }
+        super::super::tests::settle_dialog(cx, handle).await;
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = view.read(cx).git.clone();
+        assert!(
+            panel
+                .read(cx)
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .default_remote()
+                .is_none()
+        );
+        assert!(
+            panel
+                .read(cx)
+                .activity_text
+                .contains("Remote 'mirror' removed locally")
+        );
+        assert!(panel.read(cx).activity_text.contains("Running git remote"));
+        window.click("git-log-copy", cx);
+        assert!(
+            cx.read_from_clipboard()
+                .unwrap()
+                .text()
+                .unwrap()
+                .contains("removed locally")
+        );
+        window.click("git-activity-toggle", cx);
+        assert!(window.try_find("git-logs").is_none());
+        window.click("git-activity-toggle", cx);
+        assert!(window.find("git-logs").visible());
+        window.click("git-log-clear", cx);
+        assert!(panel.read(cx).activity_text.is_empty());
+        panel.update(cx, |panel, _| panel.cancel_all());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn remote_editor_rejects_configuration_changed_after_opening_and_keeps_the_draft(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let remote = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    git(remote.path(), &["init", "--bare"]);
+    git(external.path(), &["init", "--bare"]);
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    git(
+        directory.path(),
+        &["remote", "add", "origin", remote.path().to_str().unwrap()],
+    );
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().canonicalize().unwrap());
+                panel.last_fetch_attempt = Some(std::time::Instant::now());
+                panel.install_snapshot(snapshot, window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+        window.render_frame(cx);
+        window.click("git-edit-fetch-url", cx);
+        window.click("git-remote-url", cx);
+        window.press("ctrl-a", cx);
+        window.input(remote.path().to_str().unwrap(), cx);
+    })
+    .unwrap();
+    git(
+        directory.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            external.path().to_str().unwrap(),
+        ],
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-remote-save", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("git-operation-confirm").is_some()
+    })
+    .await;
+    super::super::tests::settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("git-operation-confirm", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(30), |_, cx| {
+        let panel = view.read(cx).git.read(cx);
+        !panel.active() && panel.status.contains("remote or upstream changed")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = view.read(cx).git.clone();
+        assert!(panel.read(cx).remote_edit.is_some());
+        assert_eq!(
+            panel.read(cx).remote_url.read(cx).value().as_ref(),
+            remote.path().to_str().unwrap()
+        );
+        assert_eq!(
+            panel.read(cx).snapshot.as_ref().unwrap().remote_urls["origin"].fetch[0].as_deref(),
+            external.path().to_str()
+        );
+        window.click("git-remote-edit-cancel", cx);
+        assert!(panel.read(cx).remote_edit.is_none());
+        panel.update(cx, |panel, _| panel.cancel_all());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn remote_controls_and_live_activity_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) =
+            super::super::tests::editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        let reporter = Cancellation::reporting();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    let name = "team-with-a-long-name".repeat(6);
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            branch: "main".into(),
+                            remotes: vec![name.clone()],
+                            selected_remote: Some(name.clone()),
+                            changes: ["nested/file.txt", ".regressify/qa-review/report.json"]
+                                .into_iter()
+                                .map(|path| model::Change {
+                                    path: path.into(),
+                                    original_path: None,
+                                    index: '.',
+                                    worktree: 'M',
+                                    untracked: false,
+                                    conflict: false,
+                                    submodule: false,
+                                })
+                                .collect(),
+                            remote_urls: [(
+                                name,
+                                model::RemoteUrls {
+                                    fetch: vec![Some(format!(
+                                        "https://example.test/{}",
+                                        "repository".repeat(60)
+                                    ))],
+                                    push: vec![None],
+                                },
+                            )]
+                            .into(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.comparison_open = true;
+                    panel.status = "Push in progress".into();
+                    panel.action = Some(reporter.clone());
+                    panel.begin_activity("Push".into(), reporter.clone(), true, window, cx);
+                    reporter.stage("Receiving objects: 10%");
+                    panel.sync_activity_log(window, cx);
+                });
+                this.select_view(3, window, cx);
+            });
+            window.render_frame(cx);
+            for id in [
+                "git-remote-menu",
+                "git-remote-add",
+                "git-remote-rename",
+                "git-remote-remove",
+                "git-fetch-url",
+                "git-commit",
+                "git-progress",
+                "git-logs",
+                "git-stop",
+            ] {
+                let element = window.find(id);
+                let bounds = element.bounds();
+                assert!(
+                    element.visible(),
+                    "{id} must remain visible at {width}x{height}"
+                );
+                assert!(
+                    bounds.right() <= px(width) && bounds.bottom() <= px(height),
+                    "{id} must remain within the window at {width}x{height}"
+                );
+            }
+            assert!(window.find(("git-select", 1_usize)).visible());
+            assert!(
+                window.find("git-commit").bounds().bottom()
+                    <= window.find("git-changes-panel").bounds().bottom()
+            );
+            assert!(
+                window.find("git-changes-panel").bounds().right()
+                    <= window.find("git-activity").bounds().left()
+            );
+            assert!(
+                window.find("git-remote-menu").bounds().right()
+                    <= window.find("git-remote-add").bounds().left()
+            );
+            assert!(view.read(cx).git.read(cx).activity_text.contains("10%"));
+            let panel = view.read(cx).git.clone();
+            let log = panel.read(cx).activity_log.clone();
+            assert_eq!(log.read(cx).cursor_position().line, 1);
+            window.click("git-log-follow", cx);
+            log.update(cx, |state, cx| {
+                state.set_cursor_position(lsp_types::Position::new(0, 0), window, cx)
+            });
+            panel.update(cx, |panel, cx| {
+                reporter.stage("Receiving objects: 20%");
+                panel.sync_activity_log(window, cx);
+            });
+            assert_eq!(
+                log.read(cx).cursor_position(),
+                lsp_types::Position::new(0, 0)
+            );
+            window.click("git-log-follow", cx);
+            assert_eq!(log.read(cx).cursor_position().line, 2);
+            window.click("git-remote-add", cx);
+            assert!(view.read(cx).git.read(cx).remote_edit.is_none());
+            window.click("git-stop", cx);
+            assert!(reporter.is_cancelled());
+            view.read(cx).git.clone().update(cx, |panel, cx| {
+                panel.action = None;
+                panel.finish_activity(false, "Git operation cancelled", window, cx);
+            });
+            window.render_frame(cx);
+            assert!(
+                window
+                    .find("git-progress")
+                    .label()
+                    .unwrap()
+                    .contains("Cancelled")
+            );
+            window.click(("git-select", 1_usize), cx);
+            assert!(
+                view.read(cx)
+                    .git
+                    .read(cx)
+                    .selection
+                    .contains(".regressify/qa-review/report.json")
+            );
+            view.read(cx)
+                .git
+                .clone()
+                .update(cx, |panel, _| panel.cancel_all());
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
 async fn untracked_workspace_can_initialize_through_guarded_git_ui(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = super::super::tests::editor(cx, directory.path());

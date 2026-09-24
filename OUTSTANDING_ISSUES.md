@@ -24,36 +24,23 @@ it was risk-focused, not an exhaustive security certification.
   Add tracked, untracked, and same-status staged-content regression cases in the
   existing Git test module using temporary repositories.
 
-### P2: Process Pipe Joins Escape Timeout and Cancellation
+### P2: Desktop Worker Pipe Joins Escape Timeout and Cancellation
 
-- Evidence: the [Git wait loop](src/desktop/git/process.rs#L122) stops checking its
-  deadline/cancellation when the parent exits, then unconditionally joins stdin,
-  stdout, and stderr threads while still holding the child group. The
-  [desktop worker](src/desktop/runner.rs#L693) has the same reader-join boundary.
-- Trigger: a Git hook/helper or engine descendant outlives its parent and retains
+- Evidence: the [desktop worker](src/desktop/runner.rs#L693) has an unbounded
+  reader-join boundary after the parent exits.
+- Trigger: an engine descendant outlives its parent and retains
   an inherited pipe. The reader waits for EOF; the group handle is not released,
   and subsequent cancellation no longer reaches the finished parent wait loop.
-  Git can remain busy beyond its advertised deadline, and worker close can hang.
+  Worker close can hang.
 - Verification: static control-flow review plus the pinned command-group 5.0.1
   parent `try_wait` behavior. Existing cancellation tests keep the parent alive;
   the parent-exits-first case was not executed during this review.
 - Repair/test: bound writer/reader completion and preserve cancellation/process-tree
   cleanup until all streams close. Add a fixture whose parent exits while a child
   retains stdout/stderr; assert bounded completion, cancellation, and no descendants.
-
-### P2: Authorization Header Values Survive Git Error Redaction
-
-- Evidence: [redact](src/desktop/git/process.rs#L167) splits on whitespace and
-  replaces only words containing a URL or the exact text `Authorization:`.
-  The following `Bearer`/`Basic` value remains in returned/displayed Git stderr.
-- Trigger: a Git hook, helper, or diagnostic emits an authorization header. Lowercase
-  header names and values on following tokens are not protected by the current rule.
-- Verification: compiled the actual redactor with a synthetic input;
-  `Authorization: Bearer synthetic-review-token` retained the synthetic token.
-  No real credential or remote response was accessed.
-- Repair/test: redact full header values case-insensitively and bound line parsing;
-  cover Bearer/Basic, mixed case, whitespace, multiline errors, URLs, and surrounding
-  safe text in the existing process tests.
+- Git counterpart resolved on 2026-09-24: its process wrapper keeps checking the
+  deadline/cancellation until readers and the stdin writer complete. A local
+  parent-exits-first helper regression verifies bounded completion.
 
 ## Review Checks (2026-09-23)
 
@@ -74,6 +61,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Git diagnostics now redact full authorization diagnostics case-insensitively,
+  including multiline values, before display or copying. Live output is bounded,
+  buffers complete lines across read boundaries, and omits remaining output after
+  sensitive/oversized diagnostics. Synthetic regression tests cover URL secrets,
+  header casing, whitespace, chunk splitting, and output limits.
 - Desktop now accepts blank and comment-only workspace YAML as defaults, matching
   the CLI without rewriting the source. Regressions cover first-field edits,
   resetting the last field, exact undo, and continued rejection of explicit nulls
@@ -109,6 +101,10 @@ it was risk-focused, not an exhaustive security certification.
   image browser titles include the suite name. Suite list rows show uncropped,
   side-by-side Reference/Test/optional Diff previews, with mobile, missing-image,
   and long-label browser coverage.
+- Snapshot themes and initial page backgrounds now apply before the app bundle
+  loads, removing light/dark startup flashes. Preferences synchronize across tabs
+  without startup writes; desktop/mobile regressions cover system changes, invalid
+  or blocked storage, and preference resets.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate

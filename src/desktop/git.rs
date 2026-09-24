@@ -1,8 +1,8 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -15,14 +15,77 @@ mod process;
 pub mod review;
 
 #[derive(Clone, Default)]
-pub struct Cancellation(Arc<AtomicBool>);
+pub struct Cancellation {
+    cancelled: Arc<AtomicBool>,
+    progress: Option<Arc<Mutex<Progress>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct Progress {
+    pub stage: String,
+    pub lines: VecDeque<String>,
+    pub omitted: usize,
+}
 
 impl Cancellation {
+    pub fn reporting() -> Self {
+        Self {
+            progress: Some(Arc::new(Mutex::new(Progress::default()))),
+            ..Self::default()
+        }
+    }
+
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.cancelled.store(true, Ordering::Relaxed);
     }
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    pub fn progress(&self) -> Progress {
+        self.progress
+            .as_ref()
+            .map(|progress| {
+                progress
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn stage(&self, stage: &str) {
+        if let Some(progress) = &self.progress {
+            progress
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .stage = stage.into();
+            self.log(stage);
+        }
+    }
+
+    fn log(&self, text: &str) {
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        let text = process::redact(text);
+        let mut progress = progress.lock().unwrap_or_else(|error| error.into_inner());
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let line = line
+                .chars()
+                .filter(|character| !character.is_control() || *character == '\t')
+                .collect::<String>();
+            let line = if line.len() > 2048 {
+                "[Oversized Git output line omitted]".into()
+            } else {
+                line
+            };
+            if progress.lines.len() == 400 {
+                progress.lines.pop_front();
+                progress.omitted += 1;
+            }
+            progress.lines.push_back(line);
+        }
     }
 }
 
@@ -73,6 +136,12 @@ impl Change {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RemoteUrls {
+    pub fetch: Vec<Option<String>>,
+    pub push: Vec<Option<String>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Snapshot {
     pub repository: Option<Repository>,
     pub branch: String,
@@ -81,6 +150,9 @@ pub struct Snapshot {
     pub remote: Option<String>,
     pub merge_ref: Option<String>,
     pub remotes: Vec<String>,
+    pub selected_remote: Option<String>,
+    pub remote_urls: BTreeMap<String, RemoteUrls>,
+    pub comparison_upstream: Option<String>,
     pub remote_config: String,
     pub ahead: usize,
     pub behind: usize,
@@ -97,6 +169,7 @@ impl Snapshot {
             && self.remote == other.remote
             && self.merge_ref == other.merge_ref
             && self.upstream == other.upstream
+            && self.selected_remote == other.selected_remote
             && self.remote_config == other.remote_config
     }
 
@@ -104,19 +177,34 @@ impl Snapshot {
         self.changes.iter().filter(|change| change.conflict).count()
     }
     pub fn default_remote(&self) -> Option<&str> {
-        if self.remote.as_deref() == Some(".") {
-            return None;
+        if let Some(selected) = &self.selected_remote {
+            return self.remotes.contains(selected).then_some(selected.as_str());
         }
-        self.remote
-            .as_deref()
-            .filter(|remote| *remote != ".")
-            .or_else(|| {
-                self.remotes
-                    .iter()
-                    .find(|remote| remote.as_str() == "origin")
-                    .map(String::as_str)
-            })
+        if let Some(remote) = &self.remote {
+            return (remote != "." && self.remotes.contains(remote)).then_some(remote.as_str());
+        }
+        self.remotes
+            .iter()
+            .find(|remote| remote.as_str() == "origin")
+            .map(String::as_str)
             .or_else(|| (self.remotes.len() == 1).then(|| self.remotes[0].as_str()))
+    }
+
+    pub fn pull_remote(&self) -> Option<&str> {
+        if self.selected_remote.is_none() && self.remote.as_deref() == Some(".") {
+            Some(".")
+        } else {
+            self.default_remote()
+        }
+    }
+
+    pub fn destination(&self, remote: &str) -> String {
+        if self.remote.as_deref() == Some(remote)
+            && let Some(reference) = &self.merge_ref
+        {
+            return reference.clone();
+        }
+        format!("refs/heads/{}", self.branch)
     }
 }
 
@@ -184,7 +272,12 @@ pub fn status(workspace: &Path, cancellation: &Cancellation) -> Result<Snapshot>
         .collect();
     let remote_config = process::run(
         &root,
-        ["config", "--null", "--get-regexp", "^(remote\\.|url\\.)"],
+        [
+            "config",
+            "--null",
+            "--get-regexp",
+            "^(remote\\.|url\\.|regressify\\.remote$)",
+        ],
         None,
         cancellation,
         Duration::from_secs(15),
@@ -193,6 +286,24 @@ pub fn status(workspace: &Path, cancellation: &Cancellation) -> Result<Snapshot>
         remote_config.ensure_success()?;
     }
     snapshot.remote_config = format!("{:x}", Sha256::digest(&remote_config.stdout));
+    let config = remote_config.text()?;
+    for name in &snapshot.remotes {
+        let mut urls = RemoteUrls::default();
+        for record in config.split('\0') {
+            if let Some((key, value)) = record.split_once('\n') {
+                let values = if key == format!("remote.{name}.url") {
+                    &mut urls.fetch
+                } else if key == format!("remote.{name}.pushurl") {
+                    &mut urls.push
+                } else {
+                    continue;
+                };
+                values.push(validate_remote_url(value).ok().map(|()| value.to_string()));
+            }
+        }
+        snapshot.remote_urls.insert(name.clone(), urls);
+    }
+    snapshot.selected_remote = config_value(&root, "regressify.remote", cancellation)?;
     if !snapshot.detached && !snapshot.branch.is_empty() {
         snapshot.remote = config_value(
             &root,
@@ -204,6 +315,53 @@ pub fn status(workspace: &Path, cancellation: &Cancellation) -> Result<Snapshot>
             &format!("branch.{}.merge", snapshot.branch),
             cancellation,
         )?;
+    }
+    snapshot.comparison_upstream = snapshot.upstream.clone();
+    if snapshot.selected_remote.is_some() {
+        snapshot.ahead = 0;
+        snapshot.behind = 0;
+        snapshot.comparison_upstream = None;
+        if let Some(remote) = snapshot.default_remote()
+            && let Some(head) = &snapshot.head
+            && let Some(branch) = snapshot.destination(remote).strip_prefix("refs/heads/")
+        {
+            let reference = format!("{remote}/{branch}");
+            let target = process::run(
+                &root,
+                [
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/remotes/{reference}^{{commit}}"),
+                ],
+                None,
+                cancellation,
+                Duration::from_secs(15),
+            )?;
+            if target.success {
+                let counts = command(
+                    &root,
+                    [
+                        "rev-list",
+                        "--left-right",
+                        "--count",
+                        &format!("{head}...{}", target.text()?.trim()),
+                        "--",
+                    ],
+                    cancellation,
+                )?
+                .text()?;
+                let (ahead, behind) = counts
+                    .trim()
+                    .split_once('\t')
+                    .context("Invalid Git commit counts")?;
+                snapshot.ahead = ahead.parse()?;
+                snapshot.behind = behind.parse()?;
+                snapshot.comparison_upstream = Some(reference);
+            } else if target.code != Some(1) {
+                target.ensure_success()?;
+            }
+        }
     }
     for (path, name) in [
         ("MERGE_HEAD", "Merge in progress"),
@@ -248,9 +406,15 @@ pub fn fetch(snapshot: &Snapshot, cancellation: &Cancellation) -> Result<()> {
         .repository
         .as_ref()
         .context("Workspace is not a Git repository")?;
+    cancellation.stage("Validating remote destination");
+    let current = status(&repository.root, cancellation)?;
+    ensure!(
+        snapshot.same_tracking_as(&current),
+        "Git remote or upstream changed; refresh before fetching"
+    );
     let remote = snapshot
         .default_remote()
-        .context("No tracking remote; configure a remote in VS Code")?;
+        .context("No remote selected; select or add a remote")?;
     ensure!(
         snapshot.remotes.iter().any(|name| name == remote),
         "Tracking remote is no longer configured"
@@ -261,7 +425,7 @@ pub fn fetch(snapshot: &Snapshot, cancellation: &Cancellation) -> Result<()> {
             "-c",
             "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
             "fetch",
-            "--quiet",
+            "--progress",
             "--prune",
             "--no-tags",
             "--no-recurse-submodules",
@@ -347,11 +511,34 @@ fn bounded_diff(text: &str) -> String {
 #[derive(Clone, Debug)]
 pub enum Action {
     Initialize,
-    Commit { paths: Vec<String>, message: String },
-    Discard { paths: Vec<String> },
+    Commit {
+        paths: Vec<String>,
+        message: String,
+    },
+    Discard {
+        paths: Vec<String>,
+    },
     Pull,
     Push,
-    AddOrigin { url: String },
+    SelectRemote {
+        name: String,
+    },
+    AddRemote {
+        name: String,
+        url: String,
+    },
+    UpdateRemote {
+        name: String,
+        url: String,
+        push: bool,
+    },
+    RenameRemote {
+        name: String,
+        new_name: String,
+    },
+    RemoveRemote {
+        name: String,
+    },
 }
 
 impl Action {
@@ -362,7 +549,11 @@ impl Action {
             Self::Discard { .. } => "Discard selected files",
             Self::Pull => "Pull",
             Self::Push => "Push",
-            Self::AddOrigin { .. } => "Add origin",
+            Self::SelectRemote { .. } => "Select remote",
+            Self::AddRemote { .. } => "Add remote",
+            Self::UpdateRemote { .. } => "Update remote URL",
+            Self::RenameRemote { .. } => "Rename remote",
+            Self::RemoveRemote { .. } => "Remove remote",
         }
     }
 }
@@ -376,6 +567,7 @@ pub struct Request {
 
 impl Request {
     pub fn execute(&self, cancellation: &Cancellation) -> Result<String> {
+        cancellation.stage("Validating repository and reviewed state");
         let current = status(&self.workspace, cancellation)?;
         if matches!(self.action, Action::Initialize) {
             ensure!(
@@ -397,7 +589,13 @@ impl Request {
         );
         if matches!(
             self.action,
-            Action::Pull | Action::Push | Action::AddOrigin { .. }
+            Action::Pull
+                | Action::Push
+                | Action::SelectRemote { .. }
+                | Action::AddRemote { .. }
+                | Action::UpdateRemote { .. }
+                | Action::RenameRemote { .. }
+                | Action::RemoveRemote { .. }
         ) {
             ensure!(
                 current.remote_config == self.expected.remote_config
@@ -632,9 +830,13 @@ impl Request {
                     current.changes.is_empty(),
                     "Commit local changes before pulling, or use VS Code to manage them"
                 );
+                let remote = current
+                    .pull_remote()
+                    .context("No remote selected; select or add a remote")?;
+                let destination = current.destination(remote);
                 ensure!(
-                    current.remote.is_some() && current.merge_ref.is_some(),
-                    "No upstream branch; configure tracking in VS Code first"
+                    destination.starts_with("refs/heads/"),
+                    "Upstream is not a branch"
                 );
                 let output = process::run(
                     &repository.root,
@@ -650,6 +852,10 @@ impl Request {
                         "--no-rebase",
                         "--no-edit",
                         "--no-recurse-submodules",
+                        "--progress",
+                        "--",
+                        remote,
+                        &destination,
                     ],
                     None,
                     cancellation,
@@ -671,19 +877,12 @@ impl Request {
                 );
                 let remote = current
                     .default_remote()
-                    .context("No remote configured; add origin first")?;
+                    .context("No remote selected; select or add a remote")?;
                 ensure!(
                     current.remotes.iter().any(|name| name == remote),
                     "Tracking remote is unavailable"
                 );
-                let destination = if current.remote.as_deref() == Some(remote) {
-                    current
-                        .merge_ref
-                        .clone()
-                        .unwrap_or_else(|| format!("refs/heads/{}", current.branch))
-                } else {
-                    format!("refs/heads/{}", current.branch)
-                };
+                let destination = current.destination(remote);
                 ensure!(
                     destination.starts_with("refs/heads/"),
                     "Upstream is not a branch; configure it in VS Code"
@@ -696,6 +895,7 @@ impl Request {
                         "core.sshCommand=ssh -oBatchMode=yes -oStrictHostKeyChecking=yes",
                         "push",
                         "--porcelain",
+                        "--progress",
                         "--set-upstream",
                         "--",
                         remote,
@@ -710,40 +910,130 @@ impl Request {
                     .context("Push failed; fetch and review incoming commits before retrying")?;
                 Ok("Push completed".into())
             }
-            Action::AddOrigin { url } => {
+            Action::SelectRemote { name } => {
+                ensure!(current.remotes.contains(name), "Remote no longer exists");
+                command(
+                    &repository.root,
+                    ["config", "--local", "regressify.remote", name],
+                    cancellation,
+                )?;
+                Ok(format!("Remote '{name}' selected"))
+            }
+            Action::AddRemote { name, url } => {
+                validate_remote_name(&repository.root, name, cancellation)?;
+                validate_remote_url(url)?;
                 ensure!(
-                    !current.remotes.iter().any(|remote| remote == "origin"),
-                    "Origin already exists; edit remotes in VS Code"
+                    !current.remotes.contains(name),
+                    "A remote with that name already exists"
                 );
+                command(
+                    &repository.root,
+                    ["remote", "add", "--", name, url],
+                    cancellation,
+                )?;
+                Ok(format!("Remote '{name}' added"))
+            }
+            Action::UpdateRemote { name, url, push } => {
+                ensure!(current.remotes.contains(name), "Remote no longer exists");
+                validate_remote_url(url)?;
+                let mut args = vec!["remote", "set-url"];
+                if *push {
+                    args.push("--push");
+                }
+                args.extend(["--", name, url]);
+                command(&repository.root, args, cancellation)?;
+                Ok(format!(
+                    "Remote '{name}' {} URL updated",
+                    if *push { "push" } else { "fetch" }
+                ))
+            }
+            Action::RenameRemote { name, new_name } => {
+                ensure!(current.remotes.contains(name), "Remote no longer exists");
+                validate_remote_name(&repository.root, new_name, cancellation)?;
                 ensure!(
-                    !url.trim().is_empty()
-                        && url == url.trim()
-                        && url.len() <= 4096
-                        && !url.starts_with('-')
-                        && !url.contains("::")
-                        && !url.chars().any(char::is_control),
-                    "Enter a valid remote URL or repository path"
+                    !current.remotes.contains(new_name),
+                    "A remote with that name already exists"
                 );
-                if url.contains("://") {
-                    let parsed = reqwest::Url::parse(url).context("Invalid remote URL")?;
-                    ensure!(
-                        matches!(parsed.scheme(), "https" | "ssh" | "file")
-                            && parsed.password().is_none()
-                            && parsed.query().is_none()
-                            && parsed.fragment().is_none()
-                            && (parsed.scheme() != "https" || parsed.username().is_empty()),
-                        "Use a credential-free HTTPS or SSH remote; configure authentication outside the app"
-                    );
+                command(
+                    &repository.root,
+                    ["remote", "rename", "--", name, new_name],
+                    cancellation,
+                )?;
+                if current.selected_remote.as_ref() == Some(name) {
+                    command(
+                        &repository.root,
+                        ["config", "--local", "regressify.remote", new_name],
+                        cancellation,
+                    )?;
+                }
+                Ok(format!("Remote '{name}' renamed to '{new_name}'"))
+            }
+            Action::RemoveRemote { name } => {
+                ensure!(current.remotes.contains(name), "Remote no longer exists");
+                if current.selected_remote.is_none() && current.default_remote() == Some(name) {
+                    command(
+                        &repository.root,
+                        ["config", "--local", "regressify.remote", name],
+                        cancellation,
+                    )?;
                 }
                 command(
                     &repository.root,
-                    ["remote", "add", "origin", url],
+                    ["remote", "remove", "--", name],
                     cancellation,
                 )?;
-                Ok("Origin configured".into())
+                Ok(format!("Remote '{name}' removed locally"))
             }
         }
     }
+}
+
+fn validate_remote_name(root: &Path, name: &str, cancellation: &Cancellation) -> Result<()> {
+    ensure!(
+        !name.is_empty()
+            && name.len() <= 128
+            && name.starts_with(|character: char| character.is_ascii_alphanumeric())
+            && name.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_' | '/')
+            }),
+        "Use a remote name starting with a letter or number, with letters, numbers, '.', '-', '_' or '/'"
+    );
+    command(
+        root,
+        ["check-ref-format", &format!("refs/remotes/{name}/branch")],
+        cancellation,
+    )
+    .context("Invalid remote name")?;
+    Ok(())
+}
+
+fn validate_remote_url(url: &str) -> Result<()> {
+    ensure!(
+        !url.trim().is_empty()
+            && url == url.trim()
+            && url.len() <= 4096
+            && !url.starts_with('-')
+            && !url.contains("::")
+            && !url.chars().any(char::is_control),
+        "Enter a valid remote URL or repository path"
+    );
+    if url.contains("://") {
+        let parsed = reqwest::Url::parse(url).context("Invalid remote URL")?;
+        ensure!(
+            matches!(parsed.scheme(), "https" | "ssh" | "file")
+                && parsed.password().is_none()
+                && parsed.query().is_none()
+                && parsed.fragment().is_none()
+                && (parsed.scheme() != "https" || parsed.username().is_empty()),
+            "Use a credential-free HTTPS or SSH remote; configure authentication outside the app"
+        );
+    } else if let Some((user, host)) = url.split_once('@') {
+        ensure!(
+            !user.contains(':') && !host.is_empty(),
+            "Use a credential-free SSH remote"
+        );
+    }
+    Ok(())
 }
 
 fn discard_file_path(root: &Path, path: &str) -> Result<PathBuf> {
@@ -1355,7 +1645,8 @@ mod tests {
         git(remote.path(), &["init", "--bare"]);
         execute(
             root.path(),
-            Action::AddOrigin {
+            Action::AddRemote {
+                name: "origin".into(),
                 url: remote.path().to_string_lossy().into(),
             },
         )
@@ -1423,6 +1714,432 @@ mod tests {
             .to_string()
             .contains("VS Code")
         );
+    }
+
+    #[test]
+    fn remote_selection_removal_and_missing_tracking_never_switch_destinations() {
+        let root = repository();
+        for name in ["origin", "other"] {
+            git(
+                root.path(),
+                &["remote", "add", name, "https://example.test/repo"],
+            );
+        }
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.default_remote(), Some("origin"));
+        execute(
+            root.path(),
+            Action::RemoveRemote {
+                name: "origin".into(),
+            },
+        )
+        .unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.remotes, ["other"]);
+        assert!(snapshot.default_remote().is_none());
+        assert!(
+            fetch(&snapshot, &Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("No remote selected")
+        );
+        git(root.path(), &["config", "--unset", "regressify.remote"]);
+        git(root.path(), &["config", "branch.main.remote", "missing"]);
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert!(snapshot.default_remote().is_none());
+        assert!(execute(root.path(), Action::Pull).is_err());
+    }
+
+    #[test]
+    fn remote_selection_fetch_rejects_stale_configuration_before_contacting_it() {
+        let root = repository();
+        git(
+            root.path(),
+            &["remote", "add", "origin", "https://example.test/first"],
+        );
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        git(
+            root.path(),
+            &["remote", "set-url", "origin", "https://example.test/second"],
+        );
+        assert!(
+            fetch(&snapshot, &Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("remote or upstream changed")
+        );
+    }
+
+    #[test]
+    fn remote_selection_preserves_local_upstream_fast_forward_pull() {
+        let root = repository();
+        fs::write(root.path().join("file.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        git(root.path(), &["branch", "local-upstream"]);
+        git(root.path(), &["config", "branch.main.remote", "."]);
+        git(
+            root.path(),
+            &["config", "branch.main.merge", "refs/heads/local-upstream"],
+        );
+        git(root.path(), &["checkout", "local-upstream"]);
+        fs::write(root.path().join("file.txt"), "local update\n").unwrap();
+        git(root.path(), &["commit", "-am", "local update"]);
+        git(root.path(), &["checkout", "main"]);
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert!(snapshot.default_remote().is_none());
+        assert_eq!(snapshot.pull_remote(), Some("."));
+        execute(root.path(), Action::Pull).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "local update\n"
+        );
+    }
+
+    #[test]
+    fn remote_selection_routes_push_fetch_and_pull_to_the_selected_local_remote() {
+        let root = repository();
+        fs::write(root.path().join("file.txt"), "initial\n").unwrap();
+        git(root.path(), &["add", "."]);
+        git(root.path(), &["commit", "-m", "initial"]);
+        let origin = tempfile::tempdir().unwrap();
+        let selected = tempfile::tempdir().unwrap();
+        for (name, directory) in [("origin", &origin), ("selected", &selected)] {
+            git(directory.path(), &["init", "--bare", "-b", "main"]);
+            execute(
+                root.path(),
+                Action::AddRemote {
+                    name: name.into(),
+                    url: directory.path().to_string_lossy().into(),
+                },
+            )
+            .unwrap();
+        }
+        execute(
+            root.path(),
+            Action::SelectRemote {
+                name: "selected".into(),
+            },
+        )
+        .unwrap();
+        execute(root.path(), Action::Push).unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.default_remote(), Some("selected"));
+        assert_eq!(snapshot.remote.as_deref(), Some("selected"));
+        assert_eq!(
+            snapshot.comparison_upstream.as_deref(),
+            Some("selected/main")
+        );
+        assert!(git(origin.path(), &["for-each-ref"]).is_empty());
+        let peer = repository();
+        git(
+            peer.path(),
+            &["remote", "add", "origin", selected.path().to_str().unwrap()],
+        );
+        git(peer.path(), &["pull", "origin", "main"]);
+        fs::write(peer.path().join("file.txt"), "incoming\n").unwrap();
+        git(peer.path(), &["commit", "-am", "incoming"]);
+        git(peer.path(), &["push", "origin", "main"]);
+        git(root.path(), &["config", "branch.main.remote", "origin"]);
+        fetch(
+            &status(root.path(), &Cancellation::default()).unwrap(),
+            &Cancellation::default(),
+        )
+        .unwrap();
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(snapshot.behind, 1);
+        assert_eq!(
+            snapshot.comparison_upstream.as_deref(),
+            Some("selected/main")
+        );
+        execute(root.path(), Action::Pull).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.path().join("file.txt")).unwrap(),
+            "incoming\n"
+        );
+        execute(
+            root.path(),
+            Action::RenameRemote {
+                name: "selected".into(),
+                new_name: "team".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            status(root.path(), &Cancellation::default())
+                .unwrap()
+                .default_remote(),
+            Some("team")
+        );
+        execute(
+            root.path(),
+            Action::RemoveRemote {
+                name: "team".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            status(root.path(), &Cancellation::default())
+                .unwrap()
+                .default_remote()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_selection_and_url_details_reject_stale_destinations_and_hide_credentials() {
+        let root = repository();
+        git(
+            root.path(),
+            &["remote", "add", "origin", "https://example.test/repo"],
+        );
+        git(
+            root.path(),
+            &[
+                "remote",
+                "add",
+                "private",
+                "https://user:synthetic-secret@example.test/repo",
+            ],
+        );
+        let snapshot = status(root.path(), &Cancellation::default()).unwrap();
+        assert_eq!(
+            snapshot.remote_urls["origin"].fetch[0].as_deref(),
+            Some("https://example.test/repo")
+        );
+        assert_eq!(snapshot.remote_urls["private"].fetch, vec![None]);
+        assert!(!format!("{snapshot:?}").contains("synthetic-secret"));
+        let request = Request {
+            workspace: root.path().into(),
+            expected: snapshot,
+            action: Action::SelectRemote {
+                name: "origin".into(),
+            },
+        };
+        execute(
+            root.path(),
+            Action::SelectRemote {
+                name: "private".into(),
+            },
+        )
+        .unwrap();
+        assert!(
+            request
+                .execute(&Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("remote or upstream changed")
+        );
+        assert!(
+            execute(
+                root.path(),
+                Action::SelectRemote {
+                    name: "missing".into()
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn remote_management_preserves_files_index_and_other_remotes() {
+        let root = repository();
+        fs::write(root.path().join("staged.txt"), "staged\n").unwrap();
+        git(root.path(), &["add", "."]);
+        fs::write(root.path().join("staged.txt"), "unstaged\n").unwrap();
+        let index = git(root.path(), &["ls-files", "--stage"]);
+        for name in ["origin", "review"] {
+            execute(
+                root.path(),
+                Action::AddRemote {
+                    name: name.into(),
+                    url: format!("https://example.test/{name}.git"),
+                },
+            )
+            .unwrap();
+        }
+        for push in [false, true] {
+            execute(
+                root.path(),
+                Action::UpdateRemote {
+                    name: "review".into(),
+                    url: format!("https://example.test/updated-{push}.git"),
+                    push,
+                },
+            )
+            .unwrap();
+        }
+        execute(
+            root.path(),
+            Action::RenameRemote {
+                name: "review".into(),
+                new_name: "team/review".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            git(root.path(), &["remote", "get-url", "team/review"]).trim(),
+            "https://example.test/updated-false.git"
+        );
+        assert_eq!(
+            git(root.path(), &["remote", "get-url", "--push", "team/review"]).trim(),
+            "https://example.test/updated-true.git"
+        );
+        execute(
+            root.path(),
+            Action::RemoveRemote {
+                name: "team/review".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(git(root.path(), &["remote"]).trim(), "origin");
+        assert_eq!(
+            git(root.path(), &["remote", "get-url", "origin"]).trim(),
+            "https://example.test/origin.git"
+        );
+        assert_eq!(git(root.path(), &["ls-files", "--stage"]), index);
+        assert_eq!(
+            fs::read_to_string(root.path().join("staged.txt")).unwrap(),
+            "unstaged\n"
+        );
+    }
+
+    #[test]
+    fn remote_management_rejects_invalid_names_urls_and_missing_remotes() {
+        let root = repository();
+        let before = git(root.path(), &["config", "--local", "--list"]);
+        for name in [
+            "",
+            "-origin",
+            "../origin",
+            "bad name",
+            "bad\nname",
+            "a..b",
+            "a.lock",
+        ] {
+            assert!(
+                execute(
+                    root.path(),
+                    Action::AddRemote {
+                        name: name.into(),
+                        url: "https://example.test/repo.git".into(),
+                    }
+                )
+                .is_err(),
+                "accepted invalid name: {name:?}"
+            );
+        }
+        for url in [
+            "",
+            "-option",
+            " https://example.test/repo",
+            "ext::command",
+            "https://user:synthetic-secret@example.test/repo",
+            "https://example.test/repo?token=synthetic-secret",
+            "ssh://user:synthetic-secret@example.test/repo",
+            "http://example.test/repo",
+            "repo\npath",
+        ] {
+            let error = execute(
+                root.path(),
+                Action::AddRemote {
+                    name: "origin".into(),
+                    url: url.into(),
+                },
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(!error.contains("synthetic-secret"));
+        }
+        for action in [
+            Action::UpdateRemote {
+                name: "missing".into(),
+                url: "https://example.test/repo".into(),
+                push: false,
+            },
+            Action::RenameRemote {
+                name: "missing".into(),
+                new_name: "new".into(),
+            },
+            Action::RemoveRemote {
+                name: "missing".into(),
+            },
+        ] {
+            assert!(
+                execute(root.path(), action)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no longer exists")
+            );
+        }
+        assert_eq!(git(root.path(), &["config", "--local", "--list"]), before);
+    }
+
+    #[test]
+    fn remote_management_rejects_stale_and_cancelled_requests() {
+        let root = repository();
+        git(
+            root.path(),
+            &["remote", "add", "origin", "https://example.test/first.git"],
+        );
+        let expected = status(root.path(), &Cancellation::default()).unwrap();
+        git(
+            root.path(),
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.test/second.git",
+            ],
+        );
+        let before = git(root.path(), &["config", "--local", "--list"]);
+        for action in [
+            Action::AddRemote {
+                name: "other".into(),
+                url: "https://example.test/other.git".into(),
+            },
+            Action::UpdateRemote {
+                name: "origin".into(),
+                url: "https://example.test/other.git".into(),
+                push: false,
+            },
+            Action::RenameRemote {
+                name: "origin".into(),
+                new_name: "other".into(),
+            },
+            Action::RemoveRemote {
+                name: "origin".into(),
+            },
+        ] {
+            let request = Request {
+                workspace: root.path().into(),
+                expected: expected.clone(),
+                action,
+            };
+            assert!(
+                request
+                    .execute(&Cancellation::default())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("remote or upstream changed")
+            );
+        }
+        let cancellation = Cancellation::default();
+        cancellation.cancel();
+        assert!(
+            Request {
+                workspace: root.path().into(),
+                expected: status(root.path(), &Cancellation::default()).unwrap(),
+                action: Action::RemoveRemote {
+                    name: "origin".into()
+                },
+            }
+            .execute(&cancellation)
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+        );
+        assert_eq!(git(root.path(), &["config", "--local", "--list"]), before);
     }
 
     #[test]

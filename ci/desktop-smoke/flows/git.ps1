@@ -73,15 +73,77 @@ function Test-GitFlows {
     Wait-Control '0 comparison files selected' | Out-Null
     Wait-Control 'Committed 1 selected file(s)' | Out-Null
     if (((Invoke-FixtureGit $workspace @('show', "HEAD:$unselectedResult")) -join "`n") -notmatch 'before') { throw 'An unchecked comparison result was committed.' }
-    Invoke-FixtureGit $workspace @('commit', '--only', '-m', 'Finish comparison fixture', '--', $unselectedResult) | Out-Null
+    Invoke-Control "Select $unselectedResult"
+    Write-FixtureControlText 'Git commit message' 'Finish comparison fixture'
+    Invoke-Control 'Commit selected files'
+    Invoke-Control 'Commit selected files' -Within 'Git confirmation'
+    Wait-WindowState { ((Invoke-FixtureGit $workspace @('show', "HEAD:$unselectedResult")) -join "`n") -match 'after' } 'Remaining comparison fixture was not committed.'
+    Wait-Control '0 comparison files selected' | Out-Null
     Invoke-Control 'Comparison Changes'
     Select-Theme 'Light'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     $remote = Join-Path $artifacts ('git-remote-' + [guid]::NewGuid().ToString('N'))
     [System.IO.Directory]::CreateDirectory($remote) | Out-Null
     Invoke-FixtureGit $remote @('init', '--bare', '-b', 'main') | Out-Null
-    Invoke-FixtureGit $workspace @('remote', 'add', 'origin', $remote) | Out-Null
-    Invoke-FixtureGit $workspace @('push', '-u', 'origin', 'main') | Out-Null
+    $alternate = Join-Path $artifacts ('git-remote-alternate-' + [guid]::NewGuid().ToString('N'))
+    [System.IO.Directory]::CreateDirectory($alternate) | Out-Null
+    Invoke-FixtureGit $alternate @('init', '--bare', '-b', 'main') | Out-Null
+    foreach ($name in @('origin', 'review')) {
+        Invoke-Control 'Add remote'
+        Write-FixtureControlText 'Remote name' $name
+        Write-FixtureControlText 'Remote URL' $remote
+        Invoke-Control 'Save remote'
+        Invoke-Control 'Add remote' -Within 'Git confirmation'
+        Wait-Control "Remote '$name' added" | Out-Null
+    }
+    Invoke-Control 'Select Git remote' -Pointer
+    Invoke-Control 'review'
+    Invoke-Control 'Select remote' -Within 'Git confirmation'
+    Wait-Control "Remote 'review' selected" | Out-Null
+    Invoke-Control 'Edit fetch URL'
+    Write-FixtureControlText 'Remote URL' $alternate
+    Invoke-Control 'Save remote'
+    Invoke-Control 'Update remote URL' -Within 'Git confirmation'
+    Wait-Control "Remote 'review' fetch URL updated" | Out-Null
+    Invoke-Control 'Edit push URL'
+    Write-FixtureControlText 'Remote URL' $remote
+    Invoke-Control 'Save remote'
+    Invoke-Control 'Update remote URL' -Within 'Git confirmation'
+    Wait-Control "Remote 'review' push URL updated" | Out-Null
+    Invoke-Control 'Rename remote'
+    Write-FixtureControlText 'Remote name' 'backup'
+    Invoke-Control 'Save remote'
+    Invoke-Control 'Rename remote' -Within 'Git confirmation'
+    Wait-Control "Remote 'review' renamed to 'backup'" | Out-Null
+    if (((Invoke-FixtureGit $workspace @('remote', 'get-url', 'backup')) -join '').Trim() -ne $alternate) { throw 'Fetch URL update was not retained after rename.' }
+    if (((Invoke-FixtureGit $workspace @('remote', 'get-url', '--push', 'backup')) -join '').Trim() -ne $remote) { throw 'Push URL update was not retained after rename.' }
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            Wait-Control 'Copy Git logs' | Out-Null
+            Capture-Window ('git-remotes-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+        }
+    }
+    Invoke-Control 'Remove remote'
+    Capture-Window 'git-remove-remote-confirmation'
+    Invoke-Control 'Cancel' -Within 'Git confirmation'
+    if (-not ((Invoke-FixtureGit $workspace @('remote')) -contains 'backup')) { throw 'Cancelled removal changed remotes.' }
+    Invoke-Control 'Remove remote'
+    Invoke-Control 'Remove remote' -Within 'Git confirmation'
+    Wait-Control "Remote 'backup' removed locally" | Out-Null
+    if (Test-ControlInvokable 'Push') { throw 'Removing the selected remote silently selected another destination.' }
+    Invoke-Control 'Select Git remote' -Pointer
+    Invoke-Control 'origin'
+    Invoke-Control 'Select remote' -Within 'Git confirmation'
+    Wait-Control "Remote 'origin' selected" | Out-Null
+    Invoke-Control 'Push'
+    Invoke-Control 'Push' -Within 'Git confirmation'
+    Wait-Control 'Push completed' | Out-Null
+    Wait-SourceText 'Running git push' 'Git logs'
+    Capture-Window 'git-push-activity'
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/selected.txt'), "reviewed local change`n")
     [System.IO.File]::WriteAllText((Join-Path $workspace 'nested/staged.txt'), "keep staged`n")
     Invoke-FixtureGit $workspace @('add', 'nested/staged.txt') | Out-Null
@@ -159,5 +221,5 @@ function Test-GitFlows {
     Capture-Window 'git-conflicts-dark-compact'
     Select-Theme 'Light'
     Capture-Window 'git-conflicts-light-compact'
-    Write-Output 'Git init, selected commits, diff/tree review, automatic incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
+    Write-Output 'Git remote add/select/update/rename/remove, cancellation, activity logs, init, selected commits, diff/tree review, incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
 }

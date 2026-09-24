@@ -50,11 +50,16 @@ Verified: 2026-09-24
 - [Suite list rows](../../frontend/src/pages/SuitePage.tsx) contain complete images
   in equal-width Reference/Test/optional Diff lanes, including on phones. Missing
   images retain their lanes; grid thumbnails and filtered failure jumps are unchanged.
+- [Theme startup](../../frontend/index.html) applies saved/system appearance and a
+  low-specificity background before React loads. [ThemeControl](../../frontend/src/App.tsx)
+  persists only explicit selections and listens for cross-tab changes and resets.
+  `bun run test:e2e --grep theme` blocks the app bundle to verify first-paint styling
+  and covers missing, invalid, and blocked storage on desktop/mobile.
 - Browser image-failure tests intercept the exact URL returned in suite data.
   Development fixtures share preview images instead of using production's
   per-suite image directories; assuming those directories misses the request.
 - `bun run test:e2e` tests Vite by default. Set `SNAPSHOT_URL` to the local
-  `bun run preview` address to exercise the Rust-generated fixture and CSP too.
+  `bun run preview` address to exercise the Rust-generated fixture and hosting headers.
   Source and production browser checks passed on desktop and mobile.
 - [Asset workflow](../../.github/workflows/snapshot-assets.yml) builds release source
   read-only, transfers generated assets to a separate master checkout, and opens

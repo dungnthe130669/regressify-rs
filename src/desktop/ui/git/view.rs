@@ -38,6 +38,420 @@ fn review_value(id: String, value: &str, background: Hsla) -> AnyElement {
 }
 
 impl GitPanel {
+    fn render_remotes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let disabled = self.disabled || self.active() || self.error.is_some();
+        let snapshot = self.snapshot.as_ref();
+        let selected = snapshot
+            .and_then(Snapshot::default_remote)
+            .map(str::to_string);
+        let remotes = snapshot
+            .map(|snapshot| snapshot.remotes.clone())
+            .unwrap_or_default();
+        let focus = self.focus.clone();
+        let current = selected.clone();
+        let rename = selected.clone();
+        let remove = selected.clone();
+        let mut section = div()
+            .id("git-remotes")
+            .role(Role::Group)
+            .aria_label("Git remotes")
+            .test_support()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .gap_1()
+            .px_3()
+            .py_2()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(div().text_sm().child("Remote"))
+                    .child(
+                        Button::new("git-remote-menu")
+                            .small()
+                            .min_w_0()
+                            .max_w(px(260.))
+                            .flex_1()
+                            .label(selected.clone().unwrap_or_else(|| "Select remote".into()))
+                            .accessibility_label("Select Git remote")
+                            .icon(gpui_kit::assets::IconName::ChevronDown)
+                            .disabled(disabled || self.remote_edit.is_some() || remotes.is_empty())
+                            .dropdown_menu(move |menu, _, _| {
+                                let mut menu = menu.action_context(focus.clone()).scrollable(true);
+                                for name in &remotes {
+                                    menu = menu.menu_with_check(
+                                        name.clone(),
+                                        current.as_ref() == Some(name),
+                                        Box::new(ChooseGitRemote { name: name.clone() }),
+                                    );
+                                }
+                                menu
+                            }),
+                    )
+                    .child(
+                        Button::new("git-remote-add")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Plus)
+                            .tooltip("Add remote")
+                            .accessibility_label("Add remote")
+                            .disabled(disabled || self.remote_edit.is_some())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.edit_remote(RemoteEdit::Add, window, cx)
+                            })),
+                    )
+                    .child(
+                        Button::new("git-remote-rename")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .tooltip("Rename remote")
+                            .accessibility_label("Rename remote")
+                            .disabled(disabled || selected.is_none() || self.remote_edit.is_some())
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(name) = &rename {
+                                    this.edit_remote(RemoteEdit::Rename(name.clone()), window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("git-remote-remove")
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Trash)
+                            .tooltip("Remove remote")
+                            .accessibility_label("Remove remote")
+                            .disabled(disabled || selected.is_none() || self.remote_edit.is_some())
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                if let Some(name) = &remove {
+                                    this.request(
+                                        model::Action::RemoveRemote { name: name.clone() },
+                                        cx,
+                                    );
+                                }
+                            })),
+                    ),
+            );
+        if let Some((mode, _)) = &self.remote_edit {
+            let needs_name = !matches!(mode, RemoteEdit::Url { .. });
+            let needs_url = !matches!(mode, RemoteEdit::Rename(_));
+            let label = match mode {
+                RemoteEdit::Add => "Add remote",
+                RemoteEdit::Rename(_) => "Rename remote",
+                RemoteEdit::Url { push: true, .. } => "Update push URL",
+                RemoteEdit::Url { .. } => "Update fetch URL",
+            };
+            section = section.child(
+                div()
+                    .id("git-remote-form")
+                    .test_support()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .py_1()
+                    .when(needs_name, |form| {
+                        form.child(
+                            Input::new(&self.remote_name)
+                                .id("git-remote-name")
+                                .aria_label("Remote name")
+                                .small()
+                                .disabled(disabled),
+                        )
+                    })
+                    .when(needs_url, |form| {
+                        form.child(
+                            Input::new(&self.remote_url)
+                                .id("git-remote-url")
+                                .aria_label("Remote URL")
+                                .small()
+                                .disabled(disabled),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex()
+                            .justify_end()
+                            .gap_2()
+                            .child(
+                                Button::new("git-remote-edit-cancel")
+                                    .small()
+                                    .label("Cancel edit")
+                                    .disabled(disabled)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.remote_edit = None;
+                                        this.remote_url.update(cx, |state, cx| {
+                                            state.set_value("", window, cx)
+                                        });
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("git-remote-save")
+                                    .small()
+                                    .primary()
+                                    .icon(gpui_kit::assets::IconName::Save)
+                                    .label(label)
+                                    .accessibility_label("Save remote")
+                                    .disabled(
+                                        disabled
+                                            || (needs_name
+                                                && self
+                                                    .remote_name
+                                                    .read(cx)
+                                                    .value()
+                                                    .trim()
+                                                    .is_empty())
+                                            || (needs_url
+                                                && self
+                                                    .remote_url
+                                                    .read(cx)
+                                                    .value()
+                                                    .trim()
+                                                    .is_empty()),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| this.save_remote(cx))),
+                            ),
+                    ),
+            );
+        } else if let Some(name) = &selected {
+            let urls = snapshot.and_then(|snapshot| snapshot.remote_urls.get(name));
+            for push in [false, true] {
+                let values = urls.map(|urls| {
+                    if push && !urls.push.is_empty() {
+                        &urls.push
+                    } else {
+                        &urls.fetch
+                    }
+                });
+                let value = values
+                    .and_then(|values| values.first())
+                    .map(|url| {
+                        url.as_deref()
+                            .unwrap_or("URL hidden (credentials or unsupported format)")
+                    })
+                    .unwrap_or("No URL configured");
+                let text = format!(
+                    "{}: {}{}{}",
+                    if push { "Push" } else { "Fetch" },
+                    value,
+                    if push && urls.is_some_and(|urls| urls.push.is_empty()) {
+                        " (same as fetch)"
+                    } else {
+                        ""
+                    },
+                    values
+                        .filter(|values| values.len() > 1)
+                        .map(|values| format!(" (+{} more)", values.len() - 1))
+                        .unwrap_or_default()
+                );
+                let name = name.clone();
+                let label = if push {
+                    "Edit push URL"
+                } else {
+                    "Edit fetch URL"
+                };
+                section = section.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .min_w_0()
+                        .child(
+                            div()
+                                .id(if push {
+                                    "git-push-url"
+                                } else {
+                                    "git-fetch-url"
+                                })
+                                .role(Role::Status)
+                                .aria_label(text.clone())
+                                .test_support()
+                                .flex_1()
+                                .min_w_0()
+                                .text_xs()
+                                .truncate()
+                                .child(text),
+                        )
+                        .child(
+                            Button::new(if push {
+                                "git-edit-push-url"
+                            } else {
+                                "git-edit-fetch-url"
+                            })
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .tooltip(label)
+                            .accessibility_label(label)
+                            .disabled(disabled)
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.edit_remote(
+                                        RemoteEdit::Url {
+                                            name: name.clone(),
+                                            push,
+                                        },
+                                        window,
+                                        cx,
+                                    )
+                                },
+                            )),
+                        ),
+                );
+            }
+        }
+        section.into_any_element()
+    }
+
+    fn render_activity(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(activity) = &self.activity else {
+            return div().into_any_element();
+        };
+        let elapsed = activity
+            .finished
+            .unwrap_or_else(|| activity.started.elapsed());
+        let state = if activity.finished.is_none() {
+            if activity.reporter.is_cancelled() {
+                "Cancelling"
+            } else {
+                "Running"
+            }
+        } else if activity.success == Some(true) {
+            "Completed"
+        } else if activity.reporter.is_cancelled() {
+            "Cancelled"
+        } else {
+            "Failed"
+        };
+        let progress = activity.reporter.progress();
+        let summary = format!(
+            "{} | {state} | {:.1}s",
+            activity.label,
+            elapsed.as_secs_f32()
+        );
+        div()
+            .id("git-activity")
+            .role(Role::Group)
+            .aria_label("Git activity")
+            .test_support()
+            .flex()
+            .flex_col()
+            .flex_shrink_0()
+            .min_w_0()
+            .border_t_1()
+            .border_color(cx.theme().border)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .child(
+                        Button::new("git-activity-toggle")
+                            .ghost()
+                            .xsmall()
+                            .icon(if self.activity_open {
+                                gpui_kit::assets::IconName::ChevronDown
+                            } else {
+                                gpui_kit::assets::IconName::ChevronRight
+                            })
+                            .label("Activity")
+                            .accessibility_label("Toggle Git activity logs")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.activity_open = !this.activity_open;
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("git-progress")
+                            .role(Role::Status)
+                            .aria_label(summary.clone())
+                            .test_support()
+                            .text_xs()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(summary),
+                    )
+                    .child(
+                        Checkbox::new("git-log-follow")
+                            .label("Follow latest")
+                            .checked(self.activity_follow)
+                            .on_click(cx.listener(|this, checked, window, cx| {
+                                this.activity_follow = *checked;
+                                if *checked {
+                                    this.activity_text.clear();
+                                    this.sync_activity_log(window, cx);
+                                }
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        Button::new("git-log-copy")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Copy)
+                            .tooltip("Copy Git logs")
+                            .accessibility_label("Copy Git logs")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    this.activity_text.clone(),
+                                ))
+                            })),
+                    )
+                    .child(
+                        Button::new("git-log-clear")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::Trash)
+                            .tooltip("Clear Git logs")
+                            .accessibility_label("Clear Git logs")
+                            .disabled(activity.finished.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.activity = None;
+                                this.activity_history.clear();
+                                this.sync_activity_log(window, cx);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .when(self.activity_open, |section| {
+                section
+                    .child(
+                        div()
+                            .id("git-progress-stage")
+                            .role(Role::Status)
+                            .aria_label(progress.stage.clone())
+                            .test_support()
+                            .px_3()
+                            .text_xs()
+                            .min_w_0()
+                            .truncate()
+                            .child(progress.stage),
+                    )
+                    .child(
+                        div()
+                            .id("git-logs")
+                            .test_support()
+                            .h(px(130.))
+                            .min_w_0()
+                            .child(
+                                CodeEditor::new(&self.activity_log)
+                                    .aria_label("Git logs")
+                                    .readonly(true)
+                                    .size_full(),
+                            ),
+                    )
+            })
+            .into_any_element()
+    }
+
     fn select_tree(&mut self, comparison: bool, selected: bool, cx: &mut Context<Self>) {
         if self.disabled || self.active() || self.error.is_some() {
             return;
@@ -1117,8 +1531,8 @@ impl Render for GitPanel {
             || diverged
             || snapshot.is_none_or(|snapshot| {
                 snapshot.detached
-                    || snapshot.remote.is_none()
-                    || snapshot.merge_ref.is_none()
+                    || snapshot.pull_remote().is_none()
+                    || snapshot.head.is_none()
                     || !snapshot.changes.is_empty()
             });
         let push_disabled = disabled
@@ -1132,6 +1546,17 @@ impl Render for GitPanel {
         div()
             .id("git-panel")
             .test_support()
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, action: &ChooseGitRemote, _, cx| {
+                if this.remote_edit.is_none() {
+                    this.request(
+                        model::Action::SelectRemote {
+                            name: action.name.clone(),
+                        },
+                        cx,
+                    );
+                }
+            }))
             .size_full()
             .flex()
             .flex_col()
@@ -1163,6 +1588,7 @@ impl Render for GitPanel {
                         Button::new("git-refresh")
                             .ghost()
                             .small()
+                            .loading(self.scan.is_some())
                             .icon(gpui_kit::assets::IconName::RefreshCw)
                             .tooltip("Refresh local changes")
                             .accessibility_label("Refresh Git status")
@@ -1172,6 +1598,7 @@ impl Render for GitPanel {
                     .child(
                         Button::new("git-fetch")
                             .small()
+                            .loading(self.fetch.is_some())
                             .icon(gpui_kit::assets::IconName::CloudDownload)
                             .label("Fetch")
                             .tooltip("Check remote commits without changing files")
@@ -1180,9 +1607,9 @@ impl Render for GitPanel {
                                     || self.fetch.is_some()
                                     || snapshot.and_then(Snapshot::default_remote).is_none(),
                             )
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.check_remote(window, cx)),
-                            ),
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.check_remote(true, window, cx)
+                            })),
                     )
                     .child(
                         Button::new("git-pull")
@@ -1221,13 +1648,7 @@ impl Render for GitPanel {
                                 .icon(gpui_kit::assets::IconName::Square)
                                 .label("Stop")
                                 .on_click(cx.listener(|this, _, _, cx| {
-                                    if let Some(cancel) =
-                                        this.action.as_ref().or(this.fetch.as_ref())
-                                    {
-                                        cancel.cancel();
-                                    }
-                                    this.status = "Cancelling Git operation...".into();
-                                    cx.notify();
+                                    this.cancel_operation(cx);
                                 })),
                         )
                     }),
@@ -1289,8 +1710,10 @@ impl Render for GitPanel {
                                 .child(
                                     div().text_xs().child(
                                         snapshot
-                                            .and_then(|snapshot| snapshot.upstream.as_deref())
-                                            .unwrap_or("No upstream")
+                                            .and_then(|snapshot| {
+                                                snapshot.comparison_upstream.as_deref()
+                                            })
+                                            .unwrap_or("No remote branch")
                                             .to_string(),
                                     ),
                                 ),
@@ -1378,44 +1801,7 @@ impl Render for GitPanel {
                     )
                 },
             )
-            .when(
-                tracked && snapshot.is_some_and(|snapshot| snapshot.remotes.is_empty()),
-                |panel| {
-                    panel.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .px_3()
-                            .py_2()
-                            .child(
-                                Input::new(&self.remote_url)
-                                    .id("git-remote-url")
-                                    .aria_label("Origin remote URL")
-                                    .small()
-                                    .disabled(disabled),
-                            )
-                            .child(
-                                Button::new("git-add-origin")
-                                    .small()
-                                    .icon(gpui_kit::assets::IconName::Plus)
-                                    .label("Add origin")
-                                    .disabled(
-                                        disabled
-                                            || self.remote_url.read(cx).value().trim().is_empty(),
-                                    )
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.request(
-                                            model::Action::AddOrigin {
-                                                url: this.remote_url.read(cx).value().trim().into(),
-                                            },
-                                            cx,
-                                        )
-                                    })),
-                            ),
-                    )
-                },
-            )
+            .when(tracked, |panel| panel.child(self.render_remotes(cx)))
             .when(tracked, |panel| {
                 panel.child(
                     div().flex_1().min_h_0().child(
@@ -1426,10 +1812,24 @@ impl Render for GitPanel {
                                     .size_range(px(230.)..px(540.))
                                     .child(self.render_changes(cx)),
                             )
-                            .child(resizable_panel().child(self.render_review(cx))),
+                            .child(
+                                resizable_panel().child(
+                                    div()
+                                        .size_full()
+                                        .flex()
+                                        .flex_col()
+                                        .min_h_0()
+                                        .min_w_0()
+                                        .child(
+                                            div().flex_1().min_h_0().child(self.render_review(cx)),
+                                        )
+                                        .child(self.render_activity(cx)),
+                                ),
+                            ),
                     ),
                 )
             })
+            .when(!tracked, |panel| panel.child(self.render_activity(cx)))
             .when(!self.status.is_empty(), |panel| {
                 panel.child(
                     div()

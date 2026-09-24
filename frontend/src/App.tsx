@@ -12,15 +12,35 @@ import { SuitePage } from "./pages/SuitePage";
 
 const iconUrl = `${desktopIcon}?v=${import.meta.env.VITE_REGRESSIFY_ICON_VERSION}`;
 
+function readTheme(): "light" | "dark" | "system" {
+  try {
+    const saved = localStorage.getItem("regressify-theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
+
 function ThemeControl() {
-  const [theme, setTheme] = useState(() => {
+  const [theme, setTheme] = useState(readTheme);
+  useEffect(() => {
+    let storage: Storage;
     try {
-      const saved = localStorage.getItem("regressify-theme");
-      return saved === "light" || saved === "dark" ? saved : "system";
+      storage = localStorage;
     } catch {
-      return "system";
+      return;
     }
-  });
+    const sync = (event: StorageEvent) => {
+      if (
+        event.storageArea === storage &&
+        (event.key === "regressify-theme" || event.key === null)
+      ) {
+        setTheme(readTheme());
+      }
+    };
+    window.addEventListener("storage", sync);
+    return () => window.removeEventListener("storage", sync);
+  }, []);
   useEffect(() => {
     const media = matchMedia("(prefers-color-scheme: dark)");
     const apply = () => {
@@ -28,11 +48,7 @@ function ThemeControl() {
         theme === "system" ? (media.matches ? "dark" : "light") : theme;
     };
     apply();
-    try {
-      localStorage.setItem("regressify-theme", theme);
-    } catch {
-      /* Storage is optional in private/file contexts. */
-    }
+    if (theme !== "system") return;
     media.addEventListener("change", apply);
     return () => media.removeEventListener("change", apply);
   }, [theme]);
@@ -49,7 +65,14 @@ function ThemeControl() {
           key={value}
           label={`${value[0]?.toUpperCase()}${value.slice(1)} theme`}
           aria-pressed={theme === value}
-          onClick={() => setTheme(value)}
+          onClick={() => {
+            setTheme(value);
+            try {
+              localStorage.setItem("regressify-theme", value);
+            } catch {
+              /* Theme changes remain usable when storage is unavailable. */
+            }
+          }}
         >
           <Icon size={16} />
         </IconButton>

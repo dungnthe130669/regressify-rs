@@ -20,6 +20,7 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 1. Windows smoke requires an unlocked interactive desktop and no other app instances because it temporarily changes shared preferences. Never bypass these guards or close the user's windows; report the prerequisite instead.
 1. Smoke shortcuts use `Send-FixtureKeys <ConsoleKey> -Control -Shift` as needed; literal text uses `Send-FixtureText`. Keep modifier pairs and extended navigation flags in the shared native helper, and retain caret/control outcome checks. Start a fresh PowerShell session after changing inline `Add-Type` definitions.
 1. Native pointer clicks synchronize compositor frames after movement and press; always release in `finally`. Back-to-back native mouse events can miss scenario clicks even when frame-stepped GPUI tests pass. Keep pointer sequencing and failure cleanup covered by the headless harness.
+1. Remote management has a distinct accessible `Save remote` command so the form's submit action cannot be confused with the disabled Add/Rename toolbar controls. Test dropdowns through their popup items after they render. Keep activity below the diff pane so expanded logs cannot collapse file trees; compact tests must include expanded comparison rows, not only visible commit controls.
 
 ## Checks
 

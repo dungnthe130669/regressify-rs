@@ -36,6 +36,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   viewport approval.
 - [Desktop smoke harness](desktop-smoke.md): module ownership, shared scope, and
   headless regression checks.
+- [Desktop Git](desktop-git.md): remote selection, reviewed configuration, safe
+  URL details, and bounded live activity.
 - [Desktop updates](desktop-updates.md): shared eight-hour scheduling,
   single-owner downloads, cross-window notifications, and shutdown handoff.
 - [Deployment packaging](deployment-packaging.md): dependency-only staging,

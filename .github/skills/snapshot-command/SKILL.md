@@ -28,6 +28,7 @@ description: 'Use when changing regressify snapshot, the frontend React SPA, rep
 1. Images use native right-pane page scrolling, not wheel zoom or inner pan/scroll handlers. Explicit zoom buttons resize their document-flow footprint. Keep stats and metadata in a hover/focus/pinnable Info dialog with selectable text; failure arrows scroll within the filtered suite without changing routes.
 1. Reuse the desktop [icon source](../../../assets/icon.svg) for the logo and favicon. Bundle it once and content-version both URLs. Suite/image browser titles include the suite name and configured report title; overview navigation restores the report title.
 1. Suite list rows show equal-width Reference/Test lanes and a Diff lane only when present, including on phones. Contain complete previews without cropping, retain missing-image lanes, and preserve filters/view selection when opening captures. Grid view keeps one thumbnail.
+1. Apply theme preferences synchronously in the document head before the app bundle. Keep the critical background palette aligned with the main stylesheet and lower in specificity. Storage is optional; persist only explicit selections, synchronize other tabs, and follow OS appearance only in System mode.
 
 ## Checks
 
@@ -40,6 +41,8 @@ cargo test --features desktop --lib snapshot::site::tests
 ```
 
 In `frontend`, run `bun run lint`, `bun run test`, `bun run build`, and `bun run test:e2e`. Browser tests require an existing Chromium executable or an explicit Playwright install. Use synthetic fixtures; never production credentials. Generate with `cargo run --bin regressify -- --root frontend/.fixtures/workspace snapshot`, then `bun run preview` and `SNAPSHOT_URL` for production-bundle browser checks. Cover empty data, filters, hostile labels/URLs, repeated generation, write errors, deep-link refresh, mobile navigation, and all image modes. Keep `.fixtures` out of Biome. Verify lane alignment, mouse-controlled wipe, native page scrolling without scale changes, independent panes, divider mouse/keyboard bounds and persistence, suite-scoped scenarios, failure-arrow endpoints, and Info hover/pinning/selection/clipboard/Escape behavior. Check logo/favicon bytes against the shared SVG, title updates across navigation/refresh, and list lanes with absent diffs, missing images, and long labels.
+
+For theme changes, run `bun run test:e2e --grep theme` against development and generated reports. Block the app bundle to verify the initial theme/background, then check saved/system precedence, invalid or inaccessible storage, cross-tab changes, and resets without automatic preference writes.
 
 ## Maintain
 

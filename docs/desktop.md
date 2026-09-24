@@ -208,8 +208,9 @@ or choose Git from Commands to open the change trees and read-only change review
 The repository root is shown explicitly, including when the workspace is a
 subdirectory of a larger repository. Counts and the tree cover that repository.
 
-Local status refreshes every five seconds. The app checks the tracking remote
-(otherwise origin or the only configured remote) every minute while idle.
+Local status refreshes every five seconds. The app checks the selected remote
+every minute while idle. Before an explicit selection, it uses the tracking remote,
+otherwise origin or the only configured remote.
 Automatic checks fetch remote refs only: they never pull, merge, rebase, stash,
 or change working files. Fetch also provides a manual remote check. Incoming
 commits, divergence, merge conflicts, and failed remote checks are highlighted;
@@ -271,23 +272,61 @@ in-progress Git operations, submodules, directory replacements, and renames that
 would overwrite an unselected file. Changed Git status requires another review.
 
 Untracked workspaces display Not tracked and offer Initialize Git; initialization
-does not stage files. Add origin accepts a credential-free HTTPS/SSH URL or local
-repository path. Push uses the configured tracking branch, or publishes the
-current branch to origin/the sole remote and establishes upstream tracking. It
-never force-pushes. Pull requires a clean working tree and uses fast-forward-only
+does not stage files. The **Remote** row supports adding named remotes, selecting
+the active remote, renaming it, editing its fetch or push URL, and removing it.
+Add and URL edits accept credential-free HTTPS/SSH URLs or local repository paths.
+Remote names start with a letter or number and use letters, numbers, `.`, `-`, `_`,
+or `/`, subject to Git reference-name rules. URLs containing credentials or
+unsupported formats are hidden; entering a replacement does not reveal the old
+value. Push defaults to the fetch URL unless a separate push URL is configured.
+URL edits change the first configured URL and preserve any additional URLs, whose
+count is shown beside the primary URL.
+
+Selection is saved in the repository's local Git configuration as
+`regressify.remote`, not in workspace files. Fetch, pull, push, and incoming/outgoing
+counts use this selection. With the tracking remote selected, network operations
+use the configured upstream branch; otherwise they use the current branch name.
+Renaming a selected remote retains the selection. Removing the active remote, or
+losing it through an external edit, requires selecting a destination again; it
+does not silently switch to another remote. Removing a remote deletes its local
+remote-tracking references and upstream settings, not local branches, worktree
+files, or the hosted repository. Remote edits retain their reviewed configuration
+and reject an external change instead of overwriting it; cancel and reopen an edit
+to review the latest configuration.
+
+Push establishes upstream tracking and never force-pushes.
+Pull requires a clean working tree and uses fast-forward-only
 semantics. Diverged branches and existing conflicts show Open in VS Code for
 merge/rebase resolution; refresh afterward. This avoids embedding a second merge
 editor or silently resolving conflicts. VS Code must be installed and registered
 for its `vscode://` URL handler.
 
-Commit, discard, pull, push, initialization, and remote setup use explicit
+Commit, discard, pull, push, initialization, and remote changes use explicit
 confirmation and the editor's unsaved-draft guard. Mutating operations block
 workspace edits until completion and offer Stop; other Git work runs off the UI
 thread. Requests
 revalidate repository identity and HEAD before acting. Cancelling a network
 operation cannot undo changes already accepted by the remote; stopping discard
-cannot undo changes already discarded. Git must be installed on PATH. Git UI
+cannot undo changes already discarded. Stopping a multi-step remote rename can
+leave completed configuration changes in place; refresh and select the renamed
+remote if necessary. Git must be installed on PATH. Git UI
 tests use isolated repositories and local bare remotes.
+
+**Activity** shows the running operation, elapsed time, current stage, live Git
+progress/diagnostics, and completion, failure, or cancellation. Explicit actions
+open it automatically; periodic fetches update it without expanding a collapsed
+panel. It sits below the diff pane, keeping the file trees and commit controls
+independent of log height, including in compact windows. Stop remains available
+while a command is running or cancelling. Logs are
+read-only and can be copied, collapsed, or cleared after completion. They retain
+the newest output in view while **Follow latest** is checked; uncheck it to read
+older output without jumping to the newest line. Logs retain
+up to 400 lines for the current operation and 400 lines of recent history in memory;
+switching workspaces clears them. Oversized output and omitted lines are marked.
+URLs and authorization diagnostics are redacted before display or copying; after
+an authorization header or oversized streamed line, the remaining diagnostic
+stream is omitted conservatively. Process deadlines and cancellation remain in
+effect while inherited output/input pipes are draining after Git exits.
 
 Remote/upstream configuration is fingerprinted without retaining credentials in
 status messages; network actions reject a changed destination after confirmation.
@@ -297,7 +336,8 @@ background and close a document removed by the operation while retaining the
 Git view. Discard retains the draft commit message.
 
 `./ci/desktop-smoke.ps1 -GitFlows` runs the native acceptance flow against local
-repositories only. It verifies initialization, structured and source review,
+repositories only. It verifies named remote add/select/update/rename/remove,
+cancelled removal, separate fetch/push URLs, activity logs, initialization, structured and source review,
 comparison-file opt-in, selected
 commits that preserve unrelated staging, push, automatic one-minute incoming
 checks, fast-forward pull, and conflict handoff in light/dark compact windows.
