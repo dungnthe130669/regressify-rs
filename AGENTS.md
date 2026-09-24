@@ -71,7 +71,7 @@ before editing; load only the skills relevant to the task.
 | Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                   |
 | Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md) |
 | Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                             |
-| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [.github/workflows](.github/workflows)                 |
+| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)   |
 | AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                       |
 
 ## Skills and Checks

@@ -304,6 +304,14 @@ gh() {
         self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")
         step = next(step for step in WORKFLOW["jobs"]["release"]["steps"]
                     if step.get("name") == "Publish Windows installer to Tuyen Drive")
+        pipeline = yaml.load(
+            (ROOT / ".ado/workflows/tuyen-release.yaml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        release = next(stage for stage in pipeline["stages"] if stage["stage"] == "Release")
+        azure_step = next(step for step in release["jobs"][0]["steps"]
+                          if step.get("displayName") == "Publish Windows installer to Tuyen Drive")
+        scripts = {"GitHub": step["run"], "Azure": azure_step["pwsh"]}
         stub = '''
 $ErrorActionPreference = 'Stop'
 function tuyen {
@@ -315,22 +323,23 @@ function tuyen {
             file = Path(directory) / drive_release.installer_name("1.2.3.0")
             file.write_bytes(b"MZ synthetic installer")
             arguments = Path(directory) / "arguments.json"
-            for app, token, version, cli_exit, invoked, succeeds in [
+            for (provider, script), (app, token, version, cli_exit, invoked, succeeds) in itertools.product(scripts.items(), [
                 ("regressify", "test-token", "1.2.3.0", 0, True, True),
                 ("regressify", "test-token", "1.2.3.0", 7, True, False),
                 ("", "test-token", "1.2.3.0", 0, False, False),
                 ("regressify", "", "1.2.3.0", 0, False, False),
                 ("regressify", "test-token", "1.2.4.0", 0, False, False),
-            ]:
-                with self.subTest(app=app, has_token=bool(token), version=version, cli_exit=cli_exit):
+            ]):
+                with self.subTest(provider=provider, app=app, has_token=bool(token), version=version, cli_exit=cli_exit):
                     arguments.unlink(missing_ok=True)
                     env = dict(os.environ, TUYEN_DRIVE_APP=app, TUYEN_DRIVE_TOKEN=token,
                                INSTALLER=str(file), INSTALLER_VERSION=version,
                                TUYEN_ARGUMENTS_FILE=str(arguments), TUYEN_TEST_EXIT=str(cli_exit))
-                    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", stub + step["run"]],
+                    result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", stub + script],
                                             env=env, capture_output=True, text=True, check=False)
                     self.assertEqual(result.returncode == 0, succeeds, result.stderr)
                     self.assertEqual(arguments.exists(), invoked)
+                    self.assertNotIn("test-token", result.stdout + result.stderr)
                     if invoked:
                         self.assertEqual(json.loads(arguments.read_text(encoding="utf-8-sig")), [
                             "drive", "upload-app", "--name", app, "--token", token,
@@ -443,6 +452,238 @@ function tuyen {
                     if features:
                         expected.extend(["--features", features])
                     self.assertEqual(arguments.read_text(encoding="utf-8").splitlines(), expected)
+
+
+class AzureReleaseTests(unittest.TestCase):
+    def setUp(self):
+        self.pipeline = yaml.load(
+            (ROOT / ".ado/workflows/tuyen-release.yaml").read_text(encoding="utf-8"),
+            Loader=yaml.BaseLoader,
+        )
+        self.plan = next(stage for stage in self.pipeline["stages"] if stage["stage"] == "Plan")
+        self.release = next(stage for stage in self.pipeline["stages"] if stage["stage"] == "Release")
+        self.steps = self.release["jobs"][0]["steps"]
+
+    def matrix(self, build, selected, reason="Manual", ref="refs/heads/master"):
+        step = next(step for step in self.plan["jobs"][0]["steps"] if step.get("name") == "Matrix")
+        env = dict(os.environ, BUILD=build, BUILD_REASON=reason, BUILD_SOURCEBRANCH=ref)
+        env.update({key: str(key in selected) for key in TARGETS})
+        result = subprocess.run(
+            [sys.executable, "-c", step["inputs"]["script"]],
+            cwd=ROOT, env=env, capture_output=True, text=True, check=False,
+        )
+        prefix = "##vso[task.setvariable variable=matrix;isOutput=true]"
+        outputs = [line.removeprefix(prefix) for line in result.stdout.splitlines() if line.startswith(prefix)]
+        rows = None
+        if outputs:
+            self.assertEqual(len(outputs), 1)
+            matrix = json.loads(outputs[0])
+            for name in matrix:
+                self.assertRegex(name, r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
+            rows = list(matrix.values())
+        return result, rows
+
+    def test_tag_push_builds_windows_desktop(self):
+        for reason in ("IndividualCI", "BatchedCI"):
+            with self.subTest(reason=reason):
+                result, rows = self.matrix("both", list(TARGETS), reason, "refs/tags/v1.2.3")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    [(row["application"], row["target"]) for row in rows],
+                    [("desktop", "x86_64-pc-windows-msvc")],
+                )
+                self.assertEqual(rows[0]["buildInstaller"], "true")
+                self.assertIn("##vso[task.setvariable variable=version;isOutput=true]1.2.3.0", result.stdout)
+
+    def test_manual_runs_preserve_selection_and_linux_fallback(self):
+        for ref in ("refs/heads/master", "refs/tags/v1.2.3"):
+            for selected, targets in [([], [TARGETS["LINUX_GNU_X86_64"]]),
+                                      (["WINDOWS_X86_64"], [TARGETS["WINDOWS_X86_64"]])]:
+                with self.subTest(ref=ref, selected=selected):
+                    result, rows = self.matrix("both", selected, ref=ref)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(
+                        {(row["application"], row["target"]) for row in rows},
+                        {(application, target) for application in ("cli", "desktop") for target in targets},
+                    )
+                    for row in rows:
+                        installer = (ref.startswith("refs/tags/") and row["application"] == "desktop"
+                                     and row["target"] == "x86_64-pc-windows-msvc")
+                        self.assertEqual(row["buildInstaller"], str(installer).lower())
+
+    def test_every_application_and_supported_platform_selection(self):
+        supported = {key: target for key, target in TARGETS.items() if key != "MACOS_AARCH64"}
+        for build in ("cli", "desktop", "both"):
+            applications = ("cli", "desktop") if build == "both" else (build,)
+            for flags in itertools.product((False, True), repeat=len(supported)):
+                selected = [key for key, enabled in zip(supported, flags) if enabled]
+                with self.subTest(build=build, selected=selected):
+                    targets = [supported[key] for key in selected] or [supported["LINUX_GNU_X86_64"]]
+                    expected = {(application, target) for application in applications for target in targets
+                                if application != "desktop" or not target.endswith("-musl")}
+                    result, rows = self.matrix(build, selected)
+                    if not expected:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Musl is CLI-only", result.stderr)
+                        self.assertIsNone(rows)
+                        continue
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual({(row["application"], row["target"]) for row in rows}, expected)
+                    self.assertEqual(len(rows), len(expected))
+                    for row in rows:
+                        desktop = row["application"] == "desktop"
+                        self.assertEqual(row["features"], "gui" if desktop else "")
+                        self.assertEqual(row["fileName"], "regressify-desktop" if desktop else "regressify")
+                        self.assertEqual(row["packageName"], "regressify-desktop" if desktop else "regressify-cli")
+                        self.assertEqual(row["buildInstaller"], "false")
+                        if row["target"].endswith("-darwin"):
+                            self.assertEqual(row["os"], "macos-15")
+                        elif row["target"].endswith("-msvc"):
+                            self.assertEqual(row["os"], "windows-latest")
+                        else:
+                            self.assertEqual(row["os"], "ubuntu-24.04" if desktop else "ubuntu-22.04")
+
+    def test_invalid_selections_and_tags_fail_without_outputs(self):
+        for build, ref, message in [
+            ("invalid", "refs/heads/master", "Build must be"),
+            ("both", "refs/tags/v1.2.3-beta", "Release tag must be"),
+            ("both", "refs/tags/v1.10000.0", "Release tag must be"),
+            ("both", "refs/tags/path/v1.2.3", "Release tag must be"),
+        ]:
+            with self.subTest(build=build, ref=ref):
+                result, rows = self.matrix(build, [], ref=ref)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertIsNone(rows)
+                self.assertNotIn("##vso[task.setvariable", result.stdout)
+        result, rows = self.matrix("", [])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({row["application"] for row in rows}, {"cli", "desktop"})
+        result, _ = self.matrix("desktop", ["WINDOWS_X86_64"], ref="refs/tags/v01.02.03.4")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("##vso[task.setvariable variable=version;isOutput=true]1.2.3.4", result.stdout)
+
+    def test_pipeline_scopes_secrets_and_consumes_plan_outputs(self):
+        self.assertEqual(self.pipeline["trigger"], {"branches": {"exclude": ["*"]}, "tags": {"include": ["v*.*.*"]}})
+        self.assertEqual(self.pipeline["pr"], "none")
+        self.assertNotIn("variables", self.pipeline)
+        self.assertNotIn("group", json.dumps(self.plan))
+        self.assertNotIn("TUYEN_", json.dumps(self.plan))
+        self.assertEqual(self.release["dependsOn"], "Plan")
+        self.assertEqual(self.release["condition"], "and(succeeded(), ne(variables['Build.Reason'], 'PullRequest'))")
+        self.assertEqual(self.release["lockBehavior"], "sequential")
+        variables = self.release["variables"]
+        self.assertEqual([variable["group"] for variable in variables if "group" in variable], ["GitHub", "Regressify"])
+        version = next(variable["value"] for variable in variables if variable.get("name") == "releaseVersion")
+        self.assertEqual(version, "$[ stageDependencies.Plan.SetMatrix.outputs['Matrix.version'] ]")
+        job = self.release["jobs"][0]
+        self.assertEqual(job["strategy"]["matrix"], "$[ stageDependencies.Plan.SetMatrix.outputs['Matrix.matrix'] ]")
+        self.assertEqual(job["pool"]["vmImage"], "$(os)")
+        self.assertGreaterEqual(int(job["timeoutInMinutes"]), 90)
+        parameters = {parameter["name"]: parameter for parameter in self.pipeline["parameters"]}
+        self.assertNotIn("macosAarch64", parameters)
+        self.assertEqual(parameters["build"]["values"], ["cli", "desktop", "both"])
+        self.assertEqual(parameters["build"]["default"], "both")
+        matrix = next(step for step in self.plan["jobs"][0]["steps"] if step.get("name") == "Matrix")
+        for variable, parameter in [("MACOS_X86_64", "macosX86_64"), ("WINDOWS_X86_64", "windowsX86_64"),
+                                    ("LINUX_GNU_X86_64", "linuxGnuX86_64"), ("LINUX_MUSL_X86_64", "linuxMuslX86_64"),
+                                    ("LINUX_MUSL_AARCH64", "linuxMuslAarch64")]:
+            self.assertEqual(matrix["env"][variable], "${{ parameters." + parameter + " }}")
+            self.assertEqual(parameters[parameter]["type"], "boolean")
+            self.assertEqual(parameters[parameter]["default"], str(parameter == "linuxGnuX86_64").lower())
+        for step in self.steps:
+            if step.get("task") == "Cache@2":
+                self.assertIn('"$(application)"', step["inputs"]["key"])
+                self.assertIn('"$(target)"', step["inputs"]["key"])
+            if step.get("checkout") == "self":
+                self.assertEqual(step["submodules"], "recursive")
+        archives = next(step for step in self.steps if step.get("displayName") == "Build artifacts")
+        self.assertEqual(archives["condition"], "and(succeeded(), ne(variables['buildInstaller'], 'true'))")
+        for name, value in {"FILE_NAME": "$(fileName)", "PACKAGE_NAME": "$(packageName)",
+                            "CARGO_FEATURES": "$(features)", "NO_DEFAULT_FEATURES": "1",
+                            "GITHUB_REF": "$(Build.SourceBranch)", "GITHUB_SHA": "$(Build.SourceVersion)",
+                            "REPO": "$(TUYEN_GITHUB_ACTION_DEV_TOOLS_REPO)",
+                            "TOKEN": "$(TUYEN_GITHUB_ACTION_PAT_TOKEN)"}.items():
+            self.assertEqual(archives["env"][name], value)
+
+    def test_windows_release_is_gated_and_retained_before_publishing(self):
+        names = ("Setup Tuyen CLI", "Check Tuyen Drive upload support", "Build Windows desktop release",
+                 "Build Windows installer", "Retain Windows installer", "Publish Windows installer to Tuyen Drive",
+                 "Verify Windows installer publish")
+        steps = {name: next(step for step in self.steps if step.get("displayName") == name) for name in names}
+        indexes = [self.steps.index(steps[name]) for name in names]
+        self.assertEqual(indexes, sorted(indexes))
+        for step in steps.values():
+            self.assertEqual(step["condition"], "and(succeeded(), eq(variables['buildInstaller'], 'true'))")
+        self.assertIn("https://cli.tuyen.blog/install.ps1", steps[names[0]]["pwsh"])
+        self.assertIn("##vso[task.prependpath]", steps[names[0]]["pwsh"])
+        self.assertIn("tuyen drive upload-app --help", steps[names[1]]["pwsh"])
+        build = steps[names[2]]
+        self.assertIn("cargo build --locked --no-default-features --features gui --bin regressify-desktop", build["pwsh"])
+        self.assertEqual(build["env"]["REGRESSIFY_DESKTOP_VERSION"], "$(releaseVersion)")
+        self.assertEqual(build["env"]["TUYEN_DRIVE_APP"], "$(TUYEN_DRIVE_APP)")
+        self.assertEqual(build["env"]["BINARY_GIT_HASH"], "$(Build.SourceVersion)")
+        self.assertIn("+crt-static", build["env"]["RUSTFLAGS"])
+        self.assertIn("-RequireStaticRuntime -SmokeTest", steps[names[3]]["pwsh"])
+        self.assertEqual(steps[names[4]]["task"], "PublishPipelineArtifact@1")
+        self.assertEqual(steps[names[4]]["inputs"]["targetPath"], "$(installer)")
+        self.assertEqual(steps[names[5]]["env"]["TUYEN_DRIVE_TOKEN"], "$(TUYEN_DRIVE_TOKEN)")
+        self.assertEqual(steps[names[5]]["env"]["INSTALLER_VERSION"], "$(releaseVersion)")
+        verify = steps[names[6]]
+        self.assertIn("ci/drive_release.py verify", verify["pwsh"])
+        self.assertEqual(verify["env"]["GITHUB_REF_TYPE"], "tag")
+        self.assertEqual(verify["env"]["GITHUB_REF_NAME"], "$(Build.SourceBranchName)")
+        for step in self.steps:
+            if step is not steps[names[5]]:
+                self.assertNotIn("TUYEN_DRIVE_TOKEN", step.get("env", {}))
+
+    def test_powershell_steps_parse(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for Azure release checks")
+        parser = '''
+$ErrorActionPreference = 'Stop'
+$scripts = [Console]::In.ReadToEnd() | ConvertFrom-Json
+foreach ($script in $scripts) {
+    $tokens = $null
+    $parseErrors = $null
+    [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$parseErrors) | Out-Null
+    if ($parseErrors) { throw ($parseErrors | Out-String) }
+}
+'''
+        result = subprocess.run(
+            [shell, "-NoProfile", "-NonInteractive", "-Command", parser],
+            input=json.dumps([step["pwsh"] for step in self.steps if "pwsh" in step]),
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_rust_environment_is_forwarded_only_after_success(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for Azure release checks")
+        step = next(step for step in self.steps if step.get("displayName") == "Install Rust")
+        stub = '''
+$ErrorActionPreference = 'Stop'
+function Invoke-RustFixture {
+    if (($args -join ' ') -ne 'ci/install-rust.sh') { throw 'Incorrect Rust installer script.' }
+    [System.IO.File]::WriteAllText($env:GITHUB_ENV, $env:RUST_TEST_ENV)
+    $global:LASTEXITCODE = [int]$env:RUST_TEST_EXIT
+}
+'''
+        settings = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld\nCC=aarch64-linux-gnu-gcc\n"
+        for content, exit_code, succeeds in [("", 0, True), (settings, 0, True), (settings, 7, False),
+                                            ("UNEXPECTED=value", 0, False), ("CC", 0, False)]:
+            with self.subTest(content=content, exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
+                env = dict(os.environ, AGENT_TEMPDIRECTORY=directory, BASH_PATH="Invoke-RustFixture",
+                           RUST_TEST_ENV=content, RUST_TEST_EXIT=str(exit_code))
+                result = subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", stub + step["pwsh"]],
+                                        env=env, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                if succeeds and content:
+                    for setting in content.splitlines():
+                        name, value = setting.split("=", 1)
+                        self.assertIn(f"##vso[task.setvariable variable={name}]{value}", result.stdout)
+                else:
+                    self.assertNotIn("##vso[task.setvariable", result.stdout)
 
 
 class DriveReleaseTests(unittest.TestCase):

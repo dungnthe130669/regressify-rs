@@ -593,7 +593,7 @@ disabled rather than bypassing the current workspace or document conditions.
 
 ## Release Pipeline
 
-The [Release workflow](../.github/workflows/tuyen-release.yml) has a `build`
+The [GitHub Release workflow](../.github/workflows/tuyen-release.yml) has a `build`
 choice: `cli`, `desktop`, or `both` (default). The existing platform switches
 select targets; selecting none falls back to Linux GNU x86_64.
 
@@ -684,6 +684,49 @@ PowerShell 7 (`pwsh`) are also required; set `BASH_PATH` to Git Bash on Windows.
 The tests execute all 192 application/target selections, stub Cargo and Tuyen CLI
 to check the real workflow arguments and failure handling, and verify manifests
 against offline fixtures without publishing.
+
+### Azure Pipelines
+
+Create an Azure DevOps Services pipeline using the existing YAML file
+[.ado/workflows/tuyen-release.yaml](../.ado/workflows/tuyen-release.yaml).
+It preserves the GitHub build choices, tag-only Windows installer publishing,
+manual tagged releases, Linux GNU fallback, and CLI-only Musl targets.
+The Azure version omits macOS ARM64 because Microsoft's hosted ARM64 preview is
+not generally available; macOS x86_64 uses `macos-15`. The GitHub workflow remains
+unchanged, including its ARM64 option.
+
+Authorize the pipeline under **Pipelines > Library > Pipeline permissions** for
+both existing variable groups, using these case-sensitive names:
+
+- `GitHub`: `TUYEN_GITHUB_ACTION_DEV_TOOLS_REPO` and
+  `TUYEN_GITHUB_ACTION_PAT_TOKEN` for the existing archive-upload destination.
+- `Regressify`: `TUYEN_DRIVE_APP` and `TUYEN_DRIVE_TOKEN` for installer publishing.
+
+Keep the credentials marked secret. The `Plan` stage has no Library groups;
+it runs the offline release tests and validates the complete source tag before
+emitting the version and dynamic matrix. The `Release` stage loads the groups,
+maps secrets only to the steps that need them, and refuses pull-request runs.
+Tagged Windows desktop builds receive the app slug but not the upload token.
+
+The release stage uses `lockBehavior: sequential`. Azure DevOps Services creates
+a [stage-level lock](https://learn.microsoft.com/en-us/azure/devops/pipelines/process/approvals#exclusive-lock),
+so releases queue without cancelling an active release; no additional Library
+lock is required. GitHub and Azure locks are independent. Both definitions retain
+tag triggers: enable only one publisher for a release stream, because Tuyen Drive
+versions are immutable and a second upload of the same tag will fail.
+
+Windows uses Tuyen's native `https://cli.tuyen.blog/install.ps1` installer in the
+agent temporary directory and checks `drive upload-app` before building. Existing
+shell build scripts run through Git Bash on Windows, not WSL. The Rust installer
+step forwards its Musl cross-compilation environment settings to later Azure tasks.
+Inno Setup smoke tests and static-runtime checks remain mandatory, and the exact
+installer is retained as an Azure Pipeline Artifact before upload and verification.
+
+Azure release jobs allow 90 minutes. An Azure private project's free hosted-job
+limit is 60 minutes; longer builds require paid hosted parallel-job capacity.
+The offline suite also exercises all 96 supported Azure application/target
+selections, PowerShell syntax, environment forwarding, and both CI upload paths.
+Run only the Azure checks with `python ci/test-release.py AzureReleaseTests`.
 
 ## Workspace and Files
 

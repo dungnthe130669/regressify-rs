@@ -76,6 +76,11 @@ through the [snapshot assets workflow](.github/workflows/snapshot-assets.yml).
 
 ## Release Script Permissions
 
+Release definitions are available for [GitHub Actions](.github/workflows/tuyen-release.yml)
+and [Azure Pipelines](.ado/workflows/tuyen-release.yaml). See the
+[release guide](docs/desktop.md#release-pipeline) for setup, Library variables,
+supported targets, and publishing safeguards.
+
 ```bash
 git update-index --chmod=+x ./ci/install-rust.sh
 git update-index --chmod=+x ./ci/make-release.sh

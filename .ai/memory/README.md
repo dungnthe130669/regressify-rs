@@ -48,6 +48,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   sampled progress warnings, and local cancellation semantics.
 - [Snapshot frontend](snapshot-frontend.md): query-versioned SPA assets, build/PR workflow,
   schema boundaries, and production-fixture browser checks.
+- [Release pipelines](release-pipelines.md): GitHub/Azure release selection, Library
+  scope, stage locking, and Windows tool compatibility.
 
 ## Checks
 
