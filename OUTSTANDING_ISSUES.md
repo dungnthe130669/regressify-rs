@@ -50,6 +50,10 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- [Azure release preparation](.ado/workflows/tuyen-release.yaml) waits for `vswhere`
+  to finish before selecting MSBuild, avoiding a stale exit code that rejected a
+  valid installation. Native Windows reproduction and [offline release tests](ci/test-release.py)
+  cover successful, empty, and failed lookups without PATH updates on failure.
 - Source now supports selected-line comments, indentation, duplication, movement,
   and deletion through focused shortcuts and an Edit menu. GUI regressions cover
   undo/redo, JSON comment rejection, read-only and busy guards, Unicode/CRLF, and

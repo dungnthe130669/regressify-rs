@@ -17,8 +17,13 @@ Verified: 2026-09-24
   the agent temporary directory and `task.prependpath`. Shared Bash scripts run
   in explicit Git Bash. `ci/install-rust.sh` writes cross-compilation settings to
   `GITHUB_ENV`; the Azure wrapper forwards the linker and `CC` to subsequent tasks.
+- Azure MSBuild discovery buffers `vswhere` output before selecting the first path.
+  Direct piping into `Select-Object -First 1` can leave `$LASTEXITCODE` stale even
+  with a valid MSBuild result; native Windows reproduction and the offline
+  discovery regression verify the failure and fix.
 - [Offline tests](../../ci/test-release.py) exercise 192 GitHub and 96 Azure
   selections, real publish scripts with a stub CLI, and Azure PowerShell wrappers.
   Use `python ci/test-release.py`; PyYAML, Bash, and PowerShell 7 are required.
+  On Windows, set `BASH_PATH` to Git Bash for the build-argument tests.
   [Setup details](../../docs/desktop.md#azure-pipelines) include Library permissions
   and the hosted-job timeout limit. Hosted Azure execution remains a separate gate.

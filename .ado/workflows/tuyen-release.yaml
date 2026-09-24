@@ -178,8 +178,11 @@ stages:
                   $bash = Join-Path $env:ProgramFiles 'Git/bin/bash.exe'
                   if (-not (Test-Path -LiteralPath $bash)) { throw 'Git Bash is required for Windows release builds.' }
                   $locator = "${env:ProgramFiles(x86)}/Microsoft Visual Studio/Installer/vswhere.exe"
-                  $msbuild = & $locator -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe' | Select-Object -First 1
-                  if ($LASTEXITCODE -ne 0 -or -not $msbuild) { throw 'MSBuild was not found.' }
+                  # Selecting from the native pipeline can stop vswhere before LASTEXITCODE is set.
+                  $msbuildPaths = @(& $locator -latest -products '*' -requires Microsoft.Component.MSBuild -find 'MSBuild/**/Bin/MSBuild.exe')
+                  if ($LASTEXITCODE -ne 0) { throw "MSBuild discovery failed (vswhere exit code $LASTEXITCODE)." }
+                  $msbuild = $msbuildPaths | Select-Object -First 1
+                  if (-not $msbuild) { throw 'MSBuild was not found.' }
                   Write-Host "##vso[task.prependpath]$(Split-Path $msbuild -Parent)"
               } else {
                   $bash = (Get-Command bash -ErrorAction Stop).Source

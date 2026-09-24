@@ -722,10 +722,16 @@ step forwards its Musl cross-compilation environment settings to later Azure tas
 Inno Setup smoke tests and static-runtime checks remain mandatory, and the exact
 installer is retained as an Azure Pipeline Artifact before upload and verification.
 
+MSBuild discovery waits for `vswhere` to finish before selecting its first result.
+Piping it directly to `Select-Object -First 1` can leave `$LASTEXITCODE` unset or
+stale and falsely report `MSBuild was not found`. A nonzero discovery exit is
+reported separately from an empty result.
+
 Azure release jobs allow 90 minutes. An Azure private project's free hosted-job
 limit is 60 minutes; longer builds require paid hosted parallel-job capacity.
 The offline suite also exercises all 96 supported Azure application/target
-selections, PowerShell syntax, environment forwarding, and both CI upload paths.
+selections, PowerShell syntax, MSBuild discovery, environment forwarding, and both
+CI upload paths.
 Run only the Azure checks with `python ci/test-release.py AzureReleaseTests`.
 
 ## Workspace and Files

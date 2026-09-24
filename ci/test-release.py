@@ -657,6 +657,55 @@ foreach ($script in $scripts) {
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_msbuild_discovery_waits_for_exit_before_selecting_a_path(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for Azure release checks")
+        step = next(step for step in self.steps
+                    if step.get("displayName") == "Prepare build tools and cache directories")
+        stub = r'''
+$ErrorActionPreference = 'Stop'
+function Invoke-VswhereFixture {
+    if (($args -join ' ') -cne '-latest -products * -requires Microsoft.Component.MSBuild -find MSBuild/**/Bin/MSBuild.exe') {
+        throw 'Incorrect MSBuild discovery arguments.'
+    }
+    foreach ($path in (ConvertFrom-Json -InputObject $env:MSBUILD_TEST_PATHS)) {
+        Write-Output $path
+    }
+    $global:LASTEXITCODE = [int]$env:MSBUILD_TEST_EXIT
+}
+$workflow = [ScriptBlock]::Create([Console]::In.ReadToEnd())
+$assignment = $workflow.Ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -eq '$locator'
+}, $true)
+if (-not $assignment) { throw 'MSBuild locator assignment was not found.' }
+$statements = @($assignment.Parent.Statements)
+$discovery = ($statements | Select-Object -Skip ([Array]::IndexOf($statements, $assignment) + 1)).Extent.Text -join "`n"
+$locator = 'Invoke-VswhereFixture'
+$global:LASTEXITCODE = 91
+& ([ScriptBlock]::Create($discovery))
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            first = Path(directory) / "Visual Studio" / "MSBuild" / "Current" / "Bin" / "MSBuild.exe"
+            second = Path(directory) / "Build Tools" / "MSBuild" / "Current" / "Bin" / "MSBuild.exe"
+            for paths, exit_code, succeeds in [([str(first)], 0, True), ([str(first), str(second)], 0, True),
+                                               ([], 0, False), ([], 7, False), ([str(first)], 7, False)]:
+                with self.subTest(paths=paths, exit_code=exit_code):
+                    env = dict(os.environ, MSBUILD_TEST_PATHS=json.dumps(paths), MSBUILD_TEST_EXIT=str(exit_code))
+                    result = subprocess.run(
+                        [shell, "-NoProfile", "-NonInteractive", "-Command", stub],
+                        input=step["pwsh"], env=env, capture_output=True, text=True, check=False, timeout=15,
+                    )
+                    self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                    if succeeds:
+                        self.assertIn(f"##vso[task.prependpath]{first.parent}", result.stdout)
+                        self.assertNotIn(str(second.parent), result.stdout)
+                    else:
+                        self.assertNotIn("##vso[task.prependpath]", result.stdout)
+                        message = f"vswhere exit code {exit_code}" if exit_code else "MSBuild was not found."
+                        self.assertIn(message, result.stderr)
+
     def test_rust_environment_is_forwarded_only_after_success(self):
         shell = shutil.which("pwsh")
         self.assertIsNotNone(shell, "PowerShell 7 is required for Azure release checks")
