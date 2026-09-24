@@ -724,6 +724,12 @@ Suite rows also show queued/running/pass/fail totals. The refresh icon reloads
 suite discovery. Scenario rows shorten web addresses to host/path and local
 fixture URLs to workspace-relative paths; tooltips retain the full URL.
 
+Unlabelled scenarios use the same [URL-derived names](create-scenario.md) in the
+suite catalog, live draft list, editor heading, and action breadcrumb. Names use
+the shortest unique readable path suffix, with origins only for mixed-origin
+suites. Explicit labels take priority; generated names do not modify the draft,
+scenario selection IDs, or capture filenames.
+
 The Workspace files section contains configuration and YAML/JSON under `common`.
 Opening a viewport file displays its definitions in the lower pane. Open
 configuration file adds other workspace-relative data files, including custom
@@ -1170,10 +1176,12 @@ use Approve Results in Runs for suite-wide or all-viewport approval. Ordinary Ru
 approval retains its existing behavior and does not automatically recompare.
 
 Capture rows use scenario labels, with viewport and saved-step/target details on
-the secondary line. Newly captured labels are preserved in report metadata;
-older runs resolve names from the current workspace where an ID matches
-unambiguously. Unresolved generated IDs fall back to the recorded page URL or an
-unnamed-scenario label. Raw capture IDs remain searchable and available in
+the secondary line. Newly captured display names are preserved in report metadata
+and used unchanged by desktop and web reports, including partial comparisons.
+Older runs derive friendly names from recorded original URLs using the same
+shared rules; when names and URLs are missing, an unambiguous current-workspace
+ID match can supply the name. Unresolved generated IDs use an unnamed-scenario
+label. Raw capture IDs remain searchable and available in
 tooltips. Generated desktop run UUIDs are presented as report timestamps;
 timestamp-based CLI run IDs are formatted as local dates. Custom run names remain
 unchanged.

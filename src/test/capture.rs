@@ -363,6 +363,8 @@ pub(crate) struct ReportPageUrls {
     pub scenario_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scenario_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenario_display_name: Option<String>,
 }
 
 /// Per-capture page URLs preserved for report regeneration and standalone
@@ -1123,6 +1125,7 @@ mod tests {
                 ReportPageUrls {
                     scenario_id: None,
                     scenario_label: None,
+                    scenario_display_name: Some("Home".into()),
                     reference_url: "https://www.example.com/home".to_string(),
                     url: "https://test.example.com/home".to_string(),
                 },
@@ -1138,6 +1141,10 @@ mod tests {
         assert_eq!(
             value["captures"]["home__FINAL"]["url"],
             "https://test.example.com/home"
+        );
+        assert_eq!(
+            value["captures"]["home__FINAL"]["scenarioDisplayName"],
+            "Home"
         );
     }
 

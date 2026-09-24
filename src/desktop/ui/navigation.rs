@@ -815,6 +815,7 @@ impl Workbench {
             None
         };
         let items = items.map(Vec::as_slice).unwrap_or_default();
+        let scenario_titles = self.scenario_titles();
         let query = self.scenario_search.read(cx).value().trim().to_lowercase();
         let owner = open
             .filter(|_| suite || viewport)
@@ -828,18 +829,18 @@ impl Workbench {
             .iter()
             .enumerate()
             .filter_map(|(index, item)| {
-                let label = item["label"]
-                    .as_str()
-                    .filter(|label| !label.trim().is_empty())
-                    .or_else(|| item["url"].as_str().filter(|url| !url.is_empty()))
-                    .map(str::to_string)
-                    .unwrap_or_else(|| {
-                        format!(
-                            "{} {}",
-                            if viewport { "Viewport" } else { "Scenario" },
-                            index + 1
-                        )
-                    });
+                let label = if viewport {
+                    item["label"]
+                        .as_str()
+                        .filter(|label| !label.trim().is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("Viewport {}", index + 1))
+                } else {
+                    scenario_titles
+                        .get(index)
+                        .cloned()
+                        .unwrap_or_else(|| format!("Scenario {}", index + 1))
+                };
                 if !query.is_empty()
                     && ![
                         label.as_str(),

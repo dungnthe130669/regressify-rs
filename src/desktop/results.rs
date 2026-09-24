@@ -45,6 +45,19 @@ pub struct Report {
 }
 
 impl Report {
+    pub(crate) fn resolve_names(&mut self, suite: Option<&SuiteSummary>) {
+        let names = crate::helpers::scenario_names(
+            &self
+                .tests
+                .iter()
+                .map(|test| test.pair.scenario_name())
+                .collect::<Vec<_>>(),
+        );
+        for (test, name) in self.tests.iter_mut().zip(names) {
+            test.pair.resolve_name(suite, Some(&name));
+        }
+    }
+
     pub(super) fn scenario_counts(&self) -> crate::progress::Counts {
         let mut scenarios = std::collections::BTreeMap::new();
         for test in &self.tests {
@@ -135,6 +148,7 @@ pub struct Pair {
     pub label: String,
     pub scenario_id: Option<String>,
     pub scenario_label: Option<String>,
+    pub scenario_display_name: Option<String>,
     #[serde(default)]
     pub file_name: String,
     #[serde(skip)]
@@ -161,6 +175,17 @@ pub struct CaptureDisplay {
 }
 
 impl Pair {
+    fn scenario_name(&self) -> crate::helpers::ScenarioName<'_> {
+        crate::helpers::ScenarioName::captured(
+            self.scenario_id.as_deref().unwrap_or_default(),
+            self.scenario_display_name.as_deref(),
+            self.scenario_label.as_deref(),
+            self.reference_url.as_deref(),
+            self.url.as_deref(),
+        )
+        .with_capture_label(&self.label, self.capture_key())
+    }
+
     pub fn capture_key(&self) -> &str {
         let filename = if self.file_name.is_empty() {
             self.test
@@ -193,7 +218,7 @@ impl Pair {
             || self.capture_key().to_lowercase().contains(query)
     }
 
-    fn resolve_name(&mut self, suite: Option<&SuiteSummary>) {
+    fn resolve_name(&mut self, suite: Option<&SuiteSummary>, captured_name: Option<&str>) {
         let key = self.capture_key();
         let scenarios = suite
             .map(|suite| suite.scenarios.as_slice())
@@ -218,41 +243,32 @@ impl Pair {
             .scenario_id
             .as_deref()
             .or_else(|| matched.map(|(_, scenario)| scenario.id.as_str()));
-        let (viewport, target) = id
-            .and_then(|id| key.strip_prefix(id))
-            .map(|suffix| {
-                if let Some(target) = suffix.strip_prefix("__") {
-                    ("", target)
-                } else {
-                    suffix
-                        .strip_prefix('_')
-                        .unwrap_or(suffix)
-                        .split_once("__")
-                        .unwrap_or(("", ""))
-                }
+        let (viewport, detail) = crate::helpers::capture_details(key, id, &self.selector);
+        let generated = crate::helpers::generated_capture_label(&self.label, key);
+        let has_metadata = [
+            &self.scenario_display_name,
+            &self.scenario_label,
+            &self.reference_url,
+            &self.url,
+        ]
+        .iter()
+        .any(|value| {
+            value
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        });
+        let resolved;
+        let captured_name = if has_metadata {
+            Some(if let Some(name) = captured_name {
+                name
+            } else {
+                resolved = crate::helpers::scenario_names(&[self.scenario_name()]);
+                &resolved[0]
             })
-            .unwrap_or_else(|| {
-                let (prefix, target) = key.split_once("__").unwrap_or((key, ""));
-                let viewport = prefix
-                    .split_once('_')
-                    .filter(|(prefix, _)| generated_id(prefix))
-                    .map_or("", |(_, viewport)| viewport);
-                (viewport, target)
-            });
-        let generated = self.label.is_empty()
-            || self.label.contains("__")
-            || self.label == key.replace('_', " ")
-            || self.label == key.replace("__", " ")
-            || self.label
-                == key
-                    .replace('_', " ")
-                    .split_whitespace()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-        let name = self
-            .scenario_label
-            .as_deref()
-            .filter(|label| !label.trim().is_empty())
+        } else {
+            None
+        };
+        let name = captured_name
             .or_else(|| {
                 matched.map(|(_, scenario)| {
                     if scenario.label == scenario.id {
@@ -276,28 +292,10 @@ impl Pair {
                     humanize(prefix)
                 }
             });
-        let capture = match target {
-            "FINAL" => "Full page".into(),
-            "VIEWPORT" => "Viewport capture".into(),
-            target if target.starts_with('$') => format!("Saved: {}", &target[1..]),
-            target if target.starts_with("SELECTOR-") => "Element capture".into(),
-            _ => match self.selector.as_str() {
-                "document" => "Full page".into(),
-                "viewport" => "Viewport capture".into(),
-                selector if selector.starts_with("save:") => format!("Saved: {}", &selector[5..]),
-                selector if selector.starts_with("SELECTOR-") => "Element capture".into(),
-                selector => selector.to_string(),
-            },
-        };
-        let detail = [humanize(viewport), capture]
-            .into_iter()
-            .filter(|part| !part.is_empty())
-            .collect::<Vec<_>>()
-            .join(" / ");
         self.display = CaptureDisplay {
             title,
             detail,
-            viewport: viewport.to_string(),
+            viewport,
             scenario_index: matched.map(|(index, _)| index),
             page_url: self
                 .url
@@ -674,9 +672,7 @@ impl Catalog {
                 }
             });
             report.source = suite.map(|suite| suite.entry.clone());
-            for test in &mut report.report.tests {
-                test.pair.resolve_name(suite);
-            }
+            report.report.resolve_names(suite);
         }
     }
 
@@ -1027,14 +1023,14 @@ mod tests {
             "scenarioId": "8ac900fea19642cc0000", "scenarioLabel": "Name at capture time"
         }))
         .unwrap();
-        pair.resolve_name(Some(&suite()));
+        pair.resolve_name(Some(&suite()), None);
         assert_eq!(pair.display.title, "Name at capture time");
         assert_eq!(pair.display.detail, "Desktop / Full page");
         assert_eq!(pair.display.scenario_index, Some(0));
         assert_eq!(pair.capture_key(), "8ac900fea19642cc0000_desktop__FINAL");
         assert!(pair.matches("name at capture"));
         assert!(pair.matches("8ac900"));
-        pair.resolve_name(None);
+        pair.resolve_name(None, None);
         assert_eq!(pair.display.title, "Name at capture time");
         assert!(pair.display.scenario_index.is_none());
     }
@@ -1044,25 +1040,25 @@ mod tests {
         let mut pair: Pair = serde_json::from_value(json!({
             "label": "8ac900fea19642cc0000 phone $after-login", "test": "../bitmaps_test/run/8ac900fea19642cc0000_phone__$after-login.png"
         })).unwrap();
-        pair.resolve_name(Some(&suite()));
+        pair.resolve_name(Some(&suite()), None);
         assert_eq!(pair.display.title, "Payment confirmation");
         assert_eq!(pair.display.detail, "Phone / Saved: after-login");
         pair.file_name = "checkout_extra__VIEWPORT.png".into();
-        pair.resolve_name(Some(&suite()));
+        pair.resolve_name(Some(&suite()), None);
         assert_eq!(pair.display.title, "Extra details");
         assert_eq!(pair.display.scenario_index, Some(2));
         pair.file_name = "checkouts__FINAL.png".into();
-        pair.resolve_name(Some(&suite()));
+        pair.resolve_name(Some(&suite()), None);
         assert!(pair.display.scenario_index.is_none());
     }
 
     #[test]
     fn unknown_generated_names_use_urls_and_ambiguous_suites_do_not_guess() {
         let mut pair: Pair = serde_json::from_value(json!({"label": "8ac900fea19642cc0000 FINAL", "fileName": "8ac900fea19642cc0000__FINAL.png", "url": "https://example.com/receipt"})).unwrap();
-        pair.resolve_name(None);
-        assert_eq!(pair.display.title, "https://example.com/receipt");
+        pair.resolve_name(None, None);
+        assert_eq!(pair.display.title, "Receipt");
         pair.url = None;
-        pair.resolve_name(None);
+        pair.resolve_name(None, None);
         assert_eq!(pair.display.title, "Unnamed scenario");
         let directory = tempfile::tempdir().unwrap();
         fixture(directory.path(), "desktop-0123456789abcdef0123456789abcdef");

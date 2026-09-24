@@ -997,6 +997,7 @@ fn report_page_urls(
                 .unwrap_or(&scenario.url)
                 .to_string(),
         ),
+        scenario_display_name: None,
     })
 }
 
@@ -1019,11 +1020,25 @@ fn write_capture_run_manifests(
         let mut thresholds = Vec::new();
         let mut urls = Vec::new();
 
-        for (_, scenario) in selected_scenarios(&input.name, suite, filters) {
+        // Resolve against the complete suite before filtering or replacing URLs.
+        let names = crate::helpers::scenario_names(
+            &suite
+                .scenarios
+                .iter()
+                .map(|scenario| crate::helpers::ScenarioName {
+                    id: scenario.id.as_deref().unwrap_or_default(),
+                    label: scenario.label.as_deref(),
+                    url: Some(&scenario.url),
+                })
+                .collect::<Vec<_>>(),
+        );
+        for (index, scenario) in selected_scenarios(&input.name, suite, filters) {
             let order_keys =
                 scenario_capture_order_keys(workspace_config, suite, scenario, &suite.scenarios)?;
             let resolved = config::resolve_config(workspace_config, suite, scenario);
-            let page_urls = report_page_urls(scenario, &url_replacements, apply_url_replacements)?;
+            let mut page_urls =
+                report_page_urls(scenario, &url_replacements, apply_url_replacements)?;
+            page_urls.scenario_display_name = Some(names[index].clone());
             for order_key in &order_keys {
                 thresholds.push((order_key.clone(), resolved.mis_match_threshold));
                 if let Some(prefix) = order_key.split("__").next() {
@@ -1501,6 +1516,8 @@ mod tests {
             scenario("page", Some(Needs::String("base".into()))),
             scenario("page-extra", None),
         ]);
+        selected_suite.scenarios[0].url = "https://example.com/blog/page".into();
+        selected_suite.scenarios[1].url = "https://example.com/docs/page".into();
         selected_suite.test_date = Some("selection".into());
         let suite = Arc::new(selected_suite);
         let filters = vec!["alloy:page".parse().unwrap(), "alloy:page".parse().unwrap()];
@@ -1539,6 +1556,12 @@ mod tests {
         assert_eq!(
             urls.captures["page__FINAL"].scenario_id.as_deref(),
             Some("page")
+        );
+        assert_eq!(
+            urls.captures["page__FINAL"]
+                .scenario_display_name
+                .as_deref(),
+            Some("Docs / Page")
         );
     }
 

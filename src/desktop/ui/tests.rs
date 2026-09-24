@@ -5205,6 +5205,50 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
 }
 
 #[gpui_kit::test]
+async fn url_only_scenario_names_match_editor_lists_and_headings(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let source = "scenarios:\n- url: https://example.test/men/running-shoes\n- url: https://example.test/women/running-shoes\n- url: https://example.test/help-center\n";
+    std::fs::write(&path, source).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let entry = this.session.open.as_ref().unwrap().entry.clone();
+            this.session.load(entry).unwrap();
+            this.sync_editor(window, cx);
+            let draft = this.draft_suite_summary().unwrap();
+            assert_eq!(
+                draft
+                    .scenarios
+                    .iter()
+                    .map(|scenario| scenario.label.clone())
+                    .collect::<Vec<_>>(),
+                this.scenario_titles()
+            );
+            assert!(this.value["scenarios"][0].get("label").is_none());
+            assert!(this.value["scenarios"][0].get("id").is_none());
+        });
+        window.render_frame(cx);
+        for (index, expected) in [
+            "Men / Running shoes",
+            "Women / Running shoes",
+            "Help center",
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(window.find(("scenario", index)).label(), Some(expected));
+            window.click(("scenario", index), cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).selection_title(), expected);
+            assert_eq!(window.find("editor-heading").label(), Some(expected));
+        }
+    })
+    .unwrap();
+    assert_eq!(std::fs::read_to_string(path).unwrap(), source);
+}
+
+#[gpui_kit::test]
 async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
     cx: &mut TestAppContext,
 ) {

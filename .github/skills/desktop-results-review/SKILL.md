@@ -12,7 +12,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 ## Procedure and Invariants
 
 1. Treat report JSON and relative image paths as untrusted. Enforce artifact-root containment, file/byte/image-size bounds, and safe external URL schemes.
-1. Keep captured human labels separate from immutable capture keys/scenario IDs. Legacy missing metadata is unavailable, not evidence of a pass or zero difference.
+1. Keep captured human labels separate from immutable capture keys/scenario IDs. Prefer recorded `scenarioDisplayName`; use the [shared URL naming resolver](../../../src/helpers/scenario_names.rs) for legacy reports. Resolve across logical scenarios, not individual viewports/captures, and keep desktop/editor/web names aligned. Legacy missing metrics are unavailable, not evidence of a pass or zero difference.
 1. Diff dimension offsets are signed test-minus-reference pixels. Preserve raw referenceUrl versus replaced test url; do not share a display URL fallback.
 1. Inventory successful baselines and actual captures, not directories or generated diffs. Select latest captures by the existing metadata/time rules, not lexical UUID.
 1. Results exposes Approve This Scenario for the current viewport, never whole-run approval. Pin the output root, suite, run, scenario, and capture key. Confirm inline in the comparison and retain draft/preflight guards without switching to Runs. Dismiss pending approval on capture changes or refresh; keep whole-run approval in Runs.
@@ -25,6 +25,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 
 ```sh
 cargo test --features desktop --lib desktop::results::tests
+cargo test --features desktop --lib snapshot::capture_report::tests
 cargo test --features gui-tests --lib desktop::ui::tests -- --test-threads=1
 ```
 

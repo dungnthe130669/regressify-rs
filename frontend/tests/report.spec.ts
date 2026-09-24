@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import AxeBuilder from "@axe-core/playwright";
 import { expect, type Page, test } from "@playwright/test";
@@ -42,6 +43,46 @@ test("overview is responsive, accessible, sortable, and theme-aware", async ({ p
   await page.emulateMedia({ colorScheme: "light" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(errors).toEqual([]);
+});
+
+test("logo and favicon use the shared desktop artwork", async ({ page }) => {
+  await page.goto("/");
+  const logo = page.locator(".brand img");
+  await expect(logo).toBeVisible();
+  const source = await logo.getAttribute("src");
+  if (!source) throw new Error("The application logo is missing");
+  const artwork = readFileSync(resolve(import.meta.dirname, "../../assets/icon.svg"), "utf8");
+  expect(new URL(source, page.url()).searchParams.get("v")).toBe(getAssetVersion(artwork));
+  await expect(page.locator('head link[rel="icon"]')).toHaveAttribute("href", source);
+  const response = await page.request.get(source);
+  expect(response.ok()).toBe(true);
+  expect(await response.text()).toBe(artwork);
+  await expect
+    .poll(() => logo.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBeGreaterThan(0);
+});
+
+test("page titles follow suite navigation, deep links, and the overview", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
+  const reportTitle = await page.title();
+  await page.locator(".suite-name").filter({ hasText: "workspace-overview" }).click();
+  await expect(page).toHaveTitle(`workspace-overview | ${reportTitle}`);
+  await page.locator(".capture-card").first().click();
+  await expect(page).toHaveTitle(`workspace-overview | ${reportTitle}`);
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /orders-and-checkout/ })
+    .click();
+  await expect(page).toHaveTitle(`orders-and-checkout | ${reportTitle}`);
+  await page.reload();
+  await expect(page).toHaveTitle(`orders-and-checkout | ${reportTitle}`);
+  await page.getByRole("link", { name: "Regressify overview" }).click();
+  await expect(page).toHaveTitle(reportTitle);
 });
 
 test("overview centers metrics and result columns with aligned suite labels", async ({
@@ -132,6 +173,82 @@ test("navigation stays in the SPA, preserves filters, and refreshes deep links",
   }
 });
 
+test("suite list compares reference, test, and available diff captures side by side", async ({
+  page,
+}, info) => {
+  await page.goto("/suites/workspace-overview?view=list");
+  const capture = page.locator(".capture-list .capture-card").first();
+  const lanes = capture.locator(".capture-lane");
+  await expect(lanes).toHaveCount(3);
+  await expect(lanes.locator("figcaption")).toHaveText(["Reference", "Test", "Diff"]);
+  for (const image of await lanes.getByRole("img").all()) {
+    await expect(image).toBeVisible();
+    await expect(image).toHaveCSS("object-fit", "contain");
+    await expect
+      .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+      .toBeGreaterThan(0);
+  }
+  const bounds = await lanes.evaluateAll((elements) =>
+    elements.map((element) => {
+      const { top, left, right, width } = element.getBoundingClientRect();
+      return { top, left, right, width };
+    }),
+  );
+  for (const [index, lane] of bounds.entries()) {
+    expect(lane.width).toBeGreaterThan(50);
+    expect(Math.abs(lane.top - bounds[0].top)).toBeLessThan(1);
+    expect(Math.abs(lane.width - bounds[0].width)).toBeLessThan(1);
+    if (index > 0) expect(lane.left).toBeGreaterThanOrEqual(bounds[index - 1].right);
+  }
+  await screenshot(page, info.project.name, "suite-list");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await capture.click();
+  await expect(page).toHaveURL(/\/images\/overview__desktop.png\?view=list$/);
+  await page.locator(".back-link").click();
+  await expect(page.getByRole("button", { name: "List view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.goto("/suites/customer-accounts?view=list");
+  await expect(lanes).toHaveCount(2);
+  await expect(lanes.locator("figcaption")).toHaveText(["Reference", "Test"]);
+  await page.getByRole("button", { name: "Grid view" }).click();
+  await expect(page.locator(".capture-grid .capture-card").first().getByRole("img")).toHaveCount(1);
+});
+
+test("suite list preserves missing-image lanes and wraps long capture labels", async ({ page }) => {
+  const label = "LongCaptureLabel".repeat(20);
+  let unavailableImage = "";
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    unavailableImage = new URL(`/${data.tests[0].test}`, route.request().url()).href;
+    data.tests[0].reference = null;
+    data.tests[0].label = label;
+    await route.fulfill({ response, json: data });
+  });
+  await page.route("**/_snapshot/images/**", (route) =>
+    route.request().url() === unavailableImage ? route.fulfill({ status: 404 }) : route.continue(),
+  );
+  await page.goto("/suites/workspace-overview?view=list");
+  const capture = page.locator(".capture-list .capture-card").first();
+  await expect(capture.locator(".capture-lane")).toHaveCount(3);
+  await capture.locator(".capture-comparison").scrollIntoViewIfNeeded();
+  await expect(capture.getByText("No image", { exact: true })).toBeVisible();
+  await expect(capture.getByText("Image unavailable", { exact: true })).toBeVisible();
+  await expect(capture.getByRole("img", { name: `${label} diff`, exact: true })).toBeVisible();
+  for (const width of [320, 768, 1920]) {
+    await page.setViewportSize({ width, height: 900 });
+    await assertLayout(page);
+    const overflows = await capture.evaluate((element) =>
+      [element, ...element.querySelectorAll("h2, .capture-lane-preview")].some(
+        (node) => node.scrollWidth > node.clientWidth,
+      ),
+    );
+    expect(overflows).toBe(false);
+  }
+});
+
 test("review navigation lists suites and scenarios on suite and image pages", async ({
   page,
   isMobile,
@@ -154,6 +271,42 @@ test("review navigation lists suites and scenarios on suite and image pages", as
   );
   await page.getByRole("searchbox", { name: "Find a scenario" }).fill("Scenario 3");
   await expect(scenarios.getByRole("link")).toHaveCount(1);
+});
+
+test("URL-only scenario names stay friendly while capture routes keep their IDs", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/search-and-navigation");
+  await expect(page.locator(".capture-card h2")).toHaveText([
+    "Men / Running shoes / Desktop / Full page",
+    "Women / Running shoes / Mobile / Full page",
+    "Help center / Desktop / Full page",
+    "Men / Running shoes / Mobile / Full page",
+  ]);
+  await screenshot(page, info.project.name, "url-only-scenarios");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
+  await expect(scenarios.locator(".scenario-group")).toHaveCount(1);
+  await expect(scenarios.locator("summary")).toContainText("Men / Running shoes");
+  await expect(scenarios.getByRole("link")).toHaveCount(4);
+  const scenarioId = getAssetVersion("https://example.com/men/running-shoes");
+  await expect(scenarios).not.toContainText(scenarioId);
+  await expect(scenarios).not.toContainText("https://");
+  await scenarios.getByRole("link", { name: "Men / Running shoes / Desktop / Full page" }).click();
+  await expect(page).toHaveURL(new RegExp(`/images/${scenarioId}_desktop__FINAL\\.png$`));
+  await expect(
+    page.getByRole("heading", { name: "Men / Running shoes / Desktop / Full page", exact: true }),
+  ).toBeVisible();
+  await screenshot(page, info.project.name, "url-only-image");
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Men / Running shoes / Desktop / Full page", exact: true }),
+  ).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page.getByRole("searchbox", { name: "Find a scenario" }).fill("Women / Running shoes");
+  await expect(scenarios.getByRole("link")).toHaveCount(1);
+  await expect(scenarios.getByRole("link")).toHaveText("Women / Running shoes");
 });
 
 test("scenario navigation is restricted to the selected suite and groups its captures", async ({

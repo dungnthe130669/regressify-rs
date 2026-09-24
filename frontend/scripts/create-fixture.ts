@@ -111,11 +111,29 @@ export async function createFixture() {
         suiteIndex === 3 && captureIndex === 3
           ? "Navigation timed out after 30 seconds. The page did not reach a stable state."
           : null;
-      const fileName = `${["overview", "recent-orders", "channel-summary", "full-page"][captureIndex]}__${captureIndex % 2 ? "mobile" : "desktop"}.png`;
+      const urlScenario =
+        id === "search-and-navigation"
+          ? [
+              { path: "/men/running-shoes", name: "Men / Running shoes" },
+              { path: "/women/running-shoes", name: "Women / Running shoes" },
+              { path: "/help-center", name: "Help center" },
+              { path: "/men/running-shoes", name: "Men / Running shoes" },
+            ][captureIndex]
+          : undefined;
+      const referenceUrl = `https://example.com${urlScenario?.path || "/workspace"}`;
+      const scenarioId = urlScenario
+        ? getAssetVersion(Buffer.from(referenceUrl))
+        : `scenario-${captureIndex}`;
+      const viewport = captureIndex % 2 ? "mobile" : "desktop";
+      const fileName = urlScenario
+        ? `${scenarioId}_${viewport}__FINAL.png`
+        : `${["overview", "recent-orders", "channel-summary", "full-page"][captureIndex]}__${viewport}.png`;
       const capture: Capture = {
         id: fileName,
-        label: `${["Workspace overview", "Recent orders", "Sales by channel", "Full page"][captureIndex]} / ${captureIndex % 2 ? "Mobile" : "Desktop"}`,
-        scenario: `Scenario ${captureIndex + 1}`,
+        label: urlScenario
+          ? `${urlScenario.name} / ${captureIndex % 2 ? "Mobile" : "Desktop"} / Full page`
+          : `${["Workspace overview", "Recent orders", "Sales by channel", "Full page"][captureIndex]} / ${captureIndex % 2 ? "Mobile" : "Desktop"}`,
+        scenario: urlScenario?.name || `Scenario ${captureIndex + 1}`,
         selector: "document",
         status: failed ? "fail" : "pass",
         threshold: 0.05,
@@ -124,8 +142,8 @@ export async function createFixture() {
         reference: error ? null : images.reference,
         test: failed ? images.test : images.reference,
         diff: failed && !error ? images.diff : null,
-        referenceUrl: "https://example.com/workspace",
-        testUrl: "https://staging.example.com/workspace",
+        referenceUrl,
+        testUrl: referenceUrl.replace("example.com", "staging.example.com"),
         dimensions: { same: true, width: 0, height: 0 },
       };
       tests.push(capture);
@@ -146,9 +164,9 @@ export async function createFixture() {
       rawTests.push({
         status: capture.status,
         pair: {
-          label: capture.label,
-          scenarioId: `scenario-${captureIndex}`,
-          scenarioLabel: capture.scenario,
+          label: urlScenario ? fileName.replace(/\.png$/, "").replaceAll("_", " ") : capture.label,
+          scenarioId,
+          scenarioLabel: urlScenario ? undefined : capture.scenario,
           selector: capture.selector,
           fileName,
           reference: error

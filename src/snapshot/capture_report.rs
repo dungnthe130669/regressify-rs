@@ -6,6 +6,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use serde::Deserialize;
 
+use crate::helpers::{ScenarioName, scenario_names};
+
 use super::site::{
     Capture, Dimensions, MAX_IMAGE_BYTES, MAX_REPORT_BYTES, SuiteReport, checked_file,
     read_bounded, store_asset, valid_segment,
@@ -32,6 +34,7 @@ struct RawPair {
     scenario_id: String,
     #[serde(default)]
     scenario_label: String,
+    scenario_display_name: Option<String>,
     #[serde(default)]
     selector: String,
     #[serde(default)]
@@ -45,6 +48,36 @@ struct RawPair {
     url: Option<String>,
     engine_error_msg: Option<String>,
     diff: Option<RawDiff>,
+}
+
+impl RawPair {
+    fn scenario_name(&self) -> ScenarioName<'_> {
+        let filename = if self.file_name.is_empty() {
+            self.test
+                .as_deref()
+                .or(self.reference.as_deref())
+                .unwrap_or(&self.label)
+                .split('?')
+                .next()
+                .unwrap_or_default()
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or_default()
+        } else {
+            &self.file_name
+        };
+        ScenarioName::captured(
+            &self.scenario_id,
+            self.scenario_display_name.as_deref(),
+            Some(&self.scenario_label),
+            self.reference_url.as_deref(),
+            self.url.as_deref(),
+        )
+        .with_capture_label(
+            &self.label,
+            filename.strip_suffix(".png").unwrap_or(filename),
+        )
+    }
 }
 
 #[derive(Deserialize)]
@@ -220,7 +253,14 @@ pub(super) fn load_suite(
     };
     let mut tests = Vec::with_capacity(report.tests.len());
     let mut identifiers = BTreeSet::new();
-    for test in report.tests {
+    let names = scenario_names(
+        &report
+            .tests
+            .iter()
+            .map(|test| test.pair.scenario_name())
+            .collect::<Vec<_>>(),
+    );
+    for (test, scenario) in report.tests.into_iter().zip(names) {
         let pair = test.pair;
         ensure!(
             matches!(test.status.as_str(), "pass" | "fail")
@@ -277,19 +317,22 @@ pub(super) fn load_suite(
         )?;
         let current = image_asset(root, output, id, pair.test.as_deref(), "test", images)?;
         let diff = image_asset(root, output, id, pair.diff_image.as_deref(), "diff", images)?;
-        let label = if pair.label.is_empty() {
-            capture_id.clone()
+        let key = capture_id.strip_suffix(".png").unwrap_or(&capture_id);
+        let label = if crate::helpers::generated_capture_label(&pair.label, key) {
+            let (_, detail) =
+                crate::helpers::capture_details(key, Some(&pair.scenario_id), &pair.selector);
+            [scenario.clone(), detail]
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" / ")
         } else {
             pair.label
         };
         tests.push(Capture {
             id: capture_id,
             label,
-            scenario: if pair.scenario_label.is_empty() {
-                pair.scenario_id
-            } else {
-                pair.scenario_label
-            },
+            scenario,
             selector: pair.selector,
             status: test.status,
             threshold: pair.mis_match_threshold,
@@ -367,6 +410,141 @@ mod tests {
             "suite",
             &mut BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn url_only_scenarios_get_friendly_names_without_changing_capture_ids() {
+        let (temp, mut report) = fixture();
+        let template = report["tests"][0].clone();
+        let mut filenames = Vec::new();
+        let tests = [
+            ("https://example.test/men/running-shoes", "desktop"),
+            ("https://example.test/women/running-shoes", "desktop"),
+            ("https://example.test/help-center", "desktop"),
+            ("https://example.test/men/running-shoes", "phone"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (url, viewport))| {
+            let scenario_id = super::super::get_asset_version(url.as_bytes(), 20);
+            let filename = format!("{scenario_id}_{viewport}__FINAL.png");
+            let mut test = template.clone();
+            let pair = &mut test["pair"];
+            pair["scenarioId"] = json!(scenario_id);
+            pair["scenarioLabel"] = json!(url);
+            if index == 2 {
+                pair.as_object_mut().unwrap().remove("scenarioLabel");
+            }
+            pair["label"] = json!(filename.trim_end_matches(".png").replace('_', " "));
+            pair["fileName"] = json!(filename);
+            pair["referenceUrl"] = json!(url);
+            pair["url"] = json!(url.replace("example.test", "staging.example.test"));
+            pair["test"] = json!(format!("../bitmaps_test/current/{filename}"));
+            fs::write(
+                temp.path()
+                    .join("suite/bitmaps_test/current")
+                    .join(&filename),
+                b"\x89PNG\r\n\x1a\npixels",
+            )
+            .unwrap();
+            filenames.push(filename);
+            test
+        })
+        .collect::<Vec<_>>();
+        report["tests"] = json!(tests);
+        write_fixture(temp.path(), &report);
+        let original =
+            fs::read(temp.path().join("suite/bitmaps_test/current/report.json")).unwrap();
+
+        let loaded = load(temp.path()).unwrap().unwrap();
+        assert_eq!(
+            loaded
+                .tests
+                .iter()
+                .map(|test| test.scenario.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Men / Running shoes",
+                "Women / Running shoes",
+                "Help center",
+                "Men / Running shoes"
+            ]
+        );
+        assert_eq!(
+            loaded
+                .tests
+                .iter()
+                .map(|test| test.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Men / Running shoes / Desktop / Full page",
+                "Women / Running shoes / Desktop / Full page",
+                "Help center / Desktop / Full page",
+                "Men / Running shoes / Phone / Full page"
+            ]
+        );
+        assert_eq!(
+            loaded.tests.iter().map(|test| &test.id).collect::<Vec<_>>(),
+            filenames.iter().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            fs::read(temp.path().join("suite/bitmaps_test/current/report.json")).unwrap(),
+            original
+        );
+        #[cfg(feature = "desktop")]
+        {
+            let mut desktop: crate::desktop::results::Report =
+                serde_json::from_value(report).unwrap();
+            desktop.resolve_names(None);
+            assert_eq!(
+                desktop
+                    .tests
+                    .iter()
+                    .map(|test| test.pair.display.title.as_str())
+                    .collect::<Vec<_>>(),
+                loaded
+                    .tests
+                    .iter()
+                    .map(|test| test.scenario.as_str())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                desktop
+                    .tests
+                    .iter()
+                    .map(|test| format!(
+                        "{} / {}",
+                        test.pair.display.title, test.pair.display.detail
+                    ))
+                    .collect::<Vec<_>>(),
+                loaded
+                    .tests
+                    .iter()
+                    .map(|test| test.label.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_scenario_names_survive_partial_reports_and_explicit_url_labels() {
+        let (temp, mut report) = fixture();
+        for name in ["Men / Shoes", "https://example.test/men/shoes"] {
+            report["tests"][0]["pair"]["scenarioLabel"] = json!("https://example.test/men/shoes");
+            report["tests"][0]["pair"]["referenceUrl"] = json!("https://example.test/men/shoes");
+            report["tests"][0]["pair"]["scenarioDisplayName"] = json!(name);
+            write_fixture(temp.path(), &report);
+            let loaded = load(temp.path()).unwrap().unwrap();
+            assert_eq!(loaded.tests[0].scenario, name);
+            assert_eq!(loaded.tests[0].id, "home.png");
+            #[cfg(feature = "desktop")]
+            {
+                let mut desktop: crate::desktop::results::Report =
+                    serde_json::from_value(report.clone()).unwrap();
+                desktop.resolve_names(None);
+                assert_eq!(desktop.tests[0].pair.display.title, name);
+            }
+        }
     }
 
     #[test]

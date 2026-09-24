@@ -3,6 +3,7 @@ pub const FRONTEND_FILES: &[(&str, &[u8])] = &[
     ("_headers", include_bytes!("_headers")),
     ("_redirects", include_bytes!("_redirects")),
     ("_snapshot/assets/app.js", include_bytes!("_snapshot/assets/app.js")),
+    ("_snapshot/assets/icon.svg", include_bytes!("_snapshot/assets/icon.svg")),
     ("_snapshot/assets/jetbrains-mono-combined.woff2", include_bytes!("_snapshot/assets/jetbrains-mono-combined.woff2")),
     ("_snapshot/assets/roboto-combined.woff2", include_bytes!("_snapshot/assets/roboto-combined.woff2")),
     ("_snapshot/assets/style.css", include_bytes!("_snapshot/assets/style.css")),

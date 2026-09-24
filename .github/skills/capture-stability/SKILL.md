@@ -16,6 +16,7 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 1. Support full-page, viewport, CSS target, and intermediate save captures without collisions. Validate save names and keep stable target-specific ordering.
 1. Write complete PNGs/manifests atomically; preserve required color metadata and resource bounds. Failed capture placeholders need error markers, not promotion.
 1. Keep labels, scenario IDs, target names, thresholds, and raw/replaced URLs in sync across capture manifests and report consumers.
+1. Persist `scenarioDisplayName` from the [shared resolver](../../../src/helpers/scenario_names.rs) against the complete suite before selection or URL replacements. Preserve the source label separately; generated names never feed IDs, capture keys, or filenames. Comparison regeneration must retain recorded names.
 1. The shared error-placeholder PNG lives in `src/test/data/error-icon.png`, not the generated snapshot asset folder replaced by frontend builds.
 
 ## Checks

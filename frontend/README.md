@@ -4,6 +4,9 @@ The snapshot site is a static React SPA built with Vite 8, TypeScript, Tailwind 
 and Biome. It uses the supplied Roboto and JetBrains Mono fonts locally. No CDN,
 backend, BackstopJS bundle, or runtime package manager is needed by published reports.
 
+The header logo and favicon share the desktop app's [SVG source](../assets/icon.svg).
+Vite bundles it once with a content-versioned URL; no separate frontend artwork is kept.
+
 ## Develop
 
 Use the Bun version in [.bun-version](.bun-version). From this directory:
@@ -70,7 +73,9 @@ synchronization. Playwright uses desktop and phone viewports for navigation,
 deep-link refresh, filtering, theme persistence, all image modes, zoom, downloads,
 suite-scoped scenarios, independent pane scrolling, divider drag/keyboard resizing,
 failure jumps, selectable/copyable Info content, errors, hostile content,
-narrow/wide layouts, and axe accessibility checks.
+narrow/wide layouts, and axe accessibility checks. They also verify the shared
+logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
+conditional diff lanes, and long labels.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
@@ -100,6 +105,7 @@ The version-2 manifest and every suite/image URL follow the same contract:
 ```text
 _snapshot/assets/app.js?v=<version>
 _snapshot/assets/style.css?v=<version>
+_snapshot/assets/icon.svg?v=<version>
 _snapshot/assets/roboto-combined.woff2?v=<version>
 _snapshot/data/manifest.json?v=<version>
 _snapshot/data/suites/shop.json?v=<version>
@@ -111,6 +117,17 @@ _snapshot/images/shop/diff/home_diff.png?v=<version>
 Suite JSON is loaded on demand. [Frontend schemas](src/data/report.ts) reject
 unversioned, unsafe, or noncanonical artifact URLs. Changing an image updates its
 version, its suite JSON version, and the manifest version without renaming files.
+
+The shared [Rust naming resolver](../src/helpers/scenario_names.rs) supplies
+`scenario` and generated capture `label` values for both desktop and web reports.
+Explicit labels win; URL-only scenarios use the shortest unique readable path
+suffix, origins only when mixed, and query/fragment details or numbered suffixes
+when needed. Captures record `scenarioDisplayName` before suite filtering or URL
+replacement; legacy reports derive names from available original URLs. Capture
+`id`, image filenames, source URLs, and routes are unchanged. Do not duplicate the
+naming algorithm in the SPA. The search/navigation fixture covers URL-only names
+and multiple viewports in both Vite and Rust-generated production reports.
+
 The build uses one JavaScript bundle to avoid circular chunk-version dependencies;
 CSS font references are versioned before the CSS itself. Captured website links
 are external source pages, not local report artifacts, and remain unchanged.
@@ -134,6 +151,9 @@ Deploy at the site's origin root. Routes are `/`, `/suites/:suiteId`, and
 but return real 404 responses for missing `/_snapshot/*` assets. Azure and Netlify
 configuration is generated automatically. Opening HTML through `file://` is not
 supported. Old `/suite/html_report/index.html` entry pages are removed.
+
+Suite and image pages use `suite name | report title` as the browser tab title.
+Returning to the overview restores the configured report title.
 
 Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
@@ -160,6 +180,12 @@ button dismisses it. Metadata stays out of the main image area.
 Suite pages have sticky previous/next failed-comparison arrows. They scroll to and
 highlight failed cards without changing routes, respect the current search/status
 filters, and disable at the first/last visible failure or when none are present.
+
+List view shows labeled Reference and Test previews side by side for each capture,
+with a Diff lane only when available. Previews fit the complete image without
+cropping; missing or unavailable images retain their labeled lanes. The layout
+stays side by side on phones. Grid view keeps its single preview, and opening a
+capture preserves the current filters and view selection.
 
 ## Generated-Assets Pull Request
 

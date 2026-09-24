@@ -132,15 +132,17 @@ export function SuitePage() {
               }
               to={`${imagePath(summary.id, capture.id)}${location.search}`}
             >
-              <div className="capture-thumbnail">
-                <ReportImage
-                  path={capture.test || capture.reference}
-                  alt={`${capture.label} preview`}
-                />
-                <span className="open-capture">
-                  <ArrowUpRight size={18} />
-                </span>
-              </div>
+              {!list && (
+                <div className="capture-thumbnail">
+                  <ReportImage
+                    path={capture.test || capture.reference}
+                    alt={`${capture.label} preview`}
+                  />
+                  <span className="open-capture">
+                    <ArrowUpRight size={18} />
+                  </span>
+                </div>
+              )}
               <div className="capture-info">
                 <div className="capture-card-top">
                   <span className="capture-scenario">
@@ -159,6 +161,22 @@ export function SuitePage() {
                 </div>
                 {capture.error && <p className="capture-error">{capture.error}</p>}
               </div>
+              {list && (
+                <div className="capture-comparison">
+                  {[
+                    { label: "Reference", path: capture.reference },
+                    { label: "Test", path: capture.test },
+                    ...(capture.diff ? [{ label: "Diff", path: capture.diff }] : []),
+                  ].map(({ label, path }) => (
+                    <figure className="capture-lane" key={label}>
+                      <figcaption>{label}</figcaption>
+                      <div className="capture-lane-preview">
+                        <ReportImage path={path} alt={`${capture.label} ${label.toLowerCase()}`} />
+                      </div>
+                    </figure>
+                  ))}
+                </div>
+              )}
             </Link>
           ))}
         </div>

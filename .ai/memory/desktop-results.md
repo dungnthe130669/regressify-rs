@@ -1,7 +1,16 @@
 # Results Review
 
-Verified: 2026-09-23
+Verified: 2026-09-24
 
+- [Scenario naming](../../src/helpers/scenario_names.rs) is shared by desktop
+  catalogs/drafts/results and Rust snapshot conversion. URL-only scenarios use
+  shortest unique readable suffixes, optional mixed origins, then query/fragment
+  details or ordinals. Multiple captures of one scenario share a name.
+- [Capture manifests](../../src/test/test_suites.rs) record `scenarioDisplayName`
+  against the whole suite before filtering/replacements. It is presentation-only:
+  source labels, IDs, filenames, and routes stay independent. Legacy raw-URL labels
+  are resolved during report loading. Evidence: `cargo test --features desktop
+  --lib names` covers cross-client parity, stable IDs, and captured-name preference.
 - [Results navigation](../../src/desktop/ui/navigation.rs) uses loaded report
   scenario/viewport counts while idle; saved Activity counts can predate approval.
   Live run counts still take precedence during execution.

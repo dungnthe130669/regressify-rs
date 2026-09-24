@@ -249,9 +249,30 @@ label
 
 Type: `string`.
 
-Name of current scenario.  
-If not set, the path of current URL will be used.  
-Recommend using only lowercase alphanumeric characters (`a-z`, `0-9`), minus (`-`), and underscore (`_`).
+An explicit, nonblank label is used as the scenario's display name. When it is
+omitted, the desktop app and snapshot web reports share URL-based naming rules:
+
+- Use the shortest unique path suffix within the suite. For example,
+  `/men/running-shoes` and `/women/running-shoes` become `Men / Running shoes`
+  and `Women / Running shoes`, while `/help-center` becomes `Help center`.
+- Omit the origin when all pages share it; otherwise include the scheme, host,
+  and nondefault port, without URL credentials.
+- Decode readable path text, turn hyphens/underscores into spaces, ignore trailing
+  slashes and common index filenames, and call the root page `Home`.
+- Use query or fragment differences only when paths still collide. Common
+  tracking and credential parameter names are excluded. Remaining duplicates
+  receive numbered suffixes, and unusually long generated names are shortened.
+
+Names are resolved against the full suite before scenario filtering and test URL
+replacements, then recorded with captures. Viewports and saved captures of the
+same scenario share its name. Older reports use the URLs and scenarios available
+in that report when no recorded display name exists.
+
+Automatic display names never change scenario IDs, capture filenames, dependency
+references, or the suite source. The existing identity rules still apply: without
+an explicit `id`, a provided label supplies the ID slug, otherwise the original
+URL supplies its hash. Scenarios with the exact same URL and no labels still need
+distinct explicit IDs; display-name disambiguation does not change ID validation.
 
 Example:
 

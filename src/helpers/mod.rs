@@ -8,6 +8,7 @@ mod io;
 mod locks;
 mod numbers;
 pub(crate) mod png;
+mod scenario_names;
 mod slugify;
 
 #[cfg(unix)]
@@ -25,6 +26,9 @@ pub use io::{
 };
 pub use locks::{OnceLockBoolExtensions, OnceLockExtensions};
 pub use numbers::format_bytes;
+pub(crate) use scenario_names::{
+    ScenarioName, capture_details, generated_capture_label, scenario_names,
+};
 pub use slugify::slugify;
 
 #[cfg(unix)]

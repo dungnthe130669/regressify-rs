@@ -1,15 +1,7 @@
-import {
-  ChevronRight,
-  Monitor,
-  Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
-  ScanLine,
-  Sun,
-  X,
-} from "lucide-react";
+import { ChevronRight, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from "lucide-react";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useMatch } from "react-router";
+import desktopIcon from "../../assets/icon.svg?url";
 import { ReviewNavigation } from "./components/ReviewNavigation";
 import { IconButton, StatePanel } from "./components/ui";
 import { suitePath } from "./data/report";
@@ -17,6 +9,8 @@ import { ReportProvider, useManifest } from "./data/store";
 import ImagePage from "./pages/ImagePage";
 import { OverviewPage } from "./pages/OverviewPage";
 import { SuitePage } from "./pages/SuitePage";
+
+const iconUrl = `${desktopIcon}?v=${import.meta.env.VITE_REGRESSIFY_ICON_VERSION}`;
 
 function ThemeControl() {
   const [theme, setTheme] = useState(() => {
@@ -69,6 +63,7 @@ function Shell() {
   const location = useLocation();
   const match = useMatch("/suites/:suiteId/*");
   const imageMatch = useMatch("/suites/:suiteId/images/:imageId");
+  const suiteId = match?.params.suiteId;
   const [panelOpen, setPanelOpen] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
   const compact = viewportWidth <= 959;
@@ -109,8 +104,10 @@ function Shell() {
     }
   }, [preferredPanelWidth]);
   useEffect(() => {
-    document.title = manifest.title;
-  }, [manifest.title]);
+    document.title = suiteId
+      ? [suiteId, manifest.title].filter(Boolean).join(" | ")
+      : manifest.title;
+  }, [manifest.title, suiteId]);
   useEffect(() => {
     if (location.pathname) main.current?.focus({ preventScroll: true });
     content.current?.scrollTo(0, 0);
@@ -129,7 +126,7 @@ function Shell() {
       </a>
       <header className="app-header">
         <Link to="/" className="brand" aria-label="Regressify overview">
-          <ScanLine size={23} strokeWidth={2.2} />
+          <img src={iconUrl} width={24} height={24} alt="" />
           <span>Regressify</span>
           <span className="brand-divider" />
           <span className="brand-context">Snapshot</span>
@@ -293,6 +290,7 @@ function Shell() {
 export default function App() {
   return (
     <BrowserRouter>
+      <link rel="icon" type="image/svg+xml" sizes="any" href={iconUrl} />
       <ReportProvider>
         <Shell />
       </ReportProvider>

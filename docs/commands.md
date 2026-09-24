@@ -71,6 +71,10 @@ suite and image pages have a resizable quick-switch pane containing Test suites
 and only the selected suite's Test scenarios. The navigation and right review area
 scroll independently; phones use a drawer with the same lists.
 Search, result filters, grid/list selection, and image mode are reflected in the URL.
+Suite list view shows Reference and Test previews side by side, plus Diff when
+available. Images fit without cropping, and missing images keep their labeled lanes.
+Grid view keeps a single preview per capture. The site logo and favicon use the
+same artwork as the desktop app.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
 button-controlled zoom, downloads, and safe links to captured pages. Images scroll
 with the right page, not an inner image canvas; wheel/touch scrolling never zooms.
@@ -90,6 +94,13 @@ is validated in staging before publication; HTML is replaced last. Obsolete
 generated files are removed, and desktop deployment stages only the active
 manifest's dependencies. Legacy entry pages are removed. Comparison data remains
 compatible with the desktop app.
+
+Scenario names follow the desktop's [URL-based naming rules](create-scenario.md)
+when labels are omitted. Report headings and navigation use readable names;
+capture IDs, image filenames, and image routes remain unchanged. New captures
+record names using the complete suite and original URLs, so partial comparisons
+and staging replacements do not rename them. Regenerate an existing snapshot to
+apply the shared fallback to its older comparison data; no recapture is needed.
 
 `optimize` skips `_snapshot` so already-published image versions stay valid. Run it
 before `snapshot`, or regenerate the snapshot after optimizing source captures.
@@ -118,8 +129,9 @@ or `--subheading` overrides its matching workspace setting. If neither is set,
 the defaults remain `Visual Tests Summary | Regressify`, `Visual Tests Summary`,
 and `Snapshot regression test results`, respectively.
 
-`snapshotTitle` controls the HTML page title; `snapshotHeading` is the visible
-heading. Both are plain text. `snapshotSubheading` supports safe Markdown text,
+`snapshotTitle` controls the overview's HTML page title; suite and image pages
+prepend the suite name as `suite name | snapshotTitle`. `snapshotHeading` is the
+visible heading. Both settings are plain text. `snapshotSubheading` supports safe Markdown text,
 emphasis, lists, code, and HTTP(S) links; raw HTML and embedded images are omitted. An empty
 string is an explicit value, while `null` falls back to the built-in default.
 

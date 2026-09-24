@@ -856,11 +856,7 @@ impl Workbench {
             .cloned()
             .ok_or_else(|| anyhow!("The selected file is not an active test suite"))?;
         let suite: crate::types::TestSuite = serde_json::from_value(self.value.clone())?;
-        summary.scenarios = suite
-            .scenarios
-            .iter()
-            .map(workspace::ScenarioSummary::from_scenario)
-            .collect();
+        summary.scenarios = workspace::ScenarioSummary::from_scenarios(&suite.scenarios);
         summary.error = None;
         Ok(summary)
     }
@@ -2219,12 +2215,9 @@ impl Workbench {
                                             .accessibility_label("Parent scenario")
                                             .tooltip("Open parent scenario")
                                             .child(
-                                                div().truncate().child(
-                                                    self.value["scenarios"][scenario]["label"]
-                                                        .as_str()
-                                                        .unwrap_or("Scenario")
-                                                        .to_string(),
-                                                ),
+                                                div()
+                                                    .truncate()
+                                                    .child(self.scenario_title(scenario)),
                                             )
                                             .disabled(self.busy)
                                             .on_click(cx.listener(move |this, _, window, cx| {
@@ -2451,6 +2444,28 @@ impl Workbench {
             .into_any_element()
     }
 
+    fn scenario_titles(&self) -> Vec<String> {
+        crate::helpers::scenario_names(
+            &self.value["scenarios"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|scenario| crate::helpers::ScenarioName {
+                    id: scenario["id"].as_str().unwrap_or_default(),
+                    label: scenario["label"].as_str(),
+                    url: scenario["url"].as_str(),
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    fn scenario_title(&self, index: usize) -> String {
+        self.scenario_titles()
+            .get(index)
+            .cloned()
+            .unwrap_or_else(|| "Scenario".into())
+    }
+
     fn selection_title(&self) -> String {
         match self.session.selection {
             Selection::Root => self
@@ -2459,11 +2474,7 @@ impl Workbench {
                 .as_ref()
                 .and_then(|open| open.entry.suite_name())
                 .unwrap_or_else(|| "Workspace settings".into()),
-            Selection::Scenario(index) => self.value["scenarios"][index]["label"]
-                .as_str()
-                .or_else(|| self.value["scenarios"][index]["id"].as_str())
-                .unwrap_or("Scenario")
-                .into(),
+            Selection::Scenario(index) => self.scenario_title(index),
             Selection::Action { scenario, index } => {
                 let action = &self.value["scenarios"][scenario]["actions"][index];
                 let kind = ACTIONS

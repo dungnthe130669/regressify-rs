@@ -61,8 +61,35 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
+## Snapshot Hosting Check (2026-09-24)
+
+- [Netlify headers](frontend/hosting/_headers) omit `Referrer-Policy: no-referrer`
+  and `X-Content-Type-Options: nosniff`, both present in the
+  [Azure configuration](frontend/hosting/staticwebapp.config.json).
+- The existing [header-parity assertion](src/snapshot/site.rs#L785) fails in
+  `cargo test --lib snapshot::` and
+  `cargo test --features desktop --lib snapshot::site::tests`. The hosting files
+  and assertion were unchanged during the frontend branding/list-view update.
+- Align the hosting policies and rerun both checks; this remains unresolved.
+
+## GUI Test Fixture Check (2026-09-24)
+
+- `cargo test --features gui-tests --lib scenario_names -- --test-threads=1`
+  cannot compile because [comparison tests](src/desktop/ui/reports.rs) and
+  [UI tests](src/desktop/ui/tests.rs) still include the error placeholder from the
+  replaced snapshot asset folder. The existing capture-owned image is
+  [src/test/data/error-icon.png](src/test/data/error-icon.png).
+- These pre-existing test-only includes were left unchanged during scenario
+  naming work. `cargo check --features gui --lib` passes; native interaction tests
+  remain blocked until the includes use the capture-owned fixture.
+
 ## Resolved In September 2026 Hardening Pass
 
+- URL-only scenarios now share friendly names across desktop catalogs, draft
+  headings, Results, and snapshot navigation/capture headings. Complete-suite
+  display names are recorded independently of IDs and filenames; older reports
+  use the same URL fallback. Model and desktop/mobile browser regressions cover
+  naming collisions, repeated viewports, and unchanged capture identity.
 - Desktop lists now have focus-scoped keyboard selection and navigation. Suite
   and scenario Ctrl+A/ranges respect filters; run checklists and Git trees retain
   their selection boundaries. Viewport, capture, workspace-file, and action lists
@@ -77,6 +104,10 @@ it was risk-focused, not an exhaustive security certification.
   navigator scoped to the current suite, native page-only image scrolling, and a
   selectable Info popover. Suite failure arrows jump between filtered failed cards;
   desktop/mobile browser checks cover navigation, resize, scrolling, and copying.
+- Snapshot branding now shares the desktop icon for the logo/favicon. Suite and
+  image browser titles include the suite name. Suite list rows show uncropped,
+  side-by-side Reference/Test/optional Diff previews, with mobile, missing-image,
+  and long-label browser coverage.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate

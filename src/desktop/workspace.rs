@@ -275,6 +275,27 @@ impl SuiteSelection {
 }
 
 impl ScenarioSummary {
+    pub fn from_scenarios(scenarios: &[crate::types::TestScenario]) -> Vec<Self> {
+        let names = crate::helpers::scenario_names(
+            &scenarios
+                .iter()
+                .map(|scenario| crate::helpers::ScenarioName {
+                    id: scenario.id.as_deref().unwrap_or_default(),
+                    label: scenario.label.as_deref(),
+                    url: Some(&scenario.url),
+                })
+                .collect::<Vec<_>>(),
+        );
+        scenarios
+            .iter()
+            .zip(names)
+            .map(|(scenario, label)| Self {
+                label,
+                ..Self::from_scenario(scenario)
+            })
+            .collect()
+    }
+
     pub fn from_scenario(scenario: &crate::types::TestScenario) -> Self {
         let id = scenario.id.clone().unwrap_or_else(|| {
             scenario
@@ -443,13 +464,7 @@ impl Workspace {
                     .unwrap_or_else(|| input.name.clone());
                 let scenarios = parsed
                     .as_ref()
-                    .map(|suite| {
-                        suite
-                            .scenarios
-                            .iter()
-                            .map(ScenarioSummary::from_scenario)
-                            .collect()
-                    })
+                    .map(|suite| ScenarioSummary::from_scenarios(&suite.scenarios))
                     .unwrap_or_default();
                 Ok(SuiteSummary {
                     entry,
@@ -1205,6 +1220,39 @@ mod tests {
         assert!(suite_path("ALL").is_err());
         assert!(suite_path("All.TESTS.JSON").is_err());
         assert!(suite_path("all.tests.yaml").is_err());
+    }
+
+    #[test]
+    fn url_only_scenario_names_are_suite_scoped_and_keep_cli_ids() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        workspace.create_suite("shop").unwrap();
+        let path = directory.path().join("visual_tests/shop.tests.yaml");
+        let source = "scenarios:\n  - url: https://example.test/men/running-shoes\n  - url: https://example.test/women/running-shoes\n  - url: https://example.test/help-center\n  - label: Checkout flow\n    url: https://example.test/checkout\n";
+        fs::write(&path, source).unwrap();
+        let suites = workspace.suite_catalog().unwrap();
+        assert!(suites[0].error.is_none());
+        assert_eq!(
+            suites[0]
+                .scenarios
+                .iter()
+                .map(|scenario| scenario.label.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Men / Running shoes",
+                "Women / Running shoes",
+                "Help center",
+                "Checkout flow"
+            ]
+        );
+        for scenario in &suites[0].scenarios[..3] {
+            assert_eq!(
+                scenario.id,
+                crate::snapshot::get_asset_version(scenario.url.as_bytes(), 20)
+            );
+        }
+        assert_eq!(suites[0].scenarios[3].id, "checkout-flow");
+        assert_eq!(fs::read_to_string(path).unwrap(), source);
     }
 
     #[test]

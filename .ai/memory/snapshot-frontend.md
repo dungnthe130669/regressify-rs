@@ -12,6 +12,9 @@ Verified: 2026-09-24
 - [Schema](../../frontend/src/data/report.ts) and [Rust types](../../src/snapshot/site.rs)
   use schema version 2. Markdown is rendered through React with raw HTML/images
   omitted and HTTP(S)-only page links. Report JS is parsed as a JSON wrapper, never run.
+- Scenario and generated capture display names come from the shared Rust resolver,
+  not frontend string manipulation; see [results naming](desktop-results.md).
+  The search/navigation fixture includes colliding URL paths and repeated viewports.
 - [Synthetic fixtures](../../frontend/scripts/create-fixture.ts) use local Chromium,
   not production sites. Biome must exclude `.fixtures`: formatting `config.js`
   removes JSON key quotes and intentionally fails Rust's strict report parser.
@@ -40,6 +43,16 @@ Verified: 2026-09-24
   and a non-banner heading avoid duplicate landmark diagnostics in the portal.
 - Suite failure arrows navigate only filtered failed cards, retain the suite URL,
   focus/highlight the target, and disable at endpoints or when no failures remain.
+- [Shell](../../frontend/src/App.tsx) uses the shared [desktop SVG](../../assets/icon.svg)
+  for the logo/favicon; [Vite](../../frontend/vite.config.ts) supplies its content
+  version at build time. Suite/image titles prepend the route's decoded suite name;
+  the overview restores the report title.
+- [Suite list rows](../../frontend/src/pages/SuitePage.tsx) contain complete images
+  in equal-width Reference/Test/optional Diff lanes, including on phones. Missing
+  images retain their lanes; grid thumbnails and filtered failure jumps are unchanged.
+- Browser image-failure tests intercept the exact URL returned in suite data.
+  Development fixtures share preview images instead of using production's
+  per-suite image directories; assuming those directories misses the request.
 - `bun run test:e2e` tests Vite by default. Set `SNAPSHOT_URL` to the local
   `bun run preview` address to exercise the Rust-generated fixture and CSP too.
   Source and production browser checks passed on desktop and mobile.

@@ -39,6 +39,8 @@ struct ReportPair {
     scenario_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     scenario_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scenario_display_name: Option<String>,
     reference: String,
     test: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -398,6 +400,7 @@ fn report_pair(
         label,
         scenario_id: page_urls.and_then(|urls| urls.scenario_id.clone()),
         scenario_label: page_urls.and_then(|urls| urls.scenario_label.clone()),
+        scenario_display_name: page_urls.and_then(|urls| urls.scenario_display_name.clone()),
         reference: format!("../bitmaps_reference/{}", screenshot_name),
         test: relative_test,
         reference_url: page_urls.map(|urls| urls.reference_url.clone()),
@@ -1136,6 +1139,7 @@ mod tests {
                 ReportPageUrls {
                     scenario_id: Some(id.into()),
                     scenario_label: Some(id.into()),
+                    scenario_display_name: None,
                     reference_url: "https://example.com".into(),
                     url: "https://example.com".into(),
                 },
@@ -1206,6 +1210,7 @@ mod tests {
                 ReportPageUrls {
                     scenario_id: Some(scenario_id.into()),
                     scenario_label: Some("Checkout".into()),
+                    scenario_display_name: None,
                     reference_url: "https://example.test".into(),
                     url: "https://example.test".into(),
                 },
@@ -1289,6 +1294,7 @@ mod tests {
                 ReportPageUrls {
                     scenario_id: Some(scenario.into()),
                     scenario_label: Some(format!("Recorded {scenario}")),
+                    scenario_display_name: Some(format!("Friendly {scenario}")),
                     reference_url: "https://production.example.test".into(),
                     url: "https://staging.example.test".into(),
                 },
@@ -1365,6 +1371,10 @@ mod tests {
                 current.pair.mis_match_threshold
             );
             assert_eq!(previous.pair.scenario_label, current.pair.scenario_label);
+            assert_eq!(
+                previous.pair.scenario_display_name,
+                current.pair.scenario_display_name
+            );
             assert_eq!(previous.pair.reference_url, current.pair.reference_url);
             assert_eq!(previous.pair.url, current.pair.url);
             if current.status == "pass" {
@@ -1552,6 +1562,7 @@ mod tests {
                     ReportPageUrls {
                         scenario_id: Some("home".into()),
                         scenario_label: Some("Home page".into()),
+                        scenario_display_name: Some("Recorded home page".into()),
                         reference_url: "https://www.example.com/home".to_string(),
                         url: "https://test.example.com/home".to_string(),
                     },
@@ -1578,10 +1589,15 @@ mod tests {
         assert!(config.contains("\"url\": \"https://test.example.com/home\""));
         assert_eq!(report["tests"][0]["pair"]["scenarioId"], "home");
         assert_eq!(report["tests"][0]["pair"]["scenarioLabel"], "Home page");
+        assert_eq!(
+            report["tests"][0]["pair"]["scenarioDisplayName"],
+            "Recorded home page"
+        );
         assert_eq!(report["tests"][0]["pair"]["label"], "home FINAL");
         let legacy: ReportPageUrls = serde_json::from_value(serde_json::json!({"referenceUrl": "https://example.com", "url": "https://example.com"})).unwrap();
         assert!(legacy.scenario_id.is_none());
         assert!(legacy.scenario_label.is_none());
+        assert!(legacy.scenario_display_name.is_none());
     }
 
     #[test]
