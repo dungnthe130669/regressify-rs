@@ -48,19 +48,18 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
-## Snapshot Hosting Check (2026-09-24)
-
-- [Netlify headers](frontend/hosting/_headers) omit `Referrer-Policy: no-referrer`
-  and `X-Content-Type-Options: nosniff`, both present in the
-  [Azure configuration](frontend/hosting/staticwebapp.config.json).
-- The existing [header-parity assertion](src/snapshot/site.rs#L785) fails in
-  `cargo test --lib snapshot::` and
-  `cargo test --features desktop --lib snapshot::site::tests`. The hosting files
-  and assertion were unchanged during the frontend branding/list-view update.
-- Align the hosting policies and rerun both checks; this remains unresolved.
-
 ## Resolved In September 2026 Hardening Pass
 
+- Snapshot [Netlify headers](frontend/hosting/_headers) now include
+  `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`, matching
+  [Azure](frontend/hosting/staticwebapp.config.json). Generated assets were rebuilt,
+  and the [hosting regression](src/snapshot/site.rs) passes. Cache assertions check
+  required directives independently of their order or additional shared-cache directives.
+- Desktop suite-creation and sidebar-scroll test fixtures now account for the
+  workspace files created automatically on connection. Suite creation verifies
+  preservation of existing entries; scrolling covers seven, eight, nine, and
+  twelve total files in light/dark compact/wide windows. Both regressions pass
+  without changing runtime discovery or layout.
 - Git diagnostics now redact full authorization diagnostics case-insensitively,
   including multiline values, before display or copying. Live output is bounded,
   buffers complete lines across read boundaries, and omits remaining output after

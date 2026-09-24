@@ -3589,10 +3589,30 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
     use crate::desktop::{document::DocumentKind, workspace::Entry};
 
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
-        for (dark, file_count) in [(false, 7), (true, 7), (false, 12), (true, 12)] {
+        for (dark, file_count) in [
+            (false, 7_usize),
+            (true, 7),
+            (false, 8),
+            (true, 8),
+            (false, 9),
+            (true, 9),
+            (false, 12),
+            (true, 12),
+        ] {
             let directory = tempfile::tempdir().unwrap();
             let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
-            let entries = (0..file_count)
+            let existing_files = cx.update(|cx| {
+                view.read(cx)
+                    .session
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.kind != DocumentKind::Suite)
+                    .count()
+            });
+            let additional_files = file_count
+                .checked_sub(existing_files)
+                .expect("Fixture defaults must fit within the requested file count");
+            let entries = (0..additional_files)
                 .map(|index| {
                     let path = PathBuf::from(format!("settings-{index:02}.yaml"));
                     std::fs::write(directory.path().join(&path), "{}\n").unwrap();
@@ -3607,6 +3627,14 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                 super::design::apply_theme(dark, None, cx);
                 let last_index = view.update(cx, |this, cx| {
                     this.session.entries.extend(entries);
+                    assert_eq!(
+                        this.session
+                            .entries
+                            .iter()
+                            .filter(|entry| entry.kind != DocumentKind::Suite)
+                            .count(),
+                        file_count
+                    );
                     this.workspace_files_open = true;
                     cx.notify();
                     this.session.entries.len() - 1
@@ -4680,6 +4708,14 @@ async fn unsaved_dialog_cancel_and_discard_preserve_their_contracts(cx: &mut Tes
 async fn new_suite_dialog_creates_a_real_file(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
+    let mut expected_paths = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    });
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
             this.guard(
@@ -4713,7 +4749,26 @@ async fn new_suite_dialog_creates_a_real_file(cx: &mut TestAppContext) {
         std::fs::read_to_string(directory.path().join("visual_tests/checkout.tests.json")).unwrap();
     let suite: crate::types::TestSuite = serde_json::from_str(&source).unwrap();
     assert_eq!(suite.scenarios.len(), 1);
-    cx.update(|cx| assert_eq!(view.read(cx).session.entries.len(), 2));
+    let new_path = Path::new("visual_tests/checkout.tests.json");
+    assert!(expected_paths.insert(new_path.to_path_buf()));
+    cx.update(|cx| {
+        let session = &view.read(cx).session;
+        assert_eq!(session.entries.len(), expected_paths.len());
+        assert_eq!(
+            session
+                .entries
+                .iter()
+                .map(|entry| entry.path.clone())
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected_paths
+        );
+        let open = session.open.as_ref().unwrap();
+        assert_eq!(open.entry.path, new_path);
+        assert_eq!(
+            open.entry.kind,
+            crate::desktop::document::DocumentKind::Suite
+        );
+    });
 }
 
 #[gpui_kit::test]

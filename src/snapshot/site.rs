@@ -782,10 +782,27 @@ mod tests {
         .unwrap();
         let headers = fs::read_to_string(temp.path().join("_headers")).unwrap();
         for (name, value) in config["globalHeaders"].as_object().unwrap() {
-            assert!(headers.contains(&format!("{name}: {}", value.as_str().unwrap())));
+            let expected = format!("{name}: {}", value.as_str().unwrap());
+            assert!(
+                headers.lines().any(|line| line.trim() == expected),
+                "Netlify is missing Azure's global header: {expected}"
+            );
         }
         assert_eq!(config["navigationFallback"]["rewrite"], "/index.html");
-        assert!(headers.contains("public, max-age=31536000, immutable"));
+        let cache_policies = headers
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Cache-Control: "))
+            .collect::<Vec<_>>();
+        assert!(!cache_policies.is_empty());
+        for policy in cache_policies {
+            let directives = policy.split(',').map(str::trim).collect::<BTreeSet<_>>();
+            for required in ["public", "max-age=31536000", "immutable"] {
+                assert!(
+                    directives.contains(required),
+                    "Asset cache policy is missing {required}: {policy}"
+                );
+            }
+        }
         assert!(
             fs::read_to_string(temp.path().join("_redirects"))
                 .unwrap()

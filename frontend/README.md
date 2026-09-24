@@ -153,6 +153,11 @@ but return real 404 responses for missing `/_snapshot/*` assets. Azure and Netli
 configuration is generated automatically. Opening HTML through `file://` is not
 supported. Old `/suite/html_report/index.html` entry pages are removed.
 
+Azure and Netlify share the global security policy, including
+`Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. Change hosting
+templates in [hosting](hosting), rebuild the embedded assets, and run the Rust
+hosting-policy regression to keep both providers aligned.
+
 Suite and image pages use `suite name | report title` as the browser tab title.
 Returning to the overview restores the configured report title.
 

@@ -33,3 +33,8 @@ Verified: 2026-09-24
 - Windows path assertions must compare canonical paths consistently: joining a
   slash-containing relative string can retain mixed separators, while diagnostics
   use the canonical path. Avoid raw display-string comparisons between the two.
+- [GUI fixtures](../../src/desktop/ui/tests.rs) connect through the same initializer,
+  so their entry lists already contain default non-suite files. Suite creation
+  checks the previous inventory plus the new file; sidebar-scroll tests count all
+  non-suite entries and cover seven/eight/nine/twelve total rows. These focused
+  `gui-tests` regressions pass without changing runtime discovery or layout.

@@ -1,7 +1,9 @@
 /*
   Access-Control-Max-Age: 86400
   Cross-Origin-Opener-Policy: same-origin
+  Referrer-Policy: no-referrer
   Vary: Origin
+  X-Content-Type-Options: nosniff
   X-Robots-Tag: noindex,nofollow,nocache,nosnippet,noarchive
 
 /*.woff
