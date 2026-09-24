@@ -214,18 +214,6 @@ export function ComparisonViewer({
           </label>
         )}
       </div>
-      <div className="canvas-labels">
-        {mode === "side" ? (
-          lanes.map((lane) => <span key={lane.label}>{lane.label}</span>)
-        ) : mode === "wipe" || mode === "overlay" ? (
-          <>
-            <span>Reference</span>
-            <span>Test</span>
-          </>
-        ) : (
-          <span>{modes.find(([value]) => value === mode)?.[1]}</span>
-        )}
-      </div>
       <section
         className="zoom-canvas"
         aria-label="Zoomable comparison images"

@@ -1002,27 +1002,9 @@ summary.nav-heading {
   padding: 9px 12px;
   color: var(--text);
 }
-.canvas-labels {
-  display: flex;
-  justify-content: space-around;
-  gap: 12px;
-  border: 1px solid var(--border);
-  border-bottom: 0;
-  background: var(--surface);
-  padding: 6px 10px;
-  font-size: 14px;
-}
-.canvas-labels > span {
-  flex: 1;
-  text-align: center;
-}
-.canvas-labels small {
-  color: var(--muted);
-  margin-left: 8px;
-  font-size: 12px;
-}
 .comparison-viewer .zoom-canvas {
   position: relative;
+  margin-inline: auto;
   overflow: clip;
   outline: 1px solid var(--border);
   background-color: var(--canvas);
@@ -1060,6 +1042,9 @@ summary.nav-heading {
 }
 .image-world > div {
   flex-shrink: 0;
+}
+.comparison-lane > div {
+  margin-inline: auto;
 }
 .image-layer {
   position: absolute;
@@ -1199,13 +1184,6 @@ summary.nav-heading {
   }
   .viewer-toolbar {
     align-items: flex-start;
-  }
-  .canvas-labels span {
-    font-size: 13px;
-  }
-  .canvas-labels small {
-    display: block;
-    margin-left: 0;
   }
   .blend-control {
     flex: 1;

@@ -419,7 +419,7 @@ test("side by side includes a third lane only when a diff is available", async (
   await expect(page.locator(".comparison-lane")).toHaveCount(3);
   await expect(page.locator(".suite-panel")).toHaveCount(isMobile ? 0 : 1);
   await expect(page.locator(".review-details")).toHaveCount(0);
-  await expect(page.locator(".canvas-labels")).toContainText("Diff");
+  await expect(page.locator(".canvas-labels")).toHaveCount(0);
   await expect(
     page.getByRole("img", { name: "Diff: Workspace overview / Desktop", exact: true }),
   ).toBeVisible();
@@ -445,7 +445,76 @@ test("side by side includes a third lane only when a diff is available", async (
   await screenshot(page, info.project.name, "comparison-three-lanes");
   await page.goto("/suites/customer-accounts/images/overview__desktop.png?mode=side");
   await expect(page.locator(".comparison-lane")).toHaveCount(2);
-  await expect(page.locator(".canvas-labels")).not.toContainText("Diff");
+  await expect(page.locator(".canvas-labels")).toHaveCount(0);
+});
+
+test("comparison images are centered without labels and oversized images stay reachable", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    if (data.id === "workspace-overview") data.tests[0].reference = data.tests[1].reference;
+    await route.fulfill({ response, json: data });
+  });
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane img")).toHaveCount(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".comparison-lane img")
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
+  for (const [mode, label] of [
+    ["side", "Side by side"],
+    ["reference", "Reference"],
+    ["test", "Test"],
+    ["diff", "Diff"],
+    ["wipe", "Wipe"],
+    ["overlay", "Overlay"],
+  ]) {
+    if (isMobile)
+      await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(mode || "side");
+    else await page.getByRole("button", { name: label, exact: true }).click();
+    await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+    await expect(page.locator(".canvas-labels")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.locator(".zoom-canvas").evaluate((canvas) => {
+          const bounds = canvas.getBoundingClientRect();
+          const parent = canvas.closest(".comparison-viewer")?.getBoundingClientRect();
+          return parent
+            ? Math.abs(bounds.left + bounds.width / 2 - parent.left - parent.width / 2)
+            : Number.POSITIVE_INFINITY;
+        }),
+      )
+      .toBeLessThan(1);
+    if (mode === "side") {
+      for (const lane of await page.locator(".comparison-lane").all()) {
+        const difference = await lane.evaluate((element) => {
+          const bounds = element.getBoundingClientRect();
+          const image = element.querySelector("img")?.getBoundingClientRect();
+          return image
+            ? Math.abs(image.left + image.width / 2 - bounds.left - bounds.width / 2)
+            : Number.POSITIVE_INFINITY;
+        });
+        expect(difference).toBeLessThan(1);
+      }
+      await screenshot(page, info.project.name, "comparison-centered");
+    }
+  }
+  if (isMobile) await page.getByRole("combobox", { name: "Comparison mode" }).selectOption("side");
+  else await page.getByRole("button", { name: "Side by side", exact: true }).click();
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  const edges = await page.locator(".zoom-canvas").evaluate((canvas) => ({
+    image: canvas.getBoundingClientRect().left,
+    viewer: canvas.closest(".comparison-viewer")?.getBoundingClientRect().left,
+  }));
+  expect(edges.image).toBe(edges.viewer);
 });
 
 test("empty results, missing images, errors, and unknown routes are explicit", async ({
