@@ -29,10 +29,7 @@ cargo test --features desktop --lib init::tests
 
 Cover external edits/deletion, existing destinations, path traversal/symlinks, reserved names, duplicate/shadowed suites, read-only paths, and concurrent settings.
 
-GUI fixtures use `Session::connect`, so initialized default documents already
-exist. Suite-creation assertions must preserve that inventory; sidebar-scroll
-fixtures must count total non-suite entries, including defaults, and cover the
-eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
+GUI fixtures use `Session::connect`, so initialized default documents already exist. Suite-creation assertions must preserve that inventory; sidebar-scroll fixtures must count total non-suite entries, including defaults, and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
 
 ## Maintain
 
