@@ -6,6 +6,14 @@
       "branch": "release"
     },
     {
+      "remote": "opti",
+      "branch": "master"
+    },
+    {
+      "remote": "opti",
+      "branch": "release"
+    },
+    {
       "remote": "zxz",
       "branch": "master"
     },
