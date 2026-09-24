@@ -68,7 +68,9 @@ bun run test:e2e
 Unit tests cover schemas, safe links, filters, route encoding, and atomic asset
 synchronization. Playwright uses desktop and phone viewports for navigation,
 deep-link refresh, filtering, theme persistence, all image modes, zoom, downloads,
-errors, hostile content, narrow/wide layouts, and axe accessibility checks.
+suite-scoped scenarios, independent pane scrolling, divider drag/keyboard resizing,
+failure jumps, selectable/copyable Info content, errors, hostile content,
+narrow/wide layouts, and axe accessibility checks.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
@@ -137,12 +139,27 @@ Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
 non-HTTP(S) protocols. Theme preferences are local; no analytics run.
 
-Image review gives screenshots the full width by default, with a toggle for the
-suite navigator and collapsed capture details. Side-by-side review shows aligned
-Reference/Test/Diff lanes when a diff exists. Wipe follows mouse movement over the
-image without dragging; its range control remains available for keyboard and touch.
-Mouse-wheel zoom uses bounded relative steps for both mouse and trackpad deltas;
-small scales display fractional percentages instead of rounding to zero.
+Suite and image pages show a left navigation pane with Test suites and Test
+scenarios. Scenarios belong only to the currently selected suite; scenarios with
+several captures expand into individual image links. Both lists are searchable.
+The left pane and review area scroll independently. Drag the divider to resize it,
+or focus it and use arrow keys, Home, and End. The preferred width is remembered;
+phones use a drawer with the same two lists.
+
+Images occupy their full scaled height inside the right page, with no inner
+scrollbar or wheel/pan interception. Mouse-wheel, trackpad, and touch scrolling
+move the page; zoom buttons, Fit, and Actual size change the rendered image size.
+Side-by-side review shows aligned Reference/Test/Diff lanes when a diff exists.
+Wipe follows mouse movement without dragging; its slider supports keyboard and touch.
+
+Hover or focus the Info icon for mismatch/threshold statistics, dimensions, capture
+and run details, source URLs, and engine errors. The bubble allows native text
+selection and copying. Click/tap to pin it; Escape, outside click, or its close
+button dismisses it. Metadata stays out of the main image area.
+
+Suite pages have sticky previous/next failed-comparison arrows. They scroll to and
+highlight failed cards without changing routes, respect the current search/status
+filters, and disable at the first/last visible failure or when none are present.
 
 ## Generated-Assets Pull Request
 

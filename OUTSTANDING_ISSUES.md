@@ -73,6 +73,10 @@ it was risk-focused, not an exhaustive security certification.
   Snapshot generation preserves capture history; deployment packages only the
   active manifest and refreshes versions after compression without renaming files.
   Frontend, Rust, worker, and local browser tests cover it.
+- Snapshot review now has independently scrolling panes, a resizable suite/scenario
+  navigator scoped to the current suite, native page-only image scrolling, and a
+  selectable Info popover. Suite failure arrows jump between filtered failed cards;
+  desktop/mobile browser checks cover navigation, resize, scrolling, and copying.
 - Desktop Snapshot and Deploy no longer pass built-in report text as explicit
   CLI overrides. Workspace snapshot title, heading, and Markdown subheading now
   reach staged Netlify/Azure reports. Legacy activity's prefilled defaults migrate

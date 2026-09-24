@@ -11,12 +11,8 @@ import {
   SquareSplitHorizontal,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import {
-  type ReactZoomPanPinchRef,
-  TransformComponent,
-  TransformWrapper,
-} from "react-zoom-pan-pinch";
 import type { Capture } from "../data/report";
+import { CaptureInfo } from "./CaptureInfo";
 import { IconButton, ReportImage } from "./ui";
 
 const modes = [
@@ -57,17 +53,21 @@ export function ComparisonViewer({
   capture,
   mode: requestedMode,
   onMode,
+  suiteId,
+  runId,
 }: {
   capture: Capture;
   mode: string | null;
   onMode: (mode: string) => void;
+  suiteId: string;
+  runId: string;
 }) {
   const getSize = useImageSizes(capture);
   const [blend, setBlend] = useState(50);
-  const [scale, setScale] = useState(1);
+  const [zoom, setZoom] = useState<{ mode: Mode; scale: number } | null>(null);
+  const [viewerWidth, setViewerWidth] = useState(0);
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
-  const controls = useRef<ReactZoomPanPinchRef | null>(null);
   const [compact, setCompact] = useState(() => matchMedia("(max-width: 600px)").matches);
   useEffect(() => {
     const media = matchMedia("(max-width: 600px)");
@@ -112,14 +112,13 @@ export function ComparisonViewer({
   useEffect(() => {
     const element = viewer.current;
     if (!element) return;
-    const observer = new ResizeObserver(() => {
-      const current = controls.current;
-      const width = current?.instance.wrapperComponent?.clientWidth;
-      if (current && width) void current.setTransform(0, 0, Math.min(1, width / size.width), 0);
-    });
+    const observer = new ResizeObserver(() => setViewerWidth(element.clientWidth));
     observer.observe(element);
     return () => observer.disconnect();
-  }, [size.width]);
+  }, []);
+  const fitScale = Math.max(0.001, Math.min(1, (viewerWidth || size.width) / size.width));
+  const scale = zoom?.mode === mode ? zoom.scale : fitScale;
+  const setScale = (value: number) => setZoom({ mode, scale: Math.max(0.001, Math.min(8, value)) });
   return (
     <section ref={viewer} className="comparison-viewer" aria-label="Image comparison">
       <div className="comparison-modes">
@@ -149,6 +148,23 @@ export function ComparisonViewer({
             </option>
           ))}
         </select>
+        <div className="zoom-controls">
+          <IconButton label="Zoom out" onClick={() => setScale(scale / 1.2)}>
+            <Minus size={16} />
+          </IconButton>
+          <output className="mono zoom-value" aria-label="Zoom level">
+            {Math.round(scale * 1000) / 10}%
+          </output>
+          <IconButton label="Zoom in" onClick={() => setScale(scale * 1.2)}>
+            <Plus size={16} />
+          </IconButton>
+          <IconButton label="Fit images" onClick={() => setZoom(null)}>
+            <Scan size={17} />
+          </IconButton>
+          <IconButton label="Actual size" onClick={() => setScale(1)}>
+            <Focus size={17} />
+          </IconButton>
+        </div>
         <div className="image-downloads">
           {(
             [
@@ -175,191 +191,103 @@ export function ComparisonViewer({
               ),
           )}
         </div>
-      </div>
-      <TransformWrapper
-        key={`${capture.id}:${mode}:${size.width}:${size.height}`}
-        minScale={0.001}
-        maxScale={8}
-        limitToBounds={false}
-        smooth={false}
-        disablePadding
-        keyboard={{ disabled: false }}
-        wheel={{ step: scale * 0.1 }}
-        onInit={(current) => {
-          controls.current = current;
-          const width = current.instance.wrapperComponent?.clientWidth || size.width;
-          void current.setTransform(0, 0, Math.min(1, width / size.width), 0);
-        }}
-        onTransform={(_context, state) => setScale(state.scale)}
-      >
-        {({ zoomIn, zoomOut, centerView, setTransform, instance }) => (
-          <>
-            <div className="canvas-labels">
-              {mode === "side" ? (
-                lanes.map((lane) => (
-                  <span key={lane.label}>
-                    {lane.label}{" "}
-                    <small className="mono">
-                      {lane.size.width} x {lane.size.height}
-                    </small>
-                  </span>
-                ))
-              ) : mode === "wipe" || mode === "overlay" ? (
-                <>
-                  <span>
-                    Reference{" "}
-                    <small className="mono">
-                      {referenceSize.width} x {referenceSize.height}
-                    </small>
-                  </span>
-                  <span>
-                    Test{" "}
-                    <small className="mono">
-                      {testSize.width} x {testSize.height}
-                    </small>
-                  </span>
-                </>
-              ) : (
-                <span>
-                  {modes.find(([value]) => value === mode)?.[1]}{" "}
-                  <small className="mono">
-                    {size.width} x {size.height}
-                  </small>
-                </span>
-              )}
-            </div>
-            <TransformComponent
-              wrapperClass="zoom-canvas"
-              contentClass="zoom-content"
-              wrapperProps={{
-                role: "region",
-                "aria-label": "Zoomable comparison images",
-                onPointerMove: (event) => {
-                  if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0)
-                    return;
-                  const bounds = world.current?.getBoundingClientRect();
-                  if (bounds && bounds.width > 0) {
-                    setBlend(
-                      Math.round(
-                        Math.max(
-                          0,
-                          Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100),
-                        ),
-                      ),
-                    );
-                  }
-                },
-              }}
-            >
-              <div
-                ref={world}
-                className={`image-world mode-${mode}`}
-                style={{ width: size.width, height: size.height }}
-              >
-                {mode === "side" ? (
-                  lanes.map((lane) => (
-                    <div
-                      className="comparison-lane"
-                      key={lane.label}
-                      style={{ width: laneWidth, height: size.height }}
-                    >
-                      <div style={lane.size}>
-                        <ReportImage
-                          path={lane.path}
-                          alt={`${lane.label}: ${capture.label}`}
-                          eager
-                        />
-                      </div>
-                    </div>
-                  ))
-                ) : mode === "wipe" || mode === "overlay" ? (
-                  <>
-                    <div className="image-layer" style={referenceSize}>
-                      <ReportImage
-                        path={capture.reference}
-                        alt={`Reference: ${capture.label}`}
-                        eager
-                      />
-                    </div>
-                    <div
-                      className="image-layer"
-                      style={{
-                        ...size,
-                        opacity: mode === "overlay" ? blend / 100 : 1,
-                        clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
-                      }}
-                    >
-                      <div style={testSize}>
-                        <ReportImage path={capture.test} alt={`Test: ${capture.label}`} eager />
-                      </div>
-                    </div>
-                    {mode === "wipe" && (
-                      <div className="wipe-divider" style={{ left: `${blend}%` }} />
-                    )}
-                  </>
-                ) : (
-                  <ReportImage path={single} alt={`${mode}: ${capture.label}`} eager />
-                )}
-              </div>
-            </TransformComponent>
-            <div className="canvas-toolbar">
-              <div className="zoom-controls">
-                <IconButton
-                  label="Zoom out"
-                  onClick={() => {
-                    void zoomOut();
-                  }}
-                >
-                  <Minus size={16} />
-                </IconButton>
-                <output className="mono zoom-value" aria-label="Zoom level">
-                  {Math.round(scale * 1000) / 10}%
-                </output>
-                <IconButton
-                  label="Zoom in"
-                  onClick={() => {
-                    void zoomIn();
-                  }}
-                >
-                  <Plus size={16} />
-                </IconButton>
-                <span className="control-divider" />
-                <IconButton
-                  label="Fit images"
-                  onClick={() => {
-                    const width = instance.wrapperComponent?.clientWidth || size.width;
-                    void setTransform(0, 0, Math.min(1, width / size.width), 150);
-                  }}
-                >
-                  <Scan size={17} />
-                </IconButton>
-                <IconButton
-                  label="Actual size"
-                  onClick={() => {
-                    void centerView(1, 150);
-                  }}
-                >
-                  <Focus size={17} />
-                </IconButton>
-              </div>
-              {(mode === "wipe" || mode === "overlay") && (
-                <label className="blend-control">
-                  <span>{mode === "wipe" ? "Wipe" : "Opacity"}</span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    value={blend}
-                    aria-label={mode === "wipe" ? "Wipe position" : "Test image opacity"}
-                    onChange={(event) => setBlend(Number(event.target.value))}
-                  />
-                  <output className="mono">{blend}%</output>
-                </label>
-              )}
-            </div>
-          </>
+        <CaptureInfo
+          capture={capture}
+          suiteId={suiteId}
+          runId={runId}
+          dimensions={lanes
+            .filter((lane) => lane.path)
+            .map((lane) => ({ label: lane.label, ...lane.size }))}
+        />
+        {(mode === "wipe" || mode === "overlay") && (
+          <label className="blend-control">
+            <span>{mode === "wipe" ? "Wipe" : "Opacity"}</span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              value={blend}
+              aria-label={mode === "wipe" ? "Wipe position" : "Test image opacity"}
+              onChange={(event) => setBlend(Number(event.target.value))}
+            />
+            <output className="mono">{blend}%</output>
+          </label>
         )}
-      </TransformWrapper>
+      </div>
+      <div className="canvas-labels">
+        {mode === "side" ? (
+          lanes.map((lane) => <span key={lane.label}>{lane.label}</span>)
+        ) : mode === "wipe" || mode === "overlay" ? (
+          <>
+            <span>Reference</span>
+            <span>Test</span>
+          </>
+        ) : (
+          <span>{modes.find(([value]) => value === mode)?.[1]}</span>
+        )}
+      </div>
+      <section
+        className="zoom-canvas"
+        aria-label="Zoomable comparison images"
+        style={{ width: size.width * scale, height: size.height * scale }}
+        onPointerMove={(event) => {
+          if (mode !== "wipe" || event.pointerType === "touch" || event.buttons !== 0) return;
+          const bounds = world.current?.getBoundingClientRect();
+          if (bounds && bounds.width > 0) {
+            setBlend(
+              Math.round(
+                Math.max(0, Math.min(100, ((event.clientX - bounds.left) / bounds.width) * 100)),
+              ),
+            );
+          }
+        }}
+      >
+        <div
+          ref={world}
+          className={`image-world mode-${mode}`}
+          style={{
+            width: size.width,
+            height: size.height,
+            transform: `scale(${scale})`,
+            transformOrigin: "top left",
+          }}
+        >
+          {mode === "side" ? (
+            lanes.map((lane) => (
+              <div
+                className="comparison-lane"
+                key={lane.label}
+                style={{ width: laneWidth, height: size.height }}
+              >
+                <div style={lane.size}>
+                  <ReportImage path={lane.path} alt={`${lane.label}: ${capture.label}`} eager />
+                </div>
+              </div>
+            ))
+          ) : mode === "wipe" || mode === "overlay" ? (
+            <>
+              <div className="image-layer" style={referenceSize}>
+                <ReportImage path={capture.reference} alt={`Reference: ${capture.label}`} eager />
+              </div>
+              <div
+                className="image-layer"
+                style={{
+                  ...size,
+                  opacity: mode === "overlay" ? blend / 100 : 1,
+                  clipPath: mode === "wipe" ? `inset(0 0 0 ${blend}%)` : undefined,
+                }}
+              >
+                <div style={testSize}>
+                  <ReportImage path={capture.test} alt={`Test: ${capture.label}`} eager />
+                </div>
+              </div>
+              {mode === "wipe" && <div className="wipe-divider" style={{ left: `${blend}%` }} />}
+            </>
+          ) : (
+            <ReportImage path={single} alt={`${mode}: ${capture.label}`} eager />
+          )}
+        </div>
+      </section>
     </section>
   );
 }

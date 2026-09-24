@@ -1,8 +1,8 @@
-import { ArrowLeft, ArrowRight, ExternalLink } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router";
 import { ComparisonViewer } from "../components/ComparisonViewer";
 import { IconButton, StatePanel, StatusBadge, useFilters } from "../components/ui";
-import { filterCaptures, imagePath, safePageUrl, suitePath } from "../data/report";
+import { filterCaptures, imagePath, suitePath } from "../data/report";
 import { useSuite } from "../data/store";
 
 export default function ImagePage() {
@@ -41,22 +41,8 @@ export default function ImagePage() {
           </Link>
           <h1>{capture.label}</h1>
         </div>
-        <StatusBadge status={capture.status} error={capture.error !== null} />
-      </header>
-      <div className="viewer-toolbar">
-        <div className="comparison-facts">
-          <span>
-            <span className="muted">Difference</span>{" "}
-            <strong className={`mono ${capture.status === "fail" ? "text-fail" : "text-pass"}`}>
-              {capture.mismatch === null ? "Not compared" : `${capture.mismatch.toFixed(2)}%`}
-            </strong>
-          </span>
-          <span>
-            <span className="muted">Threshold</span>{" "}
-            <strong className="mono">{capture.threshold}%</strong>
-          </span>
-        </div>
         <div className="viewer-pagination">
+          <StatusBadge status={capture.status} error={capture.error !== null} />
           <span className="mono muted">
             {sequenceIndex + 1} / {sequence.length}
           </span>
@@ -89,65 +75,15 @@ export default function ImagePage() {
             </IconButton>
           )}
         </div>
-      </div>
-      {capture.error && (
-        <div className="engine-error" role="alert">
-          <strong>Engine error</strong>
-          <pre>{capture.error}</pre>
-        </div>
-      )}
-      {capture.dimensions && !capture.dimensions.same && (
-        <div className="dimension-notice">
-          Image dimensions differ{" "}
-          <span className="mono">
-            {capture.dimensions.width > 0 ? "+" : ""}
-            {capture.dimensions.width}px width, {capture.dimensions.height > 0 ? "+" : ""}
-            {capture.dimensions.height}px height
-          </span>
-        </div>
-      )}
+      </header>
       <ComparisonViewer
         key={capture.id}
         capture={capture}
+        suiteId={summary.id}
+        runId={data.runId}
         mode={params.get("mode")}
         onMode={(mode) => set("mode", mode)}
       />
-      <details className="review-details">
-        <summary>Capture details</summary>
-        <dl className="capture-metadata">
-          <div>
-            <dt>Capture</dt>
-            <dd className="mono">{capture.id}</dd>
-          </div>
-          <div>
-            <dt>Scenario</dt>
-            <dd>{capture.scenario || "Unspecified"}</dd>
-          </div>
-          <div>
-            <dt>Selector</dt>
-            <dd className="mono">{capture.selector || "Document"}</dd>
-          </div>
-          {(
-            [
-              ["Reference page", capture.referenceUrl],
-              ["Test page", capture.testUrl],
-            ] as const
-          ).map(
-            ([label, url]) =>
-              safePageUrl(url) && (
-                <div key={label}>
-                  <dt>{label}</dt>
-                  <dd>
-                    <a href={safePageUrl(url)} target="_blank" rel="noopener noreferrer">
-                      {url}
-                      <ExternalLink size={13} />
-                    </a>
-                  </dd>
-                </div>
-              ),
-          )}
-        </dl>
-      </details>
     </div>
   );
 }

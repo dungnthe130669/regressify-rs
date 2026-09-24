@@ -211,7 +211,26 @@ svg {
   min-height: calc(100vh - 54px);
 }
 .app-layout.with-panel {
-  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-columns: var(--panel-width, 280px) minmax(0, 1fr);
+}
+.review-layout {
+  height: calc(100dvh - 54px);
+  min-height: 0;
+  overflow: hidden;
+}
+.review-layout :where(.workspace) {
+  min-height: 0;
+  overflow: hidden;
+}
+.review-layout :where(.breadcrumb-bar) {
+  flex-shrink: 0;
+}
+.review-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .workspace {
   min-width: 0;
@@ -559,13 +578,68 @@ svg {
 .suite-panel {
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 24px 14px 12px;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  position: sticky;
+  min-height: 0;
+  position: relative;
+}
+.suite-panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 18px 14px;
+}
+.panel-resizer {
+  position: absolute;
+  right: -3px;
   top: 0;
-  height: 100vh;
+  bottom: 0;
+  width: 7px;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+.panel-resizer:hover,
+.panel-resizer:focus-visible,
+.resizing .panel-resizer {
+  background: var(--accent);
+}
+.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+.navigation-section + .navigation-section {
+  border-top: 1px solid var(--border);
+  margin-top: 20px;
+  padding-top: 20px;
+}
+.nav-heading h2 {
+  font: inherit;
+}
+summary.nav-heading {
+  cursor: pointer;
+}
+.scenario-group > summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.scenario-group > summary > span:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.scenario-group > a {
+  margin-left: 16px;
 }
 .nav-heading {
   display: flex;
@@ -590,7 +664,6 @@ svg {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  overflow-y: auto;
 }
 .suite-links a {
   padding: 10px;
@@ -643,15 +716,16 @@ svg {
   background: #10191880;
 }
 .mobile-nav-content {
-  padding: 18px;
+  padding: 8px 0 0;
   display: flex;
   flex-direction: column;
-  max-height: 100%;
+  height: 100%;
 }
 .mobile-nav-close {
   display: flex;
   justify-content: flex-end;
-  margin-bottom: 16px;
+  padding: 0 14px;
+  flex-shrink: 0;
 }
 .run-id {
   color: var(--muted);
@@ -685,8 +759,35 @@ svg {
   margin-left: auto;
 }
 .capture-count {
-  margin-bottom: 14px;
   font-size: 10px;
+}
+.capture-navigation {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 0;
+  margin-bottom: 12px;
+  background: var(--bg);
+}
+.failure-navigation {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.failure-navigation output {
+  margin-right: 8px;
+  font-size: 12px;
+}
+.capture-card {
+  scroll-margin-top: 58px;
+}
+.capture-card[data-active-failure="true"] {
+  outline: 2px solid var(--fail);
+  outline-offset: 2px;
 }
 .capture-grid {
   display: grid;
@@ -855,8 +956,13 @@ svg {
 .comparison-modes {
   display: flex;
   align-items: center;
-  gap: 12px;
-  justify-content: space-between;
+  gap: 6px 12px;
+  flex-wrap: wrap;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  padding: 5px 0;
   margin-bottom: 8px;
 }
 .mode-segments {
@@ -916,10 +1022,9 @@ svg {
   font-size: 12px;
 }
 .comparison-viewer .zoom-canvas {
-  width: 100%;
-  height: max(320px, calc(100dvh - 360px));
-  cursor: grab;
-  border: 1px solid var(--border);
+  position: relative;
+  overflow: clip;
+  outline: 1px solid var(--border);
   background-color: var(--canvas);
   background-image:
     linear-gradient(45deg, #7d938610 25%, transparent 25%),
@@ -933,11 +1038,10 @@ svg {
     10px -10px,
     -10px 0;
 }
-.comparison-viewer .zoom-canvas:active {
-  cursor: grabbing;
-}
 .image-world {
-  position: relative;
+  position: absolute;
+  top: 0;
+  left: 0;
   flex-shrink: 0;
 }
 .image-world.mode-side {
@@ -1002,6 +1106,7 @@ svg {
   gap: 10px;
   color: var(--muted);
   font-size: 13px;
+  padding: 6px 0;
 }
 .blend-control input {
   width: 120px;
@@ -1013,11 +1118,9 @@ svg {
 }
 .capture-metadata {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 18px;
-  margin: 8px 0 0;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin: 0;
   font-size: 14px;
 }
 .capture-metadata dt {
@@ -1035,6 +1138,35 @@ svg {
   gap: 6px;
   color: var(--accent);
   text-decoration: underline;
+}
+.metadata-wide {
+  grid-column: 1 / -1;
+}
+.info-popover {
+  z-index: 50;
+  width: min(460px, calc(100vw - 24px));
+  max-height: min(640px, calc(100dvh - 24px));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 8px 32px #00000026;
+  background: var(--surface);
+  color: var(--text);
+  user-select: text;
+}
+.info-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.info-popover h2 {
+  font-size: 15px;
+  font-weight: 600;
 }
 @media (max-width: 1200px) {
   .mode-segments button {
@@ -1082,9 +1214,6 @@ svg {
     flex: 1;
     min-width: 60px;
   }
-  .comparison-viewer .zoom-canvas {
-    height: max(340px, calc(100dvh - 342px));
-  }
 }
 .comparison-pair {
   display: grid;
@@ -1120,6 +1249,9 @@ figcaption {
   font: 11px var(--font-mono);
   white-space: pre-wrap;
   margin: 8px 0 0;
+}
+.info-popover .engine-error {
+  margin: 16px 0 0;
 }
 .state-panel {
   min-height: 300px;
@@ -1368,7 +1500,7 @@ figcaption {
   gap: 16px;
 }
 .image-page .page-heading h1 {
-  font-size: 22px;
+  font-size: 18px;
 }
 .image-page .back-link {
   margin-bottom: 0;
@@ -1393,7 +1525,13 @@ figcaption {
     gap: 2px;
   }
   .image-page .page-heading h1 {
-    font-size: 20px;
+    font-size: 17px;
+  }
+  .image-page .page-heading {
+    flex-wrap: wrap;
+  }
+  .image-page .viewer-pagination {
+    margin-left: 0;
   }
 }
 @media print {

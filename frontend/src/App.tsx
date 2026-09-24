@@ -8,8 +8,9 @@ import {
   Sun,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useMatch } from "react-router";
+import { ReviewNavigation } from "./components/ReviewNavigation";
 import { IconButton, StatePanel } from "./components/ui";
 import { suitePath } from "./data/report";
 import { ReportProvider, useManifest } from "./data/store";
@@ -63,66 +64,63 @@ function ThemeControl() {
   );
 }
 
-function SuiteNavigation({ close }: { close: () => void }) {
-  const manifest = useManifest();
-  const match = useMatch("/suites/:suiteId/*");
-  const [query, setQuery] = useState("");
-  return (
-    <>
-      <div className="nav-heading">
-        <span>Test suites</span>
-        <span className="mono muted">{manifest.suites.length}</span>
-      </div>
-      <input
-        className="nav-search"
-        aria-label="Find a suite"
-        placeholder="Find a suite..."
-        type="search"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-      />
-      <nav aria-label="Test suites" className="suite-links">
-        {manifest.suites
-          .filter((suite) => suite.id.toLowerCase().includes(query.toLowerCase()))
-          .map((suite) => (
-            <Link
-              key={suite.id}
-              to={suitePath(suite.id)}
-              onClick={close}
-              aria-current={match?.params.suiteId === suite.id ? "page" : undefined}
-            >
-              <span className={`status-dot ${suite.failed ? "fail" : "pass"}`} />
-              <span className="suite-link-name">{suite.id}</span>
-              <span className="mono muted">{suite.total}</span>
-            </Link>
-          ))}
-        {!manifest.suites.some((suite) => suite.id.toLowerCase().includes(query.toLowerCase())) && (
-          <p className="muted nav-empty">No matching suites</p>
-        )}
-      </nav>
-    </>
-  );
-}
-
 function Shell() {
   const manifest = useManifest();
   const location = useLocation();
   const match = useMatch("/suites/:suiteId/*");
   const imageMatch = useMatch("/suites/:suiteId/images/:imageId");
-  const [panelPreference, setPanelPreference] = useState<boolean | null>(null);
-  const panelOpen = panelPreference ?? !imageMatch;
+  const [panelOpen, setPanelOpen] = useState(true);
+  const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
+  const compact = viewportWidth <= 959;
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [preferredPanelWidth, setPanelWidth] = useState(() => {
+    try {
+      const saved = Number(localStorage.getItem("regressify-panel-width"));
+      return Number.isFinite(saved) && saved >= 220 ? Math.min(480, saved) : 280;
+    } catch {
+      return 280;
+    }
+  });
+  const drag = useRef<{ x: number; width: number } | null>(null);
+  const [resizing, setResizing] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   const main = useRef<HTMLElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const maximumWidth = Math.max(220, Math.min(480, Math.floor(viewportWidth * 0.45)));
+  const panelWidth = Math.min(preferredPanelWidth, maximumWidth);
+  const resizePanel = (width: number) =>
+    setPanelWidth(Math.max(220, Math.min(maximumWidth, width)));
+  useEffect(() => {
+    const update = () => {
+      setViewportWidth(window.innerWidth);
+      if (window.innerWidth > 959) {
+        dialog.current?.close();
+        setDrawerOpen(false);
+      }
+    };
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  useEffect(() => {
+    try {
+      localStorage.setItem("regressify-panel-width", String(preferredPanelWidth));
+    } catch {
+      /* Navigation width remains usable without storage. */
+    }
+  }, [preferredPanelWidth]);
   useEffect(() => {
     document.title = manifest.title;
   }, [manifest.title]);
   useEffect(() => {
     if (location.pathname) main.current?.focus({ preventScroll: true });
+    content.current?.scrollTo(0, 0);
     window.scrollTo(0, 0);
   }, [location.pathname]);
   const togglePanel = () => {
-    if (matchMedia("(max-width: 959px)").matches) dialog.current?.showModal();
-    else setPanelPreference(!panelOpen);
+    if (compact) {
+      setDrawerOpen(true);
+      dialog.current?.showModal();
+    } else setPanelOpen(!panelOpen);
   };
   return (
     <>
@@ -140,13 +138,62 @@ function Shell() {
           <ThemeControl />
         </div>
       </header>
-      <div className={`app-layout ${match && panelOpen ? "with-panel" : ""}`}>
-        {match && panelOpen && (
+      <div
+        className={`app-layout ${match ? "review-layout" : ""} ${match && panelOpen && !compact ? "with-panel" : ""} ${resizing ? "resizing" : ""}`}
+        style={{ "--panel-width": `${panelWidth}px` } as CSSProperties}
+      >
+        {match && panelOpen && !compact && (
           <aside className="suite-panel" id="suite-panel">
-            <SuiteNavigation close={() => {}} />
-            <div className="panel-footer">
-              <ScanLine size={14} /> {manifest.suites.length} suites in this snapshot
+            <div className="suite-panel-scroll">
+              <ReviewNavigation close={() => {}} />
             </div>
+            <hr
+              className="panel-resizer"
+              tabIndex={0}
+              aria-label="Resize review navigation"
+              aria-orientation="vertical"
+              aria-valuemin={220}
+              aria-valuemax={maximumWidth}
+              aria-valuenow={panelWidth}
+              aria-controls="suite-panel"
+              onPointerDown={(event) => {
+                if (event.button !== 0) return;
+                event.preventDefault();
+                event.currentTarget.focus();
+                event.currentTarget.setPointerCapture(event.pointerId);
+                drag.current = { x: event.clientX, width: panelWidth };
+                setResizing(true);
+              }}
+              onPointerMove={(event) => {
+                if (drag.current) resizePanel(drag.current.width + event.clientX - drag.current.x);
+              }}
+              onPointerUp={(event) => {
+                drag.current = null;
+                setResizing(false);
+                if (event.currentTarget.hasPointerCapture(event.pointerId))
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+              }}
+              onLostPointerCapture={() => {
+                drag.current = null;
+                setResizing(false);
+              }}
+              onKeyDown={(event) => {
+                const next =
+                  event.key === "Home"
+                    ? 220
+                    : event.key === "End"
+                      ? maximumWidth
+                      : event.key === "ArrowLeft"
+                        ? panelWidth - 16
+                        : event.key === "ArrowRight"
+                          ? panelWidth + 16
+                          : null;
+                if (next !== null) {
+                  event.preventDefault();
+                  resizePanel(next);
+                }
+              }}
+            />
           </aside>
         )}
         <div className="workspace">
@@ -154,8 +201,10 @@ function Shell() {
             {match && (
               <IconButton
                 label="Toggle suite index"
-                aria-expanded={panelOpen}
-                aria-controls={panelOpen ? "suite-panel" : undefined}
+                aria-expanded={compact ? drawerOpen : panelOpen}
+                aria-controls={
+                  compact ? "review-navigation-drawer" : panelOpen ? "suite-panel" : undefined
+                }
                 onClick={togglePanel}
               >
                 {panelOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
@@ -183,36 +232,40 @@ function Shell() {
               })}
             </span>
           </section>
-          <main id="main" ref={main} tabIndex={-1}>
-            <Routes>
-              <Route path="/" element={<OverviewPage />} />
-              <Route path="/index.html" element={<Navigate to="/" replace />} />
-              <Route path="/suites/:suiteId" element={<SuitePage />} />
-              <Route path="/suites/:suiteId/images/:imageId" element={<ImagePage />} />
-              <Route
-                path="*"
-                element={
-                  <StatePanel
-                    title="Page not found"
-                    detail="This URL is not part of this snapshot."
-                    back
-                  />
-                }
-              />
-            </Routes>
-          </main>
-          {!imageMatch && (
-            <footer className="app-footer">
-              <span>Regressify</span>
-              <span>Visual regression report</span>
-            </footer>
-          )}
+          <div ref={content} className={match ? "review-scroll" : undefined}>
+            <main id="main" ref={main} tabIndex={-1}>
+              <Routes>
+                <Route path="/" element={<OverviewPage />} />
+                <Route path="/index.html" element={<Navigate to="/" replace />} />
+                <Route path="/suites/:suiteId" element={<SuitePage />} />
+                <Route path="/suites/:suiteId/images/:imageId" element={<ImagePage />} />
+                <Route
+                  path="*"
+                  element={
+                    <StatePanel
+                      title="Page not found"
+                      detail="This URL is not part of this snapshot."
+                      back
+                    />
+                  }
+                />
+              </Routes>
+            </main>
+            {!imageMatch && (
+              <footer className="app-footer">
+                <span>Regressify</span>
+                <span>Visual regression report</span>
+              </footer>
+            )}
+          </div>
         </div>
       </div>
       <dialog
         ref={dialog}
+        id="review-navigation-drawer"
         aria-label="Suite index"
         className="mobile-navigation"
+        onClose={() => setDrawerOpen(false)}
         onClick={(event) => {
           if (event.target === dialog.current) dialog.current?.close();
         }}
@@ -226,7 +279,11 @@ function Shell() {
               <X size={20} />
             </IconButton>
           </div>
-          <SuiteNavigation close={() => dialog.current?.close()} />
+          {drawerOpen && (
+            <div className="suite-panel-scroll">
+              <ReviewNavigation close={() => dialog.current?.close()} />
+            </div>
+          )}
         </div>
       </dialog>
     </>

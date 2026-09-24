@@ -67,14 +67,19 @@ capture directories are not rewritten or cleaned up.
 The generated site provides an overview at `/`, suite results at
 `/suites/<suite-id>`, and individual comparisons at
 `/suites/<suite-id>/images/<capture-id>`. Navigation stays in the same application;
-suite pages have a collapsible quick-switch index, and phones use a modal index.
+suite and image pages have a resizable quick-switch pane containing Test suites
+and only the selected suite's Test scenarios. The navigation and right review area
+scroll independently; phones use a drawer with the same lists.
 Search, result filters, grid/list selection, and image mode are reflected in the URL.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
-pan/zoom, downloads, and safe links to the captured pages. Side-by-side includes
-three aligned lanes when a diff exists. Wipe follows mouse movement; keyboard and
-touch users can also use its slider. Image review hides the suite panel by default
-and collapses secondary capture details to maximize screenshot space. Theme selection supports
-light, dark, or system appearance and is remembered in the browser.
+button-controlled zoom, downloads, and safe links to captured pages. Images scroll
+with the right page, not an inner image canvas; wheel/touch scrolling never zooms.
+Side-by-side includes three aligned lanes when a diff exists. Wipe follows mouse
+movement; keyboard and touch users can also use its slider. Hover, focus, or pin
+the Info icon for selectable/copyable diff statistics, capture details, URLs, and
+engine errors. Previous/next failure arrows on suite pages scroll to visible failed
+cards while keeping the current filters. Theme selection supports light, dark, or
+system appearance and is remembered in the browser.
 
 Snapshot generation preserves capture runs, baseline images, `config.js`, and
 `report.json`. It publishes copies of referenced images and JSON under `_snapshot`,

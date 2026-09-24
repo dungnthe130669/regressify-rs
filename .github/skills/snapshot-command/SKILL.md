@@ -23,6 +23,8 @@ description: 'Use when changing regressify snapshot, the frontend React SPA, rep
 1. Keep deployment inventory and post-compression query versions synchronized without renaming files. Never package the entire output directory or include raw captures, state, or stale assets.
 1. The CLI optimizer skips `_snapshot`; optimize source captures before generating a new snapshot. Never mutate published bytes without updating their URL hash.
 1. Existing visual failures remain report data. Malformed input or generated-file write failures are process errors; do not broadly swallow optional-file errors.
+1. Review navigation shows all suites but only the selected suite's scenarios. Keep capture groups, active links, search, loading/error states, and mobile drawer content scoped to that suite. Sidebar and review scroll independently; clamp divider width without losing the preferred desktop size on mobile.
+1. Images use native right-pane page scrolling, not wheel zoom or inner pan/scroll handlers. Explicit zoom buttons resize their document-flow footprint. Keep stats and metadata in a hover/focus/pinnable Info dialog with selectable text; failure arrows scroll within the filtered suite without changing routes.
 
 ## Checks
 
@@ -32,7 +34,7 @@ cargo test --lib config::tests::snapshot_report_text_loads_from_workspace_yaml
 cargo test --features desktop --lib snapshot::site::tests
 ```
 
-In `frontend`, run `bun run lint`, `bun run test`, `bun run build`, and `bun run test:e2e`. Browser tests require an existing Chromium executable or an explicit Playwright install. Use synthetic fixtures; never production credentials. Generate with `cargo run --bin regressify -- --root frontend/.fixtures/workspace snapshot`, then `bun run preview` and `SNAPSHOT_URL` for production-bundle browser checks. Cover empty data, filters, hostile labels/URLs, repeated generation, write errors, deep-link refresh, mobile navigation, and all image modes. Keep `.fixtures` out of Biome. Verify Reference/Test/Diff lane alignment, pointer-controlled wipe after zoom/pan, readable review text, and compact secondary metadata on desktop and mobile. Test real mouse wheel input, not only zoom buttons. The zoom library's smooth mode multiplies the wheel step by raw delta pixels; disable that mode for bounded relative steps and cover normal, large, and trackpad-sized deltas plus fractional scales.
+In `frontend`, run `bun run lint`, `bun run test`, `bun run build`, and `bun run test:e2e`. Browser tests require an existing Chromium executable or an explicit Playwright install. Use synthetic fixtures; never production credentials. Generate with `cargo run --bin regressify -- --root frontend/.fixtures/workspace snapshot`, then `bun run preview` and `SNAPSHOT_URL` for production-bundle browser checks. Cover empty data, filters, hostile labels/URLs, repeated generation, write errors, deep-link refresh, mobile navigation, and all image modes. Keep `.fixtures` out of Biome. Verify lane alignment, mouse-controlled wipe, native page scrolling without scale changes, independent panes, divider mouse/keyboard bounds and persistence, suite-scoped scenarios, failure-arrow endpoints, and Info hover/pinning/selection/clipboard/Escape behavior.
 
 ## Maintain
 

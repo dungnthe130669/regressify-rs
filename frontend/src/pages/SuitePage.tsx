@@ -1,5 +1,5 @@
-import { ArrowUpRight, Grid2X2, List } from "lucide-react";
-import { useDeferredValue } from "react";
+import { ArrowDown, ArrowUp, ArrowUpRight, Grid2X2, List } from "lucide-react";
+import { useDeferredValue, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import {
   Filters,
@@ -18,6 +18,10 @@ export function SuitePage() {
   const { query, status, params, set } = useFilters();
   const deferredQuery = useDeferredValue(query);
   const location = useLocation();
+  const cards = useRef(new Map<string, HTMLAnchorElement>());
+  const [selectedFailure, setSelectedFailure] = useState<{ scope: string; id: string } | null>(
+    null,
+  );
   if (!summary)
     return (
       <StatePanel
@@ -29,6 +33,24 @@ export function SuitePage() {
   if (error) return <StatePanel title="Suite unavailable" detail={error} retry={retry} />;
   if (!data) return <StatePanel title="Loading suite" loading />;
   const captures = filterCaptures(data.tests, deferredQuery, status);
+  const failures = captures.filter((capture) => capture.status === "fail");
+  const scope = JSON.stringify([suiteId, deferredQuery, status]);
+  const failureIndex =
+    selectedFailure?.scope === scope
+      ? failures.findIndex((capture) => capture.id === selectedFailure.id)
+      : -1;
+  const jumpToFailure = (index: number) => {
+    const capture = failures[index];
+    const target = capture && cards.current.get(capture.id);
+    if (!capture || !target) return;
+    setSelectedFailure({ scope, id: capture.id });
+    target.scrollIntoView({
+      behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth",
+      block: "start",
+      inline: "nearest",
+    });
+    target.focus({ preventScroll: true });
+  };
   const list = params.get("view") === "list";
   return (
     <div className="page suite-page">
@@ -71,8 +93,29 @@ export function SuitePage() {
           </IconButton>
         </div>
       </div>
-      <div className="capture-count muted mono" aria-live="polite">
-        {captures.length} {captures.length === 1 ? "capture" : "captures"}
+      <div className="capture-navigation">
+        <span className="capture-count muted mono" aria-live="polite">
+          {captures.length} {captures.length === 1 ? "capture" : "captures"}
+        </span>
+        <div className="failure-navigation">
+          <output className="mono muted" aria-label="Failed comparison position" aria-live="polite">
+            {failureIndex < 0 ? failures.length : `${failureIndex + 1} / ${failures.length}`} failed
+          </output>
+          <IconButton
+            label="Previous failed comparison"
+            disabled={failureIndex <= 0}
+            onClick={() => jumpToFailure(failureIndex - 1)}
+          >
+            <ArrowUp size={17} />
+          </IconButton>
+          <IconButton
+            label="Next failed comparison"
+            disabled={failureIndex + 1 >= failures.length}
+            onClick={() => jumpToFailure(failureIndex + 1)}
+          >
+            <ArrowDown size={17} />
+          </IconButton>
+        </div>
       </div>
       {captures.length ? (
         <div className={list ? "capture-list" : "capture-grid"}>
@@ -80,6 +123,13 @@ export function SuitePage() {
             <Link
               className="capture-card"
               key={capture.id}
+              ref={(element) => {
+                if (element) cards.current.set(capture.id, element);
+                else cards.current.delete(capture.id);
+              }}
+              data-active-failure={
+                failureIndex >= 0 && failures[failureIndex]?.id === capture.id ? "true" : undefined
+              }
               to={`${imagePath(summary.id, capture.id)}${location.search}`}
             >
               <div className="capture-thumbnail">

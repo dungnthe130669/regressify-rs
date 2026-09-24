@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-09-23
+Verified: 2026-09-24
 
 - The [SPA](../../frontend/README.md) uses root-based clean URLs and lazy suite JSON.
   `bun run build` replaces `src/snapshot/data` and generates the Rust include list;
@@ -26,10 +26,20 @@ Verified: 2026-09-23
   removes obsolete files only inside generated `_snapshot` directories.
 - Editor symbol rename may skip desktop-gated references when rust-analyzer uses
   default features. Always run the desktop-feature check after a shared rename.
-- `react-zoom-pan-pinch` smooth wheel mode multiplies `wheel.step` by raw delta.
-  A 120-pixel notch with step 0.15 jumps to a bound. The viewer uses `smooth=false`
-  with steps proportional to current scale; real-wheel browser tests reproduce
-  the old 100%-to-800% jump and verify bounded steps in both directions.
+- [Review navigation](../../frontend/src/components/ReviewNavigation.tsx) loads only
+  the selected suite's scenarios. [Shell](../../frontend/src/App.tsx) owns separate
+  left/right scroll areas and pointer-captured divider resizing; preferred desktop
+  width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,
+  so the vertical divider explicitly needs `height: 100%`.
+- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) has no wheel/pan
+  engine. Scaled images reserve their full height in the right page; native wheel
+  scrolling leaves the zoom value unchanged. Only explicit controls change scale.
+- [Info dialog](../../frontend/src/components/CaptureInfo.tsx) uses Floating UI and
+  permits native selection/copy. Pinning must ignore both `hover` and `safe-polygon`
+  close reasons; focus opening uses `visibleOnly: false`. Native dialog semantics
+  and a non-banner heading avoid duplicate landmark diagnostics in the portal.
+- Suite failure arrows navigate only filtered failed cards, retain the suite URL,
+  focus/highlight the target, and disable at endpoints or when no failures remain.
 - `bun run test:e2e` tests Vite by default. Set `SNAPSHOT_URL` to the local
   `bun run preview` address to exercise the Rust-generated fixture and CSP too.
   Source and production browser checks passed on desktop and mobile.

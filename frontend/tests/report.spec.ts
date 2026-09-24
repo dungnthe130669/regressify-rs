@@ -132,6 +132,199 @@ test("navigation stays in the SPA, preserves filters, and refreshes deep links",
   }
 });
 
+test("review navigation lists suites and scenarios on suite and image pages", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/suites/workspace-overview");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(page.getByRole("navigation", { name: "Test suites", exact: true })).toBeVisible();
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
+  await expect(scenarios).toBeVisible();
+  await expect(scenarios.getByRole("link")).toHaveCount(4);
+  await scenarios.getByRole("link", { name: /Scenario 2/ }).click();
+  await expect(page).toHaveURL(/\/images\/recent-orders__mobile.png$/);
+  await expect(
+    page.getByRole("heading", { name: "Recent orders / Mobile", exact: true }),
+  ).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(scenarios.getByRole("link", { name: /Scenario 2/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("searchbox", { name: "Find a scenario" }).fill("Scenario 3");
+  await expect(scenarios.getByRole("link")).toHaveCount(1);
+});
+
+test("scenario navigation is restricted to the selected suite and groups its captures", async ({
+  page,
+  isMobile,
+}) => {
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    data.tests.forEach((capture: { scenario: string }, index: number) => {
+      capture.scenario = `${data.id} / ${index < 2 ? "First scenario" : "Second scenario"}`;
+    });
+    await route.fulfill({ response, json: data });
+  });
+  await page.goto("/suites/workspace-overview");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
+  await expect(scenarios.locator(".scenario-group")).toHaveCount(2);
+  await expect(scenarios).toContainText("workspace-overview / First scenario");
+  await page
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /orders-and-checkout/ })
+    .click();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(scenarios).toContainText("orders-and-checkout / First scenario");
+  await expect(scenarios).not.toContainText("workspace-overview");
+  for (const link of await scenarios.getByRole("link").all())
+    await expect(link).toHaveAttribute("href", /^\/suites\/orders-and-checkout\/images\//);
+  await page
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /empty-suite/ })
+    .click();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(scenarios).toContainText("No scenarios");
+  await expect(scenarios.getByRole("link")).toHaveCount(0);
+});
+
+test("review panes resize and scroll independently", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mobile uses the review navigation drawer.");
+  await page.setViewportSize({ width: 1200, height: 520 });
+  await page.goto("/suites/workspace-overview");
+  await expect(page.locator(".capture-card")).toHaveCount(4);
+  const divider = page.getByRole("separator", { name: "Resize review navigation" });
+  const panel = page.locator(".suite-panel");
+  const start = await divider.boundingBox();
+  const original = await panel.boundingBox();
+  if (!start || !original) throw new Error("Review divider is unavailable");
+  await page.mouse.move(start.x + start.width / 2, start.y + 100);
+  await page.mouse.down();
+  await page.mouse.move(start.x + 104, start.y + 100, { steps: 5 });
+  await page.mouse.up();
+  await expect
+    .poll(async () => (await panel.boundingBox())?.width || 0)
+    .toBeGreaterThan(original.width + 70);
+  await divider.focus();
+  await divider.press("Home");
+  await expect(divider).toHaveAttribute("aria-valuenow", "220");
+  await divider.press("ArrowRight");
+  await expect(divider).toHaveAttribute("aria-valuenow", "236");
+  const sidebarScroll = page.locator(".suite-panel-scroll");
+  const reviewScroll = page.locator(".review-scroll");
+  await sidebarScroll.hover({ position: { x: 60, y: 160 } });
+  await page.mouse.wheel(0, 300);
+  await expect
+    .poll(() => sidebarScroll.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
+  expect(await reviewScroll.evaluate((element) => element.scrollTop)).toBe(0);
+  const sidebarTop = await sidebarScroll.evaluate((element) => element.scrollTop);
+  await reviewScroll.hover({ position: { x: 250, y: 200 } });
+  await page.mouse.wheel(0, 400);
+  await expect.poll(() => reviewScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  expect(await sidebarScroll.evaluate((element) => element.scrollTop)).toBe(sidebarTop);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
+  await assertLayout(page);
+  await page.reload();
+  await expect(divider).toHaveAttribute("aria-valuenow", "236");
+  await divider.focus();
+  await divider.press("End");
+  await expect(divider).toHaveAttribute("aria-valuenow", "480");
+  await page.setViewportSize({ width: 980, height: 520 });
+  await expect(divider).toHaveAttribute("aria-valuenow", "441");
+  await page.setViewportSize({ width: 390, height: 740 });
+  await expect(divider).toHaveCount(0);
+  await page.setViewportSize({ width: 1200, height: 520 });
+  await expect(divider).toHaveAttribute("aria-valuenow", "480");
+});
+
+test("suite failure arrows scroll to failed captures without leaving the suite", async ({
+  page,
+}) => {
+  await page.goto("/suites/workspace-overview?view=list");
+  const previous = page.getByRole("button", { name: "Previous failed comparison", exact: true });
+  const next = page.getByRole("button", { name: "Next failed comparison", exact: true });
+  await expect(previous).toBeDisabled();
+  for (let index = 0; index < 4; index++) {
+    await next.click();
+    await expect(page.getByLabel("Failed comparison position")).toHaveText(
+      `${index + 1} / 4 failed`,
+    );
+    const selected = page.locator('.capture-card[data-active-failure="true"]');
+    await expect(selected).toBeFocused();
+    await expect(selected).toContainText("Failed");
+    await expect(page).toHaveURL(/\/suites\/workspace-overview\?view=list$/);
+  }
+  await expect(next).toBeDisabled();
+  await previous.click();
+  await expect(page.getByLabel("Failed comparison position")).toHaveText("3 / 4 failed");
+  await page.getByRole("searchbox", { name: "Search captures" }).fill("Recent orders");
+  await expect(previous).toBeDisabled();
+  await next.click();
+  await expect(page.locator('.capture-card[data-active-failure="true"]')).toContainText(
+    "Recent orders",
+  );
+  await expect(next).toBeDisabled();
+  await page.goto("/suites/customer-accounts");
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeDisabled();
+});
+
+test("capture information opens on hover or tap and remains selectable", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png");
+  const trigger = page.getByRole("button", { name: "Capture information", exact: true });
+  const bubble = page.getByRole("dialog", { name: "Capture information", exact: true });
+  await expect(bubble).toHaveCount(0);
+  if (isMobile) await trigger.tap();
+  else await trigger.hover();
+  await expect(bubble).toBeVisible();
+  await expect(bubble).toContainText("Difference");
+  await expect(bubble).toContainText("Threshold");
+  await expect(bubble).toContainText("overview__desktop.png");
+  if (!isMobile) {
+    await bubble.hover();
+    await expect(bubble).toBeVisible();
+    const text = bubble.getByText("overview__desktop.png", { exact: true });
+    const bounds = await text.boundingBox();
+    if (!bounds) throw new Error("Copyable capture label is unavailable");
+    await page.mouse.move(bounds.x + 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      bounds.x + Math.min(bounds.width - 2, 175),
+      bounds.y + bounds.height / 2,
+      { steps: 8 },
+    );
+    await page.mouse.up();
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() || ""))
+      .not.toBe("");
+    const selectedText = await page.evaluate(() => window.getSelection()?.toString() || "");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.keyboard.press("ControlOrMeta+C");
+    await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(selectedText);
+    await expect(bubble).toBeVisible();
+  }
+  await screenshot(page, info.project.name, "capture-information");
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await page.getByRole("button", { name: "Close capture information" }).click();
+  await expect(bubble).toHaveCount(0);
+  await trigger.focus();
+  await expect(bubble).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(bubble).toHaveCount(0);
+  await trigger.click();
+  await page.getByRole("heading", { name: "Workspace overview / Desktop", exact: true }).hover();
+  await expect(bubble).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(bubble).toHaveCount(0);
+});
+
 test("image modes, zoom, downloads, and previous/next work", async ({ page, isMobile }, info) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png");
   await expect(
@@ -188,7 +381,7 @@ test("image modes, zoom, downloads, and previous/next work", async ({ page, isMo
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
-test("mouse wheel zoom changes incrementally without jumping to scale limits", async ({ page }) => {
+test("scrolling over images moves only the review page without changing zoom", async ({ page }) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
   await expect(page.locator(".comparison-lane img")).toHaveCount(3);
   await expect
@@ -200,31 +393,32 @@ test("mouse wheel zoom changes incrementally without jumping to scale limits", a
         ),
     )
     .toBe(true);
-  const zoomLevel = async () => Number.parseFloat(await page.getByLabel("Zoom level").innerText());
   await page.getByRole("button", { name: "Actual size", exact: true }).click();
   await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  const content = page.locator(".review-scroll");
+  await content.evaluate((element) => {
+    element.scrollTop = 0;
+  });
   await page.locator(".zoom-canvas").hover({ position: { x: 80, y: 80 } });
-  for (const delta of [-120, -120, 120, -1200, 1200, -1, 1]) {
-    const before = await zoomLevel();
-    await page.mouse.wheel(0, delta);
-    if (delta < 0) {
-      await expect.poll(zoomLevel).toBeGreaterThan(before);
-      expect(await zoomLevel()).toBeLessThan(before * 1.3);
-    } else {
-      await expect.poll(zoomLevel).toBeLessThan(before);
-      expect(await zoomLevel()).toBeGreaterThan(before * 0.7);
-    }
-  }
-  await page.getByRole("button", { name: "Fit images", exact: true }).click();
-  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  const bottom = await content.evaluate((element) => element.scrollTop);
+  await page.mouse.wheel(0, -120);
+  await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeLessThan(bottom);
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  expect(await page.locator(".zoom-canvas").evaluate((element) => element.scrollTop)).toBe(0);
+  expect(await page.evaluate(() => window.scrollY)).toBe(0);
 });
 
-test("side by side includes a third lane only when a diff is available", async ({ page }, info) => {
+test("side by side includes a third lane only when a diff is available", async ({
+  page,
+  isMobile,
+}, info) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
   await expect(page.locator(".comparison-lane")).toHaveCount(3);
-  await expect(page.locator(".suite-panel")).toHaveCount(0);
-  await expect(page.locator(".review-details")).not.toHaveAttribute("open", "");
+  await expect(page.locator(".suite-panel")).toHaveCount(isMobile ? 0 : 1);
+  await expect(page.locator(".review-details")).toHaveCount(0);
   await expect(page.locator(".canvas-labels")).toContainText("Diff");
   await expect(
     page.getByRole("img", { name: "Diff: Workspace overview / Desktop", exact: true }),
@@ -244,7 +438,7 @@ test("side by side includes a third lane only when a diff is available", async (
       page.evaluate(() => {
         const canvas = document.querySelector(".zoom-canvas")?.getBoundingClientRect();
         const lane = document.querySelector(".comparison-lane")?.getBoundingClientRect();
-        return canvas && lane ? Math.abs(lane.y - canvas.y - 1) : Number.POSITIVE_INFINITY;
+        return canvas && lane ? Math.abs(lane.y - canvas.y) : Number.POSITIVE_INFINITY;
       }),
     )
     .toBeLessThan(1);
@@ -264,7 +458,9 @@ test("empty results, missing images, errors, and unknown routes are explicit", a
   await page.goto("/suites/empty-suite");
   await expect(page.getByRole("heading", { name: "No matching captures" })).toBeVisible();
   await page.goto("/suites/product-catalog/images/full-page__mobile.png");
+  await page.getByRole("button", { name: "Capture information", exact: true }).click();
   await expect(page.getByRole("alert")).toContainText("Navigation timed out");
+  await page.keyboard.press("Escape");
   await expect(page.getByText("No image", { exact: true })).toBeVisible();
   if (!isMobile)
     await expect(page.getByRole("button", { name: "Wipe", exact: true })).toBeDisabled();
