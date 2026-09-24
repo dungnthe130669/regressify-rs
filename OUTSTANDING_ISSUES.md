@@ -50,6 +50,17 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Test suite rows now expose Rename/Delete context actions and focus-scoped F2/Delete
+  keys. Guarded operations update references, historical test runs, local report
+  manifests, and desktop selections/activity across known output roots. Optional
+  `displayName` is editable in Fields and Rename and labels desktop/web UIs without
+  changing filenames or IDs. Model, native-event, and desktop/mobile browser
+  regressions cover preservation, rollback, focus, escaping, and stable routes.
+- Source suggestions now accept Tab as well as Enter, preserving normal indentation
+  outside the menu. Window reactivation restores lost focus only to the same visible
+  source document without displacing another control. GUI regressions cover acceptance,
+  Escape, indentation, and restoration guards; native schema smoke verifies keyboard
+  operation after Alt+Tab away and native reactivation without an editor click.
 - Snapshot [Netlify headers](frontend/hosting/_headers) now include
   `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`, matching
   [Azure](frontend/hosting/staticwebapp.config.json). Generated assets were rebuilt,

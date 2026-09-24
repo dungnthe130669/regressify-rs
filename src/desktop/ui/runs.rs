@@ -262,6 +262,74 @@ impl RunPanel {
     pub(super) fn running(&self) -> bool {
         self.manager.running()
     }
+    pub(super) fn suite_changed(
+        &mut self,
+        old: &SuiteSummary,
+        new: Option<&SuiteSummary>,
+        cx: &mut Context<Self>,
+    ) {
+        self.selection
+            .rename_suite(&old.name, new.map(|suite| suite.name.as_str()));
+        self.suites
+            .retain(|suite| suite.entry.path != old.entry.path);
+        if let Some(suite) = new {
+            self.suites.push(suite.clone());
+        }
+        self.suite_selection_anchor = None;
+        self.scenario_selection_anchor = None;
+        self.executed_suites.retain_mut(|(name, id)| {
+            if *id != old.output_id {
+                return true;
+            }
+            if let Some(suite) = new {
+                *name = suite.name.clone();
+                *id = suite.output_id.clone();
+                true
+            } else {
+                false
+            }
+        });
+        if self.expanded_selections.remove(&old.name)
+            && let Some(suite) = new
+        {
+            self.expanded_selections.insert(suite.name.clone());
+        }
+        self.confirmation = false;
+        self.pending_request = None;
+        if let Err(error) = self.manager.remap_suite(
+            &old.name,
+            &old.output_id,
+            new.map(|suite| (suite.output_id.as_str(), suite.name.as_str())),
+        ) {
+            self.manager.persistence_error = Some(format!(
+                "Suite changed, but activity could not be updated: {error:#}"
+            ));
+        }
+        if self.manager.running() {
+            cx.spawn(async move |view, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(100))
+                        .await;
+                    let running = view
+                        .update(cx, |this, cx| {
+                            if this.manager.poll() {
+                                this.refresh_artifacts(cx);
+                                cx.emit(RunEvent::ProgressChanged);
+                            }
+                            cx.notify();
+                            this.running()
+                        })
+                        .unwrap_or(false);
+                    if !running {
+                        break;
+                    }
+                }
+            })
+            .detach();
+        }
+        cx.notify();
+    }
     pub(super) fn progress(&self) -> &crate::progress::LiveProgress {
         &self.manager.progress
     }
@@ -280,11 +348,12 @@ impl RunPanel {
     }
     fn executed_report_available(&self) -> bool {
         !self.running()
-            && self
-                .manager
-                .request
-                .as_ref()
-                .is_some_and(|request| request.command.supports_suites())
+            && self.manager.request.as_ref().is_some_and(|request| {
+                request.command.supports_suites()
+                    && (request.options.suites.is_empty()
+                        || !self.executed_suites.is_empty()
+                        || !self.manager.progress.suites.is_empty())
+            })
             && (matches!(self.manager.outcome, Some(RunOutcome::Completed))
                 || matches!(self.manager.outcome, Some(RunOutcome::Failed(_)))
                     && self.manager.progress.comparison_counts(None).total > 0)
@@ -706,12 +775,20 @@ impl RunPanel {
                         .scenarios
                         .iter()
                         .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
-                        .map(|scenario| format!("{} / {}", suite.name, scenario.label))
+                        .map(|scenario| format!("{} / {}", suite.label(), scenario.label))
                 })
                 .collect::<Vec<_>>();
             format!("Scenarios: {}", labels.join(", "))
         } else {
-            format!("Suites: {}", self.selected_names().join(", "))
+            format!(
+                "Suites: {}",
+                self.suites
+                    .iter()
+                    .filter(|suite| self.selection.contains(&suite.name))
+                    .map(|suite| suite.label())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
     }
     pub(super) fn report_approval_intent(
@@ -907,6 +984,14 @@ impl RunPanel {
                 .as_ref()
                 .ok_or_else(|| anyhow!("Open a workspace first"))?,
         ))
+    }
+
+    pub(super) fn suite_output_roots(&self) -> Vec<PathBuf> {
+        let mut roots = self.manager.output_directories();
+        if let Ok(root) = self.output_root() {
+            roots.push(root);
+        }
+        roots
     }
 
     pub(super) fn choose(&mut self, command: RunCommand, _: &mut Window, cx: &mut Context<Self>) {
@@ -1333,14 +1418,14 @@ impl RunPanel {
                                 })
                                 .accessibility_label(format!(
                                     "{} ({}/{} scenarios)",
-                                    suite.name,
+                                    suite.label(),
                                     self.selection.scenario_count(suite),
                                     suite.scenarios.len()
                                 ))
                                 .child(div().flex_1().min_w_0().truncate().text_left().child(
                                     format!(
                                         "{} ({}/{} scenarios)",
-                                        suite.name,
+                                        suite.label(),
                                         self.selection.scenario_count(suite),
                                         suite.scenarios.len()
                                     ),

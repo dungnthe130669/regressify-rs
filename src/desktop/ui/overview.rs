@@ -521,6 +521,7 @@ impl Workbench {
         for (index, suite) in self.session.suites.iter().enumerate() {
             if !query.is_empty()
                 && !suite.name.to_lowercase().contains(&query)
+                && !suite.label().to_lowercase().contains(&query)
                 && !suite
                     .scenarios
                     .iter()
@@ -602,7 +603,7 @@ impl Workbench {
                                     .child(
                                         div()
                                             .font_weight(FontWeight::MEDIUM)
-                                            .child(suite.name.clone()),
+                                            .child(suite.label().to_owned()),
                                     )
                                     .child(
                                         div()

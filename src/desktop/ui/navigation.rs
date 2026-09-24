@@ -1,8 +1,15 @@
 //! Separate suite selection from the open document's scenario outline.
 
+use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 use gpui_kit::component::resizable::v_resizable;
 
 use super::*;
+
+pub(super) struct SuiteMenu {
+    menu: Entity<PopupMenu>,
+    position: Point<Pixels>,
+    _subscription: Subscription,
+}
 
 fn empty_list(id: &'static str, text: &'static str, cx: &App) -> AnyElement {
     div()
@@ -54,6 +61,43 @@ fn page_location(url: &str, root: Option<&std::path::Path>) -> String {
 }
 
 impl Workbench {
+    fn show_suite_menu(
+        &mut self,
+        entry: Entry,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        self.suite_list.focus_item(entry.path.clone(), window, cx);
+        let rename_entry = entry.clone();
+        let rename = cx.listener(move |this, _, window, cx| {
+            this.begin_suite_operation(rename_entry.clone(), files::Operation::Rename, window, cx)
+        });
+        let delete = cx.listener(move |this, _, window, cx| {
+            this.begin_suite_operation(entry.clone(), files::Operation::Delete, window, cx)
+        });
+        let focus = self.suite_list.focus.clone();
+        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
+            menu.action_context(focus)
+                .item(PopupMenuItem::new("Rename suite").on_click(rename))
+                .item(PopupMenuItem::new("Delete suite").on_click(delete))
+        });
+        let subscription = cx.subscribe(&menu, |this, _, _: &gpui_kit::DismissEvent, cx| {
+            this.suite_menu = None;
+            cx.notify();
+        });
+        menu.focus_handle(cx).focus(window, cx);
+        self.suite_menu = Some(SuiteMenu {
+            menu,
+            position,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
     fn select_visible_suites(&mut self, visible: &[String], cx: &mut Context<Self>) {
         if self.busy || visible.is_empty() {
             return;
@@ -355,6 +399,21 @@ impl Workbench {
             .when(self.main_tab != 2, |navigation| {
                 navigation.child(self.render_workspace_files(cx))
             })
+            .children(self.suite_menu.as_ref().map(|menu| {
+                gpui_kit::deferred(
+                    gpui_kit::anchored()
+                        .position(menu.position)
+                        .anchor(gpui_kit::Anchor::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(
+                            div()
+                                .id("suite-context-menu")
+                                .test_support()
+                                .child(menu.menu.clone()),
+                        ),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY)
+            }))
             .into_any_element()
     }
 
@@ -420,6 +479,11 @@ impl Workbench {
                 };
                 if !query.is_empty()
                     && !entry.label().to_lowercase().contains(&query)
+                    && !suite.is_some_and(|suite| suite.label().to_lowercase().contains(&query))
+                    && !(open
+                        && self.value["displayName"]
+                            .as_str()
+                            .is_some_and(|name| name.to_lowercase().contains(&query)))
                     && matches == 0
                 {
                     return None;
@@ -449,10 +513,11 @@ impl Workbench {
         let toggle_names = visible.clone();
         let toggle_paths = paths.clone();
         let open_names = visible.clone();
+        let command_paths = paths.clone();
         let mut rows = div()
             .id("suite-list")
             .test_support()
-            .key_context("RegressifyList")
+            .key_context("RegressifyList RegressifySuiteList")
             .track_focus(&self.suite_list.focus)
             .track_scroll(&self.suite_list.scroll)
             .relative()
@@ -480,6 +545,22 @@ impl Workbench {
             .on_action(cx.listener(move |this, _: &OpenListItem, window, cx| {
                 this.activate_suite_list(&paths, &open_names, false, window, cx);
             }))
+            .on_action(
+                cx.listener(move |this, command: &files::FileCommand, window, cx| {
+                    cx.stop_propagation();
+                    let fallback = this.session.open.as_ref().map(|open| &open.entry.path);
+                    if let Some(path) = this.suite_list.current_item(&command_paths, fallback)
+                        && let Some(entry) = this
+                            .session
+                            .entries
+                            .iter()
+                            .find(|entry| entry.path == path)
+                            .cloned()
+                    {
+                        this.begin_suite_operation(entry, command.operation, window, cx);
+                    }
+                }),
+            )
             .on_click(cx.listener(|this, _, window, cx| {
                 window.focus(&this.suite_list.focus, cx);
                 if !this.busy {
@@ -529,6 +610,16 @@ impl Workbench {
             let selected = runs.selected(&name);
             let visible = visible.clone();
             let entry = entry.clone();
+            let menu_entry = entry.clone();
+            let label = if open {
+                self.value["displayName"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_owned)
+            } else {
+                suite.map(|suite| suite.label().to_owned())
+            }
+            .unwrap_or_else(|| name.clone());
             let filename = entry
                 .path
                 .file_name()
@@ -601,6 +692,13 @@ impl Workbench {
                     )
                     .when(selected, |row| row.bg(cx.theme().accent))
                     .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.show_suite_menu(menu_entry.clone(), event.position, window, cx);
+                        }),
+                    )
                     .child(
                         Button::new(("file", index))
                             .ghost()
@@ -609,7 +707,11 @@ impl Workbench {
                             .min_w_0()
                             .justify_start()
                             .selected(selected)
-                            .accessibility_label(filename)
+                            .accessibility_label(if label == name {
+                                filename
+                            } else {
+                                label.clone()
+                            })
                             .tooltip(error.map_or_else(
                                 || entry.label(),
                                 |error| format!("{}\n{error}", entry.label()),
@@ -635,9 +737,7 @@ impl Workbench {
                                             } else {
                                                 FontWeight::NORMAL
                                             })
-                                            .child(
-                                                entry.suite_name().unwrap_or_else(|| entry.label()),
-                                            ),
+                                            .child(label),
                                     )
                                     .child(
                                         div()
@@ -820,8 +920,11 @@ impl Workbench {
         let owner = open
             .filter(|_| suite || viewport)
             .map(|open| {
-                open.entry
-                    .suite_name()
+                self.value["displayName"]
+                    .as_str()
+                    .filter(|name| !name.trim().is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| open.entry.suite_name())
                     .unwrap_or_else(|| open.entry.label())
             })
             .unwrap_or_else(|| "No suite selected".into());

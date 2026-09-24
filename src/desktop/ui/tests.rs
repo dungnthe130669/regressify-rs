@@ -559,6 +559,63 @@ fn source_editor_registers_schema_completion(cx: &mut TestAppContext) {
 async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
     cx: &mut TestAppContext,
 ) {
+    accept_and_save_source_completion(cx, "enter", false).await;
+}
+
+#[gpui_kit::test]
+async fn source_completion_can_be_accepted_with_tab_and_saved_without_duplicate_text(
+    cx: &mut TestAppContext,
+) {
+    accept_and_save_source_completion(cx, "tab", false).await;
+}
+
+#[gpui_kit::test]
+async fn source_completion_recovers_keyboard_focus_after_window_reactivation(
+    cx: &mut TestAppContext,
+) {
+    accept_and_save_source_completion(cx, "enter", true).await;
+}
+
+#[gpui_kit::test]
+async fn source_completion_recovers_tab_and_escape_after_window_reactivation(
+    cx: &mut TestAppContext,
+) {
+    accept_and_save_source_completion(cx, "tab", true).await;
+}
+
+async fn reactivate_without_editor_focus(cx: &mut TestAppContext, handle: WindowHandle<Root>) {
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.is_window_active()
+    })
+    .await;
+    let other_directory = tempfile::tempdir().unwrap();
+    let (other_handle, _) = editor(cx, other_directory.path());
+    cx.update_window(other_handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        !window.is_window_active()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.blur(cx);
+        window.activate_window();
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.is_window_active()
+    })
+    .await;
+    cx.update_window(other_handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+}
+
+async fn accept_and_save_source_completion(
+    cx: &mut TestAppContext,
+    accept_key: &str,
+    reactivate: bool,
+) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
@@ -578,13 +635,16 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
         menu.open && menu.items.iter().any(|item| item.label == "delay")
     })
     .await;
+    if reactivate {
+        reactivate_without_editor_focus(cx, handle).await;
+    }
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert_eq!(
             window.find("source-completion-status").label(),
             Some("1 suggestion")
         );
-        window.press("enter", cx);
+        window.press(accept_key, cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
@@ -624,6 +684,9 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
         menu.open && menu.items.iter().any(|item| item.label == "browser")
     })
     .await;
+    if reactivate {
+        reactivate_without_editor_focus(cx, handle).await;
+    }
     cx.update_window(handle.into(), |_, window, cx| {
         let cursor = view.read(cx).source.read(cx).cursor();
         window.press("down", cx);
@@ -631,6 +694,96 @@ async fn source_completion_can_be_accepted_and_saved_without_duplicate_text(
         assert_eq!(view.read(cx).source.read(cx).cursor(), cursor);
         window.press("escape", cx);
         assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn source_tab_keeps_indentation_without_suggestions(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        let original = "scenarios: []\n";
+        view.read(cx).source.clone().update(cx, |state, cx| {
+            state.set_value(original, window, cx);
+            state.set_selected_range(original.len()..original.len(), cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
+        window.press("tab", cx);
+        let value = view.read(cx).source.read(cx).value();
+        let indentation = value.strip_prefix(original).unwrap();
+        assert!(!indentation.is_empty());
+        assert!(indentation.chars().all(|character| character == ' '));
+        window.press("escape", cx);
+        window.press("shift-tab", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), original);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn source_focus_restoration_respects_other_controls_and_document_state(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.is_window_active()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let path = view
+            .read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .entry
+            .path
+            .clone();
+        for (tab, main_tab, overview, busy) in [
+            (0, 0, false, false),
+            (1, 1, false, false),
+            (1, 0, true, false),
+            (1, 0, false, true),
+        ] {
+            window.blur(cx);
+            view.update(cx, |this, cx| {
+                this.tab = tab;
+                this.main_tab = main_tab;
+                this.overview = overview;
+                this.busy = busy;
+                this.source_focus_restore = Some(path.clone());
+                this.source_window_activation_changed(window, cx);
+                assert!(this.source_focus_restore.is_none());
+            });
+            assert!(window.focused(cx).is_none());
+        }
+        view.update(cx, |this, cx| {
+            this.tab = 1;
+            this.main_tab = 0;
+            this.overview = false;
+            this.busy = false;
+            let other_focus = this.search.read(cx).focus_handle(cx);
+            window.focus(&other_focus, cx);
+            this.source_focus_restore = Some(path);
+            this.source_window_activation_changed(window, cx);
+            assert!(other_focus.is_focused(window));
+
+            window.focus(&this.focus, cx);
+            this.source_focus_restore = Some(directory.path().join("different.tests.yaml"));
+            this.source_window_activation_changed(window, cx);
+            assert!(this.focus.is_focused(window));
+
+            this.source_window_activation_changed(window, cx);
+            assert!(this.focus.is_focused(window));
+        });
     })
     .unwrap();
 }
@@ -4702,6 +4855,347 @@ async fn unsaved_dialog_cancel_and_discard_preserve_their_contracts(cx: &mut Tes
             1
         );
     });
+}
+
+#[gpui_kit::test]
+async fn suite_panel_activity_remap_finishes_persistence_and_unlocks_catalog(
+    cx: &mut TestAppContext,
+) {
+    use crate::{
+        desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest},
+        progress::{Event, Record},
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let history = directory.path().join("saved-activity.json");
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let old = this.session.suites[0].clone();
+            let mut new = old.clone();
+            new.name = "renamed".into();
+            new.output_id = "renamed".into();
+            new.entry.path = "visual_tests/renamed.tests.yaml".into();
+            let root = this.session.workspace.as_ref().unwrap().root.clone();
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.set_storage_path(history.clone());
+                panel.manager.request = Some(RunRequest {
+                    root,
+                    command: RunCommand::Compare,
+                    options: RunOptions {
+                        suites: vec!["ui-test".into()],
+                        ..Default::default()
+                    },
+                });
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 1,
+                    event: Event::Compared {
+                        suite_id: "ui-test".into(),
+                        capture: "home__FINAL".into(),
+                        label: "Home".into(),
+                        scenario_id: Some("home".into()),
+                        passed: true,
+                        error: None,
+                    },
+                });
+                panel.manager.progress.end(false, None);
+                panel.manager.outcome = Some(RunOutcome::Completed);
+                panel.suite_changed(&old, Some(&new), cx);
+            });
+            this.sync_editor(window, cx);
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).runs.read(cx).running()
+    })
+    .await;
+    let saved: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(history).unwrap()).unwrap();
+    assert!(saved["progress"]["suites"].get("renamed").is_some());
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .manager
+                .persistence_error
+                .is_none()
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn suite_panel_context_rename_fields_and_delete_keep_artifacts_aligned(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_with_reference(cx, directory.path()).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("ui-test"))
+            .unwrap();
+        window.right_click(("suite-row", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("Rename suite")
+        );
+        assert_eq!(
+            window.within("popup-menu").find(1_usize).label(),
+            Some("Delete suite")
+        );
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("file-name", cx);
+        window.press("ctrl-a", cx);
+        window.input("checkout.tests.yaml", cx);
+        window.click("suite-display-name", cx);
+        window.input("Customer checkout", cx);
+        window.click("file-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy
+    })
+    .await;
+    cx.update(|cx| assert_eq!(view.read(cx).status, "File saved"));
+    assert!(
+        !directory
+            .path()
+            .join("visual_tests/ui-test.tests.yaml")
+            .exists()
+    );
+    assert!(
+        directory
+            .path()
+            .join(".regressify/checkout/bitmaps_reference/home.png")
+            .exists()
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("checkout"))
+            .unwrap();
+        assert_eq!(
+            window.find(("file", index)).label(),
+            Some("Customer checkout")
+        );
+        assert_eq!(
+            window.find("field-displayName").value(),
+            Some("Customer checkout")
+        );
+        assert_eq!(
+            window.find("field-displayName").label(),
+            Some("Display name")
+        );
+        window.click("field-displayName", cx);
+        window.press("ctrl-a", cx);
+        window.input("Checkout review", cx);
+        window.press("f2", cx);
+        assert!(
+            window.try_find("file-confirm").is_none(),
+            "F2 must not rename from a field input"
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).unsaved()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.click("save", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy
+    })
+    .await;
+    cx.update(|cx| assert!(!view.read(cx).unsaved(), "{}", view.read(cx).status));
+    let path = directory.path().join("visual_tests/checkout.tests.yaml");
+    let suite: crate::types::TestSuite =
+        serde_yaml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(suite.display_name.as_deref(), Some("Checkout review"));
+    cx.update_window(handle.into(), |_, window, cx| {
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("checkout"))
+            .unwrap();
+        window.click(("file", index), cx);
+        window.press("delete", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("remove-cancel", cx)
+    })
+    .unwrap();
+    assert!(path.exists());
+    assert!(directory.path().join(".regressify/checkout").exists());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| window.focus(&this.suite_list.focus, cx));
+        window.press("delete", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("remove-confirm", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy && view.read(cx).status == "Suite deleted"
+    })
+    .await;
+    assert!(!path.exists());
+    assert!(!directory.path().join(".regressify/checkout").exists());
+    cx.update(|cx| assert!(view.read(cx).session.suites.is_empty()));
+}
+
+#[gpui_kit::test]
+async fn suite_panel_f2_targets_focused_results_row_and_ignores_search(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.main_tab = 2;
+        });
+        window.render_frame(cx);
+        window.click("navigator-search", cx);
+        window.input("second", cx);
+        window.press("f2", cx);
+        window.press("delete", cx);
+        assert!(window.try_find("file-confirm").is_none());
+        assert!(window.try_find("remove-confirm").is_none());
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("second"))
+            .unwrap();
+        window.render_frame(cx);
+        window.click(("file", index), cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("ui-test")
+        );
+        window.press("f2", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("file-name").is_some()
+    })
+    .await;
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("file-name").value(), Some("second.tests.yaml"));
+        window.click("suite-display-name", cx);
+        window.input("Second suite label", cx);
+        window.click("file-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy && view.read(cx).status == "File saved"
+    })
+    .await;
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/second.tests.yaml")
+            .exists()
+    );
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/ui-test.tests.yaml")
+            .exists()
+    );
+    let suite: crate::types::TestSuite = serde_yaml::from_str(
+        &std::fs::read_to_string(directory.path().join("visual_tests/second.tests.yaml")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(suite.display_name.as_deref(), Some("Second suite label"));
+}
+
+#[gpui_kit::test]
+async fn suite_panel_context_delete_preserves_unsaved_draft_on_cancel(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("ui-test"))
+            .unwrap();
+        window.right_click(("suite-row", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(1_usize, cx)
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("guard-cancel").visible());
+        window.click("guard-cancel", cx);
+        assert!(view.read(cx).unsaved());
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+    })
+    .unwrap();
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/ui-test.tests.yaml")
+            .exists()
+    );
 }
 
 #[gpui_kit::test]

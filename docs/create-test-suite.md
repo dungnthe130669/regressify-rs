@@ -61,6 +61,24 @@ data before Chromium launches.
 
 ## Properties
 
+### Display Name
+
+Set the optional `displayName` string to label a suite in the desktop app and
+snapshot website independently of its filename and `id`:
+
+```yaml
+displayName: Customer checkout
+scenarios:
+  - url: https://example.com/checkout
+```
+
+Blank or omitted names fall back to the suite name. Display names do not rename
+files, output directories, capture keys, CLI suite filters, or report routes.
+The desktop exposes this value in Fields > General and in the suite Rename
+dialog. Desktop saves update existing local report labels; CLI-authored changes
+are recorded on the next reference or test capture. Redeploy published sites to
+make updated labels visible remotely.
+
 ### HTTP Basic Authentication
 
 `basicAuth` is supported in workspace, suite, and scenario configuration.

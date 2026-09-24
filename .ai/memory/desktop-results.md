@@ -2,6 +2,19 @@
 
 Verified: 2026-09-24
 
+- Suite `displayName` is independent of file/output identity. The
+  [workspace model](../../src/desktop/workspace.rs) stages reference/history/site
+  changes across known output roots for rename/delete and label saves. Explicit
+  IDs remain stable; unknown custom roots require the caller to supply them.
+  [Artifact tests](../../src/desktop/workspace/artifacts.rs) cover rollback and
+  concurrent changes; this is not a crash-atomic or cross-process transaction.
+- [Suite menu tests](../../src/desktop/ui/tests.rs) use `suite_panel_` to cover
+  right-click Rename/Delete, F2/Delete focus isolation, Fields labels, artifact
+  migration, and cancelled unsaved work. Global F2 bindings defeat input isolation.
+- Post-mutation activity persistence needs its own UI polling task because the
+  worker poller has stopped. `suite_panel_activity_remap_finishes_persistence_and_unlocks_catalog`
+  verifies completion; native `-ArtifactFlows` additionally checks label accessibility,
+  F2 rename, preserved image hashes, and cancelled/confirmed deletion.
 - [Scenario naming](../../src/helpers/scenario_names.rs) is shared by desktop
   catalogs/drafts/results and Rust snapshot conversion. URL-only scenarios use
   shortest unique readable suffixes, optional mixed origins, then query/fragment

@@ -823,6 +823,68 @@ pub struct RunManager {
 }
 
 impl RunManager {
+    pub fn remap_suite(
+        &mut self,
+        old_name: &str,
+        old_id: &str,
+        new: Option<(&str, &str)>,
+    ) -> Result<()> {
+        ensure!(
+            !self.running(),
+            "Finish the active command before changing a suite"
+        );
+        self.suite_history = self.completed_suite_history();
+        for history in self.suite_history.values_mut() {
+            if let Some(counts) = history.remove(old_id)
+                && let Some((id, _)) = new
+            {
+                history.insert(id.into(), counts);
+            }
+        }
+        self.progress.remap_suite(old_id, new);
+        // Deletion retains historical filters: clearing them would mean "all suites" on replay.
+        if let Some(request) = &mut self.request
+            && let Some((id, name)) = new
+        {
+            let (old, updated) = if request.command.uses_output_suite_ids() {
+                (old_id, id)
+            } else {
+                (old_name, name)
+            };
+            for selected in &mut request.options.suites {
+                if *selected == glob::Pattern::escape(old) {
+                    *selected = glob::Pattern::escape(updated);
+                }
+            }
+            for filter in &mut request.options.scenarios {
+                if filter.suite == old {
+                    filter.suite = updated.into();
+                }
+            }
+        }
+        self.revision = self.revision.wrapping_add(1);
+        if let (Some(path), Some(snapshot)) = (self.storage_path.clone(), self.snapshot()) {
+            self.persistence = Some(
+                thread::Builder::new()
+                    .name("regressify-save-run".into())
+                    .spawn(move || snapshot.save(&path))?,
+            );
+        }
+        Ok(())
+    }
+
+    pub fn output_directories(&self) -> Vec<PathBuf> {
+        self.suite_history
+            .keys()
+            .cloned()
+            .chain(
+                self.request
+                    .iter()
+                    .map(|request| request.options.output_directory(&request.root)),
+            )
+            .collect()
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -1130,6 +1192,7 @@ mod tests {
                         kind: DocumentKind::Suite,
                     },
                     name: name.into(),
+                    display_name: None,
                     output_id: output_id.into(),
                     error: None,
                     scenarios: vec![ScenarioSummary {
@@ -1264,6 +1327,83 @@ mod tests {
                 assert_eq!(options[key], expected[key]);
             }
         }
+    }
+
+    #[test]
+    fn suite_renames_and_deletion_update_saved_activity_without_widening_filters() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let mut manager = RunManager::default();
+        let mut request = request(RunCommand::Test);
+        request.root = root.clone();
+        request.options.suites = vec!["shop".into(), "other".into()];
+        request.options.scenarios = vec!["shop:home".parse().unwrap()];
+        manager.request = Some(request);
+        for id in ["shop", "other"] {
+            manager.progress.apply(crate::progress::Record {
+                version: 1,
+                elapsed_ms: 10,
+                event: crate::progress::Event::Compared {
+                    suite_id: id.into(),
+                    capture: "home__FINAL".into(),
+                    label: "Home".into(),
+                    scenario_id: Some("home".into()),
+                    passed: true,
+                    error: None,
+                },
+            });
+        }
+        manager.progress.end(false, None);
+        manager.outcome = Some(RunOutcome::Completed);
+        manager
+            .remap_suite("shop", "shop", Some(("checkout", "checkout")))
+            .unwrap();
+        assert_eq!(
+            manager
+                .suite_counts(&root.join(".regressify"), "checkout")
+                .unwrap()
+                .passed,
+            1
+        );
+        assert!(
+            manager
+                .suite_counts(&root.join(".regressify"), "shop")
+                .is_none()
+        );
+        assert_eq!(
+            manager.request.as_ref().unwrap().options.scenarios[0].suite,
+            "checkout"
+        );
+        assert_eq!(
+            manager
+                .progress
+                .scenarios
+                .values()
+                .filter(|scenario| scenario.job.suite_id == "checkout")
+                .count(),
+            1
+        );
+        let path = root.join("activity.json");
+        manager.snapshot().unwrap().save(&path).unwrap();
+        let mut reopened = RunManager::default();
+        reopened
+            .restore(RunSnapshot::load(&path, &root).unwrap().unwrap())
+            .unwrap();
+        reopened.remap_suite("checkout", "checkout", None).unwrap();
+        assert!(
+            reopened
+                .suite_counts(&root.join(".regressify"), "checkout")
+                .is_none()
+        );
+        assert_eq!(reopened.progress.counts(None).passed, 1);
+        assert_eq!(
+            reopened.request.as_ref().unwrap().options.suites,
+            ["checkout", "other"]
+        );
+        assert_eq!(
+            reopened.request.as_ref().unwrap().options.scenarios[0].suite,
+            "checkout"
+        );
     }
 
     #[test]

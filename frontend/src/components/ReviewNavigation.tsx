@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Link, useMatch } from "react-router";
-import { type Capture, imagePath, suitePath } from "../data/report";
+import { type Capture, imagePath, suiteLabel, suitePath } from "../data/report";
 import { useManifest, useSuite } from "../data/store";
 
 function ScenarioNavigation({ suiteId, close }: { suiteId: string; close: () => void }) {
@@ -90,7 +90,7 @@ export function ReviewNavigation({ close }: { close: () => void }) {
   const match = useMatch("/suites/:suiteId/*");
   const [query, setQuery] = useState("");
   const suites = manifest.suites.filter((suite) =>
-    suite.id.toLowerCase().includes(query.trim().toLowerCase()),
+    `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   return (
     <>
@@ -116,7 +116,7 @@ export function ReviewNavigation({ close }: { close: () => void }) {
               aria-current={match?.params.suiteId === suite.id ? "page" : undefined}
             >
               <span className={`status-dot ${suite.failed ? "fail" : "pass"}`} />
-              <span className="suite-link-name">{suite.id}</span>
+              <span className="suite-link-name">{suiteLabel(suite)}</span>
               <span className="mono muted">{suite.total}</span>
             </Link>
           ))}

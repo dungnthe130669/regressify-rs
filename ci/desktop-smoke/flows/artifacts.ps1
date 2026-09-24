@@ -77,5 +77,44 @@ function Test-ArtifactFlows {
     Invoke-Control 'Runs'
     Wait-Control 'Last run: Compare Results' | Out-Null
     Wait-Control 'Passed: 1' | Out-Null
-    Write-Output 'Baseline gating, saved-report opening, capture-only comparison, and persistent activity after restart passed without browser capture.'
+    Invoke-Control 'Editor'
+    Invoke-Control 'account.tests.json' -Pointer
+    Send-FixtureKeys F2
+    Wait-Control 'Filename' | Out-Null
+    Write-FixtureControlText 'Filename' 'customers.tests.json'
+    Write-FixtureControlText 'Display name' 'Customer accounts'
+    Capture-Window 'suite-rename-dialog'
+    Invoke-Control 'Save'
+    Wait-Control 'File saved' | Out-Null
+    Wait-Control 'Customer accounts' | Out-Null
+    $renamedOutput = Join-Path $workspace '.regressify/customers'
+    if ((Test-Path $accountOutput) -or (Test-Path (Join-Path $workspace 'visual_tests/account.tests.json'))) { throw 'Suite rename retained old source/output paths.' }
+    $renamedSource = Join-Path $workspace 'visual_tests/customers.tests.json'
+    $renamedSuite = Get-Content $renamedSource -Raw | ConvertFrom-Json
+    if ($renamedSuite.displayName -ne 'Customer accounts') { throw 'Rename did not save the independent display name.' }
+    if ((Get-FileHash (Join-Path $renamedOutput 'bitmaps_reference/profile__FINAL.png')).Hash -ne $referenceHash) { throw 'Suite rename changed reference pixels.' }
+    if ((Get-FileHash (Join-Path $renamedOutput 'bitmaps_test/smoke-run/profile__FINAL.png')).Hash -ne $captureHash) { throw 'Suite rename changed capture pixels.' }
+    $renamedReport = Get-Content (Join-Path $renamedOutput 'bitmaps_test/smoke-run/report.json') -Raw | ConvertFrom-Json
+    if ($renamedReport.id -ne 'customers' -or $renamedReport.displayName -ne 'Customer accounts') { throw 'Suite rename did not update report identity and label.' }
+    Invoke-Control 'Fields'
+    Send-FixtureKeys F -Control -Shift
+    Send-FixtureText 'displayName'
+    Write-FixtureControlText 'Display name' 'Customer account review'
+    Send-FixtureKeys S -Control
+    Wait-Control 'Saved' | Out-Null
+    if (-not (Test-Path $renamedSource)) { throw 'Editing the display name renamed the suite file.' }
+    Capture-Window 'suite-display-name-fields'
+    Invoke-Control 'Customer account review' -Pointer
+    Send-FixtureKeys Delete
+    Wait-Control 'Delete suite and its data?' | Out-Null
+    Capture-Window 'suite-delete-confirmation'
+    Invoke-Control 'Cancel'
+    if (-not (Test-Path $renamedOutput)) { throw 'Cancelling suite deletion removed its artifacts.' }
+    Invoke-Control 'Customer account review' -Pointer
+    Send-FixtureKeys Delete
+    Invoke-Control 'Delete'
+    Wait-Control 'Suite deleted' | Out-Null
+    if ((Test-Path $renamedSource) -or (Test-Path $renamedOutput)) { throw 'Suite deletion did not remove its source and artifacts.' }
+    if (-not (Test-Path $reportPath)) { throw 'Suite deletion removed another suite report.' }
+    Write-Output 'Artifact gating, persistent activity, suite rename/display labels, and confirmed deletion passed without browser capture.'
 }

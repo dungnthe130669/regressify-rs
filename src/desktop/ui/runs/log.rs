@@ -51,7 +51,15 @@ impl RunPanel {
             return;
         };
         self.log_scope = Some(ScenarioLogScope {
-            title: format!("{} / {}", entry.job.suite_name, entry.job.label),
+            title: format!(
+                "{} / {}",
+                self.suites
+                    .iter()
+                    .find(|suite| suite.output_id == entry.job.suite_id)
+                    .map(|suite| suite.label())
+                    .unwrap_or(&entry.job.suite_name),
+                entry.job.label
+            ),
             jobs,
         });
         self.tab = 3;
@@ -67,7 +75,11 @@ impl RunPanel {
             jobs: BTreeSet::from([id]),
             title: format!(
                 "{} / {}{}",
-                entry.job.suite_name,
+                self.suites
+                    .iter()
+                    .find(|suite| suite.output_id == entry.job.suite_id)
+                    .map(|suite| suite.label())
+                    .unwrap_or(&entry.job.suite_name),
                 entry.job.label,
                 if entry.job.viewport.is_empty() {
                     String::new()

@@ -16,9 +16,11 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 1. Scope list shortcuts to a retained list focus handle, excluding search and editor inputs. Reuse the owning selection methods; suite/scenario keyboard ranges and Ctrl+A use visible rows, while scenario selection preserves other suites. Keep single-selection lists single-select and operation locks intact.
 1. For keyboard-scrolled rows, share `track_scroll` with an explicit scrollbar. Append scrollbar overlays after rows because `ScrollHandle::scroll_to_item` indexes direct children; the convenience scroll wrapper owns a separate handle. Virtualized lists use their uniform-list handle and filtered positions.
 1. Use real pointer/keyboard tests for menus/dialogs; model tests alone cannot establish interaction behavior. Settle dialog animations with existing helpers.
+1. Suite context actions and F2/Delete target the focused row, not the open editor or all checked rows. Keep `RegressifySuiteList` separate from inputs; no global F2 binding. Test Results targeting, dirty cancellation, independent filename/display-name edits, and confirmed artifact deletion with `desktop::ui::tests::suite_panel_`.
 1. Exercise compact/large windows, long labels, light/dark/system themes, scroll, clipboard selection, and accessibility names. Inspect actual rendered screenshots.
 1. Windows smoke requires an unlocked interactive desktop and no other app instances because it temporarily changes shared preferences. Never bypass these guards or close the user's windows; report the prerequisite instead.
-1. Smoke shortcuts use `Send-FixtureKeys <ConsoleKey> -Control -Shift` as needed; literal text uses `Send-FixtureText`. Keep modifier pairs and extended navigation flags in the shared native helper, and retain caret/control outcome checks. Start a fresh PowerShell session after changing inline `Add-Type` definitions.
+1. Smoke shortcuts use `Send-FixtureKeys <ConsoleKey> -Control -Shift -Alt` as needed; literal text uses `Send-FixtureText`. Keep modifier pairs and extended navigation flags in the shared native helper, and retain caret/control outcome checks. Start a fresh PowerShell session after changing inline `Add-Type` definitions.
+1. Source focus checks must compare the actual focused accessibility element, not the editor wrapper's `HasKeyboardFocus`. `-SchemaFlows` uses Alt+Tab to an owned temporary window, native return activation, and Enter/Tab/Escape without clicking the editor; keep the temporary window's cleanup in `finally`.
 1. Native pointer clicks synchronize compositor frames after movement and press; always release in `finally`. Back-to-back native mouse events can miss scenario clicks even when frame-stepped GPUI tests pass. Keep pointer sequencing and failure cleanup covered by the headless harness.
 1. Remote management has a distinct accessible `Save remote` command so the form's submit action cannot be confused with the disabled Add/Rename toolbar controls. Test dropdowns through their popup items after they render. Keep activity below the diff pane so expanded logs cannot collapse file trees; compact tests must include expanded comparison rows, not only visible commit controls.
 
@@ -31,6 +33,8 @@ cargo test --features gui-tests --lib desktop::ui -- --test-threads=1
 ```
 
 Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-ComparisonFlows`, or `-GitFlows`; the default flow includes pointer-focused suite/scenario/checklist shortcuts. Use `-SkipBuild` only with a current binary. Capture flows may require managed Chromium. Do not use browser automation as a substitute for this native UI's tests.
+
+`-ArtifactFlows` also exercises F2 rename, independent display-name editing in Rename and Fields, byte-preserving reference/history migration, and Delete cancellation/confirmation. Inputs and the deletion prompt need accessible names, not only visible text or test IDs.
 
 ## Maintain
 

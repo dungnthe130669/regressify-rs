@@ -26,6 +26,11 @@ pub struct TestSuite {
     /// Stable suite identifier used for report and screenshot folders. Normally generated from the suite filename.
     pub id: Option<String>,
 
+    /// Human-readable suite name shown in the desktop app and reports. Does not change the filename or output identifier.
+    #[schemars(example = "Customer checkout")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+
     /// Run timestamp recorded by Regressify. Normally leave this unset when authoring tests.
     pub test_date: Option<String>,
 

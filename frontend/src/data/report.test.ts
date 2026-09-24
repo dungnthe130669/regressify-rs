@@ -8,6 +8,7 @@ import {
   manifestSchema,
   passRate,
   safePageUrl,
+  suiteLabel,
   suiteReportSchema,
 } from "./report";
 
@@ -30,6 +31,16 @@ export const capture = captureSchema.parse({
 });
 
 describe("snapshot contract", () => {
+  test("suite display names are optional presentation data, not route identity", () => {
+    for (const displayName of [undefined, "", "  ", "Customer checkout", "<img src=x>"]) {
+      const suite = suiteReportSchema.parse({ id: "shop", displayName, runId: "run", tests: [] });
+      expect(suiteLabel(suite)).toBe(displayName?.trim() ? displayName : "shop");
+      expect(imagePath(suite.id, "home.png")).toBe("/suites/shop/images/home.png");
+    }
+    expect(
+      suiteReportSchema.safeParse({ id: "shop", displayName: 10, runId: "run", tests: [] }).success,
+    ).toBe(false);
+  });
   test("accepts signed dimension differences and hostile labels as plain data", () => {
     expect(
       captureSchema.parse({ ...capture, label: '<img src=x onerror="alert(1)">' }).label,

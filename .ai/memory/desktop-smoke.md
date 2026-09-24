@@ -19,12 +19,16 @@ Verified: 2026-09-24
   native baseline comparisons must run from a real script file beside the entry
   point so local initialization and `$script:` assignments share ownership.
 - [Keyboard input](../../ci/desktop-smoke/native.ps1) builds balanced `SendInput`
-  events from `ConsoleKey` plus Control/Shift, including extended navigation flags.
+  events from `ConsoleKey` plus Control/Shift/Alt, including extended navigation flags.
   Zero and undefined keys are rejected before input is sent. Headless checks
   compile this code and inspect its event sequences without invoking Windows.
 - Inline `Add-Type` definitions are cached for the PowerShell process. Native
   tests of changed C# need a fresh host; rerunning in an old terminal can otherwise
   retain the previous implementation.
+- [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) verifies Enter/Tab/Escape
+  after Alt+Tab to an owned temporary window and native return activation without
+  clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;
+  the source wrapper's `HasKeyboardFocus` stays false even while its input works.
 - The [default flow](../../ci/desktop-smoke/flows/default.ps1) includes pointer-focused
   Ctrl+A, Ctrl+Shift+A, and Escape checks for suite/scenario selection and the Runs
   checklist. It verifies accessible selection counts without launching a worker.

@@ -55,6 +55,7 @@ before editing; load only the skills relevant to the task.
   placeholder or delete it before a replacement capture succeeds.
 - Preserve `camelCase` config and untagged action deserialization precedence.
   Configuration resolves scenario -> suite -> workspace -> defaults.
+- Suite `displayName` is presentation-only; keep file, output, and route identity separate.
 - Desktop writes must preserve user edits and detect external conflicts. Keep
   blocking work off the UI thread; cancellation must account for child processes.
 - Validate workspace-relative paths at filesystem boundaries. Escape for the

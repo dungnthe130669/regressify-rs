@@ -20,11 +20,13 @@ import { IconButton } from "./ui";
 export function CaptureInfo({
   capture,
   suiteId,
+  suiteName,
   runId,
   dimensions,
 }: {
   capture: Capture;
   suiteId: string;
+  suiteName: string;
   runId: string;
   dimensions: { label: string; width: number; height: number }[];
 }) {
@@ -100,7 +102,7 @@ export function CaptureInfo({
               </div>
               <div>
                 <dt>Suite</dt>
-                <dd>{suiteId}</dd>
+                <dd title={suiteId}>{suiteName}</dd>
               </div>
               <div>
                 <dt>Scenario</dt>

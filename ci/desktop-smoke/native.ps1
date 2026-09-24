@@ -84,21 +84,23 @@ public static class RegressifySmokeText {
     struct Input { public uint type; public InputData data; }
     [DllImport("user32.dll", SetLastError = true)]
     static extern uint SendInput(uint count, Input[] inputs, int size);
-    public static KeyInput[] KeySequence(ConsoleKey key, bool control, bool shift) {
+    public static KeyInput[] KeySequence(ConsoleKey key, bool control, bool shift, bool alt) {
         if (key == 0 || !Enum.IsDefined(typeof(ConsoleKey), key)) throw new ArgumentOutOfRangeException(nameof(key));
         var events = new List<KeyInput>();
         if (control) events.Add(new KeyInput { key = 0x11 });
         if (shift) events.Add(new KeyInput { key = 0x10 });
+        if (alt) events.Add(new KeyInput { key = 0x12 });
         // Extended navigation keys must not be interpreted as their numpad variants.
         uint flags = (key >= ConsoleKey.PageUp && key <= ConsoleKey.DownArrow) || key == ConsoleKey.Insert || key == ConsoleKey.Delete ? 1u : 0u;
         events.Add(new KeyInput { key = (ushort)key, flags = flags });
         events.Add(new KeyInput { key = (ushort)key, flags = flags | 2 });
+        if (alt) events.Add(new KeyInput { key = 0x12, flags = 2 });
         if (shift) events.Add(new KeyInput { key = 0x10, flags = 2 });
         if (control) events.Add(new KeyInput { key = 0x11, flags = 2 });
         return events.ToArray();
     }
-    public static void Press(ConsoleKey key, bool control, bool shift) {
-        var inputs = Array.ConvertAll(KeySequence(key, control, shift), keyboard =>
+    public static void Press(ConsoleKey key, bool control, bool shift, bool alt) {
+        var inputs = Array.ConvertAll(KeySequence(key, control, shift, alt), keyboard =>
             new Input { type = 1, data = new InputData { keyboard = keyboard } });
         Send(inputs);
     }

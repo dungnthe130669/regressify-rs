@@ -29,8 +29,11 @@ pub(super) struct Manifest {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(super) struct SuiteSummary {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
@@ -42,6 +45,8 @@ pub(super) struct SuiteSummary {
 #[serde(rename_all = "camelCase")]
 pub(super) struct SuiteReport {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
     pub run_id: String,
     pub tests: Vec<Capture>,
 }
@@ -250,6 +255,7 @@ pub(crate) fn generate_site(
                 .count();
             summaries.push(SuiteSummary {
                 id: id.clone(),
+                display_name: report.display_name.clone(),
                 total: report.tests.len(),
                 passed,
                 failed: report.tests.len() - passed,
@@ -567,6 +573,92 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
         checked_file(&root, path, false)?;
     }
     Ok(paths.into_iter().collect())
+}
+
+#[cfg(feature = "desktop")]
+pub(crate) fn update_suite(
+    output: &Path,
+    old_id: &str,
+    new_id: Option<&str>,
+    display_name: Option<&str>,
+) -> Result<()> {
+    ensure!(
+        valid_segment(old_id) && new_id.is_none_or(valid_segment),
+        "Invalid snapshot suite identity"
+    );
+    let root = output.canonicalize()?;
+    if checked_file(&root, Path::new("index.html"), true)?.is_none() {
+        return Ok(());
+    }
+    let (_, mut manifest) = read_manifest(&root)?;
+    let selected: Vec<_> = manifest
+        .suites
+        .iter()
+        .map(|suite| suite.id.clone())
+        .collect();
+    artifact_paths(&root, &selected)?;
+    ensure!(
+        new_id.is_none_or(|id| id == old_id || !selected.iter().any(|existing| existing == id)),
+        "A published report already uses the destination suite ID"
+    );
+    let mut reports = Vec::new();
+    for summary in &manifest.suites {
+        reports.push(serde_json::from_slice::<SuiteReport>(&read_versioned(
+            &root,
+            &summary.report,
+            "data",
+        )?)?);
+    }
+    let mut summaries = Vec::new();
+    for (mut summary, mut report) in manifest.suites.into_iter().zip(reports) {
+        if summary.id == old_id {
+            let Some(new_id) = new_id else { continue };
+            summary.id = new_id.into();
+            summary.display_name = display_name
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned);
+            report.id = new_id.into();
+            report.display_name = summary.display_name.clone();
+        }
+        if let Some(new_id) = new_id.filter(|id| *id != old_id) {
+            let prefix = Path::new("_snapshot/images").join(old_id);
+            for capture in &mut report.tests {
+                for image in [&mut capture.reference, &mut capture.test, &mut capture.diff]
+                    .into_iter()
+                    .flatten()
+                {
+                    let relative = versioned_path(image, "images")?;
+                    if let Ok(suffix) = relative.strip_prefix(&prefix) {
+                        let bytes = read_versioned(&root, image, "images")?;
+                        let destination = Path::new("_snapshot/images").join(new_id).join(suffix);
+                        *image = store_asset(
+                            &root,
+                            &destination.to_string_lossy().replace('\\', "/"),
+                            &bytes,
+                        )?;
+                    }
+                }
+            }
+        }
+        summary.report = store_json(
+            &root,
+            &format!("_snapshot/data/suites/{}.json", summary.id),
+            &report,
+        )?;
+        summaries.push(summary);
+    }
+    manifest.suites = summaries;
+    manifest
+        .suites
+        .sort_by(|first, second| first.id.cmp(&second.id));
+    publish_index(&root, &manifest)?;
+    let selected = manifest
+        .suites
+        .iter()
+        .map(|suite| suite.id.clone())
+        .collect::<Vec<_>>();
+    let active = artifact_paths(&root, &selected)?;
+    prune_generated_files(&root, &active)
 }
 
 #[cfg(feature = "desktop")]
@@ -895,6 +987,7 @@ mod tests {
         })).unwrap();
         let report = SuiteReport {
             id: "one".into(),
+            display_name: None,
             run_id: "run".into(),
             tests: vec![capture],
         };
@@ -906,6 +999,7 @@ mod tests {
             generated_at: "2026-09-23T00:00:00Z".into(),
             suites: vec![SuiteSummary {
                 id: "one".into(),
+                display_name: None,
                 total: 1,
                 passed: 0,
                 failed: 1,
@@ -955,6 +1049,47 @@ mod tests {
 
     #[cfg(feature = "desktop")]
     #[test]
+    fn suite_rename_and_delete_refresh_published_dependencies() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        for id in ["shop", "other"] {
+            fs::create_dir_all(root.join(format!("{id}/html_report"))).unwrap();
+            fs::write(
+                root.join(format!("{id}/html_report/config.js")),
+                format!("report({{\"id\":\"{id}\",\"tests\":[]}});"),
+            )
+            .unwrap();
+        }
+        generate_site(
+            &root,
+            &["shop".into(), "other".into()],
+            &args(),
+            &WorkspaceConfig::default(),
+        )
+        .unwrap();
+        let other = fs::read(root.join("_snapshot/data/suites/other.json")).unwrap();
+        update_suite(&root, "shop", Some("checkout"), Some("Customer checkout")).unwrap();
+        artifact_paths(&root, &["checkout".into(), "other".into()]).unwrap();
+        let (_, manifest) = read_manifest(&root).unwrap();
+        assert_eq!(
+            manifest.suites[0].display_name.as_deref(),
+            Some("Customer checkout")
+        );
+        assert!(!root.join("_snapshot/data/suites/shop.json").exists());
+        assert_eq!(
+            fs::read(root.join("_snapshot/data/suites/other.json")).unwrap(),
+            other
+        );
+        assert!(update_suite(&root, "checkout", Some("other"), None).is_err());
+        update_suite(&root, "checkout", None, None).unwrap();
+        artifact_paths(&root, &["other".into()]).unwrap();
+        assert!(!root.join("_snapshot/data/suites/checkout.json").exists());
+        update_suite(&root, "other", None, None).unwrap();
+        artifact_paths(&root, &[]).unwrap();
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
     fn versioned_image_roles_protect_errors_diffs_and_shared_captures() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().canonicalize().unwrap();
@@ -972,6 +1107,7 @@ mod tests {
         })).unwrap()).collect();
         let report = SuiteReport {
             id: "one".into(),
+            display_name: None,
             run_id: "run".into(),
             tests,
         };
@@ -983,6 +1119,7 @@ mod tests {
             generated_at: "2026-09-23T00:00:00Z".into(),
             suites: vec![SuiteSummary {
                 id: "one".into(),
+                display_name: None,
                 total: 2,
                 passed: 1,
                 failed: 1,

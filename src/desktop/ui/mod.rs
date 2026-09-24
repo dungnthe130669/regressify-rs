@@ -121,6 +121,7 @@ pub struct Workbench {
     #[cfg(target_os = "windows")]
     taskbar: Option<super::jump_list::WindowTaskbar>,
     source: Entity<EditorState>,
+    source_focus_restore: Option<PathBuf>,
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
     bindings: Vec<Binding>,
@@ -153,6 +154,7 @@ pub struct Workbench {
     overview: bool,
     scenario_search: Entity<InputState>,
     suite_list: lists::ListState<PathBuf>,
+    suite_menu: Option<navigation::SuiteMenu>,
     scenario_list: lists::ListState<(PathBuf, usize)>,
     workspace_list: lists::ListState<PathBuf>,
     sequence_list: lists::ListState<(PathBuf, usize, usize)>,
@@ -208,6 +210,9 @@ impl Workbench {
         let source_observer = cx.observe(&source, |_, _, cx| cx.notify());
         let appearance_subscription = cx.observe_window_appearance(window, |this, window, cx| {
             this.system_appearance_changed(window.appearance(), window, cx);
+        });
+        let activation_subscription = cx.observe_window_activation(window, |this, window, cx| {
+            this.source_window_activation_changed(window, cx);
         });
         let field_search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a setting"));
         let field_search_subscription =
@@ -327,6 +332,7 @@ impl Workbench {
             #[cfg(target_os = "windows")]
             taskbar: None,
             source,
+            source_focus_restore: None,
             resolved,
             search,
             bindings: Vec::new(),
@@ -340,6 +346,7 @@ impl Workbench {
                 results_subscription,
                 results_observer,
                 appearance_subscription,
+                activation_subscription,
                 git_subscription,
             ],
             field_subscriptions: Vec::new(),
@@ -370,6 +377,7 @@ impl Workbench {
             overview: true,
             scenario_search,
             suite_list: lists::ListState::new(cx),
+            suite_menu: None,
             scenario_list: lists::ListState::new(cx),
             workspace_list: lists::ListState::new(cx),
             sequence_list: lists::ListState::new(cx),
@@ -856,6 +864,7 @@ impl Workbench {
             .cloned()
             .ok_or_else(|| anyhow!("The selected file is not an active test suite"))?;
         let suite: crate::types::TestSuite = serde_json::from_value(self.value.clone())?;
+        summary.display_name = suite.display_name;
         summary.scenarios = workspace::ScenarioSummary::from_scenarios(&suite.scenarios);
         summary.error = None;
         Ok(summary)
@@ -1050,11 +1059,12 @@ impl Workbench {
                 },
             ))
         })();
+        let outputs = self.runs.read(cx).suite_output_roots();
         match snapshot {
             Ok((workspace, mut snapshot)) => self.task(
                 "Saving...",
                 move || {
-                    workspace.save(&mut snapshot)?;
+                    workspace.save_in_outputs(&mut snapshot, &outputs)?;
                     Ok((
                         snapshot.document.source().to_string(),
                         workspace.suite_catalog(),
@@ -1264,7 +1274,11 @@ impl Workbench {
                 .and_then(|value| value.get(&field.key))
                 .unwrap_or(&Value::Null);
             let text = field.display(value);
-            let placeholder = field.display(&self.effective[&schema::effective_key(&field.key)]);
+            let placeholder = if field.key == "displayName" {
+                field.label.clone()
+            } else {
+                field.display(&self.effective[&schema::effective_key(&field.key)])
+            };
             let control = match &field.kind {
                 FieldKind::Boolean => Control::Boolean,
                 FieldKind::Choice(_) => Control::Choice,
@@ -1813,6 +1827,7 @@ impl Workbench {
                 && self.session.selection == Selection::Root
                 && ![
                     "id",
+                    "displayName",
                     "browser",
                     "viewportNames",
                     "misMatchThreshold",
@@ -2468,11 +2483,16 @@ impl Workbench {
 
     fn selection_title(&self) -> String {
         match self.session.selection {
-            Selection::Root => self
-                .session
-                .open
-                .as_ref()
-                .and_then(|open| open.entry.suite_name())
+            Selection::Root => self.value["displayName"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    self.session
+                        .open
+                        .as_ref()
+                        .and_then(|open| open.entry.suite_name())
+                })
                 .unwrap_or_else(|| "Workspace settings".into()),
             Selection::Scenario(index) => self.scenario_title(index),
             Selection::Action { scenario, index } => {
@@ -2867,13 +2887,6 @@ fn bind_keys(cx: &mut App) {
             &format!("{modifier}-r"),
             files::FileCommand {
                 operation: files::Operation::Reload,
-            },
-            Some("Regressify"),
-        ),
-        KeyBinding::new(
-            "f2",
-            files::FileCommand {
-                operation: files::Operation::Rename,
             },
             Some("Regressify"),
         ),

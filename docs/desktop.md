@@ -727,6 +727,11 @@ includes filtered-out rows. Shortcuts in search boxes, document fields, and
 source/log editors continue to operate on their text, not the surrounding lists.
 Selection shortcuts respect active-operation locks.
 
+Right-click a Test suites row for Rename suite or Delete suite. With that panel
+focused, F2 renames the focused suite and Delete opens its deletion confirmation.
+These commands target one row, including in Results; they do not apply to every
+checked suite or intercept keys in text inputs. Active runs block both operations.
+
 Runs > Suites supports Ctrl+A, Ctrl+Shift+A, and Escape for its checklist. Git's
 Changes and Comparison Changes trees support the same selection shortcuts within
 the focused group, keeping comparison artifacts separate and excluding conflicts
@@ -755,7 +760,7 @@ lists. Image previews have horizontal and vertical scrollbars when the selected
 zoom exceeds the available space. Side-by-side previews share both scroll offsets;
 scrolling or dragging a thumb in either pane moves both images together.
 
-Suite search matches paths and scenario labels, IDs, or URLs across the workspace,
+Suite search matches display names, paths, and scenario labels, IDs, or URLs across the workspace,
 but displays matching suites only. Open a suite to see its scenarios below. The
 lower search filters only that suite, without changing the suite search or run
 selection. Selected narrows the upper list to selected suites. Ctrl+P (Cmd+P on
@@ -784,6 +789,28 @@ These actions require an open workspace and do not save or discard editor drafts
 Save As takes a workspace-relative destination and never replaces an existing
 file. Reload discards a draft after confirmation. Suite-file deletion is
 confirmed but cannot be undone through document history.
+
+The Rename suite dialog edits Filename and Display name independently. Display
+name is the optional suite-level `displayName` property, also available in
+Fields > General. Nonblank values label the desktop app and snapshot site;
+omitted or blank values fall back to the filename-derived name (or report ID).
+Changing this label does not change the file on disk, suite ID, capture names,
+CLI filters, or site routes.
+
+Renaming a filename-derived suite moves its references, every saved test run,
+and comparison reports to the new output ID. An explicit `id` stays unchanged.
+Deleting a suite removes its corresponding references, test history, and local
+report entries. Published local snapshot data and cache-versioned links are
+updated; unrelated suites and browser states are preserved. Saving a display
+name also refreshes existing local report labels without recapturing.
+
+Operations cover `.regressify`, workspace `.regressify__<environment>` folders,
+and custom output roots selected or recorded in desktop activity. Unknown custom
+roots cannot be discovered automatically. Shared/ambiguous IDs, destination
+collisions, unsafe links, malformed reports, and external document changes stop
+the operation. Updates are staged with rollback on ordinary I/O failures; avoid
+running CLI writers concurrently. They are not crash-atomic. Remote deployments
+are never modified automatically; redeploy to publish the updated site.
 
 The title bar displays the package version beside Regressify. Help > About shows
 Regressify Desktop, its version, author Tuyen Pham, and the clickable website
@@ -946,13 +973,17 @@ or `~` values remain invalid, as do blank suite, viewport, data, and JSON docume
 
 Source has local YAML/JSON schema completion. Suggestions appear while typing
 property names, supported values, and documented examples; Ctrl+Space opens the menu
-explicitly (also Ctrl+Space on macOS). Arrow keys choose an item, Enter accepts,
+explicitly (also Ctrl+Space on macOS). Arrow keys choose an item, Enter or Tab accepts,
 and Escape dismisses. Keys follow the schema through nested objects and lists,
 including Basic Auth, URL replacements, iframe settings, and navigation options.
 Required fields appear first; existing sibling keys and unrelated action fields
 are excluded. Suggestions include the expected type, descriptions, units, and
 safe examples. Structured examples insert valid YAML flow notation or JSON.
 Accepting a suggestion replaces only the partial token, preserving surrounding source.
+Without suggestions, Tab indents and Shift+Tab outdents as usual. Returning from
+another window restores lost Source focus for the same visible document, so you can
+accept or dismiss suggestions without clicking the editor. Focus in another control
+is preserved.
 
 Hover over a field or value for its schema description, required/optional status,
 expected type, and examples. These hints contain schema metadata, not entered
@@ -998,8 +1029,9 @@ object when a required field is missing. The issue button moves to the next
 issue, wrapping to the first. Fixing the draft clears resolved diagnostics.
 
 `./ci/desktop-smoke.ps1 -SchemaFlows` verifies missing-origin guidance, credential-safe
-messages, issue jumps, nested completion acceptance, save guards, and compact/large
-light/dark layouts in a synthetic workspace on an unlocked Windows desktop.
+messages, issue jumps, Enter/Tab completion and Escape after Alt+Tab away and native
+reactivation, save guards, and compact/large light/dark layouts in a synthetic
+workspace on an unlocked Windows desktop.
 
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.
@@ -1374,7 +1406,8 @@ toolbar Undo/Redo always use complete document history.
 | Ctrl+Z / Ctrl+Shift+Z                | Undo / redo                                            |
 | Ctrl+F in Source or Log              | Find                                                   |
 | Ctrl+Space in Source (all platforms) | Show schema suggestions                                |
-| F2                                   | Rename suite                                           |
+| F2 in Test suites                    | Rename the focused suite                               |
+| Delete in Test suites                | Confirm deletion of the focused suite and its data     |
 | F5                                   | Refresh files                                          |
 
 ## Verification

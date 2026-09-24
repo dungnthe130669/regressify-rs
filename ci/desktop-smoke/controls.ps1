@@ -16,9 +16,9 @@ function Send-FixtureText([string]$Text) {
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }
 
-function Send-FixtureKeys([ConsoleKey]$Key, [switch]$Control, [switch]$Shift) {
+function Send-FixtureKeys([ConsoleKey]$Key, [switch]$Control, [switch]$Shift, [switch]$Alt) {
     Focus-Fixture
-    [RegressifySmokeText]::Press($Key, $Control.IsPresent, $Shift.IsPresent)
+    [RegressifySmokeText]::Press($Key, $Control.IsPresent, $Shift.IsPresent, $Alt.IsPresent)
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }
 

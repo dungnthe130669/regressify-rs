@@ -665,7 +665,8 @@ mod tests {
 
     #[test]
     fn schema_covers_workspace_suite_scenario_and_viewports() {
-        let suite: TestSuite = serde_json::from_value(json!({"scenarios": []})).unwrap();
+        let suite: TestSuite =
+            serde_json::from_value(json!({"scenarios": [], "displayName": "Suite label"})).unwrap();
         let scenario: TestScenario =
             serde_json::from_value(json!({"url": "https://example.com"})).unwrap();
         for (scope, serialized) in [
@@ -691,6 +692,14 @@ mod tests {
             assert_eq!(actual, expected, "{scope:?}");
         }
         let scenarios = fields(&Scope::Scenario).unwrap();
+        assert!(
+            fields(&Scope::Suite)
+                .unwrap()
+                .iter()
+                .any(|field| field.key == "displayName"
+                    && !field.required
+                    && field.kind == FieldKind::Text)
+        );
         assert!(
             scenarios
                 .iter()

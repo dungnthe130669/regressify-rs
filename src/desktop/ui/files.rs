@@ -28,6 +28,7 @@ pub(super) enum Pending {
     Workspace(PathBuf),
     Location(Entry, Selection),
     Name(Operation),
+    SuiteOperation(Entry, Operation),
     Reload,
     Close,
     Update,
@@ -126,8 +127,9 @@ impl Workbench {
         let suite = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
         !self.busy
             && match operation {
-                Operation::Duplicate | Operation::Rename => suite,
-                Operation::Delete => suite && !self.unsaved(),
+                Operation::Duplicate => suite,
+                Operation::Rename => suite && !self.runs.read(cx).running(),
+                Operation::Delete => suite && !self.unsaved() && !self.runs.read(cx).running(),
                 Operation::SaveAs => {
                     open.is_some() && self.diagnostic.is_none() && self.field_errors.is_empty()
                 }
@@ -171,12 +173,16 @@ impl Workbench {
             return;
         }
         match command.operation {
-            Operation::New | Operation::Duplicate | Operation::Rename => {
+            Operation::New | Operation::Duplicate => {
                 self.guard(Pending::Name(command.operation), window, cx)
+            }
+            Operation::Rename | Operation::Delete => {
+                if let Some(entry) = self.session.open.as_ref().map(|open| open.entry.clone()) {
+                    self.begin_suite_operation(entry, command.operation, window, cx);
+                }
             }
             Operation::SaveAs => self.name_dialog(Operation::SaveAs, window, cx),
             Operation::Reload => self.guard(Pending::Reload, window, cx),
-            Operation::Delete => self.confirm_remove(true, window, cx),
             Operation::Config => self.create_config(false, window, cx),
             Operation::Viewports => self.create_config(true, window, cx),
             Operation::Browse => self.browse_document(window, cx),
@@ -304,6 +310,33 @@ impl Workbench {
             Pending::Workspace(path) => self.load_workspace(path, window, cx),
             Pending::Location(entry, selection) => self.open_location(entry, selection, window, cx),
             Pending::Name(operation) => self.name_dialog(operation, window, cx),
+            Pending::SuiteOperation(entry, operation) => {
+                if self.busy || self.runs.read(cx).running() {
+                    return;
+                }
+                if self
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.entry.path == entry.path)
+                {
+                    self.finish_suite_operation(operation, window, cx);
+                } else if let Some(workspace) = self.session.workspace.clone() {
+                    self.task(
+                        "Loading suite...",
+                        move || workspace.open_document(entry),
+                        move |this, open, window, cx| {
+                            this.session.open = Some(open);
+                            this.session.selection = Selection::Root;
+                            this.tab = 0;
+                            this.sync_editor(window, cx);
+                            this.finish_suite_operation(operation, window, cx);
+                        },
+                        window,
+                        cx,
+                    );
+                }
+            }
             Pending::Reload => {
                 if let Some(entry) = self.session.open.as_ref().map(|open| open.entry.clone()) {
                     self.load_document(entry, window, cx);
@@ -314,6 +347,44 @@ impl Workbench {
             Pending::Run(intent) => self.start_selected_run(*intent, window, cx),
             Pending::Git(request) => self.confirm_git(*request, window, cx),
             Pending::CloseWorkspace => self.close_workspace(window, cx),
+        }
+    }
+
+    pub(super) fn begin_suite_operation(
+        &mut self,
+        entry: Entry,
+        operation: Operation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy
+            || self.runs.read(cx).running()
+            || entry.kind != DocumentKind::Suite
+            || !matches!(operation, Operation::Rename | Operation::Delete)
+        {
+            return;
+        }
+        self.suite_menu = None;
+        if self.session.open.is_some()
+            && let Err(error) = self.flush_drafts(window, cx)
+        {
+            self.status = format!("{error:#}");
+            cx.notify();
+            return;
+        }
+        self.guard(Pending::SuiteOperation(entry, operation), window, cx);
+    }
+
+    fn finish_suite_operation(
+        &mut self,
+        operation: Operation,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match operation {
+            Operation::Rename => self.name_dialog(operation, window, cx),
+            Operation::Delete => self.confirm_remove(true, window, cx),
+            _ => {}
         }
     }
 
@@ -345,20 +416,42 @@ impl Workbench {
             ),
             _ => return,
         };
-        let name = cx.new(|cx| InputState::new(window, cx).default_value(initial));
+        let name = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Filename")
+                .default_value(initial)
+        });
+        let display_name = (operation == Operation::Rename).then(|| {
+            cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("Display name")
+                    .default_value(self.value["displayName"].as_str().unwrap_or_default())
+            })
+        });
         let view = cx.entity();
         self.status = title.into();
         self.sync_modal(cx);
         let modal = self.modal.clone();
         window.open_dialog(cx, move |dialog, window, cx| {
             let name = name.clone();
+            let display_name = display_name.clone();
             let state = modal.read(cx);
             let busy = state.busy;
             dialog
                 .title(title)
                 .close_button(false)
                 .keyboard(!busy)
+                .when(operation == Operation::Rename, |dialog| {
+                    dialog.child(div().text_sm().child("Filename"))
+                })
                 .child(Input::new(&name).id("file-name").disabled(busy))
+                .when_some(display_name.as_ref(), |dialog, display_name| {
+                    dialog.child(div().text_sm().child("Display name")).child(
+                        Input::new(display_name)
+                            .id("suite-display-name")
+                            .disabled(busy),
+                    )
+                })
                 .child(
                     div()
                         .text_sm()
@@ -391,6 +484,9 @@ impl Workbench {
                                         this.commit_named_file(
                                             operation,
                                             name.read(cx).value().to_string(),
+                                            display_name
+                                                .as_ref()
+                                                .map(|input| input.read(cx).value().to_string()),
                                             window,
                                             cx,
                                         );
@@ -423,6 +519,7 @@ impl Workbench {
         &mut self,
         operation: Operation,
         name: String,
+        display_name: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -446,6 +543,21 @@ impl Workbench {
                 }
             }
         };
+        if operation == Operation::Rename && self.runs.read(cx).running() {
+            return;
+        }
+        let previous = self
+            .session
+            .open
+            .as_ref()
+            .and_then(|open| {
+                self.session
+                    .suites
+                    .iter()
+                    .find(|suite| suite.entry.path == open.entry.path)
+            })
+            .cloned();
+        let outputs = self.runs.read(cx).suite_output_roots();
         self.task(
             "Writing file...",
             move || {
@@ -461,21 +573,45 @@ impl Workbench {
                     )?,
                     Operation::Rename => {
                         let mut open = snapshot.ok_or_else(|| anyhow!("Open a suite first"))?;
-                        workspace.rename_suite(&mut open, &name)?;
+                        workspace.rename_suite_in_outputs(
+                            &mut open,
+                            &name,
+                            display_name.as_deref(),
+                            &outputs,
+                        )?;
                         open
                     }
                     _ => return Err(anyhow!("Unsupported file operation")),
                 };
                 Ok((open, workspace.entries()?))
             },
-            |this, (open, entries), window, cx| {
+            move |this, (open, entries), window, cx| {
+                if operation == Operation::Rename
+                    && let Some(previous) = previous
+                {
+                    let mut updated = previous.clone();
+                    updated.entry = open.entry.clone();
+                    updated.name = open.entry.suite_name().unwrap_or_default();
+                    let value = open.document.value().unwrap_or_default();
+                    updated.output_id = value["id"].as_str().unwrap_or(&updated.name).into();
+                    updated.display_name = value["displayName"].as_str().map(str::to_owned);
+                    this.runs.update(cx, |panel, cx| {
+                        panel.suite_changed(&previous, Some(&updated), cx)
+                    });
+                }
                 this.session.open = Some(open);
                 this.overview = false;
                 this.main_tab = 0;
                 this.session.entries = entries;
                 this.session.selection = Selection::Root;
+                this.suite_list.current = this
+                    .session
+                    .open
+                    .as_ref()
+                    .map(|open| open.entry.path.clone());
                 this.tab = 0;
                 this.sync_editor(window, cx);
+                this.refresh_results(window, cx);
                 this.status = "File saved".into();
                 window.close_dialog(cx);
             },
@@ -490,7 +626,7 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.busy || self.session.open.is_none() {
+        if self.busy || self.session.open.is_none() || (file && self.runs.read(cx).running()) {
             return;
         }
         if file && self.unsaved() {
@@ -499,7 +635,7 @@ impl Workbench {
             return;
         }
         let title = if file {
-            "Delete suite file?"
+            "Delete suite and its data?"
         } else {
             "Remove selected item?"
         };
@@ -526,7 +662,8 @@ impl Workbench {
                 .title(title)
                 .close_button(false)
                 .keyboard(!busy)
-                .child(target.clone())
+                .child(div().id("remove-target").role(Role::Status).aria_label(title).test_support().child(target.clone()))
+                .when(file, |dialog| dialog.child("Reference images, test runs, and local reports for this suite will also be deleted."))
                 .footer(
                     div()
                         .flex()
@@ -554,6 +691,8 @@ impl Workbench {
                                         let Some(workspace) = this.session.workspace.clone() else {
                                             return;
                                         };
+                                        if this.runs.read(cx).running() { return; }
+                                        let outputs = this.runs.read(cx).suite_output_roots();
                                         let snapshot = match this.snapshot() {
                                             Ok(snapshot) => snapshot,
                                             Err(error) => {
@@ -562,17 +701,23 @@ impl Workbench {
                                                 return;
                                             }
                                         };
+                                        let previous = this.session.suites.iter().find(|suite| suite.entry.path == snapshot.entry.path).cloned();
                                         this.task(
                                             "Deleting suite...",
                                             move || {
-                                                workspace.delete_suite(&snapshot)?;
+                                                workspace.delete_suite_in_outputs(&snapshot, &outputs)?;
                                                 workspace.entries()
                                             },
-                                            |this, entries, window, cx| {
+                                            move |this, entries, window, cx| {
+                                                if let Some(previous) = previous {
+                                                    this.runs.update(cx, |panel, cx| panel.suite_changed(&previous, None, cx));
+                                                }
                                                 this.session.open = None;
                                                 this.session.entries = entries;
                                                 this.session.selection = Selection::Root;
+                                                this.suite_list.current = None;
                                                 this.sync_editor(window, cx);
+                                                this.refresh_results(window, cx);
                                                 this.status = "Suite deleted".into();
                                                 window.close_dialog(cx);
                                             },

@@ -348,14 +348,14 @@ impl RunPanel {
                 }
                 let expanded = !self.collapsed.contains(&suite.id);
                 let state = suite_status(counts, suite.finished || progress.finished);
-                content = content.child(self.suite_header(
-                    &suite.id,
-                    &suite.name,
-                    counts,
-                    state,
-                    expanded,
-                    cx,
-                ));
+                let label = self
+                    .suites
+                    .iter()
+                    .find(|entry| entry.output_id == suite.id)
+                    .map(|entry| entry.label())
+                    .unwrap_or(&suite.name);
+                content =
+                    content.child(self.suite_header(&suite.id, label, counts, state, expanded, cx));
                 if expanded {
                     for scenario in progress
                         .scenarios
@@ -491,7 +491,7 @@ impl RunPanel {
             {
                 content = content.child(self.suite_header(
                     &suite.output_id,
-                    &suite.name,
+                    suite.label(),
                     Counts {
                         total: self.selection.scenario_count(suite),
                         queued: self.selection.scenario_count(suite),

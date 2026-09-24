@@ -16,6 +16,8 @@ use super::site::{
 #[derive(Deserialize)]
 struct RawReport {
     id: String,
+    #[serde(rename = "displayName")]
+    display_name: Option<String>,
     tests: Vec<RawTest>,
 }
 
@@ -352,6 +354,9 @@ pub(super) fn load_suite(
     }
     Ok(Some(SuiteReport {
         id: id.into(),
+        display_name: crate::compare::report_gen::read_suite_metadata(&root.join(id))?
+            .map(|metadata| metadata.display_name)
+            .unwrap_or(report.display_name),
         run_id,
         tests,
     }))
@@ -410,6 +415,26 @@ mod tests {
             "suite",
             &mut BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn suite_display_name_uses_metadata_with_legacy_report_fallback() {
+        let (temp, mut report) = fixture();
+        assert!(load(temp.path()).unwrap().unwrap().display_name.is_none());
+        report["displayName"] = json!("Captured name");
+        write_fixture(temp.path(), &report);
+        assert_eq!(
+            load(temp.path()).unwrap().unwrap().display_name.as_deref(),
+            Some("Captured name")
+        );
+        for name in [Some("Current name"), None] {
+            crate::compare::report_gen::write_suite_metadata(&temp.path().join("suite"), name)
+                .unwrap();
+            let suite = load(temp.path()).unwrap().unwrap();
+            assert_eq!(suite.display_name.as_deref(), name);
+            assert_eq!(suite.id, "suite");
+            assert_eq!(suite.run_id, "current");
+        }
     }
 
     #[test]

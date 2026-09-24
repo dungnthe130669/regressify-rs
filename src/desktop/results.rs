@@ -39,6 +39,8 @@ impl Outcome {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Report {
     pub id: String,
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
     #[serde(default)]
     pub test_suite: String,
     pub tests: Vec<TestResult>,
@@ -659,18 +661,28 @@ impl Catalog {
                 })
                 .collect::<Vec<_>>();
             let suite = (candidates.len() == 1).then(|| candidates[0]);
-            report.suite_name = suite.map(|suite| suite.name.clone()).unwrap_or_else(|| {
-                let name = if report.report.test_suite.is_empty() {
-                    &report.report.id
-                } else {
-                    &report.report.test_suite
-                };
-                if generated_id(name) || uuid::Uuid::parse_str(name).is_ok() {
-                    "Unmatched suite".into()
-                } else {
-                    name.clone()
-                }
-            });
+            report.suite_name = suite
+                .map(|suite| suite.label().to_owned())
+                .unwrap_or_else(|| {
+                    if let Some(name) = report
+                        .report
+                        .display_name
+                        .as_ref()
+                        .filter(|name| !name.trim().is_empty())
+                    {
+                        return name.clone();
+                    }
+                    let name = if report.report.test_suite.is_empty() {
+                        &report.report.id
+                    } else {
+                        &report.report.test_suite
+                    };
+                    if generated_id(name) || uuid::Uuid::parse_str(name).is_ok() {
+                        "Unmatched suite".into()
+                    } else {
+                        name.clone()
+                    }
+                });
             report.source = suite.map(|suite| suite.entry.clone());
             report.report.resolve_names(suite);
         }
@@ -908,6 +920,7 @@ mod tests {
                 kind: DocumentKind::Suite,
             },
             name: "checkout".into(),
+            display_name: None,
             output_id: "shop".into(),
             error: None,
             scenarios: vec![
@@ -928,6 +941,27 @@ mod tests {
                 },
             ],
         }
+    }
+
+    #[test]
+    fn result_suite_display_names_do_not_change_artifact_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory.path().join("shop/bitmaps_test/run");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(
+            run.join("report.json"),
+            br#"{"id":"shop","displayName":"Recorded name","tests":[]}"#,
+        )
+        .unwrap();
+        let mut catalog = Catalog::load(directory.path()).unwrap();
+        catalog.resolve_names(&[]);
+        assert_eq!(catalog.reports[0].suite_name, "Recorded name");
+        let mut suite = suite();
+        suite.display_name = Some("Current name".into());
+        catalog.resolve_names(&[suite]);
+        assert_eq!(catalog.reports[0].suite_name, "Current name");
+        assert_eq!(catalog.reports[0].report.id, "shop");
+        assert_eq!(catalog.reports[0].run_id, "run");
     }
 
     #[test]

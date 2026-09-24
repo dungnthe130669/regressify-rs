@@ -210,6 +210,54 @@ test("page titles follow suite navigation, deep links, and the overview", async 
   await expect(page).toHaveTitle(reportTitle);
 });
 
+test("suite display names label navigation without changing routes", async ({
+  page,
+  isMobile,
+}, info) => {
+  const displayName = "Customer checkout / desktop <review>";
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
+    const response = await route.fetch();
+    const manifest = await response.json();
+    for (const suite of manifest.suites) {
+      if (suite.id === "orders-and-checkout") suite.displayName = displayName;
+    }
+    await route.fulfill({ response, json: manifest });
+  });
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
+  const reportTitle = await page.title();
+  await page.getByRole("searchbox", { name: "Search suites" }).fill("Customer checkout");
+  await expect(page.locator(".suite-name")).toHaveCount(1);
+  await expect(page.locator(".suite-name")).toHaveText(displayName);
+  await page.locator(".suite-name").click();
+  await expect(page).toHaveURL(/\/suites\/orders-and-checkout$/);
+  await expect(page.getByRole("heading", { name: displayName, exact: true })).toBeVisible();
+  await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
+  await screenshot(page, info.project.name, "suite-display-name");
+  await page.locator(".capture-card").first().click();
+  await expect(page).toHaveURL(/\/suites\/orders-and-checkout\/images\//);
+  await page.getByRole("button", { name: "Capture information", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Capture information" })
+      .locator("dd[title='orders-and-checkout']"),
+  ).toHaveText(displayName);
+  await page.getByRole("button", { name: "Close capture information" }).click();
+  await expect(
+    page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: displayName }),
+  ).toBeVisible();
+  await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
+  await page.reload();
+  await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page.getByRole("searchbox", { name: "Find a suite" }).fill("Customer checkout");
+  const navigation = page.getByRole("navigation", { name: "Test suites", exact: true });
+  await expect(navigation.getByRole("link")).toHaveCount(1);
+  await expect(navigation.getByRole("link")).toContainText(displayName);
+  await expect(navigation.getByRole("link")).toHaveAttribute("href", "/suites/orders-and-checkout");
+  await expect(page.locator("review")).toHaveCount(0);
+});
+
 test("overview centers metrics and result columns with aligned suite labels", async ({
   page,
 }, info) => {

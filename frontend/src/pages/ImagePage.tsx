@@ -2,7 +2,7 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router";
 import { ComparisonViewer } from "../components/ComparisonViewer";
 import { IconButton, StatePanel, StatusBadge, useFilters } from "../components/ui";
-import { filterCaptures, imagePath, suitePath } from "../data/report";
+import { filterCaptures, imagePath, suiteLabel, suitePath } from "../data/report";
 import { useSuite } from "../data/store";
 
 export default function ImagePage() {
@@ -80,6 +80,7 @@ export default function ImagePage() {
         key={capture.id}
         capture={capture}
         suiteId={summary.id}
+        suiteName={suiteLabel(summary)}
         runId={data.runId}
         mode={params.get("mode")}
         onMode={(mode) => set("mode", mode)}

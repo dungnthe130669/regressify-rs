@@ -201,6 +201,40 @@ fn position(text: &str, offset: usize) -> Position {
 }
 
 impl Workbench {
+    pub(super) fn source_window_activation_changed(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !window.is_window_active() {
+            self.source_focus_restore = self
+                .session
+                .open
+                .as_ref()
+                .filter(|_| self.source.read(cx).focus_handle(cx).is_focused(window))
+                .map(|open| open.entry.path.clone());
+            return;
+        }
+        let Some(path) = self.source_focus_restore.take() else {
+            return;
+        };
+        // Restore only the same visible editor, without taking focus from another control.
+        if self.busy
+            || self.main_tab != 0
+            || self.overview
+            || self.tab != 1
+            || self
+                .session
+                .open
+                .as_ref()
+                .is_none_or(|open| open.entry.path != path)
+            || window.focused(cx).is_some_and(|focus| focus != self.focus)
+        {
+            return;
+        }
+        window.focus(&self.source.read(cx).focus_handle(cx), cx);
+    }
+
     pub(super) fn apply_editor_display(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.source_wrap = self.preferences.source_wrap;
         self.source_line_numbers = self.preferences.source_line_numbers;
@@ -550,7 +584,7 @@ impl Workbench {
     }
 
     pub(super) fn render_source(&self, cx: &mut Context<Self>) -> AnyElement {
-        use gpui_kit::component::input::{Enter, Escape, MoveDown, MoveUp};
+        use gpui_kit::component::input::{Enter, Escape, IndentInline, MoveDown, MoveUp};
         let cursor = self.source.read(cx).cursor_position();
         let location = format!("Ln {}, Col {}", cursor.line + 1, cursor.character + 1);
         let language = self.source.read(cx).language_name().to_uppercase();
@@ -571,6 +605,16 @@ impl Workbench {
             .key_context("RegressifySource")
             .capture_action(cx.listener(|this, action: &Enter, window, cx| {
                 this.route_completion(action, window, cx)
+            }))
+            .capture_action(cx.listener(|this, _: &IndentInline, window, cx| {
+                this.route_completion(
+                    &Enter {
+                        secondary: false,
+                        shift: false,
+                    },
+                    window,
+                    cx,
+                )
             }))
             .capture_action(cx.listener(|this, action: &MoveDown, window, cx| {
                 this.route_completion(action, window, cx)

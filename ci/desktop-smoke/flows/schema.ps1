@@ -37,6 +37,63 @@ function Test-SchemaFlows {
             throw 'Switching Source and Fields changed the invalid draft.'
         }
     }
+    function Test-SchemaCompletionKeys {
+        $switchWindow = [System.Windows.Forms.Form]::new()
+        $switchWindow.Text = 'Regressify focus fixture'
+        $switchWindow.Size = [System.Drawing.Size]::new(320, 180)
+        try {
+            $switchWindow.Show()
+            $switchWindow.Activate()
+            Wait-WindowState {
+                [System.Windows.Forms.Application]::DoEvents()
+                [RegressifySmokeFocus]::GetForegroundWindow() -eq $switchWindow.Handle
+            } 'Cannot activate the temporary focus fixture.'
+            foreach ($key in @('Enter', 'Tab', 'Escape')) {
+                $draft = "scenarios: []`nbasicAuth:`n  ori"
+                Write-SchemaSource $draft
+                Send-FixtureKeys Spacebar -Control
+                Wait-Control '1 suggestion' | Out-Null
+                $focusedBefore = [System.Windows.Automation.AutomationElement]::FocusedElement
+                if ($focusedBefore.Current.ProcessId -ne $process.Id) {
+                    throw 'The Regressify fixture was not focused before Alt+Tab.'
+                }
+                Send-FixtureKeys Tab -Alt
+                Wait-WindowState {
+                    [System.Windows.Forms.Application]::DoEvents()
+                    [RegressifySmokeFocus]::GetForegroundWindow() -eq $switchWindow.Handle
+                } 'Alt+Tab did not switch to the temporary focus fixture.'
+                Focus-Fixture
+                try {
+                    Wait-WindowState {
+                        $focusedAfter = [System.Windows.Automation.AutomationElement]::FocusedElement
+                        [System.Windows.Automation.Automation]::Compare($focusedBefore, $focusedAfter)
+                    } 'Returning from Alt+Tab did not restore source editor focus.'
+                } catch {
+                    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                    Write-Output ("Focus after Alt+Tab: name='{0}', type='{1}'" -f $focused.Current.Name, $focused.Current.ControlType.ProgrammaticName)
+                    Capture-Window 'schema-completion-focus-failure'
+                    throw
+                }
+                Capture-Window ('schema-completion-reactivated-' + $key.ToLowerInvariant())
+                Send-FixtureKeys $key
+                Wait-WindowState { $null -eq (Find-Control '1 suggestion') } "$key did not close the suggestion menu after Alt+Tab."
+                if ($key -eq 'Escape') {
+                    if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) {
+                        throw 'Escape changed the source instead of cancelling the suggestion.'
+                    }
+                } else {
+                    Wait-SourceText 'origin:'
+                    Send-FixtureText 'https://example.com'
+                    if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne "scenarios: []`nbasicAuth:`n  origin: https://example.com") {
+                        throw "$key did not accept exactly one suggestion and preserve typing focus."
+                    }
+                }
+            }
+        } finally {
+            $switchWindow.Close()
+            $switchWindow.Dispose()
+        }
+    }
     function Get-SchemaIssueDescription([int]$Line) {
         $row = Wait-Control "Issue on line $Line" 'Source issues'
         $description = $row.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
@@ -189,6 +246,7 @@ function Test-SchemaFlows {
     Send-FixtureKeys Enter
     Wait-SourceText 'origin:'
     Send-FixtureKeys Escape
+    Test-SchemaCompletionKeys
     $valid = "scenarios:`n  - url: https://example.com`n    label: Schema example`nbasicAuth:`n  origin: https://example.com`n  username: qa-user`n  password: synthetic-password`n"
     Write-SchemaSource $valid
     Send-FixtureKeys Escape
@@ -199,7 +257,7 @@ function Test-SchemaFlows {
     if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
     Capture-Window 'schema-corrected'
-    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, completion, corrected save, and compact light/dark layouts passed.'
+    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, Enter/Tab completion and Escape after Alt+Tab, corrected save, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }

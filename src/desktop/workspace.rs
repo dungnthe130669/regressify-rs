@@ -14,6 +14,8 @@ use walkdir::WalkDir;
 use super::document::{Document, DocumentKind, Format, MAX_DOCUMENT_BYTES};
 use crate::helpers::{is_windows_reserved_path_component, write_file_atomically};
 
+mod artifacts;
+
 /// Format paths for people without changing filesystem identity or resolving relative paths.
 pub fn display_path(path: &Path) -> String {
     let text = path.to_string_lossy().replace('\\', "/");
@@ -60,9 +62,19 @@ pub struct OpenDocument {
 pub struct SuiteSummary {
     pub entry: Entry,
     pub name: String,
+    pub display_name: Option<String>,
     pub output_id: String,
     pub scenarios: Vec<ScenarioSummary>,
     pub error: Option<String>,
+}
+
+impl SuiteSummary {
+    pub fn label(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +91,19 @@ pub struct SuiteSelection {
 }
 
 impl SuiteSelection {
+    pub fn rename_suite(&mut self, old: &str, new: Option<&str>) {
+        let selected = self.names.remove(old);
+        let scenarios = self.scenarios.remove(old);
+        if let Some(new) = new {
+            if selected {
+                self.names.insert(new.into());
+            }
+            if let Some(scenarios) = scenarios {
+                self.scenarios.insert(new.into(), scenarios);
+            }
+        }
+    }
+
     pub fn contains(&self, name: &str) -> bool {
         self.names.contains(name)
     }
@@ -469,6 +494,10 @@ impl Workspace {
                 Ok(SuiteSummary {
                     entry,
                     name: input.name,
+                    display_name: parsed
+                        .as_ref()
+                        .ok()
+                        .and_then(|suite| suite.display_name.clone()),
                     output_id,
                     scenarios,
                     error: parsed.err().map(|error| format!("{error:#}")),
@@ -534,10 +563,37 @@ impl Workspace {
     }
 
     pub fn save(&self, open: &mut OpenDocument) -> Result<()> {
+        self.save_in_outputs(open, &[])
+    }
+
+    pub fn save_in_outputs(&self, open: &mut OpenDocument, outputs: &[PathBuf]) -> Result<()> {
         open.document.validate()?;
         validate_typed_source(&open.document)?;
         let path = self.check_unchanged(open)?;
-        write_file_atomically(&path, open.document.source().as_bytes())?;
+        let value = open.document.value()?;
+        let saved = Document::new(
+            open.document.kind,
+            open.document.format,
+            open.document.saved_source().into(),
+        )?
+        .value()?;
+        let update = if open.entry.kind == DocumentKind::Suite
+            && value["displayName"] != saved["displayName"]
+        {
+            let (id, _) = self.suite_mutation_ids(open, None)?;
+            artifacts::ArtifactUpdate::prepare(
+                &self.suite_output_roots(outputs)?,
+                &id,
+                Some(&id),
+                value["displayName"].as_str(),
+            )?
+        } else {
+            artifacts::ArtifactUpdate::default()
+        };
+        update.commit(|| {
+            self.check_unchanged(open)?;
+            write_file_atomically(&path, open.document.source().as_bytes())
+        })?;
         open.document.mark_saved();
         Ok(())
     }
@@ -625,6 +681,19 @@ impl Workspace {
     }
 
     pub fn rename_suite(&self, open: &mut OpenDocument, name: &str) -> Result<()> {
+        let display_name = open.document.value()?["displayName"]
+            .as_str()
+            .map(str::to_owned);
+        self.rename_suite_in_outputs(open, name, display_name.as_deref(), &[])
+    }
+
+    pub fn rename_suite_in_outputs(
+        &self,
+        open: &mut OpenDocument,
+        name: &str,
+        display_name: Option<&str>,
+        outputs: &[PathBuf],
+    ) -> Result<()> {
         ensure!(
             open.entry.kind == DocumentKind::Suite,
             "Only test suites can be renamed here"
@@ -640,18 +709,56 @@ impl Workspace {
         );
         let source = self.check_unchanged(open)?;
         let destination = self.resolve(&relative)?;
-        ensure!(!destination.exists(), "Destination already exists");
-        // Same-workspace hard linking refuses an existing destination atomically.
-        fs::hard_link(&source, &destination).context("Cannot rename suite")?;
-        if let Err(error) = fs::remove_file(source) {
-            let _ = fs::remove_file(destination);
-            return Err(error).context("Cannot remove the old suite name");
-        }
+        let same_file = relative == open.entry.path;
+        ensure!(
+            same_file || !destination.exists(),
+            "Destination already exists"
+        );
+        let mut document = Document::new(
+            DocumentKind::Suite,
+            open.document.format,
+            open.document.source().into(),
+        )?;
+        document.apply(super::document::Edit::Set {
+            parent: String::new(),
+            key: "displayName".into(),
+            value: display_name
+                .filter(|name| !name.trim().is_empty())
+                .map(|name| serde_json::json!(name)),
+        })?;
+        document.validate()?;
+        validate_typed_source(&document)?;
+        let (old_id, new_id) = self.suite_mutation_ids(open, Some(&relative))?;
+        let update = artifacts::ArtifactUpdate::prepare(
+            &self.suite_output_roots(outputs)?,
+            &old_id,
+            new_id.as_deref(),
+            display_name,
+        )?;
+        update.commit(|| {
+            self.check_unchanged(open)?;
+            if same_file {
+                write_file_atomically(&source, document.source().as_bytes())?;
+            } else {
+                self.create_document(&relative, DocumentKind::Suite, document.source())?;
+                if let Err(error) = fs::remove_file(&source) {
+                    fs::remove_file(&destination).context("Cannot roll back the new suite file")?;
+                    return Err(error).context("Cannot remove the old suite name");
+                }
+            }
+            Ok(())
+        })?;
+        document.mark_saved();
+        open.document = document;
         open.entry.path = relative;
         Ok(())
     }
 
     pub fn delete_suite(&self, open: &OpenDocument) -> Result<()> {
+        self.delete_suite_in_outputs(open, &[])
+    }
+
+    pub fn delete_suite_in_outputs(&self, open: &OpenDocument, outputs: &[PathBuf]) -> Result<()> {
         ensure!(
             open.entry.kind == DocumentKind::Suite,
             "Only test suite files can be deleted here"
@@ -660,7 +767,128 @@ impl Workspace {
             !open.document.dirty(),
             "Save or discard changes before deleting"
         );
-        fs::remove_file(self.check_unchanged(open)?).context("Cannot delete suite")
+        self.check_unchanged(open)?;
+        let (old_id, _) = self.suite_mutation_ids(open, None)?;
+        let update = artifacts::ArtifactUpdate::prepare(
+            &self.suite_output_roots(outputs)?,
+            &old_id,
+            None,
+            None,
+        )?;
+        update
+            .commit(|| fs::remove_file(self.check_unchanged(open)?).context("Cannot delete suite"))
+    }
+
+    fn suite_mutation_ids(
+        &self,
+        open: &OpenDocument,
+        destination: Option<&Path>,
+    ) -> Result<(String, Option<String>)> {
+        let value = open.document.value()?;
+        let id = value
+            .get("id")
+            .filter(|id| !id.is_null())
+            .map(|id| id.as_str().context("Suite ID must be a string"))
+            .transpose()?;
+        let old_id = id
+            .map(str::to_owned)
+            .or_else(|| open.entry.suite_name())
+            .context("Missing suite identity")?;
+        let new_id = destination
+            .map(|path| {
+                id.map(str::to_owned)
+                    .or_else(|| {
+                        Entry {
+                            path: path.into(),
+                            kind: DocumentKind::Suite,
+                        }
+                        .suite_name()
+                    })
+                    .context("Missing destination suite identity")
+            })
+            .transpose()?;
+        for id in std::iter::once(&old_id).chain(new_id.iter()) {
+            validate_component(id)?;
+            ensure!(
+                id.len() <= 80 && id.trim() == id,
+                "Suite output IDs must be portable components no longer than 80 bytes without surrounding whitespace"
+            );
+            let normalized = id.to_ascii_lowercase();
+            ensure!(
+                !matches!(normalized.as_str(), "." | ".." | "_snapshot" | "states")
+                    && !normalized.starts_with(".suite-update-"),
+                "Reserved suite output ID"
+            );
+        }
+        for entry in self
+            .entries()?
+            .into_iter()
+            .filter(|entry| entry.kind == DocumentKind::Suite && entry.path != open.entry.path)
+        {
+            let other = self.open_document(entry.clone())?;
+            let value = other
+                .document
+                .value()
+                .context("Cannot determine artifact ownership while another suite is invalid")?;
+            let other_id = value["id"]
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| entry.suite_name())
+                .context("Missing other suite identity")?;
+            ensure!(
+                !other_id.eq_ignore_ascii_case(&old_id),
+                "Another suite shares this output ID; resolve the duplicate before renaming or deleting"
+            );
+            if let Some(new_id) = &new_id {
+                ensure!(
+                    !other_id.eq_ignore_ascii_case(new_id),
+                    "Another suite already uses the destination output ID"
+                );
+            }
+            if let Some(destination) = destination {
+                ensure!(
+                    entry.suite_name()
+                        != (Entry {
+                            path: destination.into(),
+                            kind: DocumentKind::Suite
+                        })
+                        .suite_name(),
+                    "Another file format already uses the destination suite name"
+                );
+            }
+        }
+        Ok((old_id, new_id))
+    }
+
+    fn suite_output_roots(&self, outputs: &[PathBuf]) -> Result<Vec<PathBuf>> {
+        let mut candidates = BTreeSet::from([self.root.join(".regressify")]);
+        candidates.extend(outputs.iter().map(|path| self.root.join(path)));
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".regressify__")
+            {
+                candidates.insert(entry.path());
+            }
+        }
+        let mut roots = BTreeSet::new();
+        for path in candidates {
+            if let Some(root) = artifacts::existing_root(&path)? {
+                ensure!(
+                    root != self.root && !self.root.starts_with(&root),
+                    "Output root cannot contain the workspace"
+                );
+                ensure!(
+                    roots.iter().all(|existing: &PathBuf| existing == &root
+                        || (!existing.starts_with(&root) && !root.starts_with(existing))),
+                    "Suite output roots cannot overlap"
+                );
+                roots.insert(root);
+            }
+        }
+        Ok(roots.into_iter().collect())
     }
 }
 
@@ -1044,6 +1272,44 @@ mod tests {
     }
 
     #[test]
+    fn suite_display_name_does_not_change_file_or_output_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let mut open = workspace.create_suite("checkout").unwrap();
+        let original_path = open.entry.path.clone();
+        open.document
+            .apply(Edit::Set {
+                parent: "".into(),
+                key: "displayName".into(),
+                value: Some(json!("Customer checkout")),
+            })
+            .unwrap();
+        workspace.save(&mut open).unwrap();
+        workspace.reload(&mut open).unwrap();
+        assert_eq!(open.entry.path, original_path);
+        assert_eq!(
+            open.document.value().unwrap()["displayName"],
+            "Customer checkout"
+        );
+        let catalog = workspace.suite_catalog().unwrap();
+        assert_eq!(catalog[0].name, "checkout");
+        assert_eq!(catalog[0].label(), "Customer checkout");
+        assert_eq!(catalog[0].output_id, "checkout");
+        assert!(catalog[0].error.is_none());
+        for display_name in [None, Some(json!("  "))] {
+            open.document
+                .apply(Edit::Set {
+                    parent: "".into(),
+                    key: "displayName".into(),
+                    value: display_name,
+                })
+                .unwrap();
+            workspace.save(&mut open).unwrap();
+            assert_eq!(workspace.suite_catalog().unwrap()[0].label(), "checkout");
+        }
+    }
+
+    #[test]
     fn suite_copy_rename_delete_preserve_data_and_avoid_output_id_collisions() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(directory.path()).unwrap();
@@ -1069,6 +1335,246 @@ mod tests {
         assert!(workspace.rename_suite(&mut copy, "original").is_err());
         workspace.delete_suite(&copy).unwrap();
         assert_eq!(workspace.entries().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn suite_artifact_mutations_preserve_history_and_other_suites_across_outputs() {
+        let directory = tempfile::tempdir().unwrap();
+        let custom = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let mut open = workspace.create_suite("shop").unwrap();
+        let roots = [
+            directory.path().join(".regressify"),
+            directory.path().join(".regressify__staging"),
+            custom.path().to_path_buf(),
+        ];
+        for root in &roots {
+            for id in ["shop", "other"] {
+                artifact_fixture(root, id);
+            }
+            fs::create_dir_all(root.join("states")).unwrap();
+            fs::write(root.join("states/auth.json"), b"private state").unwrap();
+            crate::snapshot::generate_site(
+                root,
+                &["shop".into(), "other".into()],
+                &crate::cli::args::SnapshotArgs {
+                    test_suite: vec![],
+                    title: Some("Review".into()),
+                    heading: None,
+                    subheading: None,
+                },
+                &crate::config::WorkspaceConfig::default(),
+            )
+            .unwrap();
+        }
+        let pixel = fs::read(roots[0].join("shop/bitmaps_reference/home.png")).unwrap();
+        let other = fs::read(roots[0].join("_snapshot/data/suites/other.json")).unwrap();
+        workspace
+            .rename_suite_in_outputs(
+                &mut open,
+                "checkout",
+                Some("Customer checkout"),
+                &[custom.path().into()],
+            )
+            .unwrap();
+        assert_eq!(
+            open.document.value().unwrap()["displayName"],
+            "Customer checkout"
+        );
+        assert!(!open.document.dirty());
+        for root in &roots {
+            assert!(!root.join("shop").exists());
+            assert_eq!(
+                fs::read(root.join("checkout/bitmaps_reference/home.png")).unwrap(),
+                pixel
+            );
+            for run in ["old", "current"] {
+                let report: serde_json::Value = serde_json::from_slice(
+                    &fs::read(root.join(format!("checkout/bitmaps_test/{run}/report.json")))
+                        .unwrap(),
+                )
+                .unwrap();
+                assert_eq!(report["id"], "checkout");
+                assert_eq!(report["testSuite"], "checkout");
+                assert_eq!(report["displayName"], "Customer checkout");
+                assert_eq!(
+                    report["tests"][0]["pair"]["url"],
+                    "https://example.com/shop"
+                );
+            }
+            crate::snapshot::artifact_paths(root, &["checkout".into(), "other".into()]).unwrap();
+            assert_eq!(
+                fs::read(root.join("_snapshot/data/suites/other.json")).unwrap(),
+                other
+            );
+            assert!(!root.join("_snapshot/images/shop").exists());
+        }
+        open.document
+            .apply(Edit::Set {
+                parent: "".into(),
+                key: "displayName".into(),
+                value: Some(json!("Updated label")),
+            })
+            .unwrap();
+        workspace
+            .save_in_outputs(&mut open, &[custom.path().into()])
+            .unwrap();
+        for root in &roots {
+            let report: serde_json::Value = serde_json::from_slice(
+                &fs::read(root.join("_snapshot/data/suites/checkout.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(report["displayName"], "Updated label");
+            assert_eq!(report["id"], "checkout");
+        }
+        workspace
+            .delete_suite_in_outputs(&open, &[custom.path().into()])
+            .unwrap();
+        assert!(!workspace.resolve(&open.entry.path).unwrap().exists());
+        for root in &roots {
+            assert!(!root.join("checkout").exists());
+            assert!(!root.join("_snapshot/images/checkout").exists());
+            assert!(root.join("other/bitmaps_test/old/report.json").exists());
+            assert_eq!(
+                fs::read(root.join("states/auth.json")).unwrap(),
+                b"private state"
+            );
+            crate::snapshot::artifact_paths(root, &["other".into()]).unwrap();
+        }
+    }
+
+    fn artifact_fixture(root: &Path, id: &str) {
+        let suite = root.join(id);
+        fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+        fs::create_dir_all(suite.join("html_report")).unwrap();
+        let png = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+        fs::write(suite.join("bitmaps_reference/home.png"), &png).unwrap();
+        for run in ["old", "current"] {
+            let folder = suite.join("bitmaps_test").join(run);
+            fs::create_dir_all(&folder).unwrap();
+            fs::write(folder.join("home.png"), &png).unwrap();
+            let report = json!({"id": id, "testSuite": id, "tests": [{"status": "pass", "pair": {
+                "fileName": "home.png", "label": "Home", "reference": "../bitmaps_reference/home.png",
+                "test": format!("../bitmaps_test/{run}/home.png"), "url": "https://example.com/shop"
+            }}]});
+            fs::write(folder.join("report.json"), report.to_string()).unwrap();
+            fs::write(
+                suite.join("html_report/config.js"),
+                format!("report({report});"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn suite_rename_keeps_explicit_ids_and_format_and_rejects_ambiguous_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let mut open = workspace
+            .create_document(
+                Path::new("visual_tests/shop.tests.json"),
+                DocumentKind::Suite,
+                r#"{"id":"stable","scenarios":[]}"#,
+            )
+            .unwrap();
+        let output = directory.path().join(".regressify");
+        artifact_fixture(&output, "stable");
+        assert!(workspace.rename_suite(&mut open, "new").is_err());
+        workspace
+            .rename_suite_in_outputs(&mut open, "new.tests.json", Some("Storefront"), &[])
+            .unwrap();
+        assert!(output.join("stable/bitmaps_test/old/report.json").exists());
+        assert!(!output.join("new").exists());
+        let other = workspace
+            .create_document(
+                Path::new("visual_tests/other.tests.yaml"),
+                DocumentKind::Suite,
+                "id: stable\nscenarios: []\n",
+            )
+            .unwrap();
+        assert!(workspace.delete_suite(&open).is_err());
+        assert!(
+            workspace
+                .rename_suite(&mut open, "next.tests.json")
+                .is_err()
+        );
+        assert!(workspace.resolve(&other.entry.path).unwrap().exists());
+        assert!(output.join("stable").exists());
+    }
+
+    #[test]
+    fn suite_mutation_failures_preserve_files_reports_and_drafts() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let mut open = workspace.create_suite("shop").unwrap();
+        let output = directory.path().join(".regressify");
+        artifact_fixture(&output, "shop");
+        fs::create_dir_all(output.join("destination")).unwrap();
+        assert!(workspace.rename_suite(&mut open, "destination").is_err());
+        assert!(workspace.resolve(&open.entry.path).unwrap().exists());
+        let report = output.join("shop/bitmaps_test/old/report.json");
+        fs::write(&report, b"invalid").unwrap();
+        assert!(workspace.rename_suite(&mut open, "renamed").is_err());
+        assert!(!output.join("renamed").exists());
+        assert_eq!(fs::read(&report).unwrap(), b"invalid");
+        open.document
+            .apply(Edit::Set {
+                parent: "".into(),
+                key: "displayName".into(),
+                value: Some(json!("Draft label")),
+            })
+            .unwrap();
+        assert!(workspace.save(&mut open).is_err());
+        assert!(open.document.dirty());
+        assert!(
+            workspace
+                .open_document(open.entry.clone())
+                .unwrap()
+                .document
+                .value()
+                .unwrap()
+                .get("displayName")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn suite_mutations_reject_reserved_output_ids_case_insensitively() {
+        for id in [
+            "states",
+            "STATES",
+            "_snapshot",
+            "_Snapshot",
+            ".SUITE-UPDATE-1",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = Workspace::open(directory.path()).unwrap();
+            let source = serde_json::to_string(&json!({"id": id, "scenarios": []})).unwrap();
+            let mut open = workspace
+                .create_document(
+                    Path::new("visual_tests/shop.tests.json"),
+                    DocumentKind::Suite,
+                    &source,
+                )
+                .unwrap();
+            let output = directory.path().join(".regressify").join(id);
+            fs::create_dir_all(&output).unwrap();
+            fs::write(output.join("sentinel"), b"keep").unwrap();
+            assert!(workspace.delete_suite(&open).is_err(), "{id}");
+            assert!(
+                workspace.rename_suite(&mut open, "new.tests.json").is_err(),
+                "{id}"
+            );
+            assert_eq!(fs::read(output.join("sentinel")).unwrap(), b"keep");
+            assert_eq!(
+                workspace
+                    .open_document(open.entry.clone())
+                    .unwrap()
+                    .document
+                    .source(),
+                source
+            );
+        }
     }
 
     #[test]

@@ -91,6 +91,22 @@ impl<Item: Clone + PartialEq> ListState<Item> {
 }
 
 pub(super) fn bind_keys(modifier: &str, cx: &mut App) {
+    cx.bind_keys([
+        KeyBinding::new(
+            "f2",
+            files::FileCommand {
+                operation: files::Operation::Rename,
+            },
+            Some("RegressifySuiteList"),
+        ),
+        KeyBinding::new(
+            "delete",
+            files::FileCommand {
+                operation: files::Operation::Delete,
+            },
+            Some("RegressifySuiteList"),
+        ),
+    ]);
     for context in ["RegressifyList", "RegressifyChecklist"] {
         cx.bind_keys([
             KeyBinding::new(&format!("{modifier}-a"), SelectAllListItems, Some(context)),

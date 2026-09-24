@@ -54,12 +54,14 @@ export function ComparisonViewer({
   mode: requestedMode,
   onMode,
   suiteId,
+  suiteName,
   runId,
 }: {
   capture: Capture;
   mode: string | null;
   onMode: (mode: string) => void;
   suiteId: string;
+  suiteName: string;
   runId: string;
 }) {
   const getSize = useImageSizes(capture);
@@ -194,6 +196,7 @@ export function ComparisonViewer({
         <CaptureInfo
           capture={capture}
           suiteId={suiteId}
+          suiteName={suiteName}
           runId={runId}
           dimensions={lanes
             .filter((lane) => lane.path)

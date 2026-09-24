@@ -2,6 +2,11 @@
 
 Verified: 2026-09-24
 
+- Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
+  supplies all visible suite labels while IDs remain route/asset keys. The
+  `suite display names` browser test covers desktop/mobile search, titles, Info,
+  markup-like text, and stable deep links. Wait for loaded overview rows before
+  reading the title; Vite initially serves the HTML title placeholder.
 - The [SPA](../../frontend/README.md) uses root-based clean URLs and lazy suite JSON.
   `bun run build` replaces `src/snapshot/data` and generates the Rust include list;
   Cargo does not execute JavaScript tools. All runtime assets, fonts, JSON, and

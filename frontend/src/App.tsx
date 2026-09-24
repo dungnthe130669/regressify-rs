@@ -4,7 +4,7 @@ import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useMatch } f
 import desktopIcon from "../../assets/icon.svg?url";
 import { ReviewNavigation } from "./components/ReviewNavigation";
 import { IconButton, StatePanel } from "./components/ui";
-import { suitePath } from "./data/report";
+import { suiteLabel, suitePath } from "./data/report";
 import { ReportProvider, useManifest } from "./data/store";
 import ImagePage from "./pages/ImagePage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -87,6 +87,8 @@ function Shell() {
   const match = useMatch("/suites/:suiteId/*");
   const imageMatch = useMatch("/suites/:suiteId/images/:imageId");
   const suiteId = match?.params.suiteId;
+  const activeSuite = manifest.suites.find((suite) => suite.id === suiteId);
+  const suiteName = activeSuite ? suiteLabel(activeSuite) : suiteId;
   const [panelOpen, setPanelOpen] = useState(true);
   const [viewportWidth, setViewportWidth] = useState(window.innerWidth);
   const compact = viewportWidth <= 959;
@@ -127,10 +129,10 @@ function Shell() {
     }
   }, [preferredPanelWidth]);
   useEffect(() => {
-    document.title = suiteId
-      ? [suiteId, manifest.title].filter(Boolean).join(" | ")
+    document.title = suiteName
+      ? [suiteName, manifest.title].filter(Boolean).join(" | ")
       : manifest.title;
-  }, [manifest.title, suiteId]);
+  }, [manifest.title, suiteName]);
   useEffect(() => {
     if (location.pathname) main.current?.focus({ preventScroll: true });
     content.current?.scrollTo(0, 0);
@@ -235,7 +237,7 @@ function Shell() {
               {match && (
                 <>
                   <ChevronRight size={14} />
-                  <Link to={suitePath(match.params.suiteId || "")}>{match.params.suiteId}</Link>
+                  <Link to={suitePath(match.params.suiteId || "")}>{suiteName}</Link>
                   {location.pathname.includes("/images/") && (
                     <>
                       <ChevronRight size={14} />

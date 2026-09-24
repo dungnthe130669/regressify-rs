@@ -158,6 +158,11 @@ Azure and Netlify share the global security policy, including
 templates in [hosting](hosting), rebuild the embedded assets, and run the Rust
 hosting-policy regression to keep both providers aligned.
 
+Suite summaries and suite JSON accept optional `displayName` strings without
+changing schema version 2. Lists, search, headings, breadcrumbs, Info, and browser
+titles use nonblank display names, falling back to `id`. Routes, artifact paths,
+and React keys continue to use `id`; never derive identity from presentation text.
+
 Suite and image pages use `suite name | report title` as the browser tab title.
 Returning to the overview restores the configured report title.
 

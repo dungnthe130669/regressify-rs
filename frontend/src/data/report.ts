@@ -64,6 +64,7 @@ const artifact = (kind: "data" | "images") =>
 export const suiteSummarySchema = z
   .object({
     id: segment,
+    displayName: z.string().optional(),
     total: count,
     passed: count,
     failed: count,
@@ -107,6 +108,7 @@ export const captureSchema = z.object({
 export const suiteReportSchema = z
   .object({
     id: segment,
+    displayName: z.string().optional(),
     runId: z.string(),
     tests: z.array(captureSchema),
   })
@@ -117,6 +119,10 @@ export type SuiteSummary = z.infer<typeof suiteSummarySchema>;
 export type SuiteReport = z.infer<typeof suiteReportSchema>;
 export type Capture = z.infer<typeof captureSchema>;
 export type StatusFilter = "all" | "fail" | "pass" | "error";
+
+export function suiteLabel(suite: { id: string; displayName?: string }): string {
+  return suite.displayName?.trim() ? suite.displayName : suite.id;
+}
 
 export function safePageUrl(value: string | null): string | undefined {
   if (!value) return undefined;

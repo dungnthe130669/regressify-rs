@@ -198,7 +198,7 @@ pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App)
 
 pub(super) fn group(key: &str) -> (usize, &'static str) {
     match key {
-        "label" | "url" | "id" | "description" => (0, "General"),
+        "label" | "url" | "id" | "displayName" | "description" => (0, "General"),
         "viewportNames"
         | "viewportsPath"
         | "selectors"

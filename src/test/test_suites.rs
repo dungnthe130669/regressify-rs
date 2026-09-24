@@ -1070,6 +1070,10 @@ fn write_capture_run_manifests(
                 error
             )
         })?;
+        crate::compare::report_gen::write_suite_metadata(
+            &suite_output_dir(common::REGRESSIFY_DIR.get_required()?, suite)?,
+            suite.display_name.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -1519,6 +1523,7 @@ mod tests {
         selected_suite.scenarios[0].url = "https://example.com/blog/page".into();
         selected_suite.scenarios[1].url = "https://example.com/docs/page".into();
         selected_suite.test_date = Some("selection".into());
+        selected_suite.display_name = Some("Selected suite".into());
         let suite = Arc::new(selected_suite);
         let filters = vec!["alloy:page".parse().unwrap(), "alloy:page".parse().unwrap()];
         let suites = vec![(input(), suite.clone())];
@@ -1544,6 +1549,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(keys, vec!["page__FINAL"]);
         write_capture_run_manifests(&config, &suites, &[], false, &filters).unwrap();
+        assert_eq!(
+            crate::compare::report_gen::read_suite_metadata(&root.join(".regressify/alloy"))
+                .unwrap()
+                .unwrap()
+                .display_name
+                .as_deref(),
+            Some("Selected suite")
+        );
         let run = root.join(".regressify/alloy/bitmaps_test/selection");
         let order: capture::ReportOrderManifest =
             serde_json::from_slice(&fs::read(run.join(capture::REPORT_ORDER_FILE)).unwrap())

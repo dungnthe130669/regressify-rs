@@ -12,6 +12,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 ## Procedure and Invariants
 
 1. Treat report JSON and relative image paths as untrusted. Enforce artifact-root containment, file/byte/image-size bounds, and safe external URL schemes.
+1. Suite labels prefer the source catalog's nonblank `displayName`, then captured report metadata for unmatched suites, then legacy names/IDs. Labels never control artifact paths or approval identity. Refresh catalogs/results after suite rename/delete and preserve unrelated reports.
 1. Keep captured human labels separate from immutable capture keys/scenario IDs. Prefer recorded `scenarioDisplayName`; use the [shared URL naming resolver](../../../src/helpers/scenario_names.rs) for legacy reports. Resolve across logical scenarios, not individual viewports/captures, and keep desktop/editor/web names aligned. Legacy missing metrics are unavailable, not evidence of a pass or zero difference.
 1. Diff dimension offsets are signed test-minus-reference pixels. Preserve raw referenceUrl versus replaced test url; do not share a display URL fallback.
 1. Inventory successful baselines and actual captures, not directories or generated diffs. Select latest captures by the existing metadata/time rules, not lexical UUID.

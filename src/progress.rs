@@ -401,6 +401,43 @@ impl Counts {
 }
 
 impl LiveProgress {
+    #[cfg(feature = "desktop")]
+    pub(crate) fn remap_suite(&mut self, old_id: &str, new: Option<(&str, &str)>) {
+        if let Some(mut suite) = self.suites.remove(old_id)
+            && let Some((id, name)) = new
+        {
+            suite.id = id.into();
+            suite.name = name.into();
+            self.suites.insert(id.into(), suite);
+        }
+        self.scenarios.retain(|_, scenario| {
+            if scenario.job.suite_id != old_id {
+                return true;
+            }
+            if let Some((id, name)) = new {
+                scenario.job.suite_id = id.into();
+                scenario.job.suite_name = name.into();
+                true
+            } else {
+                false
+            }
+        });
+        self.captures = std::mem::take(&mut self.captures)
+            .into_iter()
+            .filter_map(|((id, capture), job)| {
+                if id != old_id {
+                    Some(((id, capture), job))
+                } else {
+                    new.map(|(id, _)| ((id.into(), capture), job))
+                }
+            })
+            .collect();
+        self.logs
+            .retain(|entry| self.scenarios.contains_key(&entry.job_id));
+        self.log_bytes = self.logs.iter().map(|entry| entry.message.len()).sum();
+        self.revision = self.revision.wrapping_add(1);
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

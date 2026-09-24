@@ -64,10 +64,10 @@ $keyboardTypeName = 'SmokeKeyboardCheck' + [guid]::NewGuid().ToString('N')
 $keyboardType = Add-Type -TypeDefinition ($keyboardSource.Replace('public static class RegressifySmokeText {', "public static class $keyboardTypeName {")) -PassThru |
     Where-Object Name -eq $keyboardTypeName
 if ($null -eq $keyboardType.GetMethod('KeySequence')) { throw 'Native shortcuts must provide testable key sequences instead of SendKeys strings.' }
-function Test-SmokeKeySequence([ConsoleKey]$Key, [bool]$Control, [bool]$Shift, [string[]]$Expected) {
-    $sequence = @($keyboardType::KeySequence($Key, $Control, $Shift))
+function Test-SmokeKeySequence([ConsoleKey]$Key, [bool]$Control, [bool]$Shift, [string[]]$Expected, [bool]$Alt = $false) {
+    $sequence = @($keyboardType::KeySequence($Key, $Control, $Shift, $Alt))
     $actual = @($sequence | ForEach-Object { "$($_.key):$($_.flags)" })
-    Assert-SmokeEqual $actual $Expected "Incorrect key events for $Key (Ctrl=$Control, Shift=$Shift)"
+    Assert-SmokeEqual $actual $Expected "Incorrect key events for $Key (Ctrl=$Control, Shift=$Shift, Alt=$Alt)"
     foreach ($inputEvent in $sequence) {
         Assert-SmokeEqual @($inputEvent.scan, $inputEvent.time, $inputEvent.extra.ToUInt64()) @(0, 0, 0) 'Unexpected keyboard packet data'
     }
@@ -83,8 +83,12 @@ Test-SmokeKeySequence Escape $false $false @('27:0', '27:2')
 Test-SmokeKeySequence Enter $false $false @('13:0', '13:2')
 Test-SmokeKeySequence Backspace $false $false @('8:0', '8:2')
 Test-SmokeKeySequence Spacebar $true $false @('17:0', '32:0', '32:2', '17:2')
+Test-SmokeKeySequence Tab $false $false @('9:0', '9:2')
+Test-SmokeKeySequence Tab $false $true @('16:0', '9:0', '9:2', '16:2')
+Test-SmokeKeySequence Tab $false $false @('18:0', '9:0', '9:2', '18:2') -Alt $true
+Test-SmokeKeySequence Tab $false $true @('16:0', '18:0', '9:0', '9:2', '18:2', '16:2') -Alt $true
 $invalidKeyRejected = $false
-try { $keyboardType::KeySequence([ConsoleKey]0, $true, $false) | Out-Null } catch {
+try { $keyboardType::KeySequence([ConsoleKey]0, $true, $false, $false) | Out-Null } catch {
     if ($_.Exception.GetBaseException() -isnot [ArgumentOutOfRangeException]) { throw }
     $invalidKeyRejected = $true
 }

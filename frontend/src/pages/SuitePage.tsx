@@ -9,7 +9,7 @@ import {
   StatusBadge,
   useFilters,
 } from "../components/ui";
-import { filterCaptures, imagePath, passRate } from "../data/report";
+import { filterCaptures, imagePath, passRate, suiteLabel } from "../data/report";
 import { useSuite } from "../data/store";
 
 export function SuitePage() {
@@ -57,7 +57,7 @@ export function SuitePage() {
       <header className="page-heading">
         <div>
           <div className="eyebrow">Test suite</div>
-          <h1>{summary.id}</h1>
+          <h1>{suiteLabel(summary)}</h1>
           <p className="run-id mono">Run {data.runId || "Unknown"}</p>
         </div>
         <StatusBadge status={summary.failed ? "fail" : "pass"} />

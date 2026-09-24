@@ -17,12 +17,15 @@ description: 'Use when changing desktop file discovery, Save/Save As, suite crea
 1. Compare on-disk bytes with saved_source before replacing, renaming, or deleting. Preserve the draft on conflict. Atomic replacement alone does not detect edits.
 1. Create/Save As must not clobber an existing file, even between existence check and write. Preserve the existing no-clobber temporary-file mechanism.
 1. Duplication removes explicit suite IDs to avoid shared output. Preserve format on rename and do not erase the source if creating the destination fails.
+1. Suite rename/delete use [staged artifact updates](../../../src/desktop/workspace/artifacts.rs) across default/environment and caller-supplied custom roots. Preserve explicit IDs, reject shared IDs/collisions, update historical raw reports and published snapshots, and roll back on document failure. This is not crash-atomic or a lock against external writers. Never touch browser states or remote deployments.
+1. `displayName` is presentation-only. Fields saves and Rename update local report labels without changing file/output identity. Pass active and saved-history roots from the UI; remap selections/activity after successful mutations. F2/Delete are scoped to the suite list and retain draft/confirmation guards.
 1. Keep discovery precedence aligned with the CLI; runnable_suite must reject a selected file shadowed by another format. Merge preferences without losing another window's recent workspaces or settings.
 
 ## Checks
 
 ```sh
 cargo test --features desktop --lib desktop::workspace::tests
+cargo test --features desktop --lib desktop::workspace::artifacts::tests
 cargo test --features desktop --lib desktop::session::tests
 cargo test --features desktop --lib init::tests
 ```

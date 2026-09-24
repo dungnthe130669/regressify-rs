@@ -22,7 +22,57 @@ use crate::test::capture::{
 struct ReportConfig {
     test_suite: String,
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
     tests: Vec<ReportTest>,
+}
+
+pub(crate) const SUITE_METADATA_FILE: &str = "suite.json";
+const MAX_SUITE_METADATA_BYTES: usize = 65_536;
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SuiteMetadata {
+    pub display_name: Option<String>,
+}
+
+pub(crate) fn read_suite_metadata(suite_dir: &Path) -> Result<Option<SuiteMetadata>> {
+    let path = suite_dir.join(SUITE_METADATA_FILE);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error).context("Cannot read suite metadata"),
+    };
+    anyhow::ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "Suite metadata must be a regular file"
+    );
+    let mut bytes = Vec::new();
+    fs::File::open(&path)?
+        .take(MAX_SUITE_METADATA_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_SUITE_METADATA_BYTES,
+        "Suite metadata exceeds the 64 KiB limit"
+    );
+    Ok(Some(
+        serde_json::from_slice(&bytes).context("Invalid suite metadata")?,
+    ))
+}
+
+pub(crate) fn write_suite_metadata(suite_dir: &Path, display_name: Option<&str>) -> Result<()> {
+    let metadata = SuiteMetadata {
+        display_name: display_name
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_owned),
+    };
+    let bytes = serde_json::to_vec(&metadata)?;
+    anyhow::ensure!(
+        bytes.len() <= MAX_SUITE_METADATA_BYTES,
+        "Suite metadata exceeds the 64 KiB limit"
+    );
+    create_dir_all(suite_dir)?;
+    write_file_atomically(&suite_dir.join(SUITE_METADATA_FILE), &bytes)
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -511,6 +561,7 @@ fn generate_selected_report(
     if !tests_dir.exists() {
         anyhow::bail!("Test screenshots directory does not exist: {:?}", tests_dir);
     }
+    let display_name = read_suite_metadata(suite_dir)?.and_then(|metadata| metadata.display_name);
     progress::emit(ProgressEvent::Comparing {
         suite_id: suite_id.into(),
     });
@@ -778,6 +829,7 @@ fn generate_selected_report(
     let report = ReportConfig {
         test_suite: suite_id.to_string(),
         id: suite_id.to_string(),
+        display_name,
         tests: report_tests,
     };
 
@@ -1119,6 +1171,49 @@ mod tests {
 
     fn png_bytes(red: u8) -> Vec<u8> {
         lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn suite_display_name_metadata_round_trips_without_changing_report_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let suite_dir = temp.path().join("shop");
+        assert!(read_suite_metadata(&suite_dir).unwrap().is_none());
+        fs::create_dir_all(suite_dir.join("bitmaps_test/run")).unwrap();
+        fs::write(
+            suite_dir.join("bitmaps_test/run/home__FINAL.png"),
+            png_bytes(10),
+        )
+        .unwrap();
+        for name in [Some("Customer checkout"), None, Some("  ")] {
+            write_suite_metadata(&suite_dir, name).unwrap();
+            generate_comparison_report(&suite_dir, "shop", "run", 0.1, 1).unwrap();
+            let report: ReportConfig = serde_json::from_slice(
+                &fs::read(suite_dir.join("bitmaps_test/run/report.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(report.id, "shop");
+            assert_eq!(report.test_suite, "shop");
+            assert_eq!(
+                report.display_name.as_deref(),
+                name.filter(|name| !name.trim().is_empty())
+            );
+        }
+        let metadata = fs::read(suite_dir.join(SUITE_METADATA_FILE)).unwrap();
+        assert!(
+            write_suite_metadata(&suite_dir, Some(&"x".repeat(MAX_SUITE_METADATA_BYTES))).is_err()
+        );
+        assert_eq!(
+            fs::read(suite_dir.join(SUITE_METADATA_FILE)).unwrap(),
+            metadata
+        );
+        let diff = suite_dir.join("bitmaps_test/run/home__FINAL_diff.png");
+        fs::write(&diff, b"previous diff").unwrap();
+        fs::write(suite_dir.join(SUITE_METADATA_FILE), b"invalid").unwrap();
+        assert!(read_suite_metadata(&suite_dir).is_err());
+        assert!(generate_comparison_report(&suite_dir, "shop", "run", 0.1, 1).is_err());
+        assert_eq!(fs::read(diff).unwrap(), b"previous diff");
+        fs::write(suite_dir.join(SUITE_METADATA_FILE), vec![b' '; 65_537]).unwrap();
+        assert!(read_suite_metadata(&suite_dir).is_err());
     }
 
     #[test]

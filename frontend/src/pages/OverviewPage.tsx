@@ -2,7 +2,7 @@ import { ArrowDown, ArrowUp, ArrowUpRight, Check, Layers, ScanLine, X } from "lu
 import Markdown from "react-markdown";
 import { Link } from "react-router";
 import { Filters, StatePanel, StatusBadge, useFilters } from "../components/ui";
-import { passRate, safePageUrl, suitePath } from "../data/report";
+import { passRate, safePageUrl, suiteLabel, suitePath } from "../data/report";
 import { useManifest } from "../data/store";
 
 export function OverviewPage() {
@@ -28,7 +28,7 @@ export function OverviewPage() {
   const suites = manifest.suites
     .filter(
       (suite) =>
-        suite.id.toLowerCase().includes(query.trim().toLowerCase()) &&
+        `${suite.id} ${suiteLabel(suite)}`.toLowerCase().includes(query.trim().toLowerCase()) &&
         (status === "all" ||
           (status === "error"
             ? suite.errors > 0
@@ -42,7 +42,7 @@ export function OverviewPage() {
           ? first.failed - second.failed
           : sort === "total"
             ? first.total - second.total
-            : first.id.localeCompare(second.id);
+            : suiteLabel(first).localeCompare(suiteLabel(second));
       return descending ? -order : order;
     });
   const toggleSort = (key: string) => {
@@ -162,7 +162,7 @@ export function OverviewPage() {
                   <td>
                     <Link className="suite-name" to={suitePath(suite.id)}>
                       <span className={`status-dot ${suite.failed ? "fail" : "pass"}`} />
-                      {suite.id}
+                      {suiteLabel(suite)}
                     </Link>
                     {suite.errors > 0 && (
                       <span className="table-error">
@@ -180,7 +180,7 @@ export function OverviewPage() {
                       <progress
                         value={suite.passed}
                         max={suite.total || 1}
-                        aria-label={`${suite.id} pass rate`}
+                        aria-label={`${suiteLabel(suite)} pass rate`}
                       />
                       <span className="mono">{passRate(suite.passed, suite.total)}%</span>
                     </div>
@@ -189,8 +189,8 @@ export function OverviewPage() {
                     <Link
                       className="icon-button"
                       to={suitePath(suite.id)}
-                      aria-label={`Open ${suite.id}`}
-                      title={`Open ${suite.id}`}
+                      aria-label={`Open ${suiteLabel(suite)}`}
+                      title={`Open ${suiteLabel(suite)}`}
                     >
                       <ArrowUpRight size={17} />
                     </Link>
