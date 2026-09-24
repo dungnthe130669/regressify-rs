@@ -7,7 +7,7 @@ description: 'Use when changing deployment staging, report asset collection, ima
 
 ## Start Here
 
-[Staging/artifact selection](../../../src/desktop/deployment.rs), [Azure ZIP package](../../../src/desktop/deployment/package.rs), [Netlify manifests](../../../src/desktop/deployment/netlify.rs), and [snapshot generation](../../../src/snapshot/site.rs).
+[Staging/artifact selection](../../../src/desktop/deployment.rs), [Azure ZIP package](../../../src/desktop/deployment/package.rs), [Netlify manifests](../../../src/desktop/deployment/netlify.rs), [Cloudflare manifests](../../../src/desktop/deployment/cloudflare.rs), and [snapshot generation](../../../src/snapshot/site.rs).
 
 ## Procedure and Invariants
 
@@ -18,6 +18,7 @@ description: 'Use when changing deployment staging, report asset collection, ima
 1. Classify images from suite data, taking the most protective role for shared paths. Keep diffs/errors lossless. After compression, refresh image query versions, then suite JSON and manifest versions; never rename image files. Revalidate final storage size and preserve source captures.
 1. Enforce provider file limits and compressed/uncompressed byte bounds. Detect content changing during copy and clean staging/temporary packages on failure.
 1. Keep deterministic ordering and cancellation/progress updates during packaging/hashing. Azure uploads a ZIP; Netlify uploads requested content from a full SHA-1 manifest. Neither a completed ZIP nor a submitted manifest proves publication succeeded.
+1. Cloudflare uses content/extension hashes and Base64 multipart asset batches. Enforce 25 MiB per file and exclude Azure configuration and hosting-policy files from the public manifest. Pass header/redirect contents as metadata and translate index-page proxies to `/`; verify publication after receiving the completion token.
 
 ## Checks
 
@@ -25,6 +26,7 @@ description: 'Use when changing deployment staging, report asset collection, ima
 cargo test --features desktop --lib desktop::deployment::package::tests
 cargo test --features desktop --lib desktop::deployment::tests
 cargo test --features desktop --lib desktop::deployment::netlify::tests
+cargo test --features desktop --lib desktop::deployment::cloudflare::tests
 cargo test --features desktop --lib desktop::deployment::budget::tests
 cargo test --features desktop --lib snapshot::site::tests
 ```

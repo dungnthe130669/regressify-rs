@@ -803,34 +803,7 @@ fn site_url(value: &str) -> Result<String> {
 }
 
 fn validate_static_configuration(root: &Path) -> Result<()> {
-    let path = root.join("staticwebapp.config.json");
-    let file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error).context("Cannot read Azure static site configuration"),
-    };
-    let config: serde_json::Value = serde_json::from_slice(&super::bounded_read(
-        file,
-        1024 * 1024,
-        "Static site configuration",
-    )?)
-    .map_err(|_| anyhow!("Invalid Azure static site configuration"))?;
-    let restricted = config.get("auth").is_some()
-        || config.get("networking").is_some()
-        || config["routes"].as_array().is_some_and(|routes| {
-            routes.iter().any(|route| {
-                route.get("allowedRoles").is_some_and(|roles| {
-                    !roles
-                        .as_array()
-                        .is_some_and(|roles| roles.iter().any(|role| role == "anonymous"))
-                })
-            })
-        });
-    ensure!(
-        !restricted,
-        "Azure access restrictions cannot be enforced by Netlify; configure Netlify access protection before deploying these reports"
-    );
-    Ok(())
+    super::validate_static_configuration(root, DeploymentProvider::Netlify)
 }
 
 #[cfg(test)]
@@ -853,6 +826,7 @@ mod tests {
             environment: String::new(),
             provider: DeploymentProvider::Netlify,
             site_id: SITE_ID.into(),
+            cloudflare: None,
         }
     }
 

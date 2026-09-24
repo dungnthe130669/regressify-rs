@@ -140,7 +140,7 @@ Configure any CDN to **include the `v` query parameter in its cache key** and ke
 it on origin requests. Generated asset policies use immutable one-year caching.
 **The entry HTML must revalidate** so visitors discover new versions; do not cache
 `/`, `/index.html`, or SPA route responses indefinitely. Publish the complete output
-atomically, as the desktop Azure/Netlify deployers do. Old versions are not retained
+atomically, as the desktop Azure/Netlify/Cloudflare deployers do. Old versions are not retained
 at the origin; reload an old report after a deployment. The local preview rejects
 stale `v` values, making accidental version/content mismatches visible.
 
@@ -156,10 +156,17 @@ but return real 404 responses for missing `/_snapshot/*` assets. Azure and Netli
 configuration is generated automatically. Opening HTML through `file://` is not
 supported. Old `/suite/html_report/index.html` entry pages are removed.
 
+Cloudflare Workers deployment consumes the same header and redirect policies as
+asset metadata and excludes the policy files from public assets. Its canonical
+HTML rules require `/suites/* / 200`, not `/suites/* /index.html 200`; the provider
+client translates that rewrite without changing Netlify output. Keep
+`not_found_handling` as `none` so missing report assets remain 404s.
+
 Azure and Netlify share the global security policy, including
 `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. Change hosting
 templates in [hosting](hosting), rebuild the embedded assets, and run the Rust
-hosting-policy regression to keep both providers aligned.
+hosting-policy regression to keep the generated policies aligned. Cloudflare
+reuses the Netlify header rules and validates them in its live publishing test.
 
 Suite summaries and suite JSON accept optional `displayName` strings without
 changing schema version 2. Lists, search, headings, breadcrumbs, Info, and browser

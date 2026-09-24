@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 mod budget;
+pub mod cloudflare;
 pub mod credentials;
 mod diagnostics;
 pub mod netlify;
@@ -24,6 +25,7 @@ pub enum DeploymentProvider {
     #[default]
     AzureSwa,
     Netlify,
+    CloudflareWorkers,
 }
 
 impl DeploymentProvider {
@@ -31,12 +33,14 @@ impl DeploymentProvider {
         match self {
             Self::AzureSwa => "Azure Static Web Apps",
             Self::Netlify => "Netlify",
+            Self::CloudflareWorkers => "Cloudflare Workers",
         }
     }
 
     pub fn validate_token(self, token: &str) -> Result<()> {
         match self {
             Self::AzureSwa => swa::validate_token(token),
+            Self::CloudflareWorkers => cloudflare::validate_token(token),
             Self::Netlify => {
                 ensure!(
                     !token.is_empty()
@@ -63,6 +67,8 @@ pub struct DeployTarget {
     pub provider: DeploymentProvider,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub site_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cloudflare: Option<cloudflare::CloudflareTarget>,
 }
 
 impl<'de> Deserialize<'de> for DeployTarget {
@@ -83,6 +89,8 @@ impl<'de> Deserialize<'de> for DeployTarget {
             provider: DeploymentProvider,
             #[serde(default)]
             site_id: String,
+            #[serde(default)]
+            cloudflare: Option<cloudflare::CloudflareTarget>,
             #[serde(default, rename = "tokenEnv")]
             _legacy_token_env: Option<String>,
         }
@@ -94,6 +102,7 @@ impl<'de> Deserialize<'de> for DeployTarget {
             environment: fields.environment,
             provider: fields.provider,
             site_id: fields.site_id,
+            cloudflare: fields.cloudflare,
         })
     }
 }
@@ -156,6 +165,10 @@ impl DeployTarget {
                 .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok()),
             "Invalid deployment credential ID"
         );
+        ensure!(
+            self.provider == DeploymentProvider::CloudflareWorkers || self.cloudflare.is_none(),
+            "Only Cloudflare targets use Cloudflare settings"
+        );
         match self.provider {
             DeploymentProvider::AzureSwa => {
                 ensure!(
@@ -181,6 +194,16 @@ impl DeployTarget {
                     self.site_id.len() == 36 && uuid::Uuid::parse_str(&self.site_id).is_ok(),
                     "Enter the Netlify Site ID (Project ID) from project configuration"
                 );
+            }
+            DeploymentProvider::CloudflareWorkers => {
+                ensure!(
+                    self.environment.is_empty() && self.site_id.is_empty(),
+                    "Cloudflare targets do not use an Azure environment or Netlify Site ID"
+                );
+                self.cloudflare
+                    .as_ref()
+                    .context("Enter the Cloudflare Account ID and Worker name")?
+                    .validate()?;
             }
         }
         Ok(())
@@ -398,6 +421,7 @@ impl DeployTargets {
 pub enum DeploymentClient {
     Azure(swa::SwaClient),
     Netlify(netlify::NetlifyClient),
+    Cloudflare(cloudflare::CloudflareClient),
 }
 
 impl DeploymentClient {
@@ -406,15 +430,69 @@ impl DeploymentClient {
         match target.provider {
             DeploymentProvider::AzureSwa => Ok(Self::Azure(swa::SwaClient::new(token)?)),
             DeploymentProvider::Netlify => Ok(Self::Netlify(netlify::NetlifyClient::new(token)?)),
+            DeploymentProvider::CloudflareWorkers => {
+                Ok(Self::Cloudflare(cloudflare::CloudflareClient::new(token)?))
+            }
         }
     }
 
     pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+        target.validate()?;
         match self {
             Self::Azure(client) => client.deploy(root, target).await,
             Self::Netlify(client) => client.deploy(root, target).await,
+            Self::Cloudflare(client) => {
+                ensure!(
+                    target.provider == DeploymentProvider::CloudflareWorkers,
+                    "Cloudflare client requires a Cloudflare target"
+                );
+                client
+                    .deploy(
+                        root,
+                        target
+                            .cloudflare
+                            .as_ref()
+                            .context("Cloudflare target settings are missing")?,
+                    )
+                    .await
+            }
         }
     }
+}
+
+fn validate_static_configuration(root: &Path, provider: DeploymentProvider) -> Result<()> {
+    let root = root.canonicalize()?;
+    let Some(path) = artifact_source(&root, Path::new("staticwebapp.config.json"), true)? else {
+        return Ok(());
+    };
+    let config: serde_json::Value = serde_json::from_slice(&bounded_read(
+        fs::File::open(path).context("Cannot read Azure static site configuration")?,
+        1024 * 1024,
+        "Static site configuration",
+    )?)
+    .map_err(|_| anyhow::anyhow!("Invalid Azure static site configuration"))?;
+    let restricted = config.get("auth").is_some()
+        || config.get("networking").is_some()
+        || config["routes"].as_array().is_some_and(|routes| {
+            routes.iter().any(|route| {
+                route.get("allowedRoles").is_some_and(|roles| {
+                    !roles
+                        .as_array()
+                        .is_some_and(|roles| roles.iter().any(|role| role == "anonymous"))
+                })
+            })
+        });
+    let protection = if provider == DeploymentProvider::CloudflareWorkers {
+        "Cloudflare Access"
+    } else {
+        provider.label()
+    };
+    ensure!(
+        !restricted,
+        "Azure access restrictions cannot be enforced by {}; configure {protection} access protection before deploying these reports",
+        provider.label()
+    );
+    Ok(())
 }
 
 fn phase(name: &str) {
@@ -664,6 +742,7 @@ mod tests {
                 environment: String::new(),
                 provider: DeploymentProvider::AzureSwa,
                 site_id: String::new(),
+                cloudflare: None,
             },
             suite_ids: Vec::new(),
             catalog_ids: vec!["one".into(), "two".into()],
@@ -691,6 +770,7 @@ mod tests {
             environment: String::new(),
             provider: DeploymentProvider::AzureSwa,
             site_id: String::new(),
+            cloudflare: None,
         };
         let settings = DeployTargets {
             targets: vec![target.clone()],
@@ -743,6 +823,7 @@ mod tests {
             environment: String::new(),
             provider: DeploymentProvider::AzureSwa,
             site_id: String::new(),
+            cloudflare: None,
         };
         let token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
         let replacement = format!("{}-{}000", "c".repeat(64), "d".repeat(36));
@@ -893,6 +974,75 @@ mod tests {
             }))
             .is_err()
         );
+    }
+
+    #[test]
+    fn cloudflare_targets_round_trip_and_keep_credentials_on_failed_switch() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let config = tempfile::tempdir()?;
+        let path = config.path().join("targets.json");
+        let target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id": "qa", "name": "Cloudflare QA", "provider": "cloudflareWorkers",
+            "cloudflare": {"accountId": "0123456789abcdef0123456789abcdef", "workerName": "reports"}
+        }))?;
+        target.validate()?;
+        assert_eq!(
+            serde_json::from_str::<DeployTarget>(&serde_json::to_string(&target)?)?,
+            target
+        );
+        let mut invalid = target.clone();
+        invalid.cloudflare = None;
+        assert!(invalid.validate().is_err());
+        invalid = target.clone();
+        invalid.site_id = uuid::Uuid::new_v4().to_string();
+        assert!(invalid.validate().is_err());
+        invalid = target.clone();
+        invalid.environment = "preview".into();
+        assert!(invalid.validate().is_err());
+        invalid = target.clone();
+        invalid.provider = DeploymentProvider::AzureSwa;
+        assert!(invalid.validate().is_err());
+        let mut settings = DeployTargets::default();
+        settings.save_target(
+            root.path(),
+            &path,
+            target.clone(),
+            "synthetic-cloudflare-token",
+        )?;
+        let saved = settings.targets[0].clone();
+        assert_eq!(
+            saved.token(root.path())?.as_str(),
+            "synthetic-cloudflare-token"
+        );
+        assert!(!fs::read_to_string(&path)?.contains("synthetic-cloudflare-token"));
+        settings.save_target(root.path(), &path, target.clone(), "")?;
+        assert_eq!(settings.targets[0].credential_id, saved.credential_id);
+        invalid.cloudflare = None;
+        assert!(
+            settings
+                .save_target(root.path(), &path, invalid.clone(), "")
+                .is_err()
+        );
+        let azure_token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
+        assert!(
+            settings
+                .save_target(root.path(), config.path(), invalid.clone(), &azure_token)
+                .is_err()
+        );
+        assert_eq!(
+            saved.token(root.path())?.as_str(),
+            "synthetic-cloudflare-token"
+        );
+        settings.save_target(root.path(), &path, invalid, &azure_token)?;
+        assert!(saved.token(root.path()).is_err());
+        assert!(
+            settings
+                .save_target(root.path(), &path, target, "")
+                .is_err()
+        );
+        assert_eq!(settings.targets[0].provider, DeploymentProvider::AzureSwa);
+        settings.remove_target(root.path(), &path, "qa")?;
+        Ok(())
     }
 
     fn snapshot_fixture(output: &Path) -> BTreeSet<String> {

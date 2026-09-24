@@ -631,6 +631,7 @@ mod tests {
             environment: "preview".into(),
             provider: Default::default(),
             site_id: String::new(),
+            cloudflare: None,
         };
         assert_eq!(
             client.deploy(root.path(), &target).await?,
@@ -824,6 +825,7 @@ mod tests {
                 environment: String::new(),
                 provider: Default::default(),
                 site_id: String::new(),
+                cloudflare: None,
             };
             let error = client
                 .deploy(root.path(), &target)

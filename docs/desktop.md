@@ -349,11 +349,12 @@ remote. No real project commits or remote pushes are made by these tests.
 ## Deploy Reports
 
 The header's Deploy command publishes selected suites to Azure Static Web Apps
-or Netlify.
+or Netlify, or to Cloudflare Workers Static Assets.
 Use Deployment targets to add, edit, or remove multiple targets for the current
 workspace. Choose the target in the deployment dialog each time. A target has a
 name, a provider, and a securely saved token. Azure targets also have an optional
-named environment (blank means production); Netlify targets have a Site ID.
+named environment (blank means production); Netlify targets have a Site ID;
+Cloudflare targets have an Account ID and Worker name.
 Paste the provider's token directly into its masked token field and select
 Save target. No environment variable
 or app restart is needed. When editing a target, leave that field blank to keep
@@ -374,6 +375,22 @@ access to the project's team, including SSO authorization when required.
 The app publishes to the existing site's production deployment, replacing its
 contents with the selected reports. It does not create or delete Netlify sites,
 change domains, run builds, or require the Netlify CLI.
+
+For **Cloudflare Workers**, create a dedicated Worker first and enable its
+`workers.dev` route. Select Cloudflare Workers, enter its Account ID and Worker
+name, and provide an API token with **Workers Scripts Write** permission for that
+account. The Account ID is the 32-character hexadecimal identifier in the account
+dashboard; it is also the first hostname component of an R2 S3 endpoint. R2 Access
+Key IDs and Secret Access Keys are not used. The desktop does not read `.env.local`;
+enter the token in its masked field to save it securely.
+
+Cloudflare deployments replace the dedicated Worker's code/assets with an
+assets-only report, preserving its configured route. The app does not create
+Workers, change DNS or domains, manage Access policies, or require Wrangler, Bun,
+or Node.js. It returns `https://<worker>.<account-subdomain>.workers.dev/` only after
+checking the published HTML and a companion asset. The first version requires a
+publicly reachable `workers.dev` route; Access-protected responses cannot pass
+that verification. Reports are public unless protection is configured separately.
 
 Tokens are stored in the operating system's secure credential store, outside the
 repository: Windows Credential Manager (current user, this machine only), macOS
@@ -420,7 +437,7 @@ current run), capture metadata, unused TTF fonts, source maps, persisted
 authentication state, source YAML, and unrelated files are not uploaded. Skipped
 files remain unchanged on disk. Referenced web fonts, icons, scripts, and styles
 are retained. Symlinked or escaping artifact paths are rejected. No external
-Azure, npm, or Tuyen CLI installation is required.
+Azure, npm, Tuyen CLI, or Wrangler installation is required.
 Azure uses Tuyen CLI's SWA deploy handshake: validate token, request
 upload URLs, upload Azure blob blocks, update status, and poll until completion.
 Transient network failures retry within bounds; the entire deployment has a
@@ -453,7 +470,8 @@ The deployment log reports the budget, savings, reduced images, and skipped
 images. If the report cannot fit within these safeguards, deployment stops before
 upload with sizes and recovery steps. Choose fewer suites or a larger plan;
 Azure may also reject a fitting report if other environments exhaust total app
-storage. Optimization shares the deployment deadline and does not affect Netlify.
+storage. Optimization shares the deployment deadline and does not affect Netlify
+or Cloudflare.
 
 Netlify verifies site access, hashes the staged files, and creates an asynchronous
 file-digest deployment; it does not build or upload a ZIP. The manifest includes
@@ -487,7 +505,26 @@ up to one hour for hashing, uploads, retries, and publication polling. Each file
 request uses that timeout but cannot outlive the overall deadline. Connections
 retain a 10-second timeout; manifest creation and read/poll requests use 30 seconds.
 Azure retains its ZIP/block-upload protocol and 30-minute deployment deadline.
-Both providers keep tokens out of URLs and logs.
+All providers keep tokens out of URLs and logs.
+
+Cloudflare creates a path/hash/size manifest, uploads only requested content in
+Base64 multipart batches, and publishes the completed asset set. Identical content
+with the same extension is uploaded once. Fully cached deployments skip uploads
+but still publish and verify the site. At most two batches upload concurrently;
+each contains at most 50 MiB of raw content. Asset MIME types are sent explicitly.
+The provider's one-hour temporary tokens are bounded by a 55-minute client
+deadline. Safe reads and content-addressed uploads retry transient failures up to
+six attempts; session creation and publication are not automatically retried.
+Stop cancels local work, not a publication already accepted by Cloudflare.
+
+Cloudflare limits individual files to 25 MiB, including screenshots. Free accounts
+allow 20,000 files per Worker version; Paid accounts allow 100,000. The client
+checks the per-file limit, caps content at 2 GiB and 100,000 paths, and lets the
+manifest API enforce the account's file-count allowance. Manifests and API
+responses are bounded to 32 MiB and 8 MiB respectively. Oversized files fail
+without reducing image quality or uploading to R2. Deploy fewer suites or reduce
+capture sizes when needed. Azure access restrictions are rejected before any
+Cloudflare API request instead of silently publishing unprotected reports.
 
 Provider failures include available structured error details, HTTP status,
 request/deployment identifiers, and recovery guidance for access, storage,
@@ -496,9 +533,12 @@ and `errorDetails` and Netlify's `error_message`. Details are bounded and
 credential/signed-URL redacted; unparseable responses fall back to status-specific
 guidance. The full error is shown in deployment Activity and View Log.
 
-Both providers send `X-Robots-Tag: noindex,nofollow` for report URLs. Snapshots
+All providers send `X-Robots-Tag: noindex,nofollow` for report URLs. Snapshots
 include matching Azure/Netlify security and cache policies, plus clean-URL SPA
-fallback rules. HTML revalidates; `/_snapshot/*` uses immutable one-year caching.
+fallback rules. Cloudflare passes the header and redirect rules as asset metadata,
+not public files. It translates `/suites/* /index.html 200` to `/suites/* / 200`
+because Workers rejects the former as a canonical-HTML redirect loop. Missing
+`/_snapshot/*` assets remain real 404s. HTML revalidates; `/_snapshot/*` uses immutable one-year caching.
 All resource URLs include `?v=...`; any additional CDN must include that parameter
 in its cache key. Stable origin files contain only the current report version.
 These directives ask search engines not to index reports, but do not restrict

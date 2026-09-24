@@ -104,6 +104,9 @@ pub(super) fn failure(
         (DeploymentProvider::Netlify, _) => {
             "Check the project's deploy log and configuration in Netlify."
         }
+        (DeploymentProvider::CloudflareWorkers, _) => {
+            "Check the Cloudflare Account ID, Worker name, Workers Scripts Write permission, and the Worker's deployment history."
+        }
     };
     let status = status
         .map(|status| format!(" (HTTP {status})"))
@@ -167,7 +170,7 @@ fn collect_details(value: &Value, depth: usize, messages: &mut Vec<String>) {
     }
 }
 
-fn sanitize(message: &str, authorization: &HeaderValue) -> String {
+pub(super) fn sanitize(message: &str, authorization: &HeaderValue) -> String {
     static URLS: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r#"https?://[^\s<>"']+"#).expect("valid URL pattern"));
     static SECRETS: LazyLock<Regex> = LazyLock::new(|| {

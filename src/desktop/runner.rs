@@ -1131,6 +1131,7 @@ mod tests {
             (RunCommand::Snapshot, DeploymentProvider::AzureSwa),
             (RunCommand::Deploy, DeploymentProvider::AzureSwa),
             (RunCommand::Deploy, DeploymentProvider::Netlify),
+            (RunCommand::Deploy, DeploymentProvider::CloudflareWorkers),
         ] {
             for options in [
                 json!({}),
@@ -1160,6 +1161,12 @@ mod tests {
                             } else {
                                 String::new()
                             },
+                            cloudflare: (provider == DeploymentProvider::CloudflareWorkers).then(
+                                || crate::desktop::deployment::cloudflare::CloudflareTarget {
+                                    account_id: "0123456789abcdef0123456789abcdef".into(),
+                                    worker_name: "reports".into(),
+                                },
+                            ),
                         },
                         suite_ids: vec!["shop".into()],
                         catalog_ids: vec!["shop".into()],

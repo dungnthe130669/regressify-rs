@@ -985,6 +985,7 @@ mod tests {
                         credential_id: None,
                         environment: "preview".into(),
                         site_id: String::new(),
+                        cloudflare: None,
                     },
                     suite_ids: vec!["ui-test".into()],
                     catalog_ids: vec!["ui-test".into()],

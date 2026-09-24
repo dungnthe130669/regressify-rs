@@ -121,6 +121,9 @@ before `snapshot`, or regenerate the snapshot after optimizing source captures.
 
 Host at the origin root over HTTP(S), not by opening `index.html` as a local file.
 Azure `staticwebapp.config.json` and Netlify `_headers`/`_redirects` are generated.
+The [desktop Cloudflare deployer](desktop.md#deploy-reports) passes the header rules
+and suite rewrites as Workers asset metadata, using `/` as the canonical rewrite
+destination rather than `/index.html`.
 Other static hosts must serve `/index.html` for `/suites/*`, return real 404s for
 missing `/_snapshot/*`, revalidate HTML, and cache versioned assets immutably.
 CDN cache keys must include `v`; do not cache HTML indefinitely. Publish the whole

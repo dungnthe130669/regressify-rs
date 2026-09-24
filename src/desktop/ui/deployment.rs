@@ -1,6 +1,9 @@
 use super::*;
 use crate::desktop::{
-    deployment::{DeployTarget, DeployTargets, DeploymentJob, DeploymentProvider},
+    deployment::{
+        DeployTarget, DeployTargets, DeploymentJob, DeploymentProvider,
+        cloudflare::CloudflareTarget,
+    },
     runner::RunCommand,
 };
 use zeroize::Zeroizing;
@@ -40,6 +43,8 @@ pub(super) struct DeploymentPanel {
     environment: Entity<InputState>,
     provider: DeploymentProvider,
     site_id: Entity<InputState>,
+    account_id: Entity<InputState>,
+    worker_name: Entity<InputState>,
 }
 
 impl DeploymentPanel {
@@ -65,6 +70,9 @@ impl DeploymentPanel {
             provider: DeploymentProvider::AzureSwa,
             site_id: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Project ID from Netlify")),
+            account_id: cx
+                .new(|cx| InputState::new(window, cx).placeholder("Cloudflare Account ID")),
+            worker_name: cx.new(|cx| InputState::new(window, cx).placeholder("reports")),
         }
     }
 
@@ -252,17 +260,26 @@ impl Workbench {
                         .accessibility_label("Deployment provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
                         .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
                             let mut menu = menu.action_context(focus.clone());
-                            for provider in [DeploymentProvider::AzureSwa, DeploymentProvider::Netlify] {
+                            for provider in [DeploymentProvider::AzureSwa, DeploymentProvider::Netlify, DeploymentProvider::CloudflareWorkers] {
                                 menu = menu.menu(provider.label(), Box::new(ChooseDeployProvider { provider }));
                             }
                             menu
                         }})));
-                let destination = match state.provider {
-                    DeploymentProvider::AzureSwa => ("Azure environment", "deploy-environment", &state.environment),
-                    DeploymentProvider::Netlify => ("Netlify Site ID", "deploy-site-id", &state.site_id),
+                let token_label = match state.provider {
+                    DeploymentProvider::AzureSwa => "Deployment token",
+                    DeploymentProvider::Netlify => "Personal access token",
+                    DeploymentProvider::CloudflareWorkers => "API token",
                 };
-                let token_label = if state.provider == DeploymentProvider::Netlify { "Personal access token" } else { "Deployment token" };
-                for (label, id, input) in [("Target name", "deploy-name", &state.name), (token_label, "deploy-token", &state.token), destination] {
+                let mut fields = vec![("Target name", "deploy-name", &state.name), (token_label, "deploy-token", &state.token)];
+                match state.provider {
+                    DeploymentProvider::AzureSwa => fields.push(("Azure environment", "deploy-environment", &state.environment)),
+                    DeploymentProvider::Netlify => fields.push(("Netlify Site ID", "deploy-site-id", &state.site_id)),
+                    DeploymentProvider::CloudflareWorkers => {
+                        fields.push(("Cloudflare Account ID", "deploy-account-id", &state.account_id));
+                        fields.push(("Worker name", "deploy-worker-name", &state.worker_name));
+                    }
+                }
+                for (label, id, input) in fields {
                     body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
                         .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
                 }
@@ -275,6 +292,7 @@ impl Workbench {
                     .child(div().flex_1().min_w_0().text_sm().child(selected.map(|target| format!("{} | {}", match target.provider {
                     DeploymentProvider::AzureSwa => if target.environment.is_empty() { "Production".into() } else { target.environment.clone() },
                     DeploymentProvider::Netlify => format!("Production | {}", target.site_id),
+                    DeploymentProvider::CloudflareWorkers => target.cloudflare.as_ref().map(|settings| format!("Worker | {}", settings.worker_name)).unwrap_or_default(),
                 }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()))
                     .when(selected.is_some_and(|target| target.credential_id.is_none()), |row| row.child(
                         Button::new("deploy-add-token").small().icon(gpui_kit::assets::IconName::Pencil).label("Add token")
@@ -419,6 +437,28 @@ impl Workbench {
                     cx,
                 );
             });
+            state.account_id.update(cx, |input, cx| {
+                input.set_value(
+                    target
+                        .as_ref()
+                        .and_then(|target| target.cloudflare.as_ref())
+                        .map(|settings| settings.account_id.clone())
+                        .unwrap_or_default(),
+                    window,
+                    cx,
+                );
+            });
+            state.worker_name.update(cx, |input, cx| {
+                input.set_value(
+                    target
+                        .as_ref()
+                        .and_then(|target| target.cloudflare.as_ref())
+                        .map(|settings| settings.worker_name.clone())
+                        .unwrap_or_default(),
+                    window,
+                    cx,
+                );
+            });
             cx.notify();
         });
     }
@@ -446,6 +486,22 @@ impl Workbench {
             } else {
                 String::new()
             },
+            cloudflare: (state.provider == DeploymentProvider::CloudflareWorkers).then(|| {
+                CloudflareTarget {
+                    account_id: state
+                        .account_id
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .to_ascii_lowercase(),
+                    worker_name: state
+                        .worker_name
+                        .read(cx)
+                        .value()
+                        .trim()
+                        .to_ascii_lowercase(),
+                }
+            }),
         };
         if let Err(error) = target.validate() {
             self.deployment.update(cx, |state, cx| {
@@ -803,6 +859,131 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    async fn cloudflare_target_fields_save_and_preserve_tokens(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let account = "0123456789abcdef0123456789abcdef";
+        let (handle, view) = super::super::tests::editor_at_size(
+            cx,
+            root.path(),
+            gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(640.)),
+        );
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("deploy-target-add", cx);
+            view.update(cx, |this, cx| {
+                this.choose_deploy_provider(
+                    &super::ChooseDeployProvider {
+                        provider: DeploymentProvider::CloudflareWorkers,
+                    },
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-environment").is_none());
+            assert!(window.try_find("deploy-site-id").is_none());
+            window.click("deploy-name", cx);
+            window.input("Cloudflare QA", cx);
+            window.click("deploy-account-id", cx);
+            window.input(account, cx);
+            window.click("deploy-worker-name", cx);
+            window.input("reports", cx);
+            window.click("deploy-token", cx);
+            window.input("synthetic-cloudflare-token", cx);
+            for dark in [false, true] {
+                super::super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                assert!(window.find("deploy-token").value().is_none());
+                let close = window.find("deploy-close").bounds();
+                assert!(close.origin.y + close.size.height <= gpui_kit::px(640.));
+            }
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            !state.saving && state.settings.targets.len() == 1
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            let target = &state.settings.targets[0];
+            assert_eq!(target.provider, DeploymentProvider::CloudflareWorkers);
+            assert_eq!(target.cloudflare.as_ref().unwrap().account_id, account);
+            assert_eq!(target.cloudflare.as_ref().unwrap().worker_name, "reports");
+            assert!(target.environment.is_empty() && target.site_id.is_empty());
+            assert!(
+                !std::fs::read_to_string(state.path.as_ref().unwrap())
+                    .unwrap()
+                    .contains("synthetic-cloudflare-token")
+            );
+            window.click("deploy-target-edit", cx);
+            window.render_frame(cx);
+            assert_eq!(window.find("deploy-account-id").value(), Some(account));
+            assert_eq!(window.find("deploy-worker-name").value(), Some("reports"));
+            assert!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            !view.read(cx).deployment.read(cx).saving
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("deploy-target-edit", cx);
+            view.update(cx, |this, cx| {
+                this.choose_deploy_provider(
+                    &super::ChooseDeployProvider {
+                        provider: DeploymentProvider::AzureSwa,
+                    },
+                    window,
+                    cx,
+                )
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-account-id").is_none());
+            assert!(window.try_find("deploy-worker-name").is_none());
+            window.click("deploy-target-save", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .deployment
+                .read(cx)
+                .status
+                .contains("when changing providers")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let target = &view.read(cx).deployment.read(cx).settings.targets[0];
+            assert_eq!(target.provider, DeploymentProvider::CloudflareWorkers);
+            assert_eq!(
+                target.token(root.path()).unwrap().as_str(),
+                "synthetic-cloudflare-token"
+            );
+            window.click("deploy-target-cancel", cx);
+            window.click("deploy-close", cx);
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     async fn deployment_token_drafts_are_cleared_on_cancel_close_and_escape(
         cx: &mut TestAppContext,
     ) {
@@ -871,6 +1052,7 @@ mod tests {
                             environment: String::new(),
                             provider: Default::default(),
                             site_id: String::new(),
+                            cloudflare: None,
                         }],
                     };
                     state.catalog_ids =

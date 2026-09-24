@@ -48,8 +48,23 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
+## Validation Gap (2026-09-24)
+
+- `cargo test --locked --features desktop --lib` reports 612 passed, 1 failed,
+  and 12 ignored. The unchanged
+  [frontend resource-version test](src/snapshot/site.rs#L769) fails its embedded
+  HTML/asset hash assertion for `_snapshot/assets/app.js`. No frontend source or
+  embedded assets were changed for Cloudflare deployment. Regenerate the embedded
+  frontend using the [documented build](frontend/README.md) and rerun this check;
+  do not treat the complete desktop gate as passing until it is resolved.
+
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop deployment now supports Cloudflare Workers Static Assets with secure
+  target credentials, incremental uploads, and verified publication. A live check
+  confirmed report bytes, suite deep links, headers, missing-file 404s, and reuse
+  on an unchanged redeploy. The client translates the Netlify index-page rewrite
+  to Cloudflare's canonical root and rejects Azure access policies before API calls.
 - [Azure release preparation](.ado/workflows/tuyen-release.yaml) waits for `vswhere`
   to finish before selecting MSBuild, avoiding a stale exit code that rejected a
   valid installation. Native Windows reproduction and [offline release tests](ci/test-release.py)

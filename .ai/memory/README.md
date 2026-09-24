@@ -46,6 +46,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   historical capture selection, and exact ZIP regression checks.
 - [Netlify uploads](deployment-netlify.md): digest manifests, per-file retries,
   sampled progress warnings, and local cancellation semantics.
+- [Cloudflare deployment](deployment-cloudflare.md): static-asset uploads, scoped
+  SPA rewrites, provider limits, and authorized live verification.
 - [Snapshot frontend](snapshot-frontend.md): query-versioned SPA assets, build/PR workflow,
   schema boundaries, and production-fixture browser checks.
 - [Release pipelines](release-pipelines.md): GitHub/Azure release selection, Library
