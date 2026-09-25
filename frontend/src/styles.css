@@ -1,21 +1,21 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 @font-face {
   font-family: Roboto;
-  src: url('./assets/fonts/roboto-combined.woff2') format('woff2');
+  src: url("./assets/fonts/roboto-combined.woff2") format("woff2");
   font-weight: 100 900;
   font-display: swap;
 }
 @font-face {
-  font-family: 'JetBrains Mono';
-  src: url('./assets/fonts/jetbrains-mono-combined.woff2') format('woff2');
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/jetbrains-mono-combined.woff2") format("woff2");
   font-weight: 100 800;
   font-display: swap;
 }
 
 @theme {
   --font-sans: Roboto, sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
+  --font-mono: "JetBrains Mono", monospace;
 }
 :root {
   font-family: var(--font-sans);
@@ -41,7 +41,7 @@
   -webkit-font-smoothing: antialiased;
   letter-spacing: 0;
 }
-:root[data-theme='dark'] {
+:root[data-theme="dark"] {
   color-scheme: dark;
   --bg: #151919;
   --surface: #1c2222;
@@ -192,7 +192,7 @@ svg {
   color: var(--muted);
 }
 .icon-button:hover,
-.icon-button[aria-pressed='true'] {
+.icon-button[aria-pressed="true"] {
   color: var(--text);
   background: var(--surface);
 }
@@ -200,7 +200,7 @@ svg {
   width: 30px;
   height: 28px;
 }
-.segmented [aria-pressed='true'] {
+.segmented [aria-pressed="true"] {
   background: var(--surface);
   color: var(--text);
   box-shadow: 0 1px 3px #00000012;
@@ -812,7 +812,7 @@ summary.nav-heading {
   background: var(--subtle);
   color: var(--text);
 }
-.suite-links a[aria-current='page'] {
+.suite-links a[aria-current="page"] {
   background: var(--accent-soft);
   color: var(--text);
 }
@@ -919,7 +919,7 @@ summary.nav-heading {
 .capture-card {
   scroll-margin-top: 58px;
 }
-.capture-card[data-active-failure='true'] {
+.capture-card[data-active-failure="true"] {
   outline: 2px solid var(--fail);
   outline-offset: 2px;
 }
@@ -1166,7 +1166,11 @@ summary.nav-heading {
   overflow: clip;
   outline: 1px solid var(--border);
   background-color: var(--canvas);
-  background-image: linear-gradient(45deg, #7d938610 25%, transparent 25%), linear-gradient(-45deg, #7d938610 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #7d938610 75%), linear-gradient(-45deg, transparent 75%, #7d938610 75%);
+  background-image:
+    linear-gradient(45deg, #7d938610 25%, transparent 25%),
+    linear-gradient(-45deg, #7d938610 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #7d938610 75%),
+    linear-gradient(-45deg, transparent 75%, #7d938610 75%);
   background-size: 20px 20px;
   background-position:
     0 0,
