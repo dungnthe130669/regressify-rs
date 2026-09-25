@@ -1493,6 +1493,68 @@ mod tests {
     }
 
     #[test]
+    fn parse_test_suites_allows_shared_urls_across_suites() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let inputs = ["first", "second"]
+            .into_iter()
+            .map(|name| {
+                let path = PathBuf::from(format!("{name}.tests.yaml"));
+                fs::write(
+                    temp_dir.path().join(&path),
+                    "scenarios:\n  - url: https://example.com/shared\n",
+                )
+                .unwrap();
+                TestSuiteInput {
+                    name: name.into(),
+                    path,
+                    format: TestSuiteFormat::Yaml,
+                }
+            })
+            .collect();
+
+        let suites = parse_test_suites(temp_dir.path(), inputs).unwrap();
+        assert_eq!(suites.len(), 2);
+        assert_eq!(suites[0].1.scenarios[0].id, suites[1].1.scenarios[0].id);
+    }
+
+    #[test]
+    fn parse_test_suites_duplicate_ids_preserve_source_and_scenario_context() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = PathBuf::from("nested/suite.tests.yml");
+        fs::create_dir_all(temp_dir.path().join("nested")).unwrap();
+        fs::write(
+            temp_dir.path().join(&path),
+            "scenarios:\n  - url: https://example.com/shared\n  - url: https://example.com/shared\n",
+        )
+        .unwrap();
+
+        let error = parse_test_suites(
+            temp_dir.path(),
+            vec![TestSuiteInput {
+                name: "suite".into(),
+                path,
+                format: TestSuiteFormat::Yaml,
+            }],
+        )
+        .err()
+        .expect("Repeated unlabeled URLs must collide")
+        .to_string();
+
+        for expected in [
+            "Error parsing test suite 'suite'",
+            "Duplicate scenario ID",
+            "nested",
+            "suite.tests.yml",
+            "Scenario #1",
+            "Scenario #2",
+            "https://example.com/shared",
+            "unique explicit 'id'",
+        ] {
+            assert!(error.contains(expected), "Missing {expected:?}: {error}");
+        }
+    }
+
+    #[test]
     fn scenario_selection_is_exact_and_preserves_dependency_definitions() {
         let root = match std::env::var_os("REGRESSIFY_SCENARIO_SELECTION_FIXTURE") {
             Some(path) => PathBuf::from(path),

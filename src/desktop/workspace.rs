@@ -44,6 +44,13 @@ impl Entry {
     pub fn label(&self) -> String {
         display_path(&self.path)
     }
+    pub fn supports_editing(&self) -> bool {
+        self.path.extension().is_some_and(|extension| {
+            ["yaml", "yml", "json"]
+                .iter()
+                .any(|supported| extension.eq_ignore_ascii_case(supported))
+        })
+    }
     pub fn suite_name(&self) -> Option<String> {
         let filename = self.path.file_name()?.to_str()?.to_ascii_lowercase();
         [".tests.yaml", ".tests.yml", ".tests.json"]
@@ -406,19 +413,20 @@ impl Workspace {
                 }
                 let path = item.path().strip_prefix(&self.root)?.to_path_buf();
                 let name = item.file_name().to_string_lossy().to_ascii_lowercase();
-                let suite = [".tests.yaml", ".tests.yml", ".tests.json"]
-                    .iter()
-                    .any(|suffix| name.ends_with(suffix));
+                let suite = folder == "visual_tests"
+                    && [".tests.yaml", ".tests.yml", ".tests.json"]
+                        .iter()
+                        .any(|suffix| name.ends_with(suffix));
                 let data = folder == "common"
                     && ["yaml", "yml", "json"].iter().any(|extension| {
                         path.extension().is_some_and(|actual| actual == *extension)
                     });
-                if suite || data {
+                if suite || folder == "common" {
                     entries.push(Entry {
                         path,
                         kind: if suite {
                             DocumentKind::Suite
-                        } else if name.contains("viewports") {
+                        } else if data && name.contains("viewports") {
                             DocumentKind::Viewports
                         } else {
                             DocumentKind::Data
@@ -432,6 +440,10 @@ impl Workspace {
     }
 
     pub fn open_document(&self, entry: Entry) -> Result<OpenDocument> {
+        ensure!(
+            entry.supports_editing(),
+            "The desktop editor supports only YAML and JSON files"
+        );
         let source = read_document(&self.resolve(&entry.path)?)?;
         let document = Document::new(entry.kind, Format::for_path(&entry.path), source)?;
         Ok(OpenDocument { entry, document })
@@ -1076,6 +1088,62 @@ mod tests {
     use super::super::document::Edit;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn entries_include_all_common_files_and_only_visual_test_suites() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let expected = [
+            ("common/.keep", DocumentKind::Data),
+            ("common/README", DocumentKind::Data),
+            ("common/_on-ready.js", DocumentKind::Data),
+            ("common/_override.css", DocumentKind::Data),
+            ("common/_viewports.yaml", DocumentKind::Viewports),
+            ("common/data.json", DocumentKind::Data),
+            ("common/nested/helper.tests.json", DocumentKind::Data),
+            ("common/nested/hook.js", DocumentKind::Data),
+            ("common/template.tests.yaml", DocumentKind::Data),
+            ("common/viewports-preview.png", DocumentKind::Data),
+            ("common/viewports.json", DocumentKind::Viewports),
+            ("common/viewports.yml", DocumentKind::Viewports),
+            ("regressify.yaml", DocumentKind::Workspace),
+            ("visual_tests/home.tests.yaml", DocumentKind::Suite),
+        ];
+        for (path, _) in &expected {
+            let destination = directory.path().join(path);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::write(destination, b"not parsed during discovery\xFF").unwrap();
+        }
+        for path in [
+            "visual_tests/helper.js",
+            "visual_tests/data.json",
+            "other.txt",
+        ] {
+            fs::write(directory.path().join(path), "not listed").unwrap();
+        }
+        fs::create_dir_all(directory.path().join("common/empty-folder")).unwrap();
+
+        let entries = workspace.entries().unwrap();
+        let actual: Vec<_> = entries
+            .iter()
+            .map(|entry| (entry.label(), entry.kind))
+            .collect();
+
+        assert_eq!(
+            actual,
+            expected.map(|(path, kind)| (path.to_string(), kind))
+        );
+        for entry in entries
+            .into_iter()
+            .filter(|entry| !entry.supports_editing())
+        {
+            let error = workspace.open_document(entry).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "The desktop editor supports only YAML and JSON files"
+            );
+        }
+    }
 
     #[test]
     fn editor_display_preferences_default_safely_and_clamp_saved_font_sizes() {

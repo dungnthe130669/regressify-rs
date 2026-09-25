@@ -3793,6 +3793,29 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                     this.session.entries.len() - 1
                 });
                 window.render_frame(cx);
+                let original_path = view.read(cx).session.open.as_ref().unwrap().entry.path.clone();
+                for path in ["common/_on-ready.js", "common/_override.css"] {
+                    let index = view
+                        .read(cx)
+                        .session
+                        .entries
+                        .iter()
+                        .position(|entry| entry.path == Path::new(path))
+                        .expect("Common helpers must appear in Workspace files");
+                    assert!(window.find(("file", index)).visible());
+                    assert_eq!(window.find(("file", index)).label(), Some(path));
+                    window.click(("file", index), cx);
+                    view.update(cx, |this, cx| {
+                        this.workspace_list.focus_item(path.into(), window, cx);
+                    });
+                    window.press("enter", cx);
+                    window.press("space", cx);
+                    assert!(!view.read(cx).busy, "Unsupported files must not start loading");
+                    assert_eq!(
+                        view.read(cx).session.open.as_ref().unwrap().entry.path,
+                        original_path
+                    );
+                }
                 let sidebar = window.find("workspace-navigation").bounds();
                 let files = window.find("workspace-files").bounds();
                 assert!(files.top() >= window.find("scenario-pane").bounds().bottom());

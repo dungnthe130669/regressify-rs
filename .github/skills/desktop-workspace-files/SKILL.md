@@ -20,6 +20,7 @@ description: 'Use when changing desktop file discovery, Save/Save As, suite crea
 1. Suite rename/delete use [staged artifact updates](../../../src/desktop/workspace/artifacts.rs) across default/environment and caller-supplied custom roots. Preserve explicit IDs, reject shared IDs/collisions, update historical raw reports and published snapshots, and roll back on document failure. This is not crash-atomic or a lock against external writers. Never touch browser states or remote deployments.
 1. `displayName` is presentation-only. Fields saves and Rename update local report labels without changing file/output identity. Pass active and saved-history roots from the UI; remap selections/activity after successful mutations. F2/Delete are scoped to the suite list and retain draft/confirmation guards.
 1. Keep discovery precedence aligned with the CLI; runnable_suite must reject a selected file shadowed by another format. Merge preferences without losing another window's recent workspaces or settings.
+1. List every regular file under `common`, including nested files and unsupported formats. Only `visual_tests` entries become suites. Keep unsupported rows visible but non-editable, guard mouse/keyboard activation, and enforce `Entry::supports_editing` at `Workspace::open_document` before parsing. Never treat JavaScript, CSS, or binary files as YAML.
 
 ## Checks
 
@@ -28,11 +29,12 @@ cargo test --features desktop --lib desktop::workspace::tests
 cargo test --features desktop --lib desktop::workspace::artifacts::tests
 cargo test --features desktop --lib desktop::session::tests
 cargo test --features desktop --lib init::tests
+cargo test --features gui-tests --lib workspace_files_ -- --test-threads=1
 ```
 
 Cover external edits/deletion, existing destinations, path traversal/symlinks, reserved names, duplicate/shadowed suites, read-only paths, and concurrent settings.
 
-GUI fixtures use `Session::connect`, so initialized default documents already exist. Suite-creation assertions must preserve that inventory; sidebar-scroll fixtures must count total non-suite entries, including defaults, and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
+GUI fixtures use `Session::connect`, so initialized default files already exist. Validate only editable documents, but assert every runtime file is listed, including `_on-ready.js` and `_override.css`. Suite-creation assertions must preserve that inventory; sidebar-scroll fixtures must count total non-suite entries, including unsupported files, and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
 
 ## Maintain
 

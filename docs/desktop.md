@@ -935,10 +935,14 @@ the shortest unique readable path suffix, with origins only for mixed-origin
 suites. Explicit labels take priority; generated names do not modify the draft,
 scenario selection IDs, or capture filenames.
 
-The Workspace files section contains configuration and YAML/JSON under `common`.
-Opening a viewport file displays its definitions in the lower pane. Open
-configuration file adds other workspace-relative data files, including custom
-viewport definitions.
+The Workspace files section contains workspace configuration and every regular
+file under `common`, including nested files, JavaScript helpers such as
+`_on-ready.js`, CSS, images, and files without extensions. YAML/JSON files open in
+the built-in editor; unsupported formats remain visible but disabled, with an
+unsupported-file tooltip. Suite-like filenames under `common` remain in this
+section rather than the runnable suite list. Opening a viewport file displays its
+definitions in the lower pane. Open configuration file adds other workspace-relative
+data files, including custom viewport definitions.
 
 File supports new/duplicate/rename/delete suite, Save As, reload, configuration
 and viewport-file creation, file browsing, refresh, and light/dark appearance.

@@ -1,6 +1,6 @@
 # Workspace Initialization
 
-Verified: 2026-09-24
+Verified: 2026-09-25
 
 - [Initialization](../../src/init.rs) shares runtime defaults between CLI `init`
   and desktop setup: `regressify.yaml`, five `common/` files, and `visual_tests/`.
@@ -22,6 +22,12 @@ Verified: 2026-09-24
   files, Node helpers, or run/state artifacts. Explicit CLI `init` retains its
   sample, editor integration, and legacy migration. See the
   [desktop workflow](../../docs/desktop.md#workspace-and-files).
+- [Workspace discovery](../../src/desktop/workspace.rs) lists all regular files
+  under `common`, including `_on-ready.js`, `_override.css`, and nested/unknown
+  formats. Only `visual_tests` entries become suites. `Entry::supports_editing`
+  keeps unsupported formats visible but outside the YAML/JSON editor. Session
+  setup validates only editable entries; `workspace_files_` GUI tests verify
+  helper visibility and mouse/keyboard guards across both sizes and themes.
 - Starter writes use same-directory temporary files with `persist_noclobber`;
   existing regular files are skipped and symlink/non-file destinations rejected.
   This prevents partial starter publication and clobbering competing files, not

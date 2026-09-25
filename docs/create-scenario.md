@@ -3,7 +3,7 @@ title: Create a Test Scenario
 description: Learn how to define Regressify test scenarios, set target URLs, add actions, and tune per-scenario options for reliable runs.
 guid: 620b9098-627b-4db5-bb0b-cd43b9949e35
 date: 2023-06-29T17:00:00+00:00
-updated: 2026-09-13T00:00:00+00:00
+updated: 2026-09-25T00:00:00+00:00
 draft: false
 hidden: false
 weight: 30000
@@ -201,7 +201,7 @@ id
 :::::
 
 Type: `string`.  
-Default value: empty.
+Default value: a slug of `label`, or a hash of `url` when no label is provided.
 
 Scenario ID. This property is for identifying this scenario when you re-use in other one. Use any value you find meaningful, but should be as short and concise as possible.  
 IDs must be a portable single path component: they cannot be empty or contain
@@ -209,6 +209,15 @@ path separators, control characters, or Windows-reserved filename characters.
 Leading or trailing whitespace and trailing dots are also rejected.
 Lowercase alphanumeric characters (`a-z`, `0-9`), minus (`-`), and underscore
 (`_`) are recommended.
+
+IDs must be unique within each suite, ignoring letter case. Scenarios sharing a
+URL need distinct explicit IDs or labels that produce different ID slugs.
+Different suites may reuse the same URLs and scenario IDs.
+
+Duplicate-ID errors identify the suite and source file, list both conflicting
+scenario numbers (starting at 1), labels when supplied, and URLs, and suggest
+assigning unique IDs. Only URL passwords are redacted; usernames, query strings,
+fragments, and other URL information remain visible in the diagnostic.
 
 Use together with the `needs` property.
 
@@ -218,6 +227,8 @@ Example:
 scenarios:
   - url: https://www.domain.com
     id: first-visit
+  - url: https://www.domain.com
+    id: return-visit
 ```
 
 {% end %}

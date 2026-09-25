@@ -72,21 +72,50 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
     }
 
     // Screenshot names must remain unique on case-insensitive filesystems.
-    let mut scenario_ids = std::collections::HashSet::new();
-    for scenario in test_suite.scenarios.iter() {
+    let mut scenario_ids = std::collections::HashMap::new();
+    for (index, scenario) in test_suite.scenarios.iter().enumerate() {
         let scenario_id = scenario
             .id
             .as_ref()
             .ok_or_else(|| anyhow!("Scenario ID is missing."))?;
-        if !scenario_ids.insert(scenario_id.to_lowercase()) {
+        if let Some(previous_index) = scenario_ids.insert(scenario_id.to_lowercase(), index) {
+            let describe_scenario = |index: usize| {
+                let scenario = &test_suite.scenarios[index];
+                let label = scenario
+                    .label
+                    .as_ref()
+                    .map(|label| format!(" (label: {label:?})"))
+                    .unwrap_or_default();
+                format!(
+                    "  Scenario #{}{label}: URL {:?}",
+                    index + 1,
+                    scenario_diagnostic_url(&scenario.url)
+                )
+            };
             return Err(anyhow!(
-                "Duplicate scenario ID found: '{}'. Scenario IDs must be unique.",
-                scenario_id
+                "Duplicate scenario ID found in test suite '{}' ({}): '{}'.\n{}\n{}\nScenario IDs must be unique within a test suite (case-insensitive). IDs default to a slug of 'label', or a hash of 'url' when no label is set. Give each conflicting scenario a unique explicit 'id', or a distinct 'label' when no 'id' is set.",
+                name,
+                test_suite_path.display(),
+                scenario_id,
+                describe_scenario(previous_index),
+                describe_scenario(index),
             ));
         }
     }
 
     Ok(test_suite)
+}
+
+fn scenario_diagnostic_url(value: &str) -> String {
+    let Ok(mut url) = reqwest::Url::parse(value) else {
+        return value.to_string();
+    };
+    if url.password().is_none() {
+        return value.to_string();
+    }
+
+    let _ = url.set_password(Some("***"));
+    url.to_string()
 }
 
 fn test_run_id(time: chrono::DateTime<chrono::Utc>) -> String {
@@ -316,26 +345,201 @@ mod tests {
     }
 
     #[test]
-    fn parse_test_suite_rejects_case_insensitive_scenario_id_collisions() {
+    fn parse_test_suite_duplicate_ids_identify_unlabeled_url_collisions() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("suite.tests.yaml");
         std::fs::write(
             &path,
-            "scenarios:\n  - id: Home\n    url: https://example.com/home\n  - id: home\n    url: https://example.com/other\n",
+            "scenarios:\n  - url: https://example.com/shared\n  - url: https://example.com/other\n  - url: https://example.com/shared\n",
         )
         .unwrap();
 
-        let result = parse_test_suite(
+        let error = parse_test_suite(
             temp_dir.path(),
             &TestSuiteInput {
                 name: "suite".to_string(),
                 path,
                 format: TestSuiteFormat::Yaml,
             },
-        );
+        )
+        .err()
+        .expect("Repeated unlabeled URLs must collide")
+        .to_string();
 
-        assert!(
-            matches!(result, Err(error) if error.to_string().contains("Duplicate scenario ID"))
+        for expected in [
+            "Duplicate scenario ID",
+            "test suite 'suite'",
+            "suite.tests.yaml",
+            "Scenario #1",
+            "Scenario #3",
+            "https://example.com/shared",
+            "unique explicit 'id'",
+        ] {
+            assert!(error.contains(expected), "Missing {expected:?}: {error}");
+        }
+        assert!(error.contains(&get_asset_version(b"https://example.com/shared", 20)));
+        assert!(!error.contains("Scenario #2"), "{error}");
+    }
+
+    #[test]
+    fn parse_test_suite_rejects_case_insensitive_scenario_id_collisions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("suite.tests.yaml");
+        std::fs::write(
+            &path,
+            "scenarios:\n  - id: Home\n    label: First visit\n    url: https://example.com/home\n  - id: home\n    label: Second visit\n    url: https://example.com/other\n",
+        )
+        .unwrap();
+
+        let error = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "suite".to_string(),
+                path,
+                format: TestSuiteFormat::Yaml,
+            },
+        )
+        .err()
+        .expect("Case-insensitive IDs must collide")
+        .to_string();
+
+        for expected in [
+            "Duplicate scenario ID",
+            "'home'",
+            "Scenario #1 (label: \"First visit\"): URL \"https://example.com/home\"",
+            "Scenario #2 (label: \"Second visit\"): URL \"https://example.com/other\"",
+            "case-insensitive",
+        ] {
+            assert!(error.contains(expected), "Missing {expected:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn parse_test_suite_duplicate_ids_identify_label_slug_collisions_in_json() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("suite.tests.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"scenarios": [
+                {"label": "Shared page", "url": "https://example.com/first"},
+                {"label": "Shared-page", "url": "https://example.com/second"}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "suite".into(),
+                path,
+                format: TestSuiteFormat::Json,
+            },
+        )
+        .err()
+        .expect("Matching label slugs must collide")
+        .to_string();
+
+        for expected in [
+            "suite.tests.json",
+            "'shared-page'",
+            "Scenario #1 (label: \"Shared page\"): URL \"https://example.com/first\"",
+            "Scenario #2 (label: \"Shared-page\"): URL \"https://example.com/second\"",
+            "unique explicit 'id'",
+        ] {
+            assert!(error.contains(expected), "Missing {expected:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn parse_test_suite_allows_shared_urls_with_distinct_ids_or_labels() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let input = TestSuiteInput {
+            name: "suite".into(),
+            path: temp_dir.path().join("suite.tests.json"),
+            format: TestSuiteFormat::Json,
+        };
+        for scenarios in [
+            serde_json::json!([
+                {"id": "first", "label": "Same label", "url": "https://example.com/shared"},
+                {"id": "second", "label": "Same label", "url": "https://example.com/shared"}
+            ]),
+            serde_json::json!([
+                {"label": "First visit", "url": "https://example.com/shared"},
+                {"label": "Second visit", "url": "https://example.com/shared"}
+            ]),
+        ] {
+            std::fs::write(
+                &input.path,
+                serde_json::to_vec(&serde_json::json!({"scenarios": scenarios})).unwrap(),
+            )
+            .unwrap();
+
+            let suite = parse_test_suite(temp_dir.path(), &input).unwrap();
+            assert_eq!(suite.scenarios.len(), 2);
+            assert_ne!(suite.scenarios[0].id, suite.scenarios[1].id);
+        }
+    }
+
+    #[test]
+    fn parse_test_suite_duplicate_ids_redact_only_url_passwords() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let path = temp_dir.path().join("suite.tests.json");
+        let url = "https://synthetic-user:synthetic-password@example.com/shared?access_token=synthetic-query-value#synthetic-fragment-value";
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({"scenarios": [
+                {"url": url}, {"url": url}
+            ]}))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let error = parse_test_suite(
+            temp_dir.path(),
+            &TestSuiteInput {
+                name: "suite".into(),
+                path,
+                format: TestSuiteFormat::Json,
+            },
+        )
+        .err()
+        .expect("Repeated URLs must collide")
+        .to_string();
+
+        assert!(error.contains("https://synthetic-user:***@example.com/shared?access_token=synthetic-query-value#synthetic-fragment-value"));
+        assert!(!error.contains("synthetic-password"));
+    }
+
+    #[test]
+    fn scenario_diagnostic_urls_preserve_urls_without_passwords() {
+        for url in [
+            "https://example.com",
+            "https://synthetic-user@example.com/shared?item=123#details",
+            "file:///tmp/page.html",
+            "not a valid URL",
+            "data:text/plain,synthetic-content",
+            "javascript:synthetic-content",
+        ] {
+            assert_eq!(scenario_diagnostic_url(url), url);
+        }
+    }
+
+    #[test]
+    fn scenario_diagnostic_urls_redact_only_passwords() {
+        assert_eq!(
+            scenario_diagnostic_url(
+                "https://synthetic-user:synthetic%40password@example.com/shared?item=123#details"
+            ),
+            "https://synthetic-user:***@example.com/shared?item=123#details"
+        );
+        assert_eq!(
+            scenario_diagnostic_url("https://:synthetic-password@example.com/shared"),
+            "https://:***@example.com/shared"
+        );
+        assert_eq!(
+            scenario_diagnostic_url("ftp://synthetic-user:synthetic-password@example.com/shared"),
+            "ftp://synthetic-user:***@example.com/shared"
         );
     }
 

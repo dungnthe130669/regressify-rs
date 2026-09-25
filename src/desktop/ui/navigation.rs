@@ -1331,7 +1331,7 @@ impl Workbench {
                 .session
                 .entries
                 .iter()
-                .find(|entry| entry.path == path)
+                .find(|entry| entry.path == path && entry.supports_editing())
                 .cloned()
         {
             self.workspace_list.focus_item(path, window, cx);
@@ -1423,6 +1423,7 @@ impl Workbench {
                 .overflow_y_scroll();
             for (index, entry) in entries {
                 let entry = entry.clone();
+                let editable = entry.supports_editing();
                 files = files.child(
                     Button::new(("file", index))
                         .ghost()
@@ -1442,7 +1443,11 @@ impl Workbench {
                         )
                         .icon(gpui_kit::assets::IconName::FileCog)
                         .accessibility_label(entry.label())
-                        .tooltip(entry.label())
+                        .tooltip(if editable {
+                            entry.label()
+                        } else {
+                            format!("{} (unsupported file type)", entry.label())
+                        })
                         .child(
                             div()
                                 .flex_1()
@@ -1451,7 +1456,7 @@ impl Workbench {
                                 .text_left()
                                 .child(entry.label()),
                         )
-                        .disabled(self.busy)
+                        .disabled(self.busy || !editable)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.workspace_list
                                 .focus_item(entry.path.clone(), window, cx);

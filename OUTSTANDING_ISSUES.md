@@ -61,6 +61,15 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Desktop Workspace files now lists every regular file under `common`, including
+  `_on-ready.js`, `_override.css`, and nested, extensionless, or binary assets.
+  Suite-like helper names stay separate from runnable suites. Unsupported formats
+  remain visible but non-editable. Model and native-event regressions cover
+  discovery, mouse/keyboard guards, and sidebar scrolling in both themes/window sizes.
+- Duplicate scenario-ID errors now identify the suite, source file, and both
+  conflicting scenario entries, including numbers, labels, and URLs with
+  only passwords redacted. Parser and multi-suite regressions cover
+  URL-derived IDs, label slugs, case-insensitive collisions, and valid reused URLs.
 - Desktop deployment now supports Cloudflare Workers Static Assets with secure
   target credentials, incremental uploads, and verified publication. A live check
   confirmed report bytes, suite deep links, headers, missing-file 404s, and reuse

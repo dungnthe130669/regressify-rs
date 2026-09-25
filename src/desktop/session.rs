@@ -435,6 +435,13 @@ mod tests {
             "common/_replacement-profiles.yaml",
         ] {
             assert!(root.join(path).is_file(), "Missing runtime file: {path}");
+            assert!(
+                session
+                    .entries
+                    .iter()
+                    .any(|entry| entry.path == Path::new(path)),
+                "Missing workspace entry: {path}"
+            );
         }
         assert!(root.join("visual_tests").is_dir());
         assert!(!root.join(".vscode").exists());
@@ -452,7 +459,11 @@ mod tests {
                 .any(|entry| entry.kind == DocumentKind::Workspace)
         );
         assert!(session.suites.is_empty());
-        for entry in &session.entries {
+        for entry in session
+            .entries
+            .iter()
+            .filter(|entry| entry.supports_editing())
+        {
             session
                 .workspace
                 .as_ref()
