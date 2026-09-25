@@ -5,6 +5,7 @@ pub mod deployment;
 pub mod document;
 pub mod git;
 pub mod instance;
+pub mod landing;
 pub mod results;
 pub mod runner;
 pub mod schema;

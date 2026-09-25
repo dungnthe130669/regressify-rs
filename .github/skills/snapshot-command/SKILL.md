@@ -32,6 +32,7 @@ description: 'Use when changing regressify snapshot, the frontend React SPA, rep
 1. Reuse the desktop [icon source](../../../assets/icon.svg) for the logo and favicon. Bundle it once and content-version both URLs. Suite/image browser titles include the suite name and configured report title; overview navigation restores the report title.
 1. Suite list rows show equal-width Reference/Test lanes and a Diff lane only when present, including on phones. Contain complete previews without cropping, retain missing-image lanes, and preserve filters/view selection when opening captures. Grid view keeps one thumbnail.
 1. Apply theme preferences synchronously in the document head before the app bundle. Keep the critical background palette aligned with the main stylesheet and lower in specificity. Storage is optional; persist only explicit selections, synchronize other tabs, and follow OS appearance only in System mode.
+1. Publish `/_snapshot/status.json` with aggregate capture counts and timestamp only. This version-1 endpoint is unversioned, CORS-public, and revalidated, unlike immutable report JSON. Check it against the active manifest and include it in exact deployment inventories. Landing pages fetch it anonymously from linked origins; never infer local workspace ownership.
 
 ## Checks
 

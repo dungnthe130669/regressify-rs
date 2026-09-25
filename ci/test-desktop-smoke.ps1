@@ -19,7 +19,7 @@ function Assert-SmokeEqual($Actual, $Expected, [string]$Message) {
 }
 
 $entry = Read-SmokeScript (Join-Path $PSScriptRoot 'desktop-smoke.ps1')
-$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows')
+$parameters = @('SkipBuild', 'KeepOpen', 'Capture', 'ScenarioFlows', 'ArtifactFlows', 'InstanceFlows', 'UpdateFlows', 'DeploymentFlows', 'PublishingFlows', 'TitlebarFlows', 'GitFlows', 'ComparisonFlows', 'ErrorImageFlows', 'IconFlows', 'SchemaFlows')
 Assert-SmokeEqual @($entry.ParamBlock.Parameters.Name.VariablePath.UserPath) $parameters 'Public switches changed'
 foreach ($parameter in $entry.ParamBlock.Parameters) {
     Assert-SmokeEqual $parameter.StaticType.Name 'SwitchParameter' "Parameter $($parameter.Name) is not a switch"
@@ -163,6 +163,7 @@ $flows = [ordered]@{
     ComparisonFlows = @('Test-ComparisonFlows')
     TitlebarFlows = @('Test-TitlebarFlows')
     DeploymentFlows = @('Test-DeploymentFlows')
+    PublishingFlows = @('Test-PublishingFlows')
     UpdateFlows = @('Test-UpdateFlows')
     InstanceFlows = @('Test-InstanceFlows')
     ArtifactFlows = @('Test-ArtifactFlows')
@@ -182,6 +183,9 @@ function Test-SmokeDispatch([hashtable]$Flags, [string[]]$ExpectedFlow, [string]
     $settingsExisted = -not $SettingsAbsent
     $script:process = $null
     $script:fixtureProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+    $script:publishingBackups = @()
+    $script:publishingCredentials = @()
+    $script:publishingLandingIds = @()
     $script:cleanupSnapshot = $null
     foreach ($name in $mockCommands) {
         Set-Item "Function:$name" ([scriptblock]::Create("`$events.Add('$name'); if (`$FailurePoint -eq '$name') { throw 'Synthetic failure: $name' }"))

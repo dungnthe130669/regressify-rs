@@ -15,6 +15,7 @@ param(
     [switch]$InstanceFlows,
     [switch]$UpdateFlows,
     [switch]$DeploymentFlows,
+    [switch]$PublishingFlows,
     [switch]$TitlebarFlows,
     [switch]$GitFlows,
     [switch]$ComparisonFlows,
@@ -24,6 +25,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if ($PublishingFlows -and $KeepOpen) { throw 'Publishing smoke requires cleanup; do not combine -PublishingFlows with -KeepOpen.' }
 if ($ScenarioFlows -or $UpdateFlows) { $Capture = $true }
 $repository = Split-Path -Parent $PSScriptRoot
 $artifacts = Join-Path $repository 'target/desktop-smoke'
@@ -53,6 +55,7 @@ if (-not $SkipBuild) {
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/artifacts.ps1')
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/scenarios.ps1')
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/deployment.ps1')
+. (Join-Path $PSScriptRoot 'desktop-smoke/flows/publishing.ps1')
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/titlebar.ps1')
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/git.ps1')
 . (Join-Path $PSScriptRoot 'desktop-smoke/flows/schema.ps1')
@@ -62,6 +65,11 @@ if (-not $SkipBuild) {
 $cleanupSnapshot = $null
 try {
     Write-JsonFixture $settingsPath @{ theme = 'light'; sourceFontSize = 14; sourceWrap = $true; sourceLineNumbers = $true; navigatorHidden = $false; recentWorkspaces = @() }
+    if ($PublishingFlows) {
+        foreach ($backup in $script:publishingBackups) {
+            Write-JsonFixture $backup.Path $(if ([System.IO.Path]::GetFileName($backup.Path) -eq 'landing-apps.json') { @{ files = @() } } else { @{ tokens = @() } })
+        }
+    }
     Start-Fixture
     if ($IconFlows) {
         Test-WindowIcons
@@ -92,6 +100,10 @@ try {
     }
     if ($DeploymentFlows) {
         Test-DeploymentFlows
+        return
+    }
+    if ($PublishingFlows) {
+        Test-PublishingFlows
         return
     }
     if ($UpdateFlows) {

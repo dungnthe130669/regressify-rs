@@ -13,9 +13,56 @@ use super::helpers::get_asset_version;
 use crate::{cli::args::SnapshotArgs, config::WorkspaceConfig, helpers::write_file_atomically};
 
 include!("data/assets.rs");
+pub(crate) const FRONTEND_HTML: &str = include_str!("data/index.html");
 
 pub(super) const MAX_REPORT_BYTES: usize = 32 * 1024 * 1024;
 pub(super) const MAX_IMAGE_BYTES: usize = 512 * 1024 * 1024;
+const STATUS_PATH: &str = "_snapshot/status.json";
+
+#[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SiteStatus {
+    version: u8,
+    generated_at: String,
+    suites: usize,
+    total: usize,
+    passed: usize,
+    failed: usize,
+    errors: usize,
+}
+
+impl SiteStatus {
+    fn from_manifest(manifest: &Manifest) -> Result<Self> {
+        let mut status = Self {
+            version: 1,
+            generated_at: manifest.generated_at.clone(),
+            suites: manifest.suites.len(),
+            total: 0,
+            passed: 0,
+            failed: 0,
+            errors: 0,
+        };
+        for suite in &manifest.suites {
+            ensure!(
+                suite.passed.checked_add(suite.failed) == Some(suite.total)
+                    && suite.errors <= suite.failed,
+                "Invalid snapshot suite summary"
+            );
+            for (sum, count) in [
+                (&mut status.total, suite.total),
+                (&mut status.passed, suite.passed),
+                (&mut status.failed, suite.failed),
+                (&mut status.errors, suite.errors),
+            ] {
+                *sum = sum
+                    .checked_add(count)
+                    .filter(|value| (*value as u64) <= 9_007_199_254_740_991)
+                    .context("Snapshot status count exceeds its limit")?;
+            }
+        }
+        Ok(status)
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -212,7 +259,7 @@ pub(super) fn store_json(root: &Path, relative: &str, value: &impl Serialize) ->
     store_asset(root, relative, &serde_json::to_vec(value)?)
 }
 
-fn html_title(title: &str) -> String {
+pub(crate) fn escape_html(title: &str) -> String {
     title
         .replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -223,9 +270,14 @@ fn html_title(title: &str) -> String {
 
 fn publish_index(root: &Path, manifest: &Manifest) -> Result<()> {
     let manifest_url = store_json(root, "_snapshot/data/manifest.json", manifest)?;
-    let index = include_str!("data/index.html")
+    output_file(
+        root,
+        STATUS_PATH,
+        &serde_json::to_vec(&SiteStatus::from_manifest(manifest)?)?,
+    )?;
+    let index = FRONTEND_HTML
         .replace("__SNAPSHOT_MANIFEST__", &manifest_url)
-        .replace("__SNAPSHOT_TITLE__", &html_title(&manifest.title));
+        .replace("__SNAPSHOT_TITLE__", &escape_html(&manifest.title));
     // Publish the entry point only after all of its versioned dependencies are complete.
     output_file(root, "index.html", index.as_bytes())
 }
@@ -524,6 +576,14 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
         PathBuf::from("index.html"),
         versioned_path(&manifest_path, "data")?,
     ]);
+    if let Some(path) = checked_file(&root, Path::new(STATUS_PATH), true)? {
+        let status: SiteStatus = serde_json::from_slice(&read_bounded(&path, 64 * 1024)?)?;
+        ensure!(
+            status == SiteStatus::from_manifest(&manifest)?,
+            "Snapshot status does not match the published report; regenerate the snapshot"
+        );
+        paths.insert(PathBuf::from(STATUS_PATH));
+    }
     let mut image_versions = BTreeMap::<PathBuf, String>::new();
     for (name, _) in FRONTEND_FILES {
         if *name != "gitignore" {
@@ -766,6 +826,68 @@ mod tests {
     }
 
     #[test]
+    fn site_status_counts_validate_and_never_include_report_details() {
+        let mut manifest = Manifest {
+            version: 2,
+            title: "Private title".into(),
+            heading: "Private heading".into(),
+            subheading: "Private subheading".into(),
+            generated_at: "2026-09-24T00:00:00Z".into(),
+            suites: vec![SuiteSummary {
+                id: "private-suite".into(),
+                display_name: None,
+                total: 3,
+                passed: 1,
+                failed: 2,
+                errors: 1,
+                report: "private-report".into(),
+            }],
+        };
+        let status = SiteStatus::from_manifest(&manifest).unwrap();
+        assert_eq!(
+            (
+                status.suites,
+                status.total,
+                status.passed,
+                status.failed,
+                status.errors
+            ),
+            (1, 3, 1, 2, 1)
+        );
+        assert!(
+            !serde_json::to_string(&status)
+                .unwrap()
+                .to_lowercase()
+                .contains("private")
+        );
+        manifest.suites[0].errors = 3;
+        assert!(SiteStatus::from_manifest(&manifest).is_err());
+        manifest.suites[0].errors = 0;
+        manifest.suites[0].passed = usize::MAX;
+        assert!(SiteStatus::from_manifest(&manifest).is_err());
+        manifest.suites.clear();
+        assert_eq!(SiteStatus::from_manifest(&manifest).unwrap().total, 0);
+    }
+
+    #[test]
+    fn site_status_is_published_staged_and_checked_against_the_manifest() {
+        let directory = tempfile::tempdir().unwrap();
+        generate_site(directory.path(), &[], &args(), &WorkspaceConfig::default()).unwrap();
+        let path = directory.path().join(STATUS_PATH);
+        let status: SiteStatus = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(status.suites, 0);
+        assert!(
+            artifact_paths(directory.path(), &[])
+                .unwrap()
+                .contains(&PathBuf::from(STATUS_PATH))
+        );
+        let mut tampered = status;
+        tampered.total = 1;
+        fs::write(&path, serde_json::to_vec(&tampered).unwrap()).unwrap();
+        assert!(artifact_paths(directory.path(), &[]).is_err());
+    }
+
+    #[test]
     fn frontend_resource_versions_match_the_rust_asset_helper() {
         let html = include_str!("data/index.html");
         let css = FRONTEND_FILES
@@ -884,6 +1006,7 @@ mod tests {
         let cache_policies = headers
             .lines()
             .filter_map(|line| line.trim().strip_prefix("Cache-Control: "))
+            .filter(|policy| *policy != "no-cache")
             .collect::<Vec<_>>();
         assert!(!cache_policies.is_empty());
         for policy in cache_policies {
@@ -895,6 +1018,24 @@ mod tests {
                 );
             }
         }
+        let status_headers = headers
+            .split("/_snapshot/status.json")
+            .nth(1)
+            .unwrap()
+            .trim_start();
+        assert!(status_headers.starts_with("Access-Control-Allow-Origin: *"));
+        assert!(
+            status_headers
+                .lines()
+                .take_while(|line| !line.is_empty())
+                .any(|line| line.trim() == "Cache-Control: no-cache")
+        );
+        assert_eq!(config["routes"][0]["route"], "/_snapshot/status.json");
+        assert_eq!(
+            config["routes"][0]["headers"]["Access-Control-Allow-Origin"],
+            "*"
+        );
+        assert_eq!(config["routes"][0]["headers"]["Cache-Control"], "no-cache");
         assert!(
             fs::read_to_string(temp.path().join("_redirects"))
                 .unwrap()

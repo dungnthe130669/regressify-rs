@@ -163,6 +163,20 @@ impl Workbench {
         let editable = self.field_errors.is_empty() && self.diagnostic.is_none();
         let mut commands = vec![
             Command {
+                title: "Landing apps",
+                group: "Application",
+                icon: Icon::Globe,
+                action: Box::new(OpenLandingApps),
+                enabled: !self.runs.read(cx).running(),
+            },
+            Command {
+                title: "Deployment tokens",
+                group: "Application",
+                icon: Icon::Settings2,
+                action: Box::new(OpenDeploymentTokens),
+                enabled: !self.runs.read(cx).running(),
+            },
+            Command {
                 title: "Git changes and remote status",
                 group: "Workspace",
                 icon: Icon::GitBranch,

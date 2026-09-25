@@ -1154,6 +1154,7 @@ mod tests {
                             id: "test".into(),
                             name: "Test".into(),
                             credential_id: None,
+                            named_token_id: None,
                             environment: String::new(),
                             provider,
                             site_id: if provider == DeploymentProvider::Netlify {

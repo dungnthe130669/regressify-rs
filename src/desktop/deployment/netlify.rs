@@ -823,6 +823,7 @@ mod tests {
             id: "netlify".into(),
             name: "Netlify QA".into(),
             credential_id: None,
+            named_token_id: None,
             environment: String::new(),
             provider: DeploymentProvider::Netlify,
             site_id: SITE_ID.into(),
@@ -1597,7 +1598,7 @@ mod tests {
             .iter()
             .filter(|(name, _)| *name != "gitignore")
             .count()
-            + 3;
+            + 4;
         let root = directory.path().join("publish");
         super::super::stage_reports(&output, &["one".into()], &root)?;
         assert_eq!(
@@ -1615,6 +1616,7 @@ mod tests {
         assert_eq!(uploads[0].2.as_deref(), Some("application/json"));
         let manifest: serde_json::Value = serde_json::from_slice(&uploads[0].3)?;
         assert_eq!(manifest["async"], true);
+        assert!(manifest["files"].get("/_snapshot/status.json").is_some());
         assert_eq!(manifest["files"].as_object().unwrap().len(), expected_files);
         let files = records
             .iter()

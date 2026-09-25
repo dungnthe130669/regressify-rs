@@ -11,5 +11,6 @@ pub(crate) use site::generate_site;
 pub(crate) use site::update_suite;
 #[cfg(feature = "desktop")]
 pub(crate) use site::{
-    FRONTEND_FILES, ImageRole, artifact_paths, image_roles, refresh_site_versions,
+    FRONTEND_FILES, FRONTEND_HTML, ImageRole, artifact_paths, escape_html, image_roles,
+    refresh_site_versions,
 };

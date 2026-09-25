@@ -48,15 +48,16 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
-## Validation Gap (2026-09-24)
+## Validation Notes (2026-09-25)
 
-- `cargo test --locked --features desktop --lib` reports 612 passed, 1 failed,
-  and 12 ignored. The unchanged
-  [frontend resource-version test](src/snapshot/site.rs#L769) fails its embedded
-  HTML/asset hash assertion for `_snapshot/assets/app.js`. No frontend source or
-  embedded assets were changed for Cloudflare deployment. Regenerate the embedded
-  frontend using the [documented build](frontend/README.md) and rerun this check;
-  do not treat the complete desktop gate as passing until it is resolved.
+- The embedded frontend resource-version gap is resolved by rebuilding the assets.
+  The full desktop model gate passes with 627 tests and 13 optional checks ignored.
+- Full frontend lint rules and strict checks for changed files pass. The combined
+  `bun run lint` command still flags existing CRLF formatting in untouched files;
+  those files were not reformatted as part of desktop publishing changes.
+- Live landing publication passes on Azure and Cloudflare. The authorized Netlify
+  account rejects new deployments with a credit-usage limit (HTTP 403), so live
+  Netlify landing publication remains unverified until its credits are restored.
 
 ## Resolved In September 2026 Hardening Pass
 

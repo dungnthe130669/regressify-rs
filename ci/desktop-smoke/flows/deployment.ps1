@@ -1,4 +1,4 @@
-if ($DeploymentFlows -and -not ('RegressifySmokeCredentials' -as [type])) {
+if (($DeploymentFlows -or $PublishingFlows) -and -not ('RegressifySmokeCredentials' -as [type])) {
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;

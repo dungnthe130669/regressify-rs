@@ -36,6 +36,7 @@ mod deployment;
 mod design;
 mod files;
 mod git;
+mod landing;
 mod lists;
 mod navigation;
 mod overview;
@@ -43,6 +44,7 @@ mod reports;
 mod runs;
 mod sequence;
 mod source;
+mod tokens;
 mod updates;
 
 #[cfg(all(test, feature = "gui-tests"))]
@@ -65,6 +67,8 @@ actions!(
         ToggleNavigator,
         CompleteSource,
         OpenDeployment,
+        OpenDeploymentTokens,
+        OpenLandingApps,
         OpenGit,
         ShowAbout,
         OpenCommands,
@@ -166,6 +170,8 @@ pub struct Workbench {
     viewport_choices: choices::ViewportChoices,
     updates: Entity<updates::UpdatePanel>,
     deployment: Entity<deployment::DeploymentPanel>,
+    tokens: Entity<tokens::TokenPanel>,
+    landing: Entity<landing::LandingPanel>,
     git: Entity<git::GitPanel>,
 }
 
@@ -389,6 +395,8 @@ impl Workbench {
             viewport_choices: choices::ViewportChoices::default(),
             updates: cx.new(|_| updates::UpdatePanel::default()),
             deployment: cx.new(|cx| deployment::DeploymentPanel::new(window, cx)),
+            tokens: cx.new(|cx| tokens::TokenPanel::new(window, cx)),
+            landing: cx.new(|cx| landing::LandingPanel::new(window, cx)),
             git,
         }
     }
@@ -2702,6 +2710,16 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::choose_deploy_target))
             .on_action(cx.listener(Self::choose_deploy_provider))
+            .on_action(cx.listener(Self::choose_deploy_token))
+            .on_action(cx.listener(Self::choose_named_token))
+            .on_action(cx.listener(Self::choose_named_token_provider))
+            .on_action(cx.listener(|this, _: &OpenDeploymentTokens, window, cx| {
+                this.open_token_manager(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &OpenLandingApps, window, cx| {
+                this.open_landing_manager(window, cx)
+            }))
+            .on_action(cx.listener(Self::choose_landing_app))
             .on_action(cx.listener(Self::toggle_list_choice))
             .on_action(cx.listener(|this, _: &AddScenario, window, cx| {
                 this.edit(Session::add_scenario, window, cx)
@@ -2792,6 +2810,8 @@ pub fn launch(instance: Option<DesktopInstance>) {
                                         "Cancelling the active run; close again after it finishes"
                                             .into();
                                     cx.notify();
+                                    false
+                                } else if this.guard_landing_close(window, cx) {
                                     false
                                 } else if this.unsaved() {
                                     this.guard(files::Pending::Close, window, cx);

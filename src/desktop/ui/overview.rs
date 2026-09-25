@@ -137,6 +137,19 @@ impl Workbench {
                     .child(design::titlebar_control(self.file_menu(cx)))
                     .child(design::titlebar_control({
                         let focus = self.focus.clone();
+                        Button::new("publishing-menu")
+                            .ghost()
+                            .xsmall()
+                            .label("Publish")
+                            .disabled(self.busy || self.runs.read(cx).running())
+                            .dropdown_menu(move |menu, _, _| {
+                                menu.action_context(focus.clone())
+                                    .menu("Landing apps", Box::new(OpenLandingApps))
+                                    .menu("Deployment tokens", Box::new(OpenDeploymentTokens))
+                            })
+                    }))
+                    .child(design::titlebar_control({
+                        let focus = self.focus.clone();
                         Button::new("help-menu")
                             .ghost()
                             .xsmall()

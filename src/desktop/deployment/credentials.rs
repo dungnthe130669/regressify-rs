@@ -10,6 +10,15 @@ pub struct DeploymentCredential {
 
 impl DeploymentCredential {
     pub fn new(root: &Path, id: &str) -> Result<Self> {
+        Self::for_key(&credential_key(root, id)?)
+    }
+
+    pub fn named(id: &str) -> Result<Self> {
+        let id = uuid::Uuid::parse_str(id).context("Invalid named deployment token ID")?;
+        Self::for_key(&format!("named:{id}"))
+    }
+
+    fn for_key(key: &str) -> Result<Self> {
         ensure!(
             cfg!(any(
                 target_os = "windows",
@@ -20,8 +29,7 @@ impl DeploymentCredential {
             )),
             "Secure deployment token storage is unavailable on this platform"
         );
-        let key = credential_key(root, id)?;
-        let entry = credential_entry(&key)?;
+        let entry = credential_entry(key)?;
         Ok(Self { entry })
     }
 
@@ -199,5 +207,37 @@ mod tests {
         assert_eq!(key, credential_key(&first.path().join("."), "qa").unwrap());
         assert!(credential_key(first.path(), "../qa").is_err());
         assert!(credential_key(first.path(), "").is_err());
+    }
+
+    #[test]
+    fn named_credentials_are_shared_without_exposing_workspace_credentials() {
+        let first = tempfile::tempdir().unwrap();
+        let second = tempfile::tempdir().unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        let named = DeploymentCredential::named(&id).unwrap();
+        named.write("synthetic-shared-token").unwrap();
+        let local = DeploymentCredential::new(first.path(), &id).unwrap();
+        local.write("synthetic-local-token").unwrap();
+        assert_eq!(
+            DeploymentCredential::named(&id)
+                .unwrap()
+                .read()
+                .unwrap()
+                .as_str(),
+            "synthetic-shared-token"
+        );
+        assert_eq!(local.read().unwrap().as_str(), "synthetic-local-token");
+        assert!(
+            DeploymentCredential::new(second.path(), &id)
+                .unwrap()
+                .read()
+                .is_err()
+        );
+        named.delete().unwrap();
+        assert!(DeploymentCredential::named(&id).unwrap().read().is_err());
+        assert_eq!(local.read().unwrap().as_str(), "synthetic-local-token");
+        for invalid in ["", "../token", "not-a-uuid"] {
+            assert!(DeploymentCredential::named(invalid).is_err());
+        }
     }
 }

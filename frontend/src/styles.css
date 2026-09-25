@@ -314,6 +314,136 @@ svg {
 .report-subheading ol {
   padding-left: 22px;
 }
+.landing-layout {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100dvh - 54px);
+}
+.landing-page {
+  width: 100%;
+  max-width: 1180px;
+}
+#landing-controls {
+  min-width: 104px;
+  min-height: 36px;
+}
+.landing-sites {
+  border-top: 1px solid var(--border);
+}
+.landing-site {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 350px);
+  gap: 32px;
+  padding: 24px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: start;
+}
+.landing-site-copy,
+.landing-site-status {
+  min-width: 0;
+}
+.landing-site h2 {
+  font-size: 19px;
+  font-weight: 600;
+}
+.landing-site :where(h2) a:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.landing-subheading {
+  margin-top: 8px;
+}
+.landing-url {
+  display: inline-block;
+  max-width: 100%;
+  color: var(--accent);
+  margin-top: 12px;
+  font-size: 12px;
+}
+.landing-site-status {
+  min-height: 132px;
+  padding-left: 24px;
+  border-left: 1px solid var(--border);
+}
+.landing-status-message,
+.landing-status-heading,
+.landing-status-heading > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+}
+.landing-status-message .icon-button,
+.landing-status-heading .icon-button {
+  margin-left: auto;
+}
+.landing-status-heading strong {
+  font-size: 22px;
+  font-weight: 600;
+}
+.landing-status-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+.landing-status-counts dt {
+  font-size: 11px;
+  color: var(--muted);
+}
+.landing-status-counts dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.landing-status-date {
+  font-size: 10px;
+}
+.landing-empty {
+  padding: 24px 0;
+}
+.landing-page .report-subheading {
+  overflow-x: auto;
+}
+.landing-page :where(.report-subheading p + p) {
+  margin-top: 8px;
+}
+.landing-page .report-subheading ul {
+  list-style: disc;
+}
+.landing-page .report-subheading ol {
+  list-style: decimal;
+}
+.landing-page :where(.report-subheading) pre {
+  white-space: pre-wrap;
+}
+.landing-page .report-subheading :is(th, td) {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+.landing-status-spinner {
+  animation: landing-spin 1s linear infinite;
+}
+@keyframes landing-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .landing-status-spinner {
+    animation: none;
+  }
+}
+@media (max-width: 680px) {
+  .landing-site {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+  .landing-site-status {
+    padding: 0;
+    border-left: 0;
+  }
+}
 .run-status {
   display: inline-flex;
   align-items: center;

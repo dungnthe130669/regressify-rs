@@ -14,6 +14,7 @@ if (-not $KeepOpen -and -not $fixture.HasExited) {
         try {
             if (-not $discarded) {
                 $discard = Find-Control 'Discard'
+                if ($null -eq $discard) { $discard = Find-Control 'Discard changes' }
                 if ($null -ne $discard -and $discard.Current.IsEnabled) {
                     $invoke = $null
                     if ($discard.TryGetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern, [ref]$invoke)) {
@@ -57,7 +58,7 @@ if (-not $KeepOpen -and -not $fixture.HasExited) {
         $activityPath = Join-Path (Split-Path -Parent $settingsPath) ('runs/' + $activityName)
         if (Test-Path -LiteralPath $activityPath) { Remove-Item -LiteralPath $activityPath }
     }
-    if ($DeploymentFlows -and -not $KeepOpen) {
+    if (($DeploymentFlows -or $PublishingFlows) -and -not $KeepOpen) {
         $targetSettings = Get-FixtureDeploymentSettingsPath
         if (Test-Path -LiteralPath $targetSettings) {
             $targets = (Get-Content -LiteralPath $targetSettings -Raw | ConvertFrom-Json).targets
@@ -65,6 +66,32 @@ if (-not $KeepOpen -and -not $fixture.HasExited) {
                 if ($target.credentialId) { [RegressifySmokeCredentials]::Remove((Get-FixtureCredentialName $target.credentialId)) }
             }
             Remove-Item -LiteralPath $targetSettings
+        }
+    }
+    if ($PublishingFlows -and -not $KeepOpen) {
+        foreach ($credential in $script:publishingCredentials) { [RegressifySmokeCredentials]::Remove($credential) }
+        foreach ($id in $script:publishingLandingIds) {
+            foreach ($extension in @('json', 'json.lock')) {
+                $definition = Join-Path (Split-Path -Parent $settingsPath) ('landing-apps/' + $id + '.' + $extension)
+                if (Test-Path -LiteralPath $definition) { Remove-Item -LiteralPath $definition }
+            }
+            $root = Join-Path (Split-Path -Parent $settingsPath) ('landing-deployments/' + $id)
+            $identity = $root.Replace('\', '/').ToLowerInvariant()
+            $hash = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData([System.Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+            $targets = Join-Path (Split-Path -Parent $settingsPath) ('deployments/' + $hash + '.json')
+            if (Test-Path -LiteralPath $targets) {
+                foreach ($target in (Get-Content -LiteralPath $targets -Raw | ConvertFrom-Json).targets) {
+                    if ($target.credentialId) { [RegressifySmokeCredentials]::Remove("${hash}:$($target.credentialId).Regressify Desktop Deployment") }
+                }
+                Remove-Item -LiteralPath $targets
+            }
+            if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse }
+        }
+        foreach ($backup in $script:publishingBackups) {
+            if ($backup.Existed) {
+                Copy-Item -LiteralPath $backup.Backup -Destination $backup.Path -Force
+                if ((Get-FileHash -LiteralPath $backup.Backup).Hash -ne (Get-FileHash -LiteralPath $backup.Path).Hash) { throw 'Original publishing settings were not restored.' }
+            } elseif (Test-Path -LiteralPath $backup.Path) { Remove-Item -LiteralPath $backup.Path }
         }
     }
 }

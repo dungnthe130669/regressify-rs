@@ -96,9 +96,41 @@ The tests expect the supplied synthetic workspace, not arbitrary user reports.
 - [hosting](hosting): Azure/Netlify fallback, security, and cache policies.
 - [tests](tests): browser workflows and a synthetic screenshot page.
 
+## Landing Pages
+
+The desktop [landing renderer](../src/desktop/landing.rs) pre-renders headings,
+safe Markdown subheadings, and external site links using the shared HTML template
+and frontend assets. [Landing enhancements](src/landing.tsx) mount only theme and
+status controls, leaving the pre-rendered content usable without JavaScript.
+No linked workspace is required locally.
+
+Each linked site's origin supplies `/_snapshot/status.json`. The version-1
+[status schema](src/data/landing.ts) contains `generatedAt`, `suites`, `total`,
+`passed`, `failed`, and `errors`; counts refer to captures, and errors are a subset
+of failures. Requests omit credentials/referrers, reject redirects, revalidate
+caches, time out after 10 seconds, and limit responses to 64 KiB. Old, private,
+malformed, or unreachable endpoints affect only that site's status, not its link.
+
+Generate a production landing fixture by setting `REGRESSIFY_LANDING_FIXTURE` to
+a new empty directory and running:
+
+```sh
+cargo test --features desktop --lib desktop::landing::tests::generate_landing_browser_fixture -- --ignored --nocapture
+```
+
+Serve that directory with `bun run preview <directory> 4175`. Set both
+`LANDING_URL` and `SNAPSHOT_URL` to `http://127.0.0.1:4175`, then run
+`bun run test:e2e -- landing.spec.ts`. These tests use synthetic remote responses
+and cover pre-rendered Markdown, no-JavaScript links, anonymous fetching,
+unavailable/malformed status, retry, themes, responsive layout, and accessibility.
+
 ## Data And Hosting
 
-All resource filenames are stable; cache versions appear only in `?v=...`.
+Resource filenames are stable; cache versions appear only in `?v=...`.
+The public aggregate endpoint `/_snapshot/status.json` is deliberately
+unversioned, uses `Cache-Control: no-cache`, and permits anonymous cross-origin
+reads with `Access-Control-Allow-Origin: *`. Do not give it immutable JSON caching.
+The publisher checks its counts against the active manifest before staging.
 The [Rust publisher](../src/snapshot/site.rs) uses
 [get_asset_version](../src/snapshot/helpers.rs) with 20 characters of the SHA-384
 base64url digest. The [frontend build](scripts/version-assets.ts) mirrors that

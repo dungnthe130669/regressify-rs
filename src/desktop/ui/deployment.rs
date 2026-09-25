@@ -1,8 +1,9 @@
 use super::*;
+use crate::desktop::landing::LandingFile;
 use crate::desktop::{
     deployment::{
         DeployTarget, DeployTargets, DeploymentJob, DeploymentProvider,
-        cloudflare::CloudflareTarget,
+        cloudflare::CloudflareTarget, tokens::TokenCatalog,
     },
     runner::RunCommand,
 };
@@ -24,11 +25,22 @@ pub(super) struct ChooseDeployProvider {
     provider: DeploymentProvider,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct ChooseDeployToken {
+    id: Option<String>,
+}
+
 pub(super) struct DeploymentPanel {
     settings: DeployTargets,
+    tokens: TokenCatalog,
+    tokens_path: Option<PathBuf>,
+    named_token_id: Option<String>,
     path: Option<PathBuf>,
     root: Option<PathBuf>,
     intent: Option<runs::RunIntent>,
+    landing: Option<LandingFile>,
+    cancel: Option<tokio::sync::oneshot::Sender<()>>,
+    published_url: Option<String>,
     catalog_ids: Vec<String>,
     suite_ids: Vec<String>,
     partial: bool,
@@ -51,9 +63,15 @@ impl DeploymentPanel {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             settings: DeployTargets::default(),
+            tokens: TokenCatalog::default(),
+            tokens_path: None,
+            named_token_id: None,
             path: None,
             root: None,
             intent: None,
+            landing: None,
+            cancel: None,
+            published_url: None,
             catalog_ids: Vec::new(),
             suite_ids: Vec::new(),
             partial: false,
@@ -96,10 +114,8 @@ impl DeploymentPanel {
     }
 
     fn can_deploy(&self) -> bool {
-        self.intent.is_some()
-            && self
-                .selected()
-                .is_some_and(|target| target.credential_id.is_some())
+        (self.intent.is_some() || self.landing.is_some())
+            && self.selected().is_some_and(DeployTarget::has_token)
             && !self.editing
             && !self.removing
             && !self.saving
@@ -190,17 +206,28 @@ impl Workbench {
             "Loading deployment targets...",
             move || {
                 let path = DeployTargets::path_in(&loaded_root, &preferences)?;
-                Ok((DeployTargets::load(&path)?, path))
+                let tokens_path = TokenCatalog::path_in(&preferences)?;
+                Ok((
+                    DeployTargets::load(&path)?,
+                    path,
+                    TokenCatalog::load(&tokens_path)?,
+                    tokens_path,
+                ))
             },
-            move |this, (mut settings, path), window, cx| {
+            move |this, (mut settings, path, tokens, tokens_path), window, cx| {
                 if settings.selected.is_none() {
                     settings.selected = settings.targets.first().map(|target| target.id.clone());
                 }
                 this.deployment.update(cx, |state, cx| {
                     state.settings = settings;
+                    state.tokens = tokens;
+                    state.tokens_path = Some(tokens_path);
+                    state.named_token_id = None;
                     state.path = Some(path);
                     state.root = Some(root);
                     state.intent = intent;
+                    state.landing = None;
+                    state.published_url = None;
                     state.partial = suite_ids.len() != catalog_ids.len();
                     state.catalog_ids = catalog_ids;
                     state.suite_ids = suite_ids;
@@ -270,12 +297,23 @@ impl Workbench {
                     DeploymentProvider::Netlify => "Personal access token",
                     DeploymentProvider::CloudflareWorkers => "API token",
                 };
-                let mut fields = vec![("Target name", "deploy-name", &state.name), (token_label, "deploy-token", &state.token)];
+                if state.provider != DeploymentProvider::AzureSwa {
+                    let tokens = state.tokens.tokens.iter().filter(|entry| entry.provider == state.provider).cloned().collect::<Vec<_>>();
+                    let label = state.named_token_id.as_deref().map(|id| state.tokens.find(id).map(|entry| entry.name.clone()).unwrap_or_else(|_| "Missing named token".into())).unwrap_or_else(|| "Target-specific token".into());
+                    body = body.child(div().flex().flex_col().gap_1().child("Token source").child(Button::new("deploy-token-source").label(label).icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
+                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
+                            let mut menu = menu.action_context(focus.clone()).menu("Target-specific token", Box::new(ChooseDeployToken { id: None }));
+                            for entry in &tokens { menu = menu.menu(entry.name.clone(), Box::new(ChooseDeployToken { id: Some(entry.id.clone()) })); }
+                            menu
+                        }})));
+                }
+                let mut fields = vec![("Target name", "deploy-name", &state.name)];
+                if state.named_token_id.is_none() { fields.push((token_label, "deploy-token", &state.token)); }
                 match state.provider {
                     DeploymentProvider::AzureSwa => fields.push(("Azure environment", "deploy-environment", &state.environment)),
                     DeploymentProvider::Netlify => fields.push(("Netlify Site ID", "deploy-site-id", &state.site_id)),
                     DeploymentProvider::CloudflareWorkers => {
-                        fields.push(("Cloudflare Account ID", "deploy-account-id", &state.account_id));
+                        if state.named_token_id.is_none() { fields.push(("Cloudflare Account ID", "deploy-account-id", &state.account_id)); }
                         fields.push(("Worker name", "deploy-worker-name", &state.worker_name));
                     }
                 }
@@ -293,11 +331,22 @@ impl Workbench {
                     DeploymentProvider::AzureSwa => if target.environment.is_empty() { "Production".into() } else { target.environment.clone() },
                     DeploymentProvider::Netlify => format!("Production | {}", target.site_id),
                     DeploymentProvider::CloudflareWorkers => target.cloudflare.as_ref().map(|settings| format!("Worker | {}", settings.worker_name)).unwrap_or_default(),
-                }, if target.credential_id.is_some() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()))
-                    .when(selected.is_some_and(|target| target.credential_id.is_none()), |row| row.child(
+                }, if target.has_token() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()))
+                    .when(selected.is_some_and(|target| !target.has_token()), |row| row.child(
                         Button::new("deploy-add-token").small().icon(gpui_kit::assets::IconName::Pencil).label("Add token")
                             .accessibility_label("Add deployment token").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))));
+                if let Some(landing) = &state.landing {
+                    body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(landing.app.heading.clone()))
+                        .child(format!("Sites: {}", landing.app.sites.len()));
+                    if let Some(url) = &state.published_url {
+                        let url = url.clone();
+                        body = body.child(Button::new("landing-open-published").icon(gpui_kit::assets::IconName::ExternalLink).label("Open deployed site")
+                            .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                if let Err(error) = open::that_detached(&url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
+                            })));
+                    }
+                } else {
                 body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
                 body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
                     .children(state.intent.iter().flat_map(|intent| intent.suite_names.iter()).map(|name| div().truncate().child(name.clone()))));
@@ -312,20 +361,25 @@ impl Workbench {
                             })));
                 }
                 body = body.child(div().text_sm().text_color(cx.theme().muted_foreground).child("Publication: full latest reports for the selected suites."));
+                }
             }
             if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             let starting = saving && !editing && !state.removing;
-            dialog.title("Deploy reports").keyboard(!saving).close_button(!saving).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
+            dialog.title(if state.landing.is_some() { "Deploy landing page" } else { "Deploy reports" }).overlay_closable(!saving && state.landing.is_none()).keyboard(!saving && state.landing.is_none()).close_button(!saving && state.landing.is_none()).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
                 .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx)))
                 .footer(div().flex().justify_end().gap_2()
                     .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| {
                         this.cancel_deploy_edit(window, cx);
                         window.close_dialog(cx);
+                        if this.deployment.read(cx).landing.is_some() { this.show_landing_manager(window, cx); }
                     })))
+                    .when(state.cancel.is_some(), |footer| footer.child(Button::new("landing-cancel-deployment").danger().label("Cancel deployment").on_click(window.listener_for(&view, |this, _, _, cx| {
+                        this.deployment.update(cx, |state, cx| { if let Some(cancel) = state.cancel.take() { let _ = cancel.send(()); state.status = "Cancelling deployment...".into(); cx.notify(); } });
+                    }))))
                     .child(Button::new("deploy-confirm").primary().min_w(px(120.)).icon(gpui_kit::assets::IconName::CloudUpload).loading(starting)
-                        .label(if starting { "Starting..." } else { "Deploy" })
-                        .accessibility_label(if starting { "Starting deployment" } else { "Deploy selected reports" })
-                        .when(selected.is_some_and(|target| target.credential_id.is_none()), |button| button.tooltip("Deployment token required"))
+                        .label(if starting { if state.landing.is_some() { "Deploying..." } else { "Starting..." } } else { "Deploy" })
+                        .accessibility_label(if starting { "Starting deployment" } else if state.landing.is_some() { "Deploy landing page" } else { "Deploy selected reports" })
+                        .when(selected.is_some_and(|target| !target.has_token()), |button| button.tooltip("Deployment token required"))
                         .disabled(!state.can_deploy()).on_click(window.listener_for(&view, |this, _, window, cx| this.begin_deployment(window, cx)))))
         });
     }
@@ -364,6 +418,7 @@ impl Workbench {
                 return;
             }
             state.provider = action.provider;
+            state.named_token_id = None;
             let saved = state
                 .settings
                 .targets
@@ -387,6 +442,43 @@ impl Workbench {
         });
     }
 
+    pub(super) fn choose_deploy_token(
+        &mut self,
+        action: &ChooseDeployToken,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.deployment.update(cx, |state, cx| {
+            if state.saving || !state.editing || state.provider == DeploymentProvider::AzureSwa {
+                return;
+            }
+            if let Some(id) = &action.id {
+                let Ok(entry) = state.tokens.find(id) else {
+                    return;
+                };
+                if entry.provider != state.provider {
+                    return;
+                }
+                let account = entry.account_id.clone();
+                state
+                    .account_id
+                    .update(cx, |input, cx| input.set_value(account, window, cx));
+            }
+            state.named_token_id = action.id.clone();
+            let saved = state
+                .settings
+                .targets
+                .iter()
+                .find(|entry| Some(&entry.id) == state.editing_id.as_ref())
+                .is_some_and(|entry| {
+                    entry.provider == state.provider && entry.credential_id.is_some()
+                });
+            state.token = DeploymentPanel::token_input(saved, window, cx);
+            state.status.clear();
+            cx.notify();
+        });
+    }
+
     fn edit_deploy_target(&mut self, existing: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.deployment.update(cx, |state, cx| {
             if state.saving {
@@ -394,6 +486,9 @@ impl Workbench {
             }
             let target = existing.then(|| state.selected().cloned()).flatten();
             state.editing_id = target.as_ref().map(|target| target.id.clone());
+            state.named_token_id = target
+                .as_ref()
+                .and_then(|target| target.named_token_id.clone());
             state.provider = target
                 .as_ref()
                 .map(|target| target.provider)
@@ -475,6 +570,7 @@ impl Workbench {
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: state.name.read(cx).value().trim().into(),
             credential_id: None,
+            named_token_id: state.named_token_id.clone(),
             environment: if state.provider == DeploymentProvider::AzureSwa {
                 state.environment.read(cx).value().trim().into()
             } else {
@@ -537,6 +633,7 @@ impl Workbench {
             return;
         };
         let mut settings = state.settings.clone();
+        let tokens_path = state.tokens_path.clone();
         self.busy = true;
         self.sync_modal(cx);
         self.deployment.update(cx, |state, cx| {
@@ -547,7 +644,18 @@ impl Workbench {
         let task = cx.background_executor().spawn(async move {
             match change {
                 TargetChange::Save(target, token) => {
-                    settings.save_target(&root, &path, target, &token)?
+                    if target.named_token_id.is_some() {
+                        let tokens_path = tokens_path
+                            .ok_or_else(|| anyhow!("Named token settings unavailable"))?;
+                        settings.save_linked_target(
+                            &root,
+                            &path,
+                            target,
+                            &TokenCatalog::load(&tokens_path)?,
+                        )?;
+                    } else {
+                        settings.save_target(&root, &path, target, &token)?;
+                    }
                 }
                 TargetChange::Remove(id) => settings.remove_target(&root, &path, &id)?,
                 TargetChange::Select => settings.save(&path)?,
@@ -585,6 +693,10 @@ impl Workbench {
 
     fn begin_deployment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        if self.deployment.read(cx).landing.is_some() {
+            self.begin_landing_deployment(window, cx);
             return;
         }
         let state = self.deployment.read(cx);
@@ -629,6 +741,132 @@ impl Workbench {
                 cx.notify();
             }),
         }
+    }
+
+    pub(super) fn open_landing_deployment(
+        &mut self,
+        file: LandingFile,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || self.runs.read(cx).running() {
+            return;
+        }
+        let Some(preferences) = self.preferences_path.clone() else {
+            return;
+        };
+        self.task(
+            "Loading landing deployment targets...",
+            move || {
+                file.ensure_unchanged()?;
+                let root = file.app.deployment_root(&preferences)?;
+                let path = DeployTargets::path_in(&root, &preferences)?;
+                let tokens_path = TokenCatalog::path_in(&preferences)?;
+                Ok((
+                    file,
+                    root,
+                    DeployTargets::load(&path)?,
+                    path,
+                    TokenCatalog::load(&tokens_path)?,
+                    tokens_path,
+                ))
+            },
+            |this, (file, root, mut settings, path, tokens, tokens_path), window, cx| {
+                if settings.selected.is_none() {
+                    settings.selected = settings.targets.first().map(|entry| entry.id.clone());
+                }
+                this.deployment.update(cx, |state, cx| {
+                    state.settings = settings;
+                    state.root = Some(root);
+                    state.path = Some(path);
+                    state.tokens = tokens;
+                    state.tokens_path = Some(tokens_path);
+                    state.named_token_id = None;
+                    state.intent = None;
+                    state.landing = Some(file);
+                    state.published_url = None;
+                    state.catalog_ids.clear();
+                    state.suite_ids.clear();
+                    state.partial = false;
+                    state.confirmed = false;
+                    state.editing = false;
+                    state.removing = false;
+                    state.saving = false;
+                    state.status.clear();
+                    state.token = DeploymentPanel::token_input(false, window, cx);
+                    cx.notify();
+                });
+                window.close_dialog(cx);
+                this.show_deployment_dialog(window, cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    fn begin_landing_deployment(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let state = self.deployment.read(cx);
+        if !state.can_deploy() {
+            return;
+        }
+        let (Some(file), Some(target), Some(root), Some(path), Some(tokens_path)) = (
+            state.landing.clone(),
+            state.selected().cloned(),
+            state.root.clone(),
+            state.path.clone(),
+            state.tokens_path.clone(),
+        ) else {
+            return;
+        };
+        let settings = state.settings.clone();
+        let (cancel, cancelled) = tokio::sync::oneshot::channel();
+        self.busy = true;
+        self.deployment.update(cx, |state, cx| {
+            state.saving = true;
+            state.cancel = Some(cancel);
+            state.published_url = None;
+            state.status.clear();
+            cx.notify();
+        });
+        self.sync_modal(cx);
+        let task = cx.background_executor().spawn(async move {
+            file.ensure_unchanged()?;
+            target.validate()?;
+            let token = if target.named_token_id.is_some() { target.named_token(&TokenCatalog::load(&tokens_path)?)? } else { target.token(&root)? };
+            let client = crate::desktop::deployment::DeploymentClient::new(&target, &token)?;
+            drop(token);
+            settings.save(&path)?;
+            let staging = tempfile::tempdir()?;
+            file.app.stage(staging.path())?;
+            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async {
+                tokio::select! {
+                    biased;
+                    _ = cancelled => Err(anyhow!("Deployment cancelled locally. A provider may already have published the upload; check the hosted site before retrying")),
+                    result = client.deploy(staging.path(), &target) => result,
+                }
+            })
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update_in(cx, |this, _, cx| {
+                this.busy = false;
+                this.deployment.update(cx, |state, cx| {
+                    state.saving = false;
+                    state.cancel = None;
+                    match result {
+                        Ok(url) => {
+                            state.published_url = Some(url);
+                            state.status.clear();
+                        }
+                        Err(error) => state.status = format!("{error:#}"),
+                    }
+                    cx.notify();
+                });
+                this.sync_modal(cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 }
 
@@ -1049,6 +1287,7 @@ mod tests {
                             id: "qa".into(),
                             name: "QA".into(),
                             credential_id: None,
+                            named_token_id: None,
                             environment: String::new(),
                             provider: Default::default(),
                             site_id: String::new(),

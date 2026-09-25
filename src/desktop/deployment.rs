@@ -16,6 +16,7 @@ mod diagnostics;
 pub mod netlify;
 mod package;
 pub mod swa;
+pub mod tokens;
 
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
@@ -61,6 +62,8 @@ pub struct DeployTarget {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub named_token_id: Option<String>,
     #[serde(default)]
     pub environment: String,
     #[serde(default)]
@@ -84,6 +87,8 @@ impl<'de> Deserialize<'de> for DeployTarget {
             #[serde(default)]
             credential_id: Option<String>,
             #[serde(default)]
+            named_token_id: Option<String>,
+            #[serde(default)]
             environment: String,
             #[serde(default)]
             provider: DeploymentProvider,
@@ -99,6 +104,7 @@ impl<'de> Deserialize<'de> for DeployTarget {
             id: fields.id,
             name: fields.name,
             credential_id: fields.credential_id,
+            named_token_id: fields.named_token_id,
             environment: fields.environment,
             provider: fields.provider,
             site_id: fields.site_id,
@@ -166,6 +172,17 @@ impl DeployTarget {
             "Invalid deployment credential ID"
         );
         ensure!(
+            self.named_token_id
+                .as_ref()
+                .is_none_or(|id| uuid::Uuid::parse_str(id).is_ok()),
+            "Invalid named deployment token ID"
+        );
+        ensure!(
+            self.named_token_id.is_none()
+                || self.credential_id.is_none() && self.provider != DeploymentProvider::AzureSwa,
+            "Choose either a named token or a target-specific token; Azure requires a target-specific token"
+        );
+        ensure!(
             self.provider == DeploymentProvider::CloudflareWorkers || self.cloudflare.is_none(),
             "Only Cloudflare targets use Cloudflare settings"
         );
@@ -211,11 +228,43 @@ impl DeployTarget {
 
     pub fn token(&self, root: &Path) -> Result<zeroize::Zeroizing<String>> {
         self.validate()?;
+        if self.named_token_id.is_some() {
+            return self.named_token(&tokens::TokenCatalog::load(&tokens::TokenCatalog::path()?)?);
+        }
         let id = self
             .credential_id
             .as_deref()
             .context("No saved deployment token. Edit the target and enter its deployment token")?;
         credentials::DeploymentCredential::new(root, id)?.read()
+    }
+
+    pub fn named_token(
+        &self,
+        catalog: &tokens::TokenCatalog,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        self.validate()?;
+        let entry = catalog.find(
+            self.named_token_id
+                .as_deref()
+                .context("Choose a named deployment token")?,
+        )?;
+        ensure!(
+            entry.provider == self.provider,
+            "The named token belongs to a different deployment provider"
+        );
+        if let Some(cloudflare) = &self.cloudflare {
+            ensure!(
+                entry
+                    .account_id
+                    .eq_ignore_ascii_case(&cloudflare.account_id),
+                "The named token belongs to a different Cloudflare account"
+            );
+        }
+        entry.token()
+    }
+
+    pub fn has_token(&self) -> bool {
+        self.credential_id.is_some() || self.named_token_id.is_some()
     }
 }
 
@@ -272,6 +321,10 @@ impl DeployTargets {
         mut target: DeployTarget,
         token: &str,
     ) -> Result<()> {
+        ensure!(
+            target.named_token_id.is_none(),
+            "Save named token selections without entering a target-specific token"
+        );
         let token = token.trim();
         let existing = self
             .targets
@@ -344,6 +397,47 @@ impl DeployTargets {
                 .context(
                     "Cannot restore the secure credential after saving target settings failed",
                 )?;
+            }
+            return Err(error).context("Cannot save deployment target settings");
+        }
+        *self = next;
+        Ok(())
+    }
+
+    pub fn save_linked_target(
+        &mut self,
+        root: &Path,
+        path: &Path,
+        target: DeployTarget,
+        catalog: &tokens::TokenCatalog,
+    ) -> Result<()> {
+        target.named_token(catalog)?;
+        let previous_id = self
+            .targets
+            .iter()
+            .find(|entry| entry.id == target.id)
+            .and_then(|entry| entry.credential_id.as_deref());
+        let credential = previous_id
+            .map(|id| credentials::DeploymentCredential::new(root, id))
+            .transpose()?;
+        let previous = credential
+            .as_ref()
+            .map(|entry| entry.read_optional())
+            .transpose()?
+            .flatten();
+        let mut next = self.clone();
+        next.targets.retain(|entry| entry.id != target.id);
+        next.selected = Some(target.id.clone());
+        next.targets.push(target);
+        next.validate()?;
+        if let Some(credential) = &credential {
+            credential.delete()?;
+        }
+        if let Err(error) = next.save(path) {
+            if let (Some(credential), Some(previous)) = (&credential, &previous) {
+                credential
+                    .write(previous)
+                    .context("Cannot restore the target-specific token after saving failed")?;
             }
             return Err(error).context("Cannot save deployment target settings");
         }
@@ -739,6 +833,7 @@ mod tests {
                 id: "qa".into(),
                 name: "QA".into(),
                 credential_id: None,
+                named_token_id: None,
                 environment: String::new(),
                 provider: DeploymentProvider::AzureSwa,
                 site_id: String::new(),
@@ -767,6 +862,7 @@ mod tests {
             id: "one".into(),
             name: "QA reports".into(),
             credential_id: None,
+            named_token_id: None,
             environment: String::new(),
             provider: DeploymentProvider::AzureSwa,
             site_id: String::new(),
@@ -820,6 +916,7 @@ mod tests {
             id: "qa".into(),
             name: "QA reports".into(),
             credential_id: None,
+            named_token_id: None,
             environment: String::new(),
             provider: DeploymentProvider::AzureSwa,
             site_id: String::new(),
@@ -977,6 +1074,65 @@ mod tests {
     }
 
     #[test]
+    fn named_tokens_reuse_across_targets_and_survive_target_removal() -> Result<()> {
+        let first = tempfile::tempdir()?;
+        let second = tempfile::tempdir()?;
+        let config = tempfile::tempdir()?;
+        let catalog_path = config.path().join("tokens.json");
+        let mut catalog = tokens::TokenCatalog::default();
+        let entry = tokens::NamedToken {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "Shared Netlify".into(),
+            provider: DeploymentProvider::Netlify,
+            account_id: String::new(),
+        };
+        catalog.save_token(&catalog_path, entry.clone(), "synthetic-shared")?;
+        let mut target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id": "qa", "name": "QA", "provider": "netlify", "siteId": uuid::Uuid::new_v4().to_string(),
+            "namedTokenId": entry.id
+        }))?;
+        for root in [first.path(), second.path()] {
+            let mut settings = DeployTargets::default();
+            let path = root.join("targets.json");
+            settings.save_linked_target(root, &path, target.clone(), &catalog)?;
+            assert_eq!(
+                settings.targets[0].named_token(&catalog)?.as_str(),
+                "synthetic-shared"
+            );
+            settings.remove_target(root, &path, &target.id)?;
+            assert_eq!(entry.token()?.as_str(), "synthetic-shared");
+        }
+        let path = first.path().join("targets.json");
+        let mut settings = DeployTargets::default();
+        target.named_token_id = None;
+        settings.save_target(first.path(), &path, target.clone(), "synthetic-local")?;
+        let local = settings.targets[0].clone();
+        target.named_token_id = Some(entry.id.clone());
+        assert!(
+            settings
+                .save_linked_target(first.path(), first.path(), target.clone(), &catalog)
+                .is_err()
+        );
+        assert_eq!(local.token(first.path())?.as_str(), "synthetic-local");
+        settings.save_linked_target(first.path(), &path, target.clone(), &catalog)?;
+        assert!(local.token(first.path()).is_err());
+        let mut invalid = target.clone();
+        invalid.credential_id = Some(uuid::Uuid::new_v4().to_string());
+        assert!(invalid.validate().is_err());
+        invalid = target.clone();
+        invalid.provider = DeploymentProvider::CloudflareWorkers;
+        invalid.site_id.clear();
+        invalid.cloudflare = Some(cloudflare::CloudflareTarget {
+            account_id: "a".repeat(32),
+            worker_name: "reports".into(),
+        });
+        assert!(invalid.named_token(&catalog).is_err());
+        catalog.remove(&catalog_path, &entry.id)?;
+        assert!(target.named_token(&catalog).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn cloudflare_targets_round_trip_and_keep_credentials_on_failed_switch() -> Result<()> {
         let root = tempfile::tempdir()?;
         let config = tempfile::tempdir()?;
@@ -1097,6 +1253,7 @@ mod tests {
         )
         .unwrap();
         expected.extend([
+            "_snapshot/status.json".into(),
             "_snapshot/data/manifest.json".into(),
             "_snapshot/data/suites/one.json".into(),
         ]);

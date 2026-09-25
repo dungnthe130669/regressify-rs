@@ -50,6 +50,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
   SPA rewrites, provider limits, and authorized live verification.
 - [Snapshot frontend](snapshot-frontend.md): query-versioned SPA assets, build/PR workflow,
   schema boundaries, and production-fixture browser checks.
+- [Desktop publishing](desktop-publishing.md): managed landing apps, named tokens,
+  client-side status, and native publishing verification.
 - [Release pipelines](release-pipelines.md): GitHub/Azure release selection, Library
   scope, stage locking, and Windows tool compatibility.
 

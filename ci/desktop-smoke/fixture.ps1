@@ -114,3 +114,15 @@ if ($settingsExisted) { Copy-Item -LiteralPath $settingsPath -Destination $setti
 $process = $null
 $script:window = [IntPtr]::Zero
 $script:fixtureProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+$script:publishingBackups = @()
+$script:publishingCredentials = [System.Collections.Generic.List[string]]::new()
+$script:publishingLandingIds = [System.Collections.Generic.List[string]]::new()
+if ($PublishingFlows) {
+    foreach ($name in @('landing-apps.json', 'deployment-tokens.json')) {
+        $path = Join-Path (Split-Path -Parent $settingsPath) $name
+        $backup = Join-Path $workspace ('original-' + $name)
+        $existed = Test-Path -LiteralPath $path
+        if ($existed) { Copy-Item -LiteralPath $path -Destination $backup }
+        $script:publishingBackups += @{ Path = $path; Backup = $backup; Existed = $existed }
+    }
+}

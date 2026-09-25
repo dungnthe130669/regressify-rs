@@ -1,0 +1,35 @@
+# Desktop Publishing
+
+Verified: 2026-09-25
+
+- [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
+  automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
+  has no file picker or Save As. Linked URLs need no local workspace and are
+  fetched only by the visitor's browser.
+- `pulldown-cmark` renders both subheadings into static HTML. Shared frontend
+  assets provide logo, theme, and client status; raw HTML/images and unsafe or
+  credentialed links are excluded. The preview exposes only generated content.
+- [Named tokens](../../src/desktop/deployment/tokens.rs) keep only metadata in
+  JSON. Keyring identities use `named:<uuid>`, separate from direct target tokens.
+  Provider/account identity is immutable, and target deletion preserves shared
+  tokens. The catalog uses a file lock and stale-editor comparison.
+- [Status summaries](../../src/snapshot/site.rs) use `/_snapshot/status.json`
+  with aggregate counts and generation time. They revalidate and permit anonymous
+  CORS reads; exact ZIP/Netlify inventories include this extra file.
+- [Publishing smoke](../../ci/desktop-smoke/flows/publishing.ps1) passes with
+  automatic save, remote links, Markdown, draft guards, token reuse, target
+  removal, and light/dark compact/large windows. Catalogs are isolated/restored.
+- Keep selector widths bounded: long token names otherwise push toolbar actions
+  beyond the dialog. Landing forms use a retained explicit scroll handle, and
+  offscreen inputs may be absent from native accessibility until scrolling.
+- Native password clicks require the existing post-click `Wait-Control` settling
+  before typing. Menu selection also needs a rendered-state wait before checking
+  hidden fields. GPUI scroll tests must settle dialog animations before geometry.
+- Six production landing browser checks pass on desktop/mobile, including
+  no-JavaScript content, anonymous remote fetches, errors/retry, and accessibility.
+  Live Azure/Cloudflare publication and Azure-to-Cloudflare status loading passed.
+  The authorized Netlify check was blocked by provider account credits, not an
+  upload-client failure; do not automatically retry billing restrictions.
+- Use `bun run --cwd frontend biome ...` for the installed formatter. Putting
+  `--cwd frontend` after `bun x` can interpret `frontend` as a package name. Scope
+  formatting to changed files; this checkout has unrelated CRLF findings.

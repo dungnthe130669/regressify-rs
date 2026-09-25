@@ -983,6 +983,7 @@ mod tests {
                         name: "QA reports".into(),
                         provider: DeploymentProvider::AzureSwa,
                         credential_id: None,
+                        named_token_id: None,
                         environment: "preview".into(),
                         site_id: String::new(),
                         cloudflare: None,

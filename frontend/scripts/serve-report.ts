@@ -25,13 +25,15 @@ const server = Bun.serve({
     const relative =
       pathname === "/" || pathname === "/index.html" || pathname.startsWith("/suites/")
         ? "index.html"
-        : /^\/_snapshot\/assets\/[\w.-]+$/.test(pathname) &&
-            /^[A-Za-z0-9_-]{20}$/.test(url.searchParams.get("v") || "")
-          ? pathname.slice(1)
-          : artifactPath(
-              `${pathname.slice(1)}${url.search}`,
-              pathname.startsWith("/_snapshot/data/") ? "data" : "images",
-            );
+        : pathname === "/_snapshot/status.json"
+          ? "_snapshot/status.json"
+          : /^\/_snapshot\/assets\/[\w.-]+$/.test(pathname) &&
+              /^[A-Za-z0-9_-]{20}$/.test(url.searchParams.get("v") || "")
+            ? pathname.slice(1)
+            : artifactPath(
+                `${pathname.slice(1)}${url.search}`,
+                pathname.startsWith("/_snapshot/data/") ? "data" : "images",
+              );
     if (!relative) return new Response("Not found", { status: 404 });
     let path = root;
     for (const part of relative.split("/")) {
@@ -44,7 +46,12 @@ const server = Bun.serve({
     const file = Bun.file(path);
     if (!(await lstat(path)).isFile()) return new Response("Not found", { status: 404 });
     const bytes = await readFile(path);
-    if (relative !== "index.html" && url.searchParams.get("v") !== getAssetVersion(bytes))
+    const status = relative === "_snapshot/status.json";
+    if (
+      relative !== "index.html" &&
+      !status &&
+      url.searchParams.get("v") !== getAssetVersion(bytes)
+    )
       return new Response("Snapshot changed; reload the report.", {
         status: 409,
         headers: { "Cache-Control": "no-store" },
@@ -52,9 +59,10 @@ const server = Bun.serve({
     return new Response(bytes, {
       headers: {
         ...config.globalHeaders,
+        ...(status ? { "Access-Control-Allow-Origin": "*" } : {}),
         "Content-Type": file.type,
         "Cache-Control":
-          relative === "index.html" ? "no-cache" : "public, max-age=31536000, immutable",
+          relative === "index.html" || status ? "no-cache" : "public, max-age=31536000, immutable",
       },
     });
   },

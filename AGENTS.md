@@ -71,14 +71,14 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 | Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                |
 | Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                                                            |
 | Report deployment           | [src/desktop/deployment.rs](src/desktop/deployment.rs), [Cloudflare skill](.github/skills/deployment-cloudflare/SKILL.md) |
+| Landing apps and tokens     | [Landing skill](.github/skills/desktop-landing-apps/SKILL.md), [Token skill](.github/skills/deployment-targets/SKILL.md)  |
 | Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)                                  |
 | AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                                                      |
 
 ## Skills and Checks
 
-- Task-specific procedures live in [.github/skills](.github/skills), each as
-  `<topic>/SKILL.md` with matching `name` and a specific `description` in YAML
-  frontmatter. Read the matching skill before changing or reviewing that area.
+- Task procedures live in [.github/skills](.github/skills) as `<topic>/SKILL.md`,
+  with matching YAML `name` and specific `description`; read before changing or reviewing an area.
 - Keep one task per skill: concrete entry points, invariants, failure cases,
   focused checks, and docs to maintain. Verify links and commands against source.
 - Use `cargo test --lib <test_filter>` for the default CLI slice;

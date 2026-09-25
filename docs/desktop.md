@@ -346,6 +346,73 @@ remain under `target/desktop-smoke`. Other native fixtures initialize an isolate
 repository before opening, so periodic checks cannot use the parent project's
 remote. No real project commits or remote pushes are made by these tests.
 
+## Landing Apps
+
+Open **Publish > Landing apps** to manage customer landing pages independently
+of the current workspace. Use the selector to view a saved app, **New landing
+app** to create one, and **Save** to persist changes. The application chooses and
+manages storage automatically; there is no file picker or Save As step. Landing
+definitions are JSON files under `landing-apps/<id>.json` in the per-user desktop
+settings directory, not in a visual-test workspace.
+
+Each landing app has a heading, a Markdown subheading, and an ordered list of
+sites. Each site has its own heading, Markdown subheading, and absolute HTTP(S)
+URL. Add, reorder, edit, or remove sites in the editor. Heading text is escaped;
+subheadings are pre-rendered with `pulldown-cmark`, excluding raw HTML, embedded
+images, credentialed links, and unsafe URL schemes. Up to 100 sites are supported.
+
+**Preview** opens the rendered draft on a loopback-only server. It exposes only
+the generated HTML and bundled frontend assets, not workspace files or credentials.
+Saved landing apps can be deployed to an existing Azure Static Web App, Netlify
+site, or Cloudflare Worker using the same target controls as report deployment.
+Save the draft before deploying. The app generates complete static HTML before
+uploading; hosting does not need a Node.js server or request-time SSR runtime.
+The page uses the report logo, fonts, and Light/Dark/System theme controls.
+
+Linked sites do not need to exist locally and may be created by other users.
+The desktop app never searches for their workspaces or fetches their reports.
+Visitors' browsers independently request `/_snapshot/status.json` from each
+linked URL's origin, with no cookies, authorization, or referrer. Site headings,
+Markdown, and links remain usable without JavaScript or when a request fails.
+Status shows suite count, capture count, capture pass rate, failures, engine
+errors, and report-generation time; an empty report shows **No captures**.
+Unavailable or older reports show **Status unavailable** with a retry control.
+An HTTPS landing page may also be unable to read HTTP reports because of browser
+mixed-content protection. You remain responsible for the correctness of links.
+
+New reports include the small public status endpoint with CORS enabled and
+cache revalidation. It contains aggregate counts and a timestamp, not suite
+names, capture URLs, credentials, or browser state. Regenerate and redeploy older
+reports to enable status loading. Private/authenticated reports are not fetched
+with the visitor's credentials and may remain unavailable.
+
+Switching apps or closing a dirty editor requires saving or discarding the
+draft. Saves and removal reject externally changed definitions. **Remove landing
+app** confirms local deletion of the definition and its deployment settings;
+it never deletes a hosted website. Deployment cancellation stops local work but
+cannot undo a publication already accepted by a provider.
+
+## Deployment Tokens
+
+Open **Publish > Deployment tokens** to create, list, rename, rotate, or remove
+reusable credentials shared across workspaces and landing apps on this machine.
+Netlify entries contain a name and token; Cloudflare entries also contain the
+Account ID. The token input is masked, and saved secrets are never displayed.
+Leave it blank when editing to preserve the current secret. To change provider
+or Cloudflare account, create a new entry so existing targets cannot silently
+switch identity.
+
+In a deployment target, choose a saved name under **Token source**, then enter
+the Netlify Site ID or Cloudflare Worker name. A named Cloudflare token supplies
+the Account ID automatically. **Target-specific token** preserves direct entry
+for a single target. Azure tokens remain target-specific.
+
+Named-token metadata is stored in `deployment-tokens.json`; secrets remain in
+the operating system credential manager. Deleting a deployment target does not
+delete a reusable token. Removing a named token requires confirmation and makes
+targets referencing it require another token, without affecting hosted sites.
+Concurrent token-editor changes are detected rather than silently overwritten.
+
 ## Deploy Reports
 
 The header's Deploy command publishes selected suites to Azure Static Web Apps
@@ -360,7 +427,8 @@ Save target. No environment variable
 or app restart is needed. When editing a target, leave that field blank to keep
 the saved token, or paste a replacement token to rotate it. Saved tokens are
 never displayed in the editor; cancelling or closing clears newly entered text.
-Changing providers clears the token draft and requires a new token before saving.
+Changing providers clears the token draft and requires a compatible named token
+or a new target-specific token before saving.
 Existing targets without a provider setting continue to use Azure.
 
 For **Azure Static Web Apps**, choose that provider and enter the app's deployment
@@ -396,15 +464,17 @@ Tokens are stored in the operating system's secure credential store, outside the
 repository: Windows Credential Manager (current user, this machine only), macOS
 Keychain, or a Linux Secret Service such as GNOME Keyring or KWallet. Linux needs
 an available, unlocked Secret Service. A locked or unavailable store produces an
-error, never a plaintext fallback. Credentials are scoped to the canonical
-workspace path and target, so moving a workspace or changing computers requires
-entering the token again.
+error, never a plaintext fallback. Direct-entry credentials are scoped to the
+canonical workspace path and target, so moving a workspace requires entering
+those tokens again. Explicit named tokens use a separate per-user identity and
+can be shared across workspaces on the same machine. Moving to another computer
+requires entering secrets again.
 
 Target settings contain only credential references in the per-user application
 configuration. Token values are never saved in project files or settings JSON,
 passed in worker requests or command-line arguments, or included in deployment
-logs. Removing a target also removes its saved token, but does not delete the
-hosted site. Targets created with the old environment-variable setting retain
+logs. Removing a target removes its target-specific token, but preserves named
+tokens and does not delete the hosted site. Targets created with the old environment-variable setting retain
 their names and Azure environments; edit each target and enter its token once
 to enable deployment.
 
@@ -538,8 +608,9 @@ include matching Azure/Netlify security and cache policies, plus clean-URL SPA
 fallback rules. Cloudflare passes the header and redirect rules as asset metadata,
 not public files. It translates `/suites/* /index.html 200` to `/suites/* / 200`
 because Workers rejects the former as a canonical-HTML redirect loop. Missing
-`/_snapshot/*` assets remain real 404s. HTML revalidates; `/_snapshot/*` uses immutable one-year caching.
-All resource URLs include `?v=...`; any additional CDN must include that parameter
+`/_snapshot/*` assets remain real 404s. HTML and `/_snapshot/status.json` revalidate;
+versioned assets use immutable one-year caching. Versioned resource URLs include
+`?v=...`; any additional CDN must include that parameter
 in its cache key. Stable origin files contain only the current report version.
 These directives ask search engines not to index reports, but do not restrict
 access. See [snapshot site hosting](commands.md#snapshot-site) for other hosts.

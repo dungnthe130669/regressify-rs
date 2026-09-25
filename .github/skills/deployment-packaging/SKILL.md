@@ -19,6 +19,7 @@ description: 'Use when changing deployment staging, report asset collection, ima
 1. Enforce provider file limits and compressed/uncompressed byte bounds. Detect content changing during copy and clean staging/temporary packages on failure.
 1. Keep deterministic ordering and cancellation/progress updates during packaging/hashing. Azure uploads a ZIP; Netlify uploads requested content from a full SHA-1 manifest. Neither a completed ZIP nor a submitted manifest proves publication succeeded.
 1. Cloudflare uses content/extension hashes and Base64 multipart asset batches. Enforce 25 MiB per file and exclude Azure configuration and hosting-policy files from the public manifest. Pass header/redirect contents as metadata and translate index-page proxies to `/`; verify publication after receiving the completion token.
+1. Include the validated aggregate `/_snapshot/status.json` in report inventory. Landing staging instead contains only pre-rendered HTML and embedded public frontend/hosting assets; never package its local definition, catalog, target settings, or credentials.
 
 ## Checks
 

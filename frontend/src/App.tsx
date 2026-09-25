@@ -21,7 +21,7 @@ function readTheme(): "light" | "dark" | "system" {
   }
 }
 
-function ThemeControl() {
+export function ThemeControl() {
   const [theme, setTheme] = useState(readTheme);
   useEffect(() => {
     let storage: Storage;
