@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-09-24
+Verified: 2026-09-25
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -46,6 +46,11 @@ Verified: 2026-09-24
 - [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) has no wheel/pan
   engine. Scaled images reserve their full height in the right page; native wheel
   scrolling leaves the zoom value unchanged. Only explicit controls change scale.
+- Side-by-side crosshairs share image-pixel coordinates, excluding unavailable or
+  out-of-bounds pixels. Their inverse-scaled overlays keep strokes one screen pixel
+  wide. The `side by side crosshairs|scrolling over images` browser checks cover
+  alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
+  hover their wrappers to wait for stable layout before reading image bounds.
 - [Info dialog](../../frontend/src/components/CaptureInfo.tsx) uses Floating UI and
   permits native selection/copy. Pinning must ignore both `hover` and `safe-polygon`
   close reasons; focus opening uses `visibleOnly: false`. Native dialog semantics

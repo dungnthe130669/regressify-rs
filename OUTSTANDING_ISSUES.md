@@ -136,6 +136,9 @@ it was risk-focused, not an exhaustive security certification.
   image browser titles include the suite name. Suite list rows show uncropped,
   side-by-side Reference/Test/optional Diff previews, with mobile, missing-image,
   and long-label browser coverage.
+- Snapshot side-by-side review now synchronizes high-contrast pixel crosshairs
+  across Reference/Test/Diff. Desktop/mobile browser checks cover unequal image
+  sizes, zoom, missing images, pointer cleanup, and unchanged native scrolling.
 - Snapshot themes and initial page backgrounds now apply before the app bundle
   loads, removing light/dark startup flashes. Preferences synchronize across tabs
   without startup writes; desktop/mobile regressions cover system changes, invalid

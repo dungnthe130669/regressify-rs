@@ -92,7 +92,10 @@ same artwork as the desktop app.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
 button-controlled zoom, downloads, and safe links to captured pages. Images scroll
 with the right page, not an inner image canvas; wheel/touch scrolling never zooms.
-Side-by-side includes three aligned lanes when a diff exists. Wipe follows mouse
+Side-by-side includes three aligned lanes when a diff exists. Hovering any image
+shows synchronized crosshairs at matching pixel coordinates in Reference, Test,
+and Diff, with high-contrast guides that stay thin at every zoom level. Missing
+images and coordinates outside a smaller image are excluded. Wipe follows mouse
 movement; keyboard and touch users can also use its slider. Hover, focus, or pin
 the Info icon for selectable/copyable diff statistics, capture details, URLs, and
 engine errors. Previous/next failure arrows on suite pages scroll to visible failed

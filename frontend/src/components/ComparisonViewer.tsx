@@ -46,7 +46,7 @@ function useImageSizes(capture: Capture) {
       for (const image of images) image.onload = null;
     };
   }, [capture.reference, capture.test, capture.diff]);
-  return (path: string | null) => (path ? sizes[path] || fallback : fallback);
+  return (path: string | null) => (path ? sizes[path] : undefined);
 }
 
 export function ComparisonViewer({
@@ -67,6 +67,12 @@ export function ComparisonViewer({
   const getSize = useImageSizes(capture);
   const [blend, setBlend] = useState(50);
   const [zoom, setZoom] = useState<{ mode: Mode; scale: number } | null>(null);
+  const [crosshair, setCrosshair] = useState<{
+    capture: Capture;
+    scale: number;
+    x: number;
+    y: number;
+  } | null>(null);
   const [viewerWidth, setViewerWidth] = useState(0);
   const world = useRef<HTMLDivElement>(null);
   const viewer = useRef<HTMLElement>(null);
@@ -89,12 +95,14 @@ export function ComparisonViewer({
   const mode: Mode =
     modes.find(([value]) => value === requestedMode && available(value))?.[0] ||
     (compact && capture.reference && capture.test ? "wipe" : "side");
-  const referenceSize = getSize(capture.reference);
-  const testSize = getSize(capture.test);
+  const referenceSize = getSize(capture.reference) || fallback;
+  const testSize = getSize(capture.test) || fallback;
   const lanes = [
     { label: "Reference", path: capture.reference, size: referenceSize },
     { label: "Test", path: capture.test, size: testSize },
-    ...(capture.diff ? [{ label: "Diff", path: capture.diff, size: getSize(capture.diff) }] : []),
+    ...(capture.diff
+      ? [{ label: "Diff", path: capture.diff, size: getSize(capture.diff) || fallback }]
+      : []),
   ];
   const laneWidth = Math.max(...lanes.map((lane) => lane.size.width));
   const single =
@@ -110,7 +118,7 @@ export function ComparisonViewer({
             width: Math.max(referenceSize.width, testSize.width),
             height: Math.max(referenceSize.height, testSize.height),
           }
-        : getSize(single);
+        : getSize(single) || fallback;
   useEffect(() => {
     const element = viewer.current;
     if (!element) return;
@@ -121,6 +129,18 @@ export function ComparisonViewer({
   const fitScale = Math.max(0.001, Math.min(1, (viewerWidth || size.width) / size.width));
   const scale = zoom?.mode === mode ? zoom.scale : fitScale;
   const setScale = (value: number) => setZoom({ mode, scale: Math.max(0.001, Math.min(8, value)) });
+  useEffect(() => {
+    const clear = () => setCrosshair(null);
+    setCrosshair((current) =>
+      mode === "side" && current?.capture === capture && current.scale === scale ? current : null,
+    );
+    window.addEventListener("scroll", clear, true);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("scroll", clear, true);
+      window.removeEventListener("blur", clear);
+    };
+  }, [capture, mode, scale]);
   return (
     <section ref={viewer} className="comparison-viewer" aria-label="Image comparison">
       <div className="comparison-modes">
@@ -250,8 +270,66 @@ export function ComparisonViewer({
                 key={lane.label}
                 style={{ width: laneWidth, height: size.height }}
               >
-                <div style={lane.size}>
+                <div
+                  className="comparison-image"
+                  style={lane.size}
+                  onPointerMove={(event) => {
+                    const image = event.currentTarget.querySelector("img");
+                    if (
+                      !capture.diff ||
+                      event.pointerType === "touch" ||
+                      event.buttons !== 0 ||
+                      !image?.naturalWidth ||
+                      !image.naturalHeight
+                    ) {
+                      setCrosshair(null);
+                      return;
+                    }
+                    const bounds = image.getBoundingClientRect();
+                    const imageX =
+                      ((event.clientX - bounds.left) / bounds.width) * image.naturalWidth;
+                    const imageY =
+                      ((event.clientY - bounds.top) / bounds.height) * image.naturalHeight;
+                    setCrosshair(
+                      imageX >= 0 &&
+                        imageX < image.naturalWidth &&
+                        imageY >= 0 &&
+                        imageY < image.naturalHeight
+                        ? { capture, scale, x: imageX, y: imageY }
+                        : null,
+                    );
+                  }}
+                  onPointerLeave={() => setCrosshair(null)}
+                  onPointerCancel={() => setCrosshair(null)}
+                  onPointerDown={() => setCrosshair(null)}
+                >
                   <ReportImage path={lane.path} alt={`${lane.label}: ${capture.label}`} eager />
+                  {capture.diff &&
+                    getSize(lane.path) &&
+                    crosshair &&
+                    crosshair.capture === capture &&
+                    crosshair.scale === scale &&
+                    crosshair.x < lane.size.width &&
+                    crosshair.y < lane.size.height && (
+                      <span
+                        className="comparison-crosshair"
+                        aria-hidden="true"
+                        style={{
+                          width: lane.size.width * scale,
+                          height: lane.size.height * scale,
+                          transform: `scale(${1 / scale})`,
+                        }}
+                      >
+                        <span
+                          className="crosshair-horizontal"
+                          style={{ top: crosshair.y * scale }}
+                        />
+                        <span
+                          className="crosshair-vertical"
+                          style={{ left: crosshair.x * scale }}
+                        />
+                      </span>
+                    )}
                 </div>
               </div>
             ))

@@ -77,6 +77,8 @@ failure jumps, selectable/copyable Info content, errors, hostile content,
 narrow/wide layouts, and axe accessibility checks. They also verify the shared
 logo/favicon bytes, suite-aware titles, and list preview alignment, missing images,
 conditional diff lanes, and long labels.
+Side-by-side crosshair checks cover synchronized image pixels, unequal dimensions,
+zoom-independent strokes, missing/broken images, pointer cleanup, and native scrolling.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in
@@ -234,6 +236,10 @@ Images occupy their full scaled height inside the right page, with no inner
 scrollbar or wheel/pan interception. Mouse-wheel, trackpad, and touch scrolling
 move the page; zoom buttons, Fit, and Actual size change the rendered image size.
 Side-by-side review shows aligned Reference/Test/Diff lanes when a diff exists.
+Hover any image to show synchronized crosshairs at the same image-pixel coordinates
+in all three lanes. White guides with dark outlines stay one screen pixel wide at
+every zoom level. Missing images and coordinates outside a smaller image have no
+guides. Moving off the image, scrolling, changing views, or using touch clears them.
 Wipe follows mouse movement without dragging; its slider supports keyboard and touch.
 
 Hover or focus the Info icon for mismatch/threshold statistics, dimensions, capture
