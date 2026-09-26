@@ -20,6 +20,7 @@ description: 'Use when changing structured run events, scenario counts, UI polli
 1. Successful suite renames remap selections, executed targets, progress IDs, and saved count keys; deletes remove matching progress/counts. Keep historical deletion filters rather than turning an empty list into an all-suite request, and disable executed-report actions when no targets remain. Log text stays historical; visible labels use the current catalog.
 1. Activity writes started outside a worker run need their own completion polling. Keep the remapped catalog current while saving, release operation locks after persistence, and refresh artifact availability; the worker's polling task has already ended.
 1. Results badges prefer the loaded report's scenario/viewport counts while idle. Approval can recalculate a report after Activity was saved; do not let that older snapshot override the report being reviewed. Retain live counts during runs.
+1. Completed report deployments persist the validated URL to their target ID in the background completion writer, before releasing run ownership. Keep saved activity even if that target update fails; report the persistence error. Failed, cancelled, restored, or remapped history must not overwrite a target's URL.
 
 ## Checks
 

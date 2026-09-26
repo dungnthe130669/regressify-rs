@@ -627,6 +627,7 @@ mod tests {
         let target = DeployTarget {
             id: "test".into(),
             name: "Test".into(),
+            published_url: None,
             credential_id: None,
             named_token_id: None,
             environment: "preview".into(),
@@ -822,6 +823,7 @@ mod tests {
             let target = DeployTarget {
                 id: "qa".into(),
                 name: "QA".into(),
+                published_url: None,
                 credential_id: None,
                 named_token_id: None,
                 environment: String::new(),

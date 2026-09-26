@@ -48,6 +48,18 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
+## Validation Notes (2026-09-26)
+
+- Deployment URL checks pass, but the full desktop model gate has 641 passing
+  tests, 14 ignored checks, and one failure:
+  `snapshot::site::tests::frontend_resource_versions_match_the_rust_asset_helper`
+  reports a version mismatch for the embedded frontend JavaScript. The same
+  test fails with desktop features disabled. No frontend assets were changed
+  during the deployment URL fix.
+- Non-publishing Azure, Netlify, and Cloudflare access checks pass. Native Windows
+  smoke was not run because another desktop instance was open; isolated GPUI
+  deployment interaction tests pass.
+
 ## Validation Notes (2026-09-25)
 
 - The embedded frontend resource-version gap is resolved by rebuilding the assets.
@@ -61,6 +73,10 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Report and landing deployment targets now retain their last successful URL
+  across tab switches and app restarts, with open/copy controls per target.
+  Model and native-event regressions cover provider identity, failed publication,
+  safe URLs, destination edits, disk reload, and compact light/dark layouts.
 - Desktop Workspace files now lists every regular file under `common`, including
   `_on-ready.js`, `_override.css`, and nested, extensionless, or binary assets.
   Suite-like helper names stay separate from runnable suites. Unsupported formats

@@ -20,6 +20,8 @@ description: 'Use when changing desktop deployment targets, saved target configu
 1. Named tokens support Netlify and Cloudflare, with immutable provider/account identity and editable name/secret. Serialize only metadata and `namedTokenId` references. Revalidate provider/account when linking and executing; deleting a target must never remove a named token.
 1. Catalog writes lock and compare the loaded catalog, rejecting stale windows. Preserve secrets on failed metadata saves and clear masked drafts on cancel/close. Named-token removal must warn that referencing targets will require another token.
 1. Landing targets use app-managed identity, not linked-site workspaces. See the [landing skill](../desktop-landing-apps/SKILL.md).
+1. Store the optional `publishedUrl` with its target ID after successful publication. Reload current settings before updating, preserve other targets/selection, and reject removed or changed destinations. Accept only credential-free HTTPS URLs without query/fragment data. Failure/cancellation retains the previous URL.
+1. Name-only edits and Netlify/Cloudflare token changes preserve the URL. Destination changes clear it; replacing an Azure token also clears it because the token identifies the app. Surface persistence errors without hiding a successful URL. Report completion writes in the runner's background persistence task; landing completion writes before returning to the UI. Both dialogs read the selected target.
 
 ## Checks
 
@@ -27,12 +29,12 @@ description: 'Use when changing desktop deployment targets, saved target configu
 cargo test --features desktop --lib desktop::deployment::credentials::tests
 cargo test --features desktop --lib desktop::deployment::tests
 cargo test --features desktop --lib desktop::deployment::tokens::tests
+cargo test --features desktop --lib completed_deployments_persist_urls
+cargo test --features gui-tests --lib saved_deployment_urls_reopen_and_copy -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tokens::tests -- --test-threads=1
 ```
 
-Cover workspace isolation, create/edit/delete, blank/missing tokens, provider changes, failed saves, corrupt target files, and errors that omit synthetic secrets.
-Run `./ci/desktop-smoke.ps1 -PublishingFlows` for named-token and landing controls;
-run the smoke harness self-tests first and preserve the interactive-desktop guards.
+Cover workspace isolation, create/edit/delete, blank/missing tokens, provider changes, failed saves, corrupt target files, and errors that omit synthetic secrets. Run `./ci/desktop-smoke.ps1 -PublishingFlows` for named-token and landing controls; run the smoke harness self-tests first and preserve the interactive-desktop guards.
 
 ## Maintain
 

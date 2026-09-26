@@ -61,6 +61,8 @@ pub struct DeployTarget {
     pub id: String,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub named_token_id: Option<String>,
@@ -85,6 +87,8 @@ impl<'de> Deserialize<'de> for DeployTarget {
             id: String,
             name: String,
             #[serde(default)]
+            published_url: Option<String>,
+            #[serde(default)]
             credential_id: Option<String>,
             #[serde(default)]
             named_token_id: Option<String>,
@@ -103,6 +107,7 @@ impl<'de> Deserialize<'de> for DeployTarget {
         Ok(Self {
             id: fields.id,
             name: fields.name,
+            published_url: fields.published_url,
             credential_id: fields.credential_id,
             named_token_id: fields.named_token_id,
             environment: fields.environment,
@@ -165,6 +170,9 @@ impl DeployTarget {
                 && !self.name.chars().any(char::is_control),
             "Target name must contain 1-100 characters"
         );
+        if let Some(url) = &self.published_url {
+            validate_published_url(url)?;
+        }
         ensure!(
             self.credential_id
                 .as_ref()
@@ -266,6 +274,32 @@ impl DeployTarget {
     pub fn has_token(&self) -> bool {
         self.credential_id.is_some() || self.named_token_id.is_some()
     }
+
+    fn same_destination(&self, other: &Self) -> bool {
+        self.provider == other.provider
+            && self.environment == other.environment
+            && self.site_id == other.site_id
+            && self.cloudflare == other.cloudflare
+    }
+}
+
+pub fn validate_published_url(value: &str) -> Result<()> {
+    ensure!(
+        value.len() <= 4096
+            && value.starts_with("https://")
+            && !value.chars().any(|character| {
+                character.is_whitespace() || character.is_control() || character == '\\'
+            })
+            && reqwest::Url::parse(value).is_ok_and(|url| {
+                url.host_str().is_some()
+                    && url.username().is_empty()
+                    && url.password().is_none()
+                    && url.query().is_none()
+                    && url.fragment().is_none()
+            }),
+        "Invalid deployed site URL: expected an HTTPS URL without credentials, query, or fragment"
+    );
+    Ok(())
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -314,6 +348,25 @@ impl DeployTargets {
         crate::helpers::write_file_atomically(path, &serde_json::to_vec_pretty(self)?)
     }
 
+    pub fn record_published_url(path: &Path, target: &DeployTarget, url: &str) -> Result<Self> {
+        validate_published_url(url)?;
+        let mut settings = Self::load(path)?;
+        let saved = settings
+            .targets
+            .iter_mut()
+            .find(|saved| saved.id == target.id)
+            .context("Deployment target no longer exists; the deployed URL was not saved")?;
+        ensure!(
+            saved.same_destination(target)
+                && (target.provider != DeploymentProvider::AzureSwa
+                    || saved.credential_id == target.credential_id),
+            "Deployment target changed while publishing; the deployed URL was not saved"
+        );
+        saved.published_url = Some(url.into());
+        settings.save(path)?;
+        Ok(settings)
+    }
+
     pub fn save_target(
         &mut self,
         root: &Path,
@@ -344,6 +397,13 @@ impl DeployTargets {
         if !token.is_empty() {
             target.provider.validate_token(token)?;
         }
+        // An Azure token identifies the destination app as well as authorizing it.
+        target.published_url = existing
+            .filter(|previous| {
+                previous.same_destination(&target)
+                    && (target.provider != DeploymentProvider::AzureSwa || token.is_empty())
+            })
+            .and_then(|previous| previous.published_url.clone());
         let credential_id = existing_id
             .clone()
             .filter(|_| !provider_changed)
@@ -408,10 +468,15 @@ impl DeployTargets {
         &mut self,
         root: &Path,
         path: &Path,
-        target: DeployTarget,
+        mut target: DeployTarget,
         catalog: &tokens::TokenCatalog,
     ) -> Result<()> {
         target.named_token(catalog)?;
+        target.published_url = self
+            .targets
+            .iter()
+            .find(|previous| previous.id == target.id && previous.same_destination(&target))
+            .and_then(|previous| previous.published_url.clone());
         let previous_id = self
             .targets
             .iter()
@@ -832,6 +897,7 @@ mod tests {
             target: DeployTarget {
                 id: "qa".into(),
                 name: "QA".into(),
+                published_url: None,
                 credential_id: None,
                 named_token_id: None,
                 environment: String::new(),
@@ -861,6 +927,7 @@ mod tests {
         let target = DeployTarget {
             id: "one".into(),
             name: "QA reports".into(),
+            published_url: None,
             credential_id: None,
             named_token_id: None,
             environment: String::new(),
@@ -888,6 +955,188 @@ mod tests {
     }
 
     #[test]
+    fn published_urls_round_trip_with_each_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let input = serde_json::json!({
+            "targets": [
+                {
+                    "id": "azure", "name": "Azure",
+                    "publishedUrl": "https://qa.azurestaticapps.net/"
+                },
+                {
+                    "id": "netlify", "name": "Netlify", "provider": "netlify",
+                    "siteId": "12345678-1234-1234-1234-123456789abc",
+                    "publishedUrl": "https://qa.netlify.app/"
+                },
+                {
+                    "id": "cloudflare", "name": "Cloudflare", "provider": "cloudflareWorkers",
+                    "cloudflare": { "accountId": "a".repeat(32), "workerName": "qa" },
+                    "publishedUrl": "https://qa.example.workers.dev/"
+                }
+            ],
+            "selected": "netlify"
+        });
+        let settings: DeployTargets = serde_json::from_value(input.clone()).unwrap();
+        let path = directory.path().join("targets.json");
+        settings.save(&path).unwrap();
+        let reloaded = serde_json::to_value(DeployTargets::load(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["selected"], input["selected"]);
+        for (saved, expected) in reloaded["targets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .zip(input["targets"].as_array().unwrap())
+        {
+            assert_eq!(saved["id"], expected["id"]);
+            assert_eq!(saved["publishedUrl"], expected["publishedUrl"]);
+        }
+    }
+
+    #[test]
+    fn published_urls_update_only_the_matching_target() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        let mut settings: DeployTargets = serde_json::from_value(serde_json::json!({
+            "targets": [
+                {"id": "one", "name": "One", "publishedUrl": "https://old.example.com/"},
+                {"id": "two", "name": "Two", "publishedUrl": "https://other.example.com/"}
+            ],
+            "selected": "one"
+        }))?;
+        let deployed = settings.targets[0].clone();
+        settings.targets[0].name = "Renamed while publishing".into();
+        settings.selected = Some("two".into());
+        settings.save(&path)?;
+        let updated =
+            DeployTargets::record_published_url(&path, &deployed, "https://new.example.com/")?;
+        assert_eq!(updated.targets[0].name, settings.targets[0].name);
+        assert_eq!(
+            updated.targets[0].published_url.as_deref(),
+            Some("https://new.example.com/")
+        );
+        assert_eq!(updated.targets[1], settings.targets[1]);
+        assert_eq!(updated.selected, settings.selected);
+        assert_eq!(DeployTargets::load(&path)?.targets, updated.targets);
+        Ok(())
+    }
+
+    #[test]
+    fn published_urls_reject_unsafe_links_without_replacing_saved_settings() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        let settings: DeployTargets = serde_json::from_value(serde_json::json!({
+            "targets": [{"id": "qa", "name": "QA", "publishedUrl": "https://qa.example.com/"}]
+        }))?;
+        settings.save(&path)?;
+        let before = fs::read(&path)?;
+        for url in [
+            "".to_string(),
+            "javascript:alert(1)".into(),
+            "file:///C:/Windows/notepad.exe".into(),
+            "http://qa.example.com/".into(),
+            "https://user:synthetic-secret@qa.example.com/".into(),
+            "https://qa.example.com/?token=synthetic-secret".into(),
+            "https://qa.example.com/#synthetic-secret".into(),
+            "https://qa.example.com/\n".into(),
+            "https://qa.example.com/\\other".into(),
+            format!("https://qa.example.com/{}", "a".repeat(4096)),
+        ] {
+            let error = DeployTargets::record_published_url(&path, &settings.targets[0], &url)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(!error.contains("synthetic-secret"));
+            let mut invalid = settings.clone();
+            invalid.targets[0].published_url = Some(url);
+            assert!(invalid.save(&path).is_err());
+            assert_eq!(fs::read(&path)?, before);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_urls_do_not_restore_removed_or_changed_destinations() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        for input in [
+            serde_json::json!({"id": "qa", "name": "QA"}),
+            serde_json::json!({"id": "qa", "name": "QA", "provider": "netlify", "siteId": uuid::Uuid::new_v4().to_string()}),
+            serde_json::json!({"id": "qa", "name": "QA", "provider": "cloudflareWorkers", "cloudflare": {"accountId": "a".repeat(32), "workerName": "reports"}}),
+        ] {
+            let target: DeployTarget = serde_json::from_value(input)?;
+            let mut changed = target.clone();
+            match changed.provider {
+                DeploymentProvider::AzureSwa => changed.environment = "preview".into(),
+                DeploymentProvider::Netlify => changed.site_id = uuid::Uuid::new_v4().to_string(),
+                DeploymentProvider::CloudflareWorkers => {
+                    changed.cloudflare.as_mut().unwrap().worker_name = "other".into()
+                }
+            }
+            for targets in [vec![changed], Vec::new()] {
+                DeployTargets {
+                    targets,
+                    selected: None,
+                }
+                .save(&path)?;
+                let before = fs::read(&path)?;
+                assert!(
+                    DeployTargets::record_published_url(&path, &target, "https://qa.example.com/")
+                        .is_err()
+                );
+                assert_eq!(fs::read(&path)?, before);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn published_urls_survive_edits_only_for_the_same_destination() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("targets.json");
+        let token = format!("{}-{}000", "a".repeat(64), "b".repeat(36));
+        for input in [
+            serde_json::json!({"id": "qa", "name": "QA"}),
+            serde_json::json!({"id": "qa", "name": "QA", "provider": "netlify", "siteId": uuid::Uuid::new_v4().to_string()}),
+            serde_json::json!({"id": "qa", "name": "QA", "provider": "cloudflareWorkers", "cloudflare": {"accountId": "a".repeat(32), "workerName": "reports"}}),
+        ] {
+            let mut target: DeployTarget = serde_json::from_value(input)?;
+            let mut settings = DeployTargets::default();
+            settings.save_target(root.path(), &path, target.clone(), &token)?;
+            settings = DeployTargets::record_published_url(
+                &path,
+                &settings.targets[0],
+                "https://qa.example.com/",
+            )?;
+            target.name = "Renamed".into();
+            settings.save_target(root.path(), &path, target.clone(), "")?;
+            assert_eq!(
+                settings.targets[0].published_url.as_deref(),
+                Some("https://qa.example.com/")
+            );
+            settings.save_target(root.path(), &path, target.clone(), &token)?;
+            assert_eq!(
+                settings.targets[0].published_url.is_some(),
+                target.provider != DeploymentProvider::AzureSwa
+            );
+            settings = DeployTargets::record_published_url(
+                &path,
+                &settings.targets[0],
+                "https://qa.example.com/",
+            )?;
+            match target.provider {
+                DeploymentProvider::AzureSwa => target.environment = "preview".into(),
+                DeploymentProvider::Netlify => target.site_id = uuid::Uuid::new_v4().to_string(),
+                DeploymentProvider::CloudflareWorkers => {
+                    target.cloudflare.as_mut().unwrap().worker_name = "other".into()
+                }
+            }
+            settings.save_target(root.path(), &path, target, "")?;
+            assert!(settings.targets[0].published_url.is_none());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn legacy_targets_keep_metadata_but_require_a_secure_token() {
         let target: DeployTarget = serde_json::from_value(serde_json::json!({
             "id": "qa", "name": "QA", "tokenEnv": "QA_SWA_TOKEN", "environment": "preview"
@@ -897,6 +1146,7 @@ mod tests {
         assert_eq!(target.provider, DeploymentProvider::AzureSwa);
         assert!(target.site_id.is_empty());
         assert!(target.credential_id.is_none());
+        assert!(target.published_url.is_none());
         assert!(!serde_json::to_string(&target).unwrap().contains("tokenEnv"));
         assert!(
             target
@@ -915,6 +1165,7 @@ mod tests {
         let target = DeployTarget {
             id: "qa".into(),
             name: "QA reports".into(),
+            published_url: None,
             credential_id: None,
             named_token_id: None,
             environment: String::new(),
@@ -1095,6 +1346,16 @@ mod tests {
             let mut settings = DeployTargets::default();
             let path = root.join("targets.json");
             settings.save_linked_target(root, &path, target.clone(), &catalog)?;
+            settings = DeployTargets::record_published_url(
+                &path,
+                &settings.targets[0],
+                "https://qa.netlify.app/",
+            )?;
+            settings.save_linked_target(root, &path, target.clone(), &catalog)?;
+            assert_eq!(
+                settings.targets[0].published_url.as_deref(),
+                Some("https://qa.netlify.app/")
+            );
             assert_eq!(
                 settings.targets[0].named_token(&catalog)?.as_str(),
                 "synthetic-shared"

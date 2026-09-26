@@ -500,6 +500,34 @@ impl RunSnapshot {
         crate::helpers::write_file_atomically(path, &bytes).context("Cannot save run activity")
     }
 
+    fn save_completed(&self, path: &Path, deployment_path: Option<&Path>) -> Result<()> {
+        let published = (|| -> Result<()> {
+            if self.request.command == RunCommand::Deploy
+                && matches!(self.outcome, RunOutcome::Completed)
+                && let (Some(deployment_path), Some(deployment)) =
+                    (deployment_path, self.progress.deployment.as_ref())
+            {
+                let job = self
+                    .request
+                    .options
+                    .deployment
+                    .as_ref()
+                    .context("Completed deployment is missing its target")?;
+                super::deployment::DeployTargets::record_published_url(
+                    deployment_path,
+                    &job.target,
+                    &deployment.url,
+                )
+                .context("Site deployed, but its URL could not be saved to the target")?;
+            }
+            Ok(())
+        })();
+        // Keep successful publication details in activity even if the target write fails.
+        let activity = self.save(path);
+        published?;
+        activity
+    }
+
     pub fn recover_reports(
         root: &Path,
         suites: &[super::workspace::SuiteSummary],
@@ -809,6 +837,7 @@ fn read_stream(
 pub struct RunManager {
     active: Option<RunHandle>,
     storage_path: Option<PathBuf>,
+    deployment_storage_path: Option<PathBuf>,
     persistence: Option<JoinHandle<Result<()>>>,
     pub persistence_error: Option<String>,
     pub recovered_from_reports: bool,
@@ -895,6 +924,10 @@ impl RunManager {
 
     pub fn set_storage_path(&mut self, path: PathBuf) {
         self.storage_path = Some(path);
+    }
+
+    pub fn set_deployment_storage_path(&mut self, path: PathBuf) {
+        self.deployment_storage_path = Some(path);
     }
 
     pub fn suite_counts(&self, output: &Path, id: &str) -> Option<crate::progress::Counts> {
@@ -1069,9 +1102,10 @@ impl RunManager {
             });
             self.revision = self.revision.wrapping_add(1);
             if let (Some(path), Some(snapshot)) = (self.storage_path.clone(), self.snapshot()) {
+                let deployment_path = self.deployment_storage_path.clone();
                 match thread::Builder::new()
                     .name("regressify-save-run".into())
-                    .spawn(move || snapshot.save(&path))
+                    .spawn(move || snapshot.save_completed(&path, deployment_path.as_deref()))
                 {
                     Ok(persistence) => self.persistence = Some(persistence),
                     Err(error) => self.persistence_error = Some(error.to_string()),
@@ -1153,6 +1187,7 @@ mod tests {
                         target: DeployTarget {
                             id: "test".into(),
                             name: "Test".into(),
+                            published_url: None,
                             credential_id: None,
                             named_token_id: None,
                             environment: String::new(),
@@ -1643,6 +1678,75 @@ mod tests {
             _events_file: None,
         });
         (manager, progress)
+    }
+
+    #[test]
+    fn completed_deployments_persist_urls_without_replacing_them_on_failure() -> Result<()> {
+        use super::super::deployment::{DeployTarget, DeployTargets, DeploymentJob};
+
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("targets.json");
+        let history = root.path().join("activity.json");
+        let target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id": "qa", "name": "QA", "publishedUrl": "https://previous.example.com/"
+        }))?;
+        for (outcome, has_url) in [
+            (RunOutcome::Completed, true),
+            (RunOutcome::Completed, false),
+            (RunOutcome::Failed("Upload failed".into()), true),
+            (RunOutcome::Cancelled, true),
+        ] {
+            DeployTargets {
+                targets: vec![target.clone()],
+                selected: Some(target.id.clone()),
+            }
+            .save(&path)?;
+            let mut request = request(RunCommand::Deploy);
+            request.root = root.path().into();
+            request.options.deployment = Some(DeploymentJob {
+                target: target.clone(),
+                suite_ids: vec!["reports".into()],
+                catalog_ids: vec!["reports".into()],
+                partial_confirmed: false,
+            });
+            let mut manager = RunManager::default();
+            manager.request = Some(request);
+            manager.outcome = Some(outcome.clone());
+            if has_url {
+                manager.progress.deployment = Some(crate::progress::DeploymentResult {
+                    target: "Display name is not the target ID".into(),
+                    url: "https://latest.example.com/".into(),
+                });
+            }
+            manager.progress.end(false, None);
+            let snapshot = manager.snapshot().unwrap();
+            snapshot.save_completed(&history, Some(&path))?;
+            let expected = if matches!(outcome, RunOutcome::Completed) && has_url {
+                "https://latest.example.com/"
+            } else {
+                "https://previous.example.com/"
+            };
+            assert_eq!(
+                DeployTargets::load(&path)?.targets[0]
+                    .published_url
+                    .as_deref(),
+                Some(expected)
+            );
+            assert!(RunSnapshot::load(&history, root.path())?.is_some());
+            if has_url && matches!(outcome, RunOutcome::Completed) {
+                let failed_history = root.path().join("failed-save-activity.json");
+                let error = snapshot
+                    .save_completed(&failed_history, Some(root.path()))
+                    .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Site deployed, but its URL could not be saved")
+                );
+                assert!(RunSnapshot::load(&failed_history, root.path())?.is_some());
+            }
+        }
+        Ok(())
     }
 
     #[test]

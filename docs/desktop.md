@@ -368,6 +368,9 @@ site, or Cloudflare Worker using the same target controls as report deployment.
 Save the draft before deploying. The app generates complete static HTML before
 uploading; hosting does not need a Node.js server or request-time SSR runtime.
 The page uses the report logo, fonts, and Light/Dark/System theme controls.
+Each landing deployment target remembers its last successful URL. Reopen the
+landing app's deployment settings to open or copy that URL without deploying again,
+including after switching tabs or restarting the desktop app.
 
 Linked sites do not need to exist locally and may be created by other users.
 The desktop app never searches for their workspaces or fetches their reports.
@@ -431,6 +434,16 @@ Changing providers clears the token draft and requires a compatible named token
 or a new target-specific token before saving.
 Existing targets without a provider setting continue to use Azure.
 
+Each target stores its last successfully deployed HTTPS URL. Open **Deployment
+targets**, choose a target, then click its URL to open the site or use **Copy
+deployed URL**. These controls do not require suite selection or a saved token,
+and remain available after switching tabs or restarting the app. Failed or
+cancelled deployments keep the previous URL. Renaming a target preserves it;
+changing provider, Azure environment, Netlify Site ID, Cloudflare account/Worker,
+or replacing an Azure token clears it until the next successful deployment.
+Azure tokens identify the destination app as well as authorize it. If saving a
+successful deployment's URL fails, the app reports the local persistence error.
+
 For **Azure Static Web Apps**, choose that provider and enter the app's deployment
 token. The Azure environment field remains optional.
 
@@ -470,8 +483,9 @@ those tokens again. Explicit named tokens use a separate per-user identity and
 can be shared across workspaces on the same machine. Moving to another computer
 requires entering secrets again.
 
-Target settings contain only credential references in the per-user application
-configuration. Token values are never saved in project files or settings JSON,
+Target settings contain public target metadata, the last successful URL, and
+credential references in the per-user application configuration.
+Token values are never saved in project files or settings JSON,
 passed in worker requests or command-line arguments, or included in deployment
 logs. Removing a target removes its target-specific token, but preserves named
 tokens and does not delete the hosted site. Targets created with the old environment-variable setting retain

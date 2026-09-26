@@ -546,7 +546,7 @@ impl RunPanel {
             None => "Command ended without a result".into(),
         };
         match &self.manager.persistence_error {
-            Some(error) => format!("{status}. Run activity was not saved: {error}"),
+            Some(error) => format!("{status}. Local save failed: {error}"),
             None => status,
         }
     }

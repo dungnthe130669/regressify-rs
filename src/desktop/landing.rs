@@ -445,6 +445,7 @@ mod tests {
         let target = DeployTarget {
             id: "landing-verification".into(),
             name: "Landing verification".into(),
+            published_url: None,
             provider,
             credential_id: None,
             named_token_id: None,

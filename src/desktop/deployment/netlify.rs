@@ -822,6 +822,7 @@ mod tests {
         DeployTarget {
             id: "netlify".into(),
             name: "Netlify QA".into(),
+            published_url: None,
             credential_id: None,
             named_token_id: None,
             environment: String::new(),

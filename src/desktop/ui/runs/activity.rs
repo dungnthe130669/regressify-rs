@@ -981,6 +981,7 @@ mod tests {
                     target: DeployTarget {
                         id: "qa".into(),
                         name: "QA reports".into(),
+                        published_url: None,
                         provider: DeploymentProvider::AzureSwa,
                         credential_id: None,
                         named_token_id: None,
@@ -1191,6 +1192,12 @@ mod tests {
                             },
                         });
                         panel.manager.outcome = Some(outcome.clone());
+                        panel.manager.persistence_error = matches!(outcome, RunOutcome::Completed)
+                            .then(|| "Site deployed, but its URL could not be saved to the target".into());
+                        panel.status = panel.completion_status();
+                        if matches!(outcome, RunOutcome::Completed) {
+                            assert_eq!(panel.status, "Completed. Local save failed: Site deployed, but its URL could not be saved to the target");
+                        }
                         cx.notify();
                     });
                 });

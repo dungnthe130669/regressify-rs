@@ -10,7 +10,7 @@ use crate::desktop::{
 use zeroize::Zeroizing;
 
 enum TargetChange {
-    Save(DeployTarget, Zeroizing<String>),
+    Save(Box<DeployTarget>, Zeroizing<String>),
     Remove(String),
     Select,
 }
@@ -40,7 +40,6 @@ pub(super) struct DeploymentPanel {
     intent: Option<runs::RunIntent>,
     landing: Option<LandingFile>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
-    published_url: Option<String>,
     catalog_ids: Vec<String>,
     suite_ids: Vec<String>,
     partial: bool,
@@ -71,7 +70,6 @@ impl DeploymentPanel {
             intent: None,
             landing: None,
             cancel: None,
-            published_url: None,
             catalog_ids: Vec::new(),
             suite_ids: Vec::new(),
             partial: false,
@@ -227,7 +225,6 @@ impl Workbench {
                     state.root = Some(root);
                     state.intent = intent;
                     state.landing = None;
-                    state.published_url = None;
                     state.partial = suite_ids.len() != catalog_ids.len();
                     state.catalog_ids = catalog_ids;
                     state.suite_ids = suite_ids;
@@ -336,16 +333,21 @@ impl Workbench {
                         Button::new("deploy-add-token").small().icon(gpui_kit::assets::IconName::Pencil).label("Add token")
                             .accessibility_label("Add deployment token").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))));
+                if let Some(url) = selected.and_then(|target| target.published_url.clone()) {
+                    let open_url = url.clone();
+                    body = body.child(div().id("deploy-published-url").flex().items_center().gap_2().min_w_0()
+                        .child(Button::new("deploy-open-published").small().ghost().flex_1().min_w_0().overflow_hidden().justify_start()
+                            .icon(gpui_kit::assets::IconName::ExternalLink).label(url.clone()).tooltip(url.clone()).accessibility_label("Open deployed site")
+                            .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                if let Err(error) = open::that_detached(&open_url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
+                            })))
+                        .child(Button::new("deploy-copy-published").small().ghost().flex_shrink_0()
+                            .icon(gpui_kit::assets::IconName::Copy).tooltip("Copy deployed URL").accessibility_label("Copy deployed URL")
+                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.clone())))));
+                }
                 if let Some(landing) = &state.landing {
                     body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(landing.app.heading.clone()))
                         .child(format!("Sites: {}", landing.app.sites.len()));
-                    if let Some(url) = &state.published_url {
-                        let url = url.clone();
-                        body = body.child(Button::new("landing-open-published").icon(gpui_kit::assets::IconName::ExternalLink).label("Open deployed site")
-                            .on_click(window.listener_for(&view, move |this, _, _, cx| {
-                                if let Err(error) = open::that_detached(&url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
-                            })));
-                    }
                 } else {
                 body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
                 body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
@@ -569,6 +571,7 @@ impl Workbench {
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             name: state.name.read(cx).value().trim().into(),
+            published_url: None,
             credential_id: None,
             named_token_id: state.named_token_id.clone(),
             environment: if state.provider == DeploymentProvider::AzureSwa {
@@ -607,7 +610,12 @@ impl Workbench {
             return;
         }
         let token = Zeroizing::new(state.token.read(cx).value().trim().to_owned());
-        self.persist_deploy_targets(TargetChange::Save(target, token), None, window, cx);
+        self.persist_deploy_targets(
+            TargetChange::Save(Box::new(target), token),
+            None,
+            window,
+            cx,
+        );
     }
 
     fn remove_deploy_target(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -634,6 +642,7 @@ impl Workbench {
         };
         let mut settings = state.settings.clone();
         let tokens_path = state.tokens_path.clone();
+        let deployment_path = path.clone();
         self.busy = true;
         self.sync_modal(cx);
         self.deployment.update(cx, |state, cx| {
@@ -650,11 +659,11 @@ impl Workbench {
                         settings.save_linked_target(
                             &root,
                             &path,
-                            target,
+                            *target,
                             &TokenCatalog::load(&tokens_path)?,
                         )?;
                     } else {
-                        settings.save_target(&root, &path, target, &token)?;
+                        settings.save_target(&root, &path, *target, &token)?;
                     }
                 }
                 TargetChange::Remove(id) => settings.remove_target(&root, &path, &id)?,
@@ -682,6 +691,9 @@ impl Workbench {
                 });
                 this.sync_modal(cx);
                 if succeeded && let Some(intent) = pending {
+                    this.runs.update(cx, |panel, _| {
+                        panel.manager.set_deployment_storage_path(deployment_path);
+                    });
                     window.close_dialog(cx);
                     this.guard_run(Box::new(intent), window, cx);
                 }
@@ -784,7 +796,6 @@ impl Workbench {
                     state.named_token_id = None;
                     state.intent = None;
                     state.landing = Some(file);
-                    state.published_url = None;
                     state.catalog_ids.clear();
                     state.suite_ids.clear();
                     state.partial = false;
@@ -819,12 +830,12 @@ impl Workbench {
             return;
         };
         let settings = state.settings.clone();
+        let target_id = target.id.clone();
         let (cancel, cancelled) = tokio::sync::oneshot::channel();
         self.busy = true;
         self.deployment.update(cx, |state, cx| {
             state.saving = true;
             state.cancel = Some(cancel);
-            state.published_url = None;
             state.status.clear();
             cx.notify();
         });
@@ -838,13 +849,16 @@ impl Workbench {
             settings.save(&path)?;
             let staging = tempfile::tempdir()?;
             file.app.stage(staging.path())?;
-            tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async {
+            let url = tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async {
                 tokio::select! {
                     biased;
                     _ = cancelled => Err(anyhow!("Deployment cancelled locally. A provider may already have published the upload; check the hosted site before retrying")),
                     result = client.deploy(staging.path(), &target) => result,
                 }
-            })
+            })?;
+            crate::desktop::deployment::validate_published_url(&url)?;
+            let saved = DeployTargets::record_published_url(&path, &target, &url);
+            Ok::<_, anyhow::Error>((url, saved))
         });
         cx.spawn_in(window, async move |view, cx| {
             let result = task.await;
@@ -854,9 +868,17 @@ impl Workbench {
                     state.saving = false;
                     state.cancel = None;
                     match result {
-                        Ok(url) => {
-                            state.published_url = Some(url);
-                            state.status.clear();
+                        Ok((url, saved)) => {
+                            if let Some(target) = state.settings.targets.iter_mut().find(|target| target.id == target_id) {
+                                target.published_url = Some(url);
+                            }
+                            match saved {
+                                Ok(settings) => {
+                                    state.settings = settings;
+                                    state.status.clear();
+                                }
+                                Err(error) => state.status = format!("Site deployed, but its URL could not be saved to the target: {error:#}"),
+                            }
                         }
                         Err(error) => state.status = format!("{error:#}"),
                     }
@@ -873,9 +895,114 @@ impl Workbench {
 #[cfg(all(test, feature = "gui-tests"))]
 mod tests {
     use crate::desktop::deployment::{DeployTarget, DeployTargets, DeploymentProvider};
+    use gpui_kit::component::WindowExt;
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    async fn saved_deployment_urls_reopen_and_copy_for_reports_and_landings(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::desktop::landing::{LandingApp, LandingFile};
+
+        for landing in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let preferences = root.path().join("desktop-preferences.json");
+            let file = landing
+                .then(|| LandingFile::create_managed(&preferences, LandingApp::default()).unwrap());
+            let deployment_root = file
+                .as_ref()
+                .map(|file| file.app.deployment_root(&preferences).unwrap())
+                .unwrap_or_else(|| root.path().to_path_buf());
+            let long_url = format!(
+                "https://qa.example.workers.dev/{}",
+                "long-path/".repeat(200)
+            );
+            let settings: DeployTargets = serde_json::from_value(serde_json::json!({
+                "targets": [
+                    {"id": "azure", "name": "Azure", "publishedUrl": "https://qa.azurestaticapps.net/"},
+                    {"id": "netlify", "name": "Netlify", "provider": "netlify", "siteId": "12345678-1234-1234-1234-123456789abc", "publishedUrl": "https://qa.netlify.app/"},
+                    {"id": "cloudflare", "name": "Cloudflare", "provider": "cloudflareWorkers", "cloudflare": {"accountId": "a".repeat(32), "workerName": "qa"}, "publishedUrl": long_url},
+                    {"id": "unpublished", "name": "Unpublished"}
+                ],
+                "selected": "azure"
+            })).unwrap();
+            settings
+                .save(&DeployTargets::path_in(&deployment_root, &preferences).unwrap())
+                .unwrap();
+            let (handle, view) = super::super::tests::editor_at_size(
+                cx,
+                root.path(),
+                gpui_kit::size(gpui_kit::px(1000.), gpui_kit::px(640.)),
+            );
+            for _ in 0..2 {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    view.update(cx, |this, cx| {
+                        this.deployment = cx.new(|cx| super::DeploymentPanel::new(window, cx));
+                        if let Some(file) = &file {
+                            this.open_landing_deployment(file.clone(), window, cx);
+                        } else {
+                            this.open_deployment(window, cx);
+                        }
+                    });
+                })
+                .unwrap();
+                cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                    window.try_find("deploy-copy-published").is_some()
+                })
+                .await;
+                cx.update_window(handle.into(), |_, window, cx| {
+                    assert_eq!(
+                        view.read(cx)
+                            .deployment
+                            .read(cx)
+                            .settings
+                            .selected
+                            .as_deref(),
+                        Some("azure")
+                    );
+                    assert!(!view.read(cx).deployment.read(cx).can_deploy());
+                    for dark in [false, true] {
+                        super::super::design::apply_theme(dark, Some(window), cx);
+                        for target in &settings.targets {
+                            view.update(cx, |this, cx| {
+                                this.choose_deploy_target(
+                                    &super::ChooseDeployTarget {
+                                        id: target.id.clone(),
+                                    },
+                                    window,
+                                    cx,
+                                )
+                            });
+                            window.render_frame(cx);
+                            if let Some(url) = &target.published_url {
+                                assert_eq!(
+                                    window.find("deploy-open-published").label(),
+                                    Some("Open deployed site")
+                                );
+                                let open = window.find("deploy-open-published").bounds();
+                                let copy = window.find("deploy-copy-published").bounds();
+                                assert!(open.origin.x + open.size.width <= copy.origin.x);
+                                assert!(copy.origin.x + copy.size.width <= gpui_kit::px(1000.));
+                                assert!(copy.origin.y + copy.size.height <= gpui_kit::px(640.));
+                                window.click("deploy-copy-published", cx);
+                                assert_eq!(
+                                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                                    Some(url.as_str())
+                                );
+                            } else {
+                                assert!(window.try_find("deploy-open-published").is_none());
+                                assert!(window.try_find("deploy-copy-published").is_none());
+                            }
+                        }
+                    }
+                    window.close_dialog(cx);
+                })
+                .unwrap();
+            }
+        }
+    }
 
     #[gpui_kit::test]
     async fn deployment_targets_use_masked_input_and_secure_storage(cx: &mut TestAppContext) {
@@ -1286,6 +1413,7 @@ mod tests {
                         targets: vec![DeployTarget {
                             id: "qa".into(),
                             name: "QA".into(),
+                            published_url: None,
                             credential_id: None,
                             named_token_id: None,
                             environment: String::new(),

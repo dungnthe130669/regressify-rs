@@ -229,6 +229,7 @@ fn deploy_missing_token_fails_before_snapshot_modifies_output() {
                 target: DeployTarget {
                     id: "test".into(),
                     name: "Test".into(),
+                    published_url: None,
                     credential_id: None,
                     named_token_id: None,
                     environment: String::new(),
@@ -306,6 +307,7 @@ fn deploy_worker_reads_machine_local_credentials_without_exposing_tokens() {
                 target: DeployTarget {
                     id: "test".into(),
                     name: "Test".into(),
+                    published_url: None,
                     credential_id: Some(credential_id),
                     named_token_id: None,
                     environment: String::new(),
