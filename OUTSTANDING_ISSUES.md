@@ -48,6 +48,14 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
+## Validation Notes (2026-09-27)
+
+- `cargo test --locked --features gui-tests --all-targets -- --test-threads=1 --quiet`
+  reaches 829 passing library tests and 15 ignored checks, including the corrected
+  source-save regressions. The existing embedded frontend resource-version test
+  still fails for `_snapshot/assets/app.js`; Cargo stops before later test targets.
+  No frontend assets were changed during the save repair.
+
 ## Validation Notes (2026-09-26)
 
 - Deployment URL checks pass, but the full desktop model gate has 641 passing
@@ -73,6 +81,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Corrected YAML/JSON files now save even if their previously saved source has
+  syntax errors. Optional report-label comparison no longer rejects the repair;
+  strict draft validation and external-conflict checks remain. Model regressions
+  cover suites, workspace configuration, viewports, and data, and a native-event
+  test verifies that saving clears the suite list's invalid status.
 - Report and landing deployment targets now retain their last successful URL
   across tab switches and app restarts, with open/copy controls per target.
   Model and native-event regressions cover provider identity, failed publication,

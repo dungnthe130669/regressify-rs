@@ -1144,6 +1144,13 @@ view. Invalid source stays in Source when Fields cannot represent it, with its
 diagnostic retained. File-menu actions use the same availability rules as command
 search, including disabling suite deletion for unsaved documents.
 
+Corrected YAML/JSON can be saved even when the file originally contained syntax
+errors. Editor diagnostics describe the current draft; the suite list describes
+the saved file and refreshes after a successful save. If the original source
+cannot be parsed, the repair leaves existing report labels unchanged because
+their previous metadata cannot be determined safely. Draft validation and
+external-change protection still apply.
+
 Blank or comment-only `regressify.yaml` and `regressify.yml` files use defaults,
 just like `{}`. Opening, validating, and saving preserve their source text. Fields
 can add the first setting, and undo restores the original text. Explicit `null`

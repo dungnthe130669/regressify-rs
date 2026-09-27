@@ -5128,6 +5128,57 @@ async fn invalid_source_exposes_a_diagnostic_and_save_does_not_write(cx: &mut Te
 }
 
 #[gpui_kit::test]
+async fn corrected_invalid_source_saves_and_refreshes_suite_status(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let corrected = std::fs::read_to_string(&path).unwrap();
+    let invalid = "scenarios: [";
+    std::fs::write(&path, invalid).unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            let entry = this.session.open.as_ref().unwrap().entry.clone();
+            this.session.load(entry).unwrap();
+            this.tab = 1;
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.find("diagnostic").visible());
+        assert!(view.read(cx).session.suites[0].error.is_some());
+        let focus = view.read(cx).source.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+        window.render_frame(cx);
+        window.press("ctrl-a", cx);
+        window.input(&corrected, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, cx| {
+        window.try_find("diagnostic").is_none() && view.read(cx).session.dirty()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).source_issues.is_empty());
+        assert!(view.read(cx).session.suites[0].error.is_some());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        window.click("save", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window
+            .try_find("status")
+            .is_some_and(|status| status.label() == Some("Saved"))
+    })
+    .await;
+    cx.update(|cx| {
+        assert!(!view.read(cx).session.dirty());
+        assert!(view.read(cx).session.suites[0].error.is_none());
+        assert_eq!(view.read(cx).session.suites[0].scenarios.len(), 1);
+    });
+    assert_eq!(std::fs::read_to_string(path).unwrap(), corrected);
+}
+
+#[gpui_kit::test]
 async fn unsaved_dialog_cancel_and_discard_preserve_their_contracts(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

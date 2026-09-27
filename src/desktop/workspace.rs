@@ -583,14 +583,16 @@ impl Workspace {
         validate_typed_source(&open.document)?;
         let path = self.check_unchanged(open)?;
         let value = open.document.value()?;
+        // Invalid saved source must remain repairable; it has no reliable metadata to migrate.
         let saved = Document::new(
             open.document.kind,
             open.document.format,
             open.document.saved_source().into(),
         )?
-        .value()?;
+        .value()
+        .ok();
         let update = if open.entry.kind == DocumentKind::Suite
-            && value["displayName"] != saved["displayName"]
+            && saved.is_some_and(|saved| value["displayName"] != saved["displayName"])
         {
             let (id, _) = self.suite_mutation_ids(open, None)?;
             artifacts::ArtifactUpdate::prepare(
@@ -1337,6 +1339,86 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn corrected_invalid_source_can_be_saved() {
+        let valid_yaml = "scenarios:\n- url: https://example.com\n";
+        let valid_json = "{\"scenarios\": [{\"url\": \"https://example.com\"}]}\n";
+        for (relative, invalid, corrected) in [
+            ("visual_tests/home.tests.yaml", "scenarios: [", valid_yaml),
+            (
+                "visual_tests/home.tests.json",
+                r#"{"scenarios": ["#,
+                valid_json,
+            ),
+            (
+                "visual_tests/home.tests.yaml",
+                "scenarios: not-a-list\n",
+                valid_yaml,
+            ),
+            (
+                "visual_tests/home.tests.json",
+                r#"{"scenarios": "not-a-list"}"#,
+                valid_json,
+            ),
+            (
+                "visual_tests/home.tests.yaml",
+                "displayName: [\nscenarios: []\n",
+                "displayName: Repaired suite\nscenarios:\n- url: https://example.com\n",
+            ),
+            ("regressify.yaml", "[", "# Default workspace\n"),
+            (
+                "common/_viewports.yaml",
+                "- label: [\n",
+                "- label: Desktop\n  width: 1280\n  height: 720\n",
+            ),
+            ("common/data.json", "{", "{\"items\": []}\n"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let workspace = Workspace::open(directory.path()).unwrap();
+            let path = directory.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, invalid).unwrap();
+            let entry = workspace.entries().unwrap().into_iter().next().unwrap();
+            let mut open = workspace.open_document(entry).unwrap();
+            assert!(open.document.validate().is_err());
+            assert!(workspace.save(&mut open).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+            if open.entry.kind == DocumentKind::Suite {
+                assert!(workspace.suite_catalog().unwrap()[0].error.is_some());
+            }
+
+            open.document.set_source(corrected.into()).unwrap();
+            open.document.validate().unwrap();
+            validate_typed_source(&open.document).unwrap();
+
+            let external = format!("{corrected}\n");
+            fs::write(&path, &external).unwrap();
+            assert!(
+                workspace
+                    .save(&mut open)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("changed outside")
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), external);
+            assert_eq!(open.document.source(), corrected);
+            assert_eq!(open.document.saved_source(), invalid);
+            assert!(open.document.dirty());
+
+            fs::write(&path, invalid).unwrap();
+            workspace.save(&mut open).unwrap();
+
+            assert_eq!(fs::read_to_string(path).unwrap(), corrected);
+            assert_eq!(open.document.saved_source(), corrected);
+            assert!(!open.document.dirty());
+            if open.entry.kind == DocumentKind::Suite {
+                let catalog = workspace.suite_catalog().unwrap();
+                assert!(catalog[0].error.is_none());
+                assert_eq!(catalog[0].scenarios.len(), 1);
+            }
+        }
     }
 
     #[test]

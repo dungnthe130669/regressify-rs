@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-09-24
+Verified: 2026-09-27
 
 - [Source commands](../../src/desktop/ui/source.rs) bind inside
   `RegressifySource > Input` and additionally check the source focus handle and
@@ -21,3 +21,10 @@ Verified: 2026-09-24
 - [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) includes line shortcuts
   and menu screenshots. Interactive execution requires the isolation guards in
   the [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).
+- [Workspace saves](../../src/desktop/workspace.rs) validate the corrected draft,
+  not the previous saved source. Unparseable old source skips optional report-label
+  migration without weakening exact-byte external-conflict checks.
+- Editor diagnostics describe the draft; suite catalog errors describe the saved
+  file and refresh after Save succeeds. The `corrected_invalid_source` filter in
+  `cargo test --locked --features gui-tests --lib corrected_invalid_source -- --test-threads=1`
+  covers YAML/JSON repairs, conflicts, and the native Save interaction.
