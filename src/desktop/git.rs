@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     #[test]
-    fn structured_review_handles_viewports_formatting_binary_and_large_files() {
+    fn text_review_handles_any_text_binary_and_large_files() {
         let root = repository();
         fs::write(
             root.path().join("_viewports.yaml"),
@@ -1201,6 +1201,18 @@ mod tests {
         )
         .unwrap();
         fs::write(root.path().join("settings.yaml"), "delay: 1000\n").unwrap();
+        let drafts = [
+            (
+                "invalid.yaml",
+                "scenarios: [}\n",
+                "scenarios: [}\n# changed\n",
+            ),
+            ("invalid.json", "{", "{\n"),
+            ("helper.js", "const value = 1;\n", "const value = 2;\n"),
+        ];
+        for (path, before, _) in drafts {
+            fs::write(root.path().join(path), before).unwrap();
+        }
         git(root.path(), &["add", "."]);
         git(root.path(), &["commit", "-m", "initial"]);
         fs::write(
@@ -1213,28 +1225,44 @@ mod tests {
             "# QA note\ndelay: 1000\n",
         )
         .unwrap();
+        for (path, _, after) in drafts {
+            fs::write(root.path().join(path), after).unwrap();
+        }
         fs::write(root.path().join("binary.json"), [0_u8, 1, 2]).unwrap();
+        fs::write(root.path().join("non-utf8.txt"), [255_u8]).unwrap();
         let large = fs::File::create(root.path().join("large.yaml")).unwrap();
         large
             .set_len(crate::desktop::document::MAX_DOCUMENT_BYTES as u64 + 1)
             .unwrap();
         let snapshot = status(root.path(), &Cancellation::default()).unwrap();
         let viewports =
-            review::load(&snapshot, "_viewports.yaml", &Cancellation::default()).unwrap();
-        assert_eq!(viewports.groups.len(), 1);
-        assert_eq!(viewports.groups[0].title, "Viewport: Tablet");
-        assert_eq!(viewports.groups[0].fields.len(), 2);
+            review::load_text(&snapshot, "_viewports.yaml", &Cancellation::default()).unwrap();
+        assert_eq!(viewports.changes.len(), 1);
+        assert_eq!(viewports.rows.iter().filter(|row| row.changed).count(), 2);
         let formatting =
-            review::load(&snapshot, "settings.yaml", &Cancellation::default()).unwrap();
-        assert!(formatting.source_only && formatting.groups.is_empty());
+            review::load_text(&snapshot, "settings.yaml", &Cancellation::default()).unwrap();
+        assert_eq!(formatting.changes, vec![0]);
+        assert_eq!(formatting.rows[0].before, None);
+        assert_eq!(formatting.after[0], "# QA note\n");
+        for (path, before, after) in drafts {
+            let text = review::load_text(&snapshot, path, &Cancellation::default()).unwrap();
+            assert_eq!(text.before.concat(), before);
+            assert_eq!(text.after.concat(), after);
+        }
         assert!(
-            review::load(&snapshot, "binary.json", &Cancellation::default())
+            review::load_text(&snapshot, "binary.json", &Cancellation::default())
                 .unwrap_err()
                 .to_string()
                 .contains("Binary")
         );
         assert!(
-            review::load(&snapshot, "large.yaml", &Cancellation::default())
+            review::load_text(&snapshot, "non-utf8.txt", &Cancellation::default())
+                .unwrap_err()
+                .to_string()
+                .contains("UTF-8")
+        );
+        assert!(
+            review::load_text(&snapshot, "large.yaml", &Cancellation::default())
                 .unwrap_err()
                 .to_string()
                 .contains("4 MiB")

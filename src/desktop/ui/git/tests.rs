@@ -589,8 +589,10 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
         view.read(cx)
             .git
             .read(cx)
-            .diff_text
-            .contains("+review this change")
+            .text_review
+            .as_ref()
+            .and_then(|review| review.as_ref().ok())
+            .is_some_and(|review| review.after.concat().contains("review this change"))
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
@@ -656,9 +658,7 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
 }
 
 #[gpui_kit::test]
-async fn structured_git_review_shows_readable_values_and_retains_source_diff(
-    cx: &mut TestAppContext,
-) {
+async fn git_text_diff_displays_unparseable_saved_files(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = super::super::tests::editor(cx, directory.path());
     git(directory.path(), &["init", "-b", "main"]);
@@ -672,12 +672,17 @@ async fn structured_git_review_shows_readable_values_and_retains_source_diff(
         git(directory.path(), &["config", key, value]);
     }
     let path = "visual_tests/ui-test.tests.yaml";
-    let before = "scenarios:\n- id: checkout\n  label: Checkout\n  url: /checkout\n  actions:\n  - wait: 1000\n";
+    let before = "scenarios: [}\n# committed draft\n";
     std::fs::write(directory.path().join(path), before).unwrap();
     git(directory.path(), &["add", "."]);
     git(directory.path(), &["commit", "-m", "initial"]);
-    std::fs::write(directory.path().join(path), before.replace("1000", "2500")).unwrap();
+    std::fs::write(
+        directory.path().join(path),
+        before.replace("committed", "edited"),
+    )
+    .unwrap();
     std::fs::write(directory.path().join("invalid.yaml"), "scenarios: [}").unwrap();
+    std::fs::write(directory.path().join("binary.bin"), [0_u8, 1, 2]).unwrap();
     let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
     let index = snapshot
         .changes
@@ -688,6 +693,11 @@ async fn structured_git_review_shows_readable_values_and_retains_source_diff(
         .changes
         .iter()
         .position(|change| change.path == "invalid.yaml")
+        .unwrap();
+    let binary = snapshot
+        .changes
+        .iter()
+        .position(|change| change.path == "binary.bin")
         .unwrap();
     cx.update_window(handle.into(), |_, window, cx| {
         view.update(cx, |this, cx| {
@@ -702,54 +712,153 @@ async fn structured_git_review_shows_readable_values_and_retains_source_diff(
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(15), |window, _| {
-        window.try_find("git-structured-review").is_some()
+        window.try_find("git-text-diff").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(window.find("git-before-0-0").label(), Some("1000 ms"));
-        assert_eq!(window.find("git-after-0-0").label(), Some("2500 ms"));
-        assert_eq!(
-            window.find(("git-review-toggle", 0_usize)).label(),
-            Some("Scenario: Checkout / Step 1: Wait")
-        );
-        window.click(("git-review-toggle", 0_usize), cx);
-        assert!(window.try_find("git-before-0-0").is_none());
-        window.click(("git-review-toggle", 0_usize), cx);
-        window.within("git-review-tabs").click(1_usize, cx);
+        assert!(window.try_find("git-review-tabs").is_none());
         assert!(window.try_find("git-structured-review").is_none());
-        assert!(
-            view.read(cx)
-                .git
-                .read(cx)
-                .diff_text
-                .contains("+  - wait: 2500")
+        assert!(window.try_find("git-review-unavailable").is_none());
+        assert_eq!(
+            window.find("git-before-line-0").label(),
+            Some("scenarios: [}")
         );
-        window.within("git-review-tabs").click(0_usize, cx);
-        assert!(window.find("git-after-0-0").visible());
+        assert_eq!(
+            window.find("git-after-line-1").label(),
+            Some("# edited draft")
+        );
+        window.click("git-copy-before", cx);
+        assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), before);
+        window.click("git-copy-after", cx);
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().unwrap(),
+            before.replace("committed", "edited")
+        );
         window.click(("git-file", invalid), cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
-        view.read(cx)
-            .git
-            .read(cx)
-            .structured
-            .as_ref()
-            .is_some_and(Result::is_err)
+    cx.wait_for(handle.into(), Duration::from_secs(15), |window, cx| {
+        window.try_find("git-text-diff").is_some()
+            && view.read(cx).git.read(cx).diff_cancel.is_none()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.try_find("git-structured-review").is_none());
-        assert!(window.find("git-review-unavailable").visible());
-        assert!(
-            view.read(cx)
-                .git
-                .read(cx)
-                .diff_text
-                .contains("scenarios: [}")
-        );
+        assert!(window.try_find("git-review-unavailable").is_none());
+        assert!(window.find("git-text-diff").visible());
+        window.click(("git-file", binary), cx);
     })
     .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(15), |window, cx| {
+        window.try_find("git-review-unavailable").is_some()
+            && view.read(cx).git.read(cx).diff_cancel.is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("git-text-diff").is_none());
+        let panel = view.read(cx).git.read(cx);
+        assert!(
+            panel
+                .text_review
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .contains("Binary")
+        );
+        assert!(!panel.diff_text.is_empty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn git_text_diff_scrolls_both_panes_and_navigates_changes(cx: &mut TestAppContext) {
+    for dark in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        let before = (0..180)
+            .map(|index| format!("line-{index}: {}\r\n", "long text ".repeat(20)))
+            .collect::<String>();
+        let after = before
+            .replace("line-10:", "added: one\r\nadded: two\r\nline-10:")
+            .replace("line-150:", "changed-150:");
+        cx.update_window(handle.into(), |_, window, cx| {
+            super::super::design::apply_theme(dark, None, cx);
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            branch: "main".into(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.active_file = Some("invalid.yaml".into());
+                    panel.text_review = Some(Ok(model::review::compare_text(
+                        &before,
+                        &after,
+                        &Cancellation::default(),
+                    )
+                    .unwrap()));
+                });
+                this.select_view(3, window, cx);
+            });
+            window.render_frame(cx);
+            window.click("git-diff-next", cx);
+            window.click("git-diff-next", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).git.read(cx).diff_change, Some(1));
+            let before_row = window.find("git-before-line-152").bounds();
+            let after_row = window.find("git-after-line-152").bounds();
+            assert_eq!(before_row.top(), after_row.top());
+            assert!(before_row.top() >= window.find("git-diff-before").bounds().top());
+            let scroll = view
+                .read(cx)
+                .git
+                .read(cx)
+                .diff_scroll
+                .0
+                .borrow()
+                .base_handle
+                .clone();
+            let previous = scroll.offset();
+            window.scroll(
+                "git-diff-after",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(-160.), px(0.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(scroll.offset().x < previous.x);
+            window.scroll(
+                "git-diff-after",
+                gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-24.))),
+                cx,
+            );
+            window.render_frame(cx);
+            assert!(scroll.offset().y < previous.y);
+            assert_eq!(
+                window.find("git-before-line-152").bounds().top(),
+                window.find("git-after-line-152").bounds().top()
+            );
+            window.click("git-diff-previous", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).git.read(cx).diff_change, Some(0));
+            assert_eq!(
+                window.find("git-before-line-10").bounds().top(),
+                window.find("git-after-line-10").bounds().top()
+            );
+            window.click("git-copy-before", cx);
+            assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), before);
+            window.click("git-copy-after", cx);
+            assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), after);
+        })
+        .unwrap();
+    }
 }
 
 #[gpui_kit::test]
@@ -1232,8 +1341,7 @@ async fn pull_refresh_reloads_or_closes_the_current_document_without_leaving_git
 }
 
 #[gpui_kit::test]
-fn structured_review_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
-    use model::review::{ChangeGroup, ChangeKind, FieldChange, StructuredReview};
+fn git_text_diff_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) =
@@ -1266,22 +1374,14 @@ fn structured_review_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut
                         cx,
                     );
                     panel.active_file = Some("suite.tests.yaml".into());
-                    panel.structured = Some(Ok(StructuredReview {
-                        groups: vec![ChangeGroup {
-                            title: "Scenario: A checkout scenario with a long descriptive label"
-                                .repeat(3),
-                            kind: ChangeKind::Changed,
-                            fields: vec![FieldChange {
-                                label: "URL".into(),
-                                before: format!("https://old.test/{}", "a".repeat(500)),
-                                after: format!("https://new.test/{}", "b".repeat(500)),
-                                kind: ChangeKind::Changed,
-                            }],
-                        }],
-                        unchanged: 0,
-                        source_only: false,
-                        renamed_from: None,
-                    }));
+                    panel.text_review = Some(
+                        model::review::compare_text(
+                            &format!("https://old.test/{}", "a".repeat(500)),
+                            &format!("https://new.test/{}", "b".repeat(500)),
+                            &Cancellation::default(),
+                        )
+                        .map_err(|error| format!("{error:#}")),
+                    );
                 });
                 this.select_view(3, window, cx);
             });
@@ -1296,9 +1396,9 @@ fn structured_review_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut
             assert!(toggle.right() <= all.left() && all.right() <= panel.right());
             assert!(panel.top() >= window.find("git-change-count").bounds().bottom());
             assert!(panel.bottom() <= window.find("git-commit-message").bounds().top());
-            let before = window.find("git-before-0-0").bounds();
-            let after = window.find("git-after-0-0").bounds();
-            let review = window.find("git-structured-review").bounds();
+            let before = window.find("git-diff-before").bounds();
+            let after = window.find("git-diff-after").bounds();
+            let review = window.find("git-text-diff").bounds();
             assert!(before.left() >= review.left());
             assert!(before.right() <= after.left());
             assert!(after.right() <= review.right());

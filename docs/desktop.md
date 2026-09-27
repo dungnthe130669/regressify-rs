@@ -230,25 +230,24 @@ own panel to include them in a commit. Collapsing the panel preserves explicit
 selections, and the confirmation calls out included comparison files. Git-ignored
 results stay ignored; this does not edit `.gitignore` or force-add ignored files.
 
-Selecting YAML or JSON opens **Changes**, a structured Before/After review of the
-last commit and the current saved file. It groups settings, scenarios, actions,
-and viewport definitions, using readable labels, units, and Added, Removed,
-Changed, or Moved indicators. Unchanged items are counted and omitted; changed
-groups can be collapsed. Scenario matching prefers explicit IDs, then unique
-unchanged content, labels, or URLs. Actions use unique content or action type.
-Ambiguous matches remain additions/removals instead of guessed replacements.
-Inserting an item does not mark every subsequent item as moved. Values are
-explicit configuration, not an inferred comparison of inherited runtime settings;
-removed overrides are shown as Not set.
+Selecting a text file opens a side-by-side comparison of **Last Commit** and
+**Saved File**. Removed lines are red, added lines are green, and empty rows align
+insertions and deletions without changing the original line numbers. Both panes
+scroll together, including horizontally for long lines. Previous/Next change
+buttons navigate changed sections; each pane has a copy button for its exact
+source, including original line endings.
 
-**Source Diff** remains available for exact staged and unstaged patches, including
-comments and formatting. Formatting-only edits are identified in Changes. Invalid
-YAML/JSON, unsupported/binary files, conflicts, and submodules fall back to Source
-Diff with a reason. File sizes, nesting, collection matching, and displayed values
-are bounded; oversized reviews use the existing raw-diff fallback. Structured
-review does not execute scenarios or predict visual website changes, and does not
-include unsaved editor drafts. Existing save/discard/cancel guards still apply
-before commits. Neither review mode modifies files or the Git index.
+Comparison works on text, not parsed configuration: invalid YAML/JSON, comments,
+formatting changes, JavaScript, and other UTF-8 files use the same view. Binary,
+non-UTF-8, conflicted, submodule, and oversized files use a bounded raw Git diff
+with a reason. Side-by-side previews allow up to 4 MiB per file, 20,000 lines per
+side, and 16 KiB per line; the diff algorithm has a time budget. File loading and
+comparison run off the UI thread, and only visible rows are rendered.
+
+The comparison includes staged and unstaged saved changes relative to the last
+commit, not unsaved editor drafts. It does not execute scenarios, predict visual
+website changes, or modify files or the Git index. Existing save/discard/cancel
+guards still apply before commits.
 
 Choose files or folders with the checkboxes. A folder checkbox selects its group's
 eligible changed files recursively, including files in collapsed subfolders, and

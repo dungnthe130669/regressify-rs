@@ -50,6 +50,18 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Validation Notes (2026-09-27)
 
+- The side-by-side Git text comparison passes all 49 checks in
+  `cargo test --locked --features gui-tests --lib git:: -- --test-threads=1 --quiet`,
+  plus production GUI Clippy, the standalone desktop build, and the headless smoke
+  harness. Native `./ci/desktop-smoke.ps1 -GitFlows` and a `-SkipBuild` retry
+  completed the text-diff, exact-copy, malformed-JSON, and selected-comparison-commit
+  checks. Both captured light/dark screenshots at 1600x1000 and 1080x720.
+- Full native Git smoke still fails later in remote setup: the first rerun's
+  `Remote URL` control did not contain the supplied local repository path; the
+  retry's `Remote name` control did not contain `review`. The failure is reported
+  by `Wait-SourceText` in [native controls](ci/desktop-smoke/controls.ps1).
+  Root cause is not established; neither attempt is a full Git-flow pass.
+  Cleanup restored the original desktop preferences after both attempts.
 - `cargo test --locked --features gui-tests --all-targets -- --test-threads=1 --quiet`
   reaches 829 passing library tests and 15 ignored checks, including the corrected
   source-save regressions. The existing embedded frontend resource-version test
@@ -81,6 +93,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Git review now uses a side-by-side text comparison instead of schema-dependent
+  settings/scenario grouping. Invalid YAML/JSON and ordinary UTF-8 files retain
+  line-numbered, aligned red/green changes with shared scrolling, change navigation,
+  and exact-source copy controls. Model and native-event tests cover malformed
+  drafts, comments, line endings, limits, binary fallback, and compact/wide layouts.
 - Corrected YAML/JSON files now save even if their previously saved source has
   syntax errors. Optional report-label comparison no longer rejects the repair;
   strict draft validation and external-conflict checks remain. Model regressions

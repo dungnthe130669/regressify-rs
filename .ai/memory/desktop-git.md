@@ -1,6 +1,6 @@
 # Desktop Git
 
-Verified: 2026-09-24
+Verified: 2026-09-27
 
 - [The Git model](../../src/desktop/git.rs) stores active remote selection in
   repository-local `regressify.remote`. Its configuration hash covers that key,
@@ -21,8 +21,12 @@ Verified: 2026-09-24
   guarded confirmations, local bare remotes, and compact/wide layout assertions.
   `desktop::git::tests::remote_`, `desktop::git::process::tests`, and
   `desktop::ui::git::tests::remote_` passed with their matching feature gates.
-- Native `./ci/desktop-smoke.ps1 -GitFlows -SkipBuild` passed against a current
-  binary, using local repositories and light/dark compact/wide screenshots.
+- Remote-management native smoke passed on 2026-09-24, using local repositories
+  and light/dark compact/wide screenshots. Two 2026-09-27 native Git reruns passed
+  the text-diff, exact-copy, malformed-JSON, and selected-comparison-commit checks,
+  capturing both themes and window sizes. The full flow still stopped later at
+  remote-form text entry; see [validation notes](../../OUTSTANDING_ISSUES.md#validation-notes-2026-09-27).
+  Cleanup restored the original preferences after both attempts.
   Activity belongs below the diff pane: placing it below both panes collapsed
   comparison rows at 1080x720. The layout test now includes those rows and clicks
   a comparison checkbox with activity expanded. Fixture commits made immediately
@@ -30,3 +34,20 @@ Verified: 2026-09-24
 - Workflow and native-smoke prerequisites live in the
   [Git skill](../../.github/skills/desktop-git-review/SKILL.md) and
   [desktop docs](../../docs/desktop.md), not in this note.
+- GPUI Kit 0.6.1 has no built-in diff viewer in its component/base layers.
+  [Text review](../../src/desktop/git/review.rs) uses the desktop-only `similar`
+  dependency and preserves the existing safe HEAD/saved-file loader without
+  YAML/JSON parsing. Native virtual lists share a scroll handle and equal row
+  geometry; copy controls use source lines rather than numbered/padded UI text.
+- `cargo test --locked --features gui-tests --lib git_text_diff -- --test-threads=1`
+  covers malformed source, binary fallback, exact copying, change navigation,
+  aligned two-axis scrolling, and compact/wide light/dark layouts. Native wheel
+  tests send horizontal and vertical gestures separately because mixed deltas
+  use the dominant axis.
+- For Windows test-link PDB limits, a temporary `_LINK_` environment option
+  `/DEBUG:NONE` passed and leaves project/release profiles unchanged. Restore the
+  environment afterward. `LINK=/PDB:NONE` instead created a file named `NONE`;
+  it is not a reliable way to disable debug output.
+- `cargo test --locked --features gui-tests --lib git:: -- --test-threads=1 --quiet`
+  passed all 49 affected Git model/process/native-event checks. The production
+  GUI Clippy gate and standalone desktop build also passed.

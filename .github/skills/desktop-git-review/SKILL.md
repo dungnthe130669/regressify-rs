@@ -7,7 +7,7 @@ description: 'Use when changing desktop Git status/diffs, selected commit/discar
 
 ## Start Here
 
-[Git model](../../../src/desktop/git.rs), [structured diffs](../../../src/desktop/git/review.rs), and [Git UI](../../../src/desktop/ui/git.rs).
+[Git model](../../../src/desktop/git.rs), [text diffs](../../../src/desktop/git/review.rs), and [Git UI](../../../src/desktop/ui/git.rs).
 
 ## Procedure and Invariants
 
@@ -21,15 +21,17 @@ description: 'Use when changing desktop Git status/diffs, selected commit/discar
 1. Remote selection is repository-local `regressify.remote`; include it in the reviewed configuration fingerprint. Fetch, pull, push, and comparison counts must use that destination. Missing or removed active remotes must not fall back silently. Preserve local-upstream pulls and tracking branch names.
 1. Keep remote form drafts bound to their opening snapshot; revalidate before add/select/update/rename/remove. URL edits preserve additional configured URLs and separate push URLs. Never retain credential-bearing URLs in snapshots or diagnostic logs.
 1. Activity reporting shares cancellation with the process wrapper. Bound current/history logs, keep blocking work off the UI thread, show completion/cancellation/failure, and clear workspace-scoped logs on workspace changes.
+1. Review committed versus saved text without parsing YAML/JSON or inferring semantic changes. Keep exact source for copying, original line numbers, aligned rows, shared two-axis scrolling, and change navigation. Use the bounded `similar` diff off-thread with native virtual lists; binary/unsupported/oversized input retains the raw Git diff fallback. Preserve stale-result generation checks.
 
 ## Checks
 
 ```sh
 cargo test --features desktop --lib desktop::git::tests
+cargo test --features desktop --lib desktop::git::review::tests
 cargo test --features gui-tests --lib desktop::ui::git::tests -- --test-threads=1
 ```
 
-Reuse temporary repositories and local bare remotes. Set fixture-local `core.autocrlf=false` for byte-exact Windows assertions. Cover staged/untracked, renamed/deleted, conflicts, stale review, unsafe paths, and cancelled confirmation.
+Reuse temporary repositories and local bare remotes. Set fixture-local `core.autocrlf=false` for byte-exact Windows assertions. Cover malformed source on either side, comments, line endings, empty files, scrolling/copy/navigation, staged/untracked, renamed/deleted, conflicts, stale review, unsafe paths, and cancelled confirmation. `git_text_diff` covers the native split view in compact/wide layouts and light/dark themes.
 
 Remote-focused filters are `desktop::git::tests::remote_` and `desktop::ui::git::tests::remote_`. Native `./ci/desktop-smoke.ps1 -GitFlows` exercises remote forms, menus, removal cancellation, and progress/logs in compact and wide light/dark windows; observe the native UI skill's safety prerequisites.
 

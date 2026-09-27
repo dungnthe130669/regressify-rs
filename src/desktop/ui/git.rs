@@ -58,9 +58,9 @@ pub(super) struct GitPanel {
     diff_generation: u64,
     diff: Entity<EditorState>,
     diff_text: String,
-    structured: Option<std::result::Result<model::review::StructuredReview, String>>,
-    source_diff: bool,
-    collapsed_review: BTreeSet<usize>,
+    text_review: Option<std::result::Result<model::review::TextReview, String>>,
+    diff_scroll: UniformListScrollHandle,
+    diff_change: Option<usize>,
     message: Entity<TextareaState>,
     remote_name: Entity<InputState>,
     remote_url: Entity<InputState>,
@@ -130,9 +130,9 @@ impl GitPanel {
                     .line_number(false)
             }),
             diff_text: String::new(),
-            structured: None,
-            source_diff: false,
-            collapsed_review: BTreeSet::new(),
+            text_review: None,
+            diff_scroll: Default::default(),
+            diff_change: None,
             message,
             remote_name,
             remote_url,
@@ -196,9 +196,9 @@ impl GitPanel {
         self.tree_scroll = Default::default();
         self.comparison_open = false;
         self.diff_text.clear();
-        self.structured = None;
-        self.source_diff = false;
-        self.collapsed_review.clear();
+        self.text_review = None;
+        self.diff_scroll = Default::default();
+        self.diff_change = None;
         self.status.clear();
         self.remote_edit = None;
         self.activity = None;
@@ -315,8 +315,9 @@ impl GitPanel {
                 cancellation.cancel();
             }
             self.set_diff(String::new(), window, cx);
-            self.structured = None;
-            self.collapsed_review.clear();
+            self.text_review = None;
+            self.diff_scroll = Default::default();
+            self.diff_change = None;
         }
         self.snapshot = Some(snapshot);
         self.error = None;
@@ -739,9 +740,9 @@ impl GitPanel {
         }
         if self.active_file.as_ref() != Some(&path) {
             self.set_diff("Loading diff...".into(), window, cx);
-            self.structured = None;
-            self.source_diff = false;
-            self.collapsed_review.clear();
+            self.text_review = None;
+            self.diff_scroll = Default::default();
+            self.diff_change = None;
         }
         self.active_file = Some(path.clone());
         self.diff_generation += 1;
@@ -749,24 +750,25 @@ impl GitPanel {
         let cancellation = Cancellation::default();
         self.diff_cancel = Some(cancellation.clone());
         let task = cx.background_executor().spawn(async move {
-            let structured = model::review::load(&snapshot, &path, &cancellation)
+            let review = model::review::load_text(&snapshot, &path, &cancellation)
                 .map_err(|error| format!("{error:#}"));
-            let diff = model::diff(&snapshot, &path, &cancellation);
-            (structured, diff)
+            let fallback = if review.is_err() {
+                model::diff(&snapshot, &path, &cancellation)
+                    .unwrap_or_else(|error| format!("{error:#}"))
+            } else {
+                String::new()
+            };
+            (review, fallback)
         });
         cx.spawn_in(window, async move |panel, cx| {
-            let (structured, result) = task.await;
+            let (review, fallback) = task.await;
             let _ = panel.update_in(cx, |this, window, cx| {
                 if this.diff_generation != generation {
                     return;
                 }
                 this.diff_cancel = None;
-                this.structured = Some(structured);
-                this.set_diff(
-                    result.unwrap_or_else(|error| format!("{error:#}")),
-                    window,
-                    cx,
-                );
+                this.text_review = Some(review);
+                this.set_diff(fallback, window, cx);
             });
         })
         .detach();
@@ -779,6 +781,33 @@ impl GitPanel {
                 .update(cx, |editor, cx| editor.set_value(text.clone(), window, cx));
             self.diff_text = text;
         }
+        cx.notify();
+    }
+
+    fn copy_diff(&self, after: bool, cx: &mut Context<Self>) {
+        if let Some(Ok(review)) = &self.text_review {
+            let lines = if after { &review.after } else { &review.before };
+            cx.write_to_clipboard(ClipboardItem::new_string(lines.concat()));
+        }
+    }
+
+    fn move_diff_change(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(Ok(review)) = &self.text_review else {
+            return;
+        };
+        let count = review.changes.len();
+        if count == 0 {
+            return;
+        }
+        let index = match (self.diff_change, forward) {
+            (Some(index), true) => (index + 1) % count,
+            (Some(index), false) => (index + count - 1) % count,
+            (None, true) => 0,
+            (None, false) => count - 1,
+        };
+        self.diff_change = Some(index);
+        self.diff_scroll
+            .scroll_to_item_strict(review.changes[index], ScrollStrategy::Center);
         cx.notify();
     }
 

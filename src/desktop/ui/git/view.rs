@@ -14,29 +14,6 @@ fn visible_name(value: &str) -> String {
         .replace('\t', "\\t")
 }
 
-fn review_value(id: String, value: &str, background: Hsla) -> AnyElement {
-    div()
-        .id(SharedString::from(id.clone()))
-        .role(Role::Status)
-        .aria_label(value.to_string())
-        .test_support()
-        .flex_1()
-        .min_w_0()
-        .bg(background)
-        .child(
-            div()
-                .id(SharedString::from(format!("{id}-scroll")))
-                .w_full()
-                .min_w_0()
-                .p_2()
-                .text_sm()
-                .whitespace_normal()
-                .overflow_x_scrollbar()
-                .child(value.to_string()),
-        )
-        .into_any_element()
-}
-
 impl GitPanel {
     fn render_remotes(&self, cx: &mut Context<Self>) -> AnyElement {
         let disabled = self.disabled || self.active() || self.error.is_some();
@@ -1225,26 +1202,6 @@ impl GitPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.open_vscode(true, cx))),
                     ),
             )
-            .when(self.active_file.is_some(), |review| {
-                review.child(
-                    div()
-                        .px_3()
-                        .border_b_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            TabBar::new("git-review-tabs")
-                                .underline()
-                                .small()
-                                .selected_index(usize::from(self.source_diff))
-                                .on_click(cx.listener(|this, index, _, cx| {
-                                    this.source_diff = *index == 1;
-                                    cx.notify();
-                                }))
-                                .child(Tab::new().label("Changes"))
-                                .child(Tab::new().label("Source Diff")),
-                        ),
-                )
-            })
             .child(
                 div()
                     .flex_1()
@@ -1258,14 +1215,13 @@ impl GitPanel {
                         )
                     })
                     .when(self.active_file.is_some(), |content| {
-                        if !self.source_diff && self.structured.as_ref().is_some_and(Result::is_ok)
-                        {
-                            return content.child(self.render_structured_review(cx));
+                        if self.text_review.as_ref().is_some_and(Result::is_ok) {
+                            return content.child(self.render_text_review(cx));
                         }
                         content
                             .flex()
                             .flex_col()
-                            .when(!self.source_diff, |content| {
+                            .when_some(self.text_review.as_ref(), |content, review| {
                                 content.child(
                                     div()
                                         .id("git-review-unavailable")
@@ -1276,9 +1232,9 @@ impl GitPanel {
                                         .text_sm()
                                         .text_color(cx.theme().muted_foreground)
                                         .child(
-                                            self.structured
+                                            review
                                                 .as_ref()
-                                                .and_then(|result| result.as_ref().err())
+                                                .err()
                                                 .cloned()
                                                 .map(|error| format!("Source Diff: {error}"))
                                                 .unwrap_or_else(|| "Loading changes...".into()),
@@ -1298,30 +1254,13 @@ impl GitPanel {
             .into_any_element()
     }
 
-    fn render_structured_review(&self, cx: &mut Context<Self>) -> AnyElement {
-        let Some(Ok(review)) = &self.structured else {
+    fn render_text_review(&self, cx: &mut Context<Self>) -> AnyElement {
+        let Some(Ok(review)) = &self.text_review else {
             return div().into_any_element();
         };
-        let fields = review
-            .groups
-            .iter()
-            .map(|group| group.fields.len())
-            .sum::<usize>();
-        let summary = if review.groups.is_empty() {
-            if review.source_only {
-                "Only comments or formatting changed".into()
-            } else {
-                "No configuration changes".into()
-            }
-        } else {
-            format!(
-                "{} changed groups / {fields} changes / {} unchanged items",
-                review.groups.len(),
-                review.unchanged
-            )
-        };
+        // Identical row geometry lets both virtual lists share scrolling without drift.
         div()
-            .id("git-structured-review")
+            .id("git-text-diff")
             .test_support()
             .size_full()
             .flex()
@@ -1329,174 +1268,207 @@ impl GitPanel {
             .min_h_0()
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
                     .px_3()
-                    .py_2()
+                    .h(px(34.))
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
                         div()
-                            .id("git-review-summary")
+                            .id("git-diff-summary")
                             .role(Role::Status)
-                            .aria_label(summary.clone())
                             .test_support()
                             .text_sm()
-                            .child(summary),
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(format!("{} changes", review.changes.len())),
                     )
                     .when_some(review.renamed_from.as_ref(), |header, path| {
                         header.child(
                             div()
                                 .text_sm()
-                                .whitespace_normal()
+                                .min_w_0()
+                                .truncate()
                                 .child(format!("Renamed from {}", visible_name(path))),
                         )
                     })
                     .child(
-                        div()
-                            .flex()
-                            .gap_3()
-                            .mt_2()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("Before / Last commit"),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child("After / Current saved version"),
+                        Button::new("git-diff-previous")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::ArrowUp)
+                            .tooltip("Previous change")
+                            .accessibility_label("Previous change")
+                            .disabled(review.changes.is_empty())
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.move_diff_change(false, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("git-diff-next")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::ArrowDown)
+                            .tooltip("Next change")
+                            .accessibility_label("Next change")
+                            .disabled(review.changes.is_empty())
+                            .on_click(
+                                cx.listener(|this, _, _, cx| this.move_diff_change(true, cx)),
                             ),
                     ),
             )
             .child(
                 div()
-                    .id("git-review-scroll")
+                    .flex()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scrollbar()
-                    .children(review.groups.iter().enumerate().map(|(index, group)| {
-                        let collapsed = self.collapsed_review.contains(&index);
-                        let color = match group.kind {
-                            model::review::ChangeKind::Added => cx.theme().success,
-                            model::review::ChangeKind::Removed => cx.theme().danger,
-                            model::review::ChangeKind::Changed => cx.theme().warning,
-                            model::review::ChangeKind::Moved => cx.theme().primary,
-                        };
+                    .children([false, true].map(|after| {
+                        let side = if after { "after" } else { "before" };
                         div()
-                            .id(("git-review-group", index))
-                            .test_support()
-                            .w_full()
-                            .min_w_0()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .child(
-                                div()
-                                    .flex()
-                                    .items_center()
-                                    .gap_2()
-                                    .px_3()
-                                    .py_2()
-                                    .bg(cx.theme().muted.opacity(0.35))
-                                    .child(
-                                        Button::new(("git-review-toggle", index))
-                                            .ghost()
-                                            .xsmall()
-                                            .min_w_0()
-                                            .flex_1()
-                                            .justify_start()
-                                            .icon(if collapsed {
-                                                IconName::ChevronRight
-                                            } else {
-                                                IconName::ChevronDown
-                                            })
-                                            .accessibility_label(group.title.clone())
-                                            .tooltip(group.title.clone())
-                                            .child(
-                                                div()
-                                                    .flex_1()
-                                                    .min_w_0()
-                                                    .text_left()
-                                                    .truncate()
-                                                    .child(group.title.clone()),
-                                            )
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                if !this.collapsed_review.remove(&index) {
-                                                    this.collapsed_review.insert(index);
-                                                }
-                                                cx.notify();
-                                            })),
+                        .id(SharedString::from(format!("git-diff-{side}")))
+                        .test_support()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .min_h_0()
+                        .overflow_hidden()
+                        .when(!after, |pane| {
+                            pane.border_r_1().border_color(cx.theme().border)
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_3()
+                                .h(px(32.))
+                                .flex_shrink_0()
+                                .bg(cx.theme().muted.opacity(0.35))
+                                .child(div().flex_1().text_xs().child(if after {
+                                    "Saved File"
+                                } else {
+                                    "Last Commit"
+                                }))
+                                .child(
+                                    Button::new(SharedString::from(format!("git-copy-{side}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Copy)
+                                        .tooltip(if after {
+                                            "Copy saved file"
+                                        } else {
+                                            "Copy last committed file"
+                                        })
+                                        .accessibility_label(if after {
+                                            "Copy saved file"
+                                        } else {
+                                            "Copy last committed file"
+                                        })
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            this.copy_diff(after, cx);
+                                        })),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .relative()
+                                .flex_1()
+                                .min_h_0()
+                                .overflow_hidden()
+                                .child(
+                                    uniform_list(
+                                        SharedString::from(format!("git-diff-{side}-lines")),
+                                        review.rows.len(),
+                                        cx.processor(
+                                            move |this, range: std::ops::Range<usize>, _, cx| {
+                                                range
+                                                    .map(|index| {
+                                                        this.render_diff_line(index, after, cx)
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                            },
+                                        ),
                                     )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .flex_shrink_0()
-                                            .text_color(color)
-                                            .child(group.kind.label()),
-                                    ),
-                            )
-                            .when(!collapsed, |section| {
-                                section.children(group.fields.iter().enumerate().map(
-                                    |(field_index, field)| {
-                                        div()
-                                            .id(SharedString::from(format!(
-                                                "git-field-{index}-{field_index}"
-                                            )))
-                                            .test_support()
-                                            .flex()
-                                            .flex_col()
-                                            .gap_1()
-                                            .px_3()
-                                            .py_2()
-                                            .min_w_0()
-                                            .w_full()
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .gap_2()
-                                                    .min_w_0()
-                                                    .child(
-                                                        div()
-                                                            .flex_1()
-                                                            .min_w_0()
-                                                            .text_sm()
-                                                            .font_weight(FontWeight::MEDIUM)
-                                                            .whitespace_normal()
-                                                            .child(field.label.clone()),
-                                                    )
-                                                    .child(
-                                                        div()
-                                                            .text_xs()
-                                                            .flex_shrink_0()
-                                                            .text_color(cx.theme().muted_foreground)
-                                                            .child(field.kind.label()),
-                                                    ),
-                                            )
-                                            .child(
-                                                div()
-                                                    .flex()
-                                                    .gap_3()
-                                                    .min_w_0()
-                                                    .child(review_value(
-                                                        format!("git-before-{index}-{field_index}"),
-                                                        &field.before,
-                                                        cx.theme().danger.opacity(0.07),
-                                                    ))
-                                                    .child(review_value(
-                                                        format!("git-after-{index}-{field_index}"),
-                                                        &field.after,
-                                                        cx.theme().success.opacity(0.07),
-                                                    )),
-                                            )
-                                    },
+                                    .with_horizontal_sizing_behavior(
+                                        gpui_kit::ListHorizontalSizingBehavior::Unconstrained,
+                                    )
+                                    .track_scroll(&self.diff_scroll)
+                                    .size_full(),
+                                )
+                                .child(gpui_kit::component::scroll::Scrollbar::horizontal(
+                                    &self.diff_scroll.0.borrow().base_handle,
                                 ))
-                            })
+                                .when(after, |pane| {
+                                    pane.child(gpui_kit::component::scroll::Scrollbar::vertical(
+                                        &self.diff_scroll.0.borrow().base_handle,
+                                    ))
+                                }),
+                        )
                     })),
             )
+            .into_any_element()
+    }
+
+    fn render_diff_line(&self, index: usize, after: bool, cx: &Context<Self>) -> AnyElement {
+        let Some(Ok(review)) = &self.text_review else {
+            return div().into_any_element();
+        };
+        let row = &review.rows[index];
+        let (side, number, lines, color) = if after {
+            ("after", row.after, &review.after, cx.theme().success)
+        } else {
+            ("before", row.before, &review.before, cx.theme().danger)
+        };
+        let text = number
+            .map(|number| lines[number].trim_end_matches(['\r', '\n']))
+            .unwrap_or_default();
+        div()
+            .id(SharedString::from(format!("git-{side}-line-{index}")))
+            .role(Role::ListItem)
+            .aria_label(text.to_string())
+            .test_support()
+            .flex()
+            .items_center()
+            .w_full()
+            .min_w(px(review.columns as f32 * 8. + 96.))
+            .h(px(24.))
+            .font_family(cx.theme().mono_font_family.clone())
+            .text_size(px(13.))
+            .line_height(px(24.))
+            .whitespace_nowrap()
+            .when(row.changed, |line| {
+                line.bg(if number.is_some() {
+                    color.opacity(0.13)
+                } else {
+                    cx.theme().muted.opacity(0.55)
+                })
+            })
+            .child(
+                div()
+                    .w(px(56.))
+                    .flex_shrink_0()
+                    .pr_2()
+                    .text_right()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        number
+                            .map(|number| (number + 1).to_string())
+                            .unwrap_or_default(),
+                    ),
+            )
+            .child(div().w(px(20.)).flex_shrink_0().text_color(color).child(
+                if row.changed && number.is_some() {
+                    if after { "+" } else { "-" }
+                } else {
+                    ""
+                },
+            ))
+            .child(text.replace('\t', "    "))
             .into_any_element()
     }
 }

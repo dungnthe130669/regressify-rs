@@ -18,7 +18,7 @@ required-features = ["gui"]
 default = ["local"]
 local = []
 cloud = []
-desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim", "dep:sha1", "dep:tiny_http"]
+desktop = ["local", "dep:yaml-edit", "dep:command-group", "dep:saphyr-parser", "dep:tree-sitter", "dep:tree-sitter-yaml", "dep:tree-sitter-json", "dep:windows-sys", "dep:keyring", "dep:zeroize", "dep:imagequant", "dep:jsonschema", "dep:strsim", "dep:sha1", "dep:tiny_http", "dep:similar"]
 gui = ["desktop", "dep:gpui-kit", "dep:rfd", "dep:open", "dep:lsp-types", "dep:windows", "dep:webbrowser", "dep:raw-window-handle"]
 gui-tests = ["gui", "gpui-kit/test-support"]
 
@@ -57,6 +57,7 @@ schemars = "1"
 serde_yaml = "0.9.34"
 sha1 = { version = "0.10", optional = true }
 sha2 = "0.10.7"
+similar = { version = "2.7", optional = true }
 strsim = { version = "0.11", optional = true }
 tera = "1.20.1"
 tempfile = "3"

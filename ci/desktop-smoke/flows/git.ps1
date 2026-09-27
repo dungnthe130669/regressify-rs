@@ -13,7 +13,7 @@ function Test-GitFlows {
     Wait-Control 'Git repository initialized; files have not been staged' | Out-Null
     if (-not (Test-Path (Join-Path $workspace '.git'))) { throw 'Git UI did not initialize the fixture.' }
     Invoke-FixtureGit $workspace @('symbolic-ref', 'HEAD', 'refs/heads/main') | Out-Null
-    foreach ($config in @(@('user.name', 'Git UI smoke'), @('user.email', 'git-ui@example.test'), @('commit.gpgsign', 'false'), @('core.hooksPath', 'disabled-hooks'))) {
+    foreach ($config in @(@('user.name', 'Git UI smoke'), @('user.email', 'git-ui@example.test'), @('commit.gpgsign', 'false'), @('core.hooksPath', 'disabled-hooks'), @('core.autocrlf', 'false'))) {
         Invoke-FixtureGit $workspace (@('config') + $config) | Out-Null
     }
     [System.IO.File]::WriteAllText((Join-Path $workspace '.gitignore'), ".regressify*/`noriginal-desktop-settings.json`n")
@@ -24,11 +24,13 @@ function Test-GitFlows {
     $reviewResult = '.regressify/qa-review/report.json'
     $unselectedResult = '.regressify__staging/qa-review/report.json'
     Write-JsonFixture (Join-Path $workspace $reviewSuite) @{ scenarios = @(@{ id = 'checkout'; label = 'Checkout'; url = '/checkout'; actions = @(@{ wait = 1000 }) }) }
+    $reviewBefore = [System.IO.File]::ReadAllText((Join-Path $workspace $reviewSuite))
     foreach ($path in @($reviewResult, $unselectedResult)) { Write-JsonFixture (Join-Path $workspace $path) @{ status = 'before' } }
     Invoke-FixtureGit $workspace @('add', '.') | Out-Null
     Invoke-FixtureGit $workspace @('add', '-f', '--', $reviewResult, $unselectedResult) | Out-Null
     Invoke-FixtureGit $workspace @('commit', '-m', 'initial fixture') | Out-Null
     Write-JsonFixture (Join-Path $workspace $reviewSuite) @{ scenarios = @(@{ id = 'checkout'; label = 'Checkout'; url = '/checkout'; actions = @(@{ wait = 2500 }) }) }
+    $reviewAfter = [System.IO.File]::ReadAllText((Join-Path $workspace $reviewSuite))
     foreach ($path in @($reviewResult, $unselectedResult)) { Write-JsonFixture (Join-Path $workspace $path) @{ status = 'after' } }
     Invoke-FixtureGit $workspace @('add', '-u', '--', $reviewResult, $unselectedResult) | Out-Null
     Invoke-Control 'Refresh Git status'
@@ -36,20 +38,36 @@ function Test-GitFlows {
     Wait-Control '0 comparison files selected' | Out-Null
     if ($null -ne (Find-Control "Select $reviewResult")) { throw 'Comparison Changes must start collapsed.' }
     Invoke-Control "Review $reviewSuite"
-    Wait-Control '1000 ms' | Out-Null
-    Wait-Control '2500 ms' | Out-Null
+    Wait-Control 'Copy last committed file' | Out-Null
+    Wait-Control 'Copy saved file' | Out-Null
+    Invoke-Control 'Copy last committed file'
+    if ((Get-Clipboard -Raw) -cne $reviewBefore) { throw 'Git comparison did not copy the exact committed text.' }
+    Invoke-Control 'Copy saved file'
+    if ((Get-Clipboard -Raw) -cne $reviewAfter) { throw 'Git comparison did not copy the exact saved text.' }
+    Invoke-Control 'Next change'
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
-            Capture-Window ('git-structured-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Capture-Window ('git-text-diff-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
         }
     }
-    Invoke-Control 'Source Diff'
-    Wait-SourceText '2500' 'Git diff'
-    Capture-Window 'git-structured-source-diff'
-    Invoke-Control 'Changes'
-    Wait-Control '2500 ms' | Out-Null
+    $invalidReview = '{ "scenarios": ['
+    [System.IO.File]::WriteAllText((Join-Path $workspace $reviewSuite), $invalidReview)
+    Invoke-Control 'Refresh Git status'
+    Invoke-Control "Review $reviewSuite"
+    Wait-WindowState {
+        Invoke-Control 'Copy saved file'
+        (Get-Clipboard -Raw) -ceq $invalidReview
+    } 'Malformed JSON did not remain available in the text comparison.'
+    Capture-Window 'git-text-diff-invalid-json'
+    [System.IO.File]::WriteAllText((Join-Path $workspace $reviewSuite), $reviewAfter)
+    Invoke-Control 'Refresh Git status'
+    Invoke-Control "Review $reviewSuite"
+    Wait-WindowState {
+        Invoke-Control 'Copy saved file'
+        (Get-Clipboard -Raw) -ceq $reviewAfter
+    } 'Restored source did not refresh the text comparison.'
     Invoke-Control 'All' -Within 'Git changes'
     Wait-Control '0 comparison files selected' | Out-Null
     Write-FixtureControlText 'Git commit message' 'Review configuration without comparison results'
