@@ -948,10 +948,12 @@ mod tests {
     #[test]
     fn snapshot_text_precedence_empty_values_and_hostile_text_are_preserved_safely() {
         let temp = tempfile::tempdir().unwrap();
-        let mut workspace = WorkspaceConfig::default();
-        workspace.snapshot_title = Some("Shop <report> & \"results\"".into());
-        workspace.snapshot_heading = Some("Shop & results".into());
-        workspace.snapshot_subheading = Some("**Staging** <script>alert(1)</script>".into());
+        let workspace = WorkspaceConfig {
+            snapshot_title: Some("Shop <report> & \"results\"".into()),
+            snapshot_heading: Some("Shop & results".into()),
+            snapshot_subheading: Some("**Staging** <script>alert(1)</script>".into()),
+            ..Default::default()
+        };
         generate_site(temp.path(), &[], &args(), &workspace).unwrap();
         let (_, manifest) = read_manifest(&temp.path().canonicalize().unwrap()).unwrap();
         assert_eq!(manifest.heading, "Shop & results");

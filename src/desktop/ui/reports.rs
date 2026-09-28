@@ -2218,6 +2218,132 @@ impl ResultsPanel {
     }
 }
 
+impl Render for ResultsPanel {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let report_name = self
+            .selected_report()
+            .map(ReportEntry::label)
+            .unwrap_or_else(|| "No reports".into());
+        let counts = self
+            .selected_report()
+            .map(|report| report.counts())
+            .map(|(passed, mismatch, errors)| {
+                format!(
+                    "{passed} passed   {mismatch} mismatched   {errors} {}",
+                    if errors == 1 { "error" } else { "errors" }
+                )
+            })
+            .unwrap_or_default();
+        div()
+            .id("results-panel")
+            .test_support()
+            .track_focus(&self.focus)
+            .flex()
+            .flex_col()
+            .size_full()
+            .min_w_0()
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .flex_wrap()
+                    .gap_2()
+                    .px_3()
+                    .py_1()
+                    .border_b_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .id("report-title")
+                            .role(Role::Status)
+                            .aria_label(report_name.clone())
+                            .test_support()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(report_name),
+                    )
+                    .child(
+                        div()
+                            .id("results-status")
+                            .role(Role::Status)
+                            .aria_label(self.status.clone())
+                            .test_support()
+                            .child(
+                                Button::new("results-information")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(gpui_kit::assets::IconName::Info)
+                                    .accessibility_label("Report status")
+                                    .tooltip(self.status.clone()),
+                            ),
+                    )
+                    .child(
+                        Button::new("refresh-results")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::RefreshCw)
+                            .tooltip(format!("Refresh reports\n{counts}"))
+                            .disabled(self.loading || self.root.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                if let Some(root) = this.root.clone() {
+                                    this.refresh(root, window, cx);
+                                }
+                            })),
+                    )
+                    .child(
+                        Button::new("open-report")
+                            .ghost()
+                            .xsmall()
+                            .icon(gpui_kit::assets::IconName::ExternalLink)
+                            .tooltip("Open HTML report")
+                            .disabled(self.root.is_none())
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.open_report(window, cx)),
+                            ),
+                    )
+                    .child(
+                        Button::new("open-artifacts")
+                            .ghost()
+                            .xsmall()
+                            .icon(IconName::FolderOpen)
+                            .tooltip("Open artifact directory")
+                            .disabled(self.root.is_none())
+                            .on_click(cx.listener(|this, _, window, cx| {
+                                this.open_external(
+                                    this.root
+                                        .clone()
+                                        .ok_or_else(|| anyhow!("No output directory")),
+                                    window,
+                                    cx,
+                                )
+                            })),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().child(self.render_comparison(cx)))
+            .children(self.catalog.warnings.first().map(|warning| {
+                div()
+                    .px_4()
+                    .py_2()
+                    .text_xs()
+                    .text_color(cx.theme().warning)
+                    .child(warning.clone())
+            }))
+            .children(self.image_menu.as_ref().map(|menu| {
+                gpui_kit::deferred(
+                    gpui_kit::anchored()
+                        .position(menu.position)
+                        .anchor(gpui_kit::Anchor::TopLeft)
+                        .snap_to_window_with_margin(px(8.))
+                        .child(menu.menu.clone()),
+                )
+                .with_priority(gpui_kit::base::POPUP_PRIORITY)
+            }))
+    }
+}
+
 #[cfg(test)]
 mod pointer_tests {
     use super::{PointerGuides, ZOOM_LEVELS, next_zoom};
@@ -3054,131 +3180,5 @@ mod pointer_tests {
                 "Releasing Results must remove its preview assets"
             )
         });
-    }
-}
-
-impl Render for ResultsPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let report_name = self
-            .selected_report()
-            .map(ReportEntry::label)
-            .unwrap_or_else(|| "No reports".into());
-        let counts = self
-            .selected_report()
-            .map(|report| report.counts())
-            .map(|(passed, mismatch, errors)| {
-                format!(
-                    "{passed} passed   {mismatch} mismatched   {errors} {}",
-                    if errors == 1 { "error" } else { "errors" }
-                )
-            })
-            .unwrap_or_default();
-        div()
-            .id("results-panel")
-            .test_support()
-            .track_focus(&self.focus)
-            .flex()
-            .flex_col()
-            .size_full()
-            .min_w_0()
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .id("report-title")
-                            .role(Role::Status)
-                            .aria_label(report_name.clone())
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(report_name),
-                    )
-                    .child(
-                        div()
-                            .id("results-status")
-                            .role(Role::Status)
-                            .aria_label(self.status.clone())
-                            .test_support()
-                            .child(
-                                Button::new("results-information")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(gpui_kit::assets::IconName::Info)
-                                    .accessibility_label("Report status")
-                                    .tooltip(self.status.clone()),
-                            ),
-                    )
-                    .child(
-                        Button::new("refresh-results")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::RefreshCw)
-                            .tooltip(format!("Refresh reports\n{counts}"))
-                            .disabled(self.loading || self.root.is_none())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                if let Some(root) = this.root.clone() {
-                                    this.refresh(root, window, cx);
-                                }
-                            })),
-                    )
-                    .child(
-                        Button::new("open-report")
-                            .ghost()
-                            .xsmall()
-                            .icon(gpui_kit::assets::IconName::ExternalLink)
-                            .tooltip("Open HTML report")
-                            .disabled(self.root.is_none())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.open_report(window, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("open-artifacts")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::FolderOpen)
-                            .tooltip("Open artifact directory")
-                            .disabled(self.root.is_none())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.open_external(
-                                    this.root
-                                        .clone()
-                                        .ok_or_else(|| anyhow!("No output directory")),
-                                    window,
-                                    cx,
-                                )
-                            })),
-                    ),
-            )
-            .child(div().flex_1().min_h_0().child(self.render_comparison(cx)))
-            .children(self.catalog.warnings.first().map(|warning| {
-                div()
-                    .px_4()
-                    .py_2()
-                    .text_xs()
-                    .text_color(cx.theme().warning)
-                    .child(warning.clone())
-            }))
-            .children(self.image_menu.as_ref().map(|menu| {
-                gpui_kit::deferred(
-                    gpui_kit::anchored()
-                        .position(menu.position)
-                        .anchor(gpui_kit::Anchor::TopLeft)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(menu.menu.clone()),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            }))
     }
 }

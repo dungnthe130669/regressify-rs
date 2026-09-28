@@ -541,7 +541,7 @@ mod tests {
         assert_eq!(result.dimension_difference, (0, gap_height as i64));
         let expected = (gap_height * width + 2) as f64 / test.len() as f64 * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
-        let diff = lodepng::decode32(&diff.unwrap()).unwrap();
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
         assert_eq!((diff.width, diff.height), (width, height + gap_height));
         let pink = RGBA8::new(255, 0, 255, 200);
         assert!(
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(result.dimension_difference, (0, -(gap_height as i64)));
         let expected = (gap_height * width + 2) as f64 / reference.len() as f64 * 100.0;
         assert!((result.raw_mis_match_percentage - expected).abs() < 1e-10);
-        let diff = lodepng::decode32(&diff.unwrap()).unwrap();
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
         assert_eq!((diff.width, diff.height), (width, height));
         let pink = RGBA8::new(255, 0, 255, 200);
         assert!(

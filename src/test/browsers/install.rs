@@ -314,7 +314,12 @@ mod tests {
         let task = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let mut request = vec![0; 4096];
-            socket.read(&mut request).await.unwrap();
+            let mut request_length = 0;
+            while !request[..request_length].ends_with(b"\r\n\r\n") {
+                let received = socket.read(&mut request[request_length..]).await.unwrap();
+                assert!(received > 0, "incomplete or oversized mock HTTP request");
+                request_length += received;
+            }
             socket.write_all(&response).await.unwrap();
             if stall {
                 std::future::pending::<()>().await;
