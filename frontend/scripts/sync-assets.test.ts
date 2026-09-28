@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { execFileSync } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -28,6 +29,47 @@ function buildFiles() {
 }
 
 describe("Rust asset synchronization", () => {
+  test("preserves generated asset bytes when Git autocrlf is enabled", () => {
+    const env = {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(
+          ([name]) => !name.toUpperCase().startsWith("GIT_") && name !== "SSH_ASKPASS",
+        ),
+      ),
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: process.platform === "win32" ? "NUL" : "/dev/null",
+    };
+    for (const newline of ["\n", "\r\n"]) {
+      const options = {
+        cwd: join(import.meta.dir, "../.."),
+        env,
+        input: `generated${newline}asset${newline}`,
+        timeout: 10_000,
+      };
+      const expected = execFileSync("git", ["hash-object", "--no-filters", "--stdin"], options);
+      for (const name of [
+        "index.html",
+        "_snapshot/assets/app.js",
+        "_snapshot/assets/style.css",
+        "_snapshot/assets/icon.svg",
+      ]) {
+        const actual = execFileSync(
+          "git",
+          [
+            "-c",
+            "core.autocrlf=true",
+            "-c",
+            "core.safecrlf=false",
+            "hash-object",
+            `--path=src/snapshot/data/${name}`,
+            "--stdin",
+          ],
+          options,
+        );
+        expect(actual.toString()).toBe(expected.toString());
+      }
+    }
+  });
   test("requires bundled assets and a complete bootstrap", () => {
     expect(() => validateBuild(buildFiles())).not.toThrow();
     const files = buildFiles();

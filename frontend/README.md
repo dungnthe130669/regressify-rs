@@ -41,6 +41,12 @@ Commit the generated directory for ordinary Cargo builds, which do not run Bun.
 Do not edit generated files directly. `bun build` is Bun's separate built-in bundler;
 the project command is **`bun run build`**.
 
+The generated directory is marked `-text` in [.gitattributes](../.gitattributes)
+so Git preserves the exact bytes used by resource cache versions. Windows CRLF
+conversion otherwise invalidates those hashes, even in a clean working tree.
+For an already converted checkout, run `bun run build` before rerunning Cargo;
+do not normalize bytes in the hash helpers or bypass the resource-version test.
+
 To preview the actual Rust-generated site, run from the repository root:
 
 ```sh
@@ -69,7 +75,9 @@ bun run test:e2e
 ```
 
 Unit tests cover schemas, safe links, filters, route encoding, and atomic asset
-synchronization. Playwright uses desktop and phone viewports for navigation,
+synchronization. Git must be available for the read-only generated-byte regression;
+it does not stage files, change Git configuration, or contact remotes.
+Playwright uses desktop and phone viewports for navigation,
 deep-link refresh, filtering, theme persistence, pre-bundle theme/background
 application, blocked storage, cross-tab theme changes, all image modes, zoom, downloads,
 suite-scoped scenarios, independent pane scrolling, divider drag/keyboard resizing,

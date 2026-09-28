@@ -48,6 +48,17 @@ it was risk-focused, not an exhaustive security certification.
 - Ignored Chromium/Node fixtures, GUI interaction, installer execution, and live
   provider/update services were not run. Test success does not resolve the gaps above.
 
+## Asset Version Resolution (2026-09-28)
+
+- The recurring generated JavaScript version failure was Git CRLF conversion,
+  not a Rust release-mode hash difference. Normalizing checkout bytes to LF
+  reproduced the version embedded in the HTML.
+- [.gitattributes](.gitattributes) now preserves all generated snapshot bytes.
+  Regenerate existing converted checkouts with `bun run --cwd frontend build`.
+  The existing Rust resource-version test passes in release mode; the
+  [asset-sync regression](frontend/scripts/sync-assets.test.ts) covers LF and
+  CRLF inputs with Git autocrlf enabled.
+
 ## Validation Notes (2026-09-27)
 
 - The side-by-side Git text comparison passes all 49 checks in
