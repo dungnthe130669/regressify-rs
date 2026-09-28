@@ -7,7 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use base64::{
+    Engine,
+    engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
+};
 use futures::{StreamExt, TryStreamExt, stream};
 use reqwest::{
     Client, RequestBuilder, Response, Url,
@@ -23,13 +26,33 @@ const MAX_CONTENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_BUCKET_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
-const UPLOAD_CONCURRENCY: usize = 2;
+const UPLOAD_MEMORY_BYTES: usize = 50 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct CloudflareTarget {
     pub account_id: String,
     pub worker_name: String,
+    pub workers_dev: Option<bool>,
+    pub html_handling: String,
+    pub not_found_handling: String,
+    pub compatibility_date: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+}
+
+impl Default for CloudflareTarget {
+    fn default() -> Self {
+        Self {
+            account_id: String::new(),
+            worker_name: String::new(),
+            workers_dev: Some(true),
+            html_handling: "auto-trailing-slash".into(),
+            not_found_handling: "none".into(),
+            compatibility_date: "2026-09-25".into(),
+            exclude: Vec::new(),
+        }
+    }
 }
 
 impl CloudflareTarget {
@@ -39,8 +62,57 @@ impl CloudflareTarget {
                 && self.account_id.bytes().all(|byte| byte.is_ascii_hexdigit()),
             "Enter a valid Cloudflare Account ID (32 hexadecimal characters)"
         );
-        validate_dns_label(&self.worker_name, "Worker name")
+        validate_worker_name(&self.worker_name)?;
+        if self.workers_dev == Some(true) {
+            validate_public_worker_name(&self.worker_name)?;
+        }
+        ensure!(
+            [
+                "auto-trailing-slash",
+                "force-trailing-slash",
+                "drop-trailing-slash",
+                "none"
+            ]
+            .contains(&self.html_handling.as_str()),
+            "Invalid Cloudflare HTML handling setting"
+        );
+        ensure!(
+            ["none", "404-page", "single-page-application"]
+                .contains(&self.not_found_handling.as_str()),
+            "Invalid Cloudflare not-found handling setting"
+        );
+        ensure!(
+            self.compatibility_date.len() == 10
+                && chrono::NaiveDate::parse_from_str(&self.compatibility_date, "%Y-%m-%d").is_ok(),
+            "Cloudflare compatibility date must be a valid YYYY-MM-DD date"
+        );
+        for pattern in &self.exclude {
+            glob::Pattern::new(pattern).context("Invalid Cloudflare exclusion glob")?;
+        }
+        Ok(())
     }
+}
+
+fn validate_worker_name(value: &str) -> Result<()> {
+    ensure!(
+        !value.is_empty()
+            && value.len() <= 63
+            && !value.starts_with('-')
+            && value.bytes().all(|byte| byte.is_ascii_lowercase()
+                || byte.is_ascii_digit()
+                || matches!(byte, b'_' | b'-')),
+        "Worker name must contain 1-63 lowercase letters, digits, underscores, or hyphens and cannot start with a hyphen"
+    );
+    Ok(())
+}
+
+fn validate_public_worker_name(value: &str) -> Result<()> {
+    validate_worker_name(value)?;
+    ensure!(
+        !value.ends_with('-'),
+        "Worker names ending in a hyphen cannot use workers.dev; rename the Worker or disable its public route"
+    );
+    Ok(())
 }
 
 fn validate_dns_label(value: &str, label: &str) -> Result<()> {
@@ -99,9 +171,11 @@ struct AccountSubdomain {
     subdomain: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct WorkerRoute {
     enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previews_enabled: Option<bool>,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +200,8 @@ struct ApiFailure {
     message: String,
     retryable: bool,
     retry_after: Option<Duration>,
+    missing_worker: bool,
+    rejected: bool,
 }
 
 impl std::fmt::Display for ApiFailure {
@@ -142,6 +218,8 @@ impl ApiFailure {
             message: message.into(),
             retryable,
             retry_after: None,
+            missing_worker: false,
+            rejected: false,
         }
     }
 }
@@ -198,10 +276,7 @@ impl CloudflareClient {
                 Ok(response) => {
                     api_response(response, &[&self.authorization, &authorization], secrets).await
                 }
-                Err(_) => Err(ApiFailure::new(
-                    "Cloudflare request was interrupted or timed out",
-                    true,
-                )),
+                Err(error) => Err(network_failure(error)),
             };
             match result {
                 Ok(value) => return Ok(value),
@@ -236,35 +311,47 @@ impl CloudflareClient {
         .await
     }
 
-    pub async fn deploy(&self, root: &Path, target: &CloudflareTarget) -> Result<String> {
+    pub async fn deploy(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
         target.validate()?;
         tokio::time::timeout(self.deadline, self.deploy_inner(root, target))
             .await
             .map_err(|_| anyhow!("Cloudflare deployment exceeded its deadline; check the Worker's deployment history before retrying"))?
     }
 
-    async fn deploy_inner(&self, root: &Path, target: &CloudflareTarget) -> Result<String> {
+    async fn deploy_inner(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
         super::validate_static_configuration(root, super::DeploymentProvider::CloudflareWorkers)?;
         let deadline = Instant::now() + self.deadline;
         let account = format!("accounts/{}", target.account_id);
         let worker = format!("{account}/workers/scripts/{}", target.worker_name);
-        super::phase("Validating Cloudflare deployment target");
-        let _: serde::de::IgnoredAny = self.get(&format!("{worker}/settings")).await?;
-        let subdomain: AccountSubdomain = self.get(&format!("{account}/workers/subdomain")).await?;
-        let route: WorkerRoute = self.get(&format!("{worker}/subdomain")).await?;
-        ensure!(
-            route.enabled,
-            "Enable the selected Worker's workers.dev route in Cloudflare before deploying"
-        );
-        let public_url = worker_url(&target.worker_name, &subdomain.subdomain)?;
-        #[cfg(test)]
-        let public_url = self.verification_url.clone().unwrap_or(public_url);
         super::phase("Hashing selected report files for Cloudflare");
         let directory = root.to_path_buf();
+        let exclude = target.exclude.clone();
+        let html_handling = target.html_handling.clone();
         let (manifest, headers, redirects) = tokio::task::spawn_blocking(move || {
-            let manifest = Manifest::create(&directory, deadline)?;
-            let headers = hosting_policy(&manifest.root, "_headers")?;
-            let redirects = cloudflare_redirects(&hosting_policy(&manifest.root, "_redirects")?);
+            let manifest = Manifest::create_bounded(
+                &directory,
+                deadline,
+                MAX_FILES,
+                MAX_CONTENT_BYTES,
+                MAX_FILE_BYTES,
+                &exclude,
+            )?;
+            let patterns = exclude
+                .iter()
+                .map(|pattern| glob::Pattern::new(pattern))
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let policy = |name: &str| {
+                if patterns
+                    .iter()
+                    .any(|pattern| pattern.matches_path(Path::new(name)))
+                {
+                    Ok(String::new())
+                } else {
+                    hosting_policy(&manifest.root, name)
+                }
+            };
+            let headers = policy("_headers")?;
+            let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
             Ok::<_, anyhow::Error>((manifest, headers, redirects))
         })
         .await??;
@@ -273,6 +360,18 @@ impl CloudflareClient {
             body.len() <= MAX_MANIFEST_BYTES,
             "Cloudflare asset manifest exceeds 32 MiB"
         );
+        super::phase("Validating Cloudflare deployment target");
+        let (route_config, update_route) = self
+            .route_configuration(&worker, target.workers_dev)
+            .await?;
+        let public_url = if route_config.enabled {
+            Some(
+                self.public_worker_url(&account, &target.worker_name)
+                    .await?,
+            )
+        } else {
+            None
+        };
         super::phase(&format!(
             "Creating Cloudflare upload session for {} files ({:.2} MiB)",
             manifest.files.len(),
@@ -292,10 +391,9 @@ impl CloudflareClient {
                         .timeout(self.read_timeout)
                         .body(body.clone()))
                 },
-                false,
+                true,
             )
             .await?;
-        manifest.validate_buckets(&session.buckets)?;
         let upload_token = zeroize::Zeroizing::new(session.jwt);
         let upload_authorization = bearer(&upload_token)?;
         let manifest = Arc::new(manifest);
@@ -312,33 +410,149 @@ impl CloudflareClient {
             .await?
         };
         let metadata = zeroize::Zeroizing::new(serde_json::to_string(&serde_json::json!({
-            "compatibility_date": "2026-09-01",
+            "compatibility_date": target.compatibility_date,
             "assets": {
                 "jwt": completion.as_str(),
                 "config": {
                     "_headers": headers,
                     "_redirects": redirects,
-                    "html_handling": "auto-trailing-slash",
-                    "not_found_handling": "none"
+                    "html_handling": target.html_handling,
+                    "not_found_handling": target.not_found_handling
                 }
             }
         }))?);
         let publish_url = self.endpoint.join(&worker)?;
         super::phase("Publishing Cloudflare report assets");
         // Publication is not retried: a lost response must not overwrite a later deployment.
-        let published: PublishedWorker = self.request_protected(|| Ok(self.client.put(publish_url.clone())
-            .header(AUTHORIZATION, self.authorization.clone())
-            .timeout(self.read_timeout)
-            .multipart(multipart::Form::new().part("metadata", multipart::Part::text(metadata.to_string()).mime_str("application/json")?))), false, &[completion.as_str()])
-            .await.context("Cloudflare publication was not confirmed; check the Worker's deployment history before retrying")?;
+        let published: PublishedWorker = self
+            .request_protected(
+                || {
+                    Ok(self
+                        .client
+                        .put(publish_url.clone())
+                        .header(AUTHORIZATION, self.authorization.clone())
+                        .timeout(self.read_timeout)
+                        .multipart(
+                            multipart::Form::new().part(
+                                "metadata",
+                                multipart::Part::text(metadata.to_string())
+                                    .mime_str("application/json")?,
+                            ),
+                        ))
+                },
+                false,
+                &[completion.as_str()],
+            )
+            .await
+            .map_err(publication_error)?;
         ensure!(
             published.id == target.worker_name && published.has_assets,
             "Cloudflare returned a different Worker or no deployed assets"
         );
+        let route = if update_route {
+            super::phase("Configuring the published Worker's workers.dev route");
+            let route_url = self.endpoint.join(&format!("{worker}/subdomain"))?;
+            let route: WorkerRoute = self
+                .request(
+                    || {
+                        Ok(self
+                            .client
+                            .post(route_url.clone())
+                            .header(AUTHORIZATION, self.authorization.clone())
+                            .timeout(self.read_timeout)
+                            .json(&route_config))
+                    },
+                    true,
+                )
+                .await
+                .context(
+                    "Worker was published, but its workers.dev route could not be configured",
+                )?;
+            ensure!(
+                route.enabled == route_config.enabled
+                    && route_config
+                        .previews_enabled
+                        .is_none_or(|expected| route.previews_enabled == Some(expected)),
+                "Worker was published, but Cloudflare did not confirm its workers.dev route"
+            );
+            route
+        } else {
+            // Preserve dashboard changes made while the upload was in progress.
+            match self
+                .get::<WorkerRoute>(&format!("{worker}/subdomain"))
+                .await
+            {
+                Ok(route) => route,
+                Err(error) => {
+                    super::phase(&format!(
+                        "Worker '{}' was published, but its current routing could not be verified: {error:#}. Inspect routing in Cloudflare; no public URL is reported",
+                        target.worker_name
+                    ));
+                    return Ok(None);
+                }
+            }
+        };
+        if !route.enabled {
+            super::phase(&format!(
+                "Deployed Worker '{}' without a public workers.dev route",
+                target.worker_name
+            ));
+            return Ok(None);
+        }
+        let public_url = match public_url {
+            Some(url) => url,
+            None => match self.public_worker_url(&account, &target.worker_name).await {
+                Ok(url) => url,
+                Err(error) => {
+                    super::phase(&format!(
+                        "Worker '{}' was published, but its current public URL could not be verified: {error:#}. Inspect routing in Cloudflare",
+                        target.worker_name
+                    ));
+                    return Ok(None);
+                }
+            },
+        };
         super::phase("Verifying published Cloudflare report");
-        self.verify_publication(&public_url, manifest).await?;
+        self.verify_publication(&public_url, manifest, &target.html_handling)
+            .await?;
         super::phase(&format!("Deployed: {public_url}"));
-        Ok(public_url.to_string())
+        Ok(Some(public_url.to_string()))
+    }
+
+    async fn public_worker_url(&self, account: &str, worker: &str) -> Result<Url> {
+        validate_public_worker_name(worker)?;
+        let subdomain: AccountSubdomain = self.get(&format!("{account}/workers/subdomain")).await
+            .context("Cannot read workers.dev subdomain; register one in Cloudflare or disable the target's public route")?;
+        let url = worker_url(worker, &subdomain.subdomain)?;
+        #[cfg(test)]
+        let url = self.verification_url.clone().unwrap_or(url);
+        Ok(url)
+    }
+
+    async fn route_configuration(
+        &self,
+        worker: &str,
+        requested: Option<bool>,
+    ) -> Result<(WorkerRoute, bool)> {
+        if let Some(enabled) = requested {
+            return Ok((
+                WorkerRoute {
+                    enabled,
+                    previews_enabled: (!enabled).then_some(false),
+                },
+                true,
+            ));
+        }
+        match self.get::<WorkerRoute>(&format!("{worker}/subdomain")).await {
+            Ok(route) => {
+                ensure!(route.previews_enabled.is_some(), "Cloudflare returned no preview routing state");
+                Ok((route, false))
+            }
+            Err(error) if error.downcast_ref::<ApiFailure>().is_some_and(|failure| failure.missing_worker) => {
+                Ok((WorkerRoute { enabled: false, previews_enabled: Some(false) }, true))
+            }
+            Err(error) => Err(error.context("Cannot preserve existing workers.dev routing; choose an explicit routing setting only to intentionally override it")),
+        }
     }
 
     async fn upload_assets(
@@ -348,49 +562,110 @@ impl CloudflareClient {
         account: &str,
         authorization: HeaderValue,
     ) -> Result<zeroize::Zeroizing<String>> {
-        let url = self
-            .endpoint
-            .join(&format!("{account}/workers/assets/upload?base64=true"))?;
+        let token = authorization.to_str()?.trim_start_matches("Bearer ");
+        let concurrency = upload_concurrency(token);
+        self.upload_assets_bounded(
+            manifest,
+            buckets,
+            account,
+            authorization,
+            concurrency,
+            UPLOAD_MEMORY_BYTES,
+        )
+        .await
+    }
+
+    async fn upload_assets_bounded(
+        &self,
+        manifest: Arc<Manifest>,
+        buckets: Vec<Vec<String>>,
+        account: &str,
+        authorization: HeaderValue,
+        concurrency: usize,
+        byte_budget: usize,
+    ) -> Result<zeroize::Zeroizing<String>> {
+        let single = single_asset_upload(authorization.to_str()?.trim_start_matches("Bearer "));
+        ensure!(
+            buckets.iter().all(|bucket| !bucket.is_empty()),
+            "Cloudflare returned an empty upload bucket"
+        );
+        let buckets = if single {
+            buckets
+                .into_iter()
+                .flatten()
+                .map(|hash| vec![hash])
+                .collect()
+        } else {
+            buckets
+        };
+        let sizes = manifest.validate_buckets(&buckets)?;
+        ensure!(
+            concurrency > 0
+                && byte_budget > 0
+                && byte_budget <= u32::MAX as usize
+                && sizes.iter().all(|size| *size <= byte_budget as u64),
+            "Cloudflare upload limits cannot accommodate a server bucket"
+        );
+        let memory = Arc::new(tokio::sync::Semaphore::new(byte_budget));
         let total = buckets.len();
-        let results = stream::iter(buckets.into_iter().enumerate())
-            .map(|(index, hashes)| {
+        let completion = stream::iter(buckets.into_iter().zip(sizes).enumerate())
+            .map(|(index, (hashes, size))| {
                 let manifest = manifest.clone();
-                let url = url.clone();
+                let memory = memory.clone();
                 let authorization = authorization.clone();
                 async move {
-                    let assets = tokio::task::spawn_blocking(move || {
-                        hashes
+                    let permit = memory.acquire_many_owned(size.max(1) as u32).await?;
+                    // Retain the budget during disk reads, request copies, retries, and cancellation.
+                    let (assets, _permit) = tokio::task::spawn_blocking(move || {
+                        let assets = hashes
                             .into_iter()
                             .map(|hash| {
                                 let (path, bytes) = manifest.read_asset(&hash)?;
-                                Ok::<_, anyhow::Error>((
-                                    hash,
-                                    STANDARD.encode(bytes),
-                                    mime_type(&path),
-                                ))
+                                let content = if single {
+                                    bytes
+                                } else {
+                                    STANDARD.encode(bytes).into_bytes()
+                                };
+                                Ok::<_, anyhow::Error>((hash, content, mime_type(&path)))
                             })
-                            .collect::<Result<Vec<_>>>()
+                            .collect::<Result<Vec<_>>>()?;
+                        Ok::<_, anyhow::Error>((assets, permit))
                     })
                     .await??;
+                    let path = if single {
+                        format!("{account}/workers/assets/upload/{}", assets[0].0)
+                    } else {
+                        format!("{account}/workers/assets/upload?base64=true")
+                    };
+                    let url = self.endpoint.join(&path)?;
+                    let bytes = assets
+                        .iter()
+                        .map(|(_, content, _)| content.len() as u64)
+                        .sum();
                     // Retries resend these bounded, verified bytes, never a changed file on disk.
                     let result: UploadResult = self
                         .request(
                             || {
+                                let request = self
+                                    .client
+                                    .post(url.clone())
+                                    .header(AUTHORIZATION, authorization.clone())
+                                    .timeout(upload_timeout(bytes));
+                                if single {
+                                    return Ok(request
+                                        .header("Content-Type", assets[0].2)
+                                        .body(assets[0].1.clone()));
+                                }
                                 let mut form = multipart::Form::new();
                                 for (hash, content, mime) in &assets {
                                     form = form.part(
                                         hash.clone(),
-                                        multipart::Part::bytes(content.as_bytes().to_vec())
+                                        multipart::Part::bytes(content.clone())
                                             .file_name(hash.clone())
                                             .mime_str(mime)?,
                                     );
                                 }
-                                Ok(self
-                                    .client
-                                    .post(url.clone())
-                                    .header(AUTHORIZATION, authorization.clone())
-                                    .timeout(self.deadline)
-                                    .multipart(form))
+                                Ok(request.multipart(form))
                             },
                             true,
                         )
@@ -403,19 +678,23 @@ impl CloudflareClient {
                     Ok::<_, anyhow::Error>(result.jwt.map(zeroize::Zeroizing::new))
                 }
             })
-            .buffer_unordered(UPLOAD_CONCURRENCY)
-            .try_collect::<Vec<_>>()
+            .buffer_unordered(concurrency)
+            .try_fold(
+                None,
+                |previous, current| async move { Ok(current.or(previous)) },
+            )
             .await?;
-        let token = results
-            .into_iter()
-            .flatten()
-            .last()
-            .context("Cloudflare did not return an asset completion token")?;
+        let token = completion.context("Cloudflare did not return an asset completion token")?;
         bearer(&token)?;
         Ok(token)
     }
 
-    async fn verify_publication(&self, base: &Url, manifest: Arc<Manifest>) -> Result<()> {
+    async fn verify_publication(
+        &self,
+        base: &Url,
+        manifest: Arc<Manifest>,
+        html_handling: &str,
+    ) -> Result<()> {
         let samples = tokio::task::spawn_blocking(move || {
             let mut paths = vec!["/index.html".to_string()];
             if let Some(path) = manifest.files.keys().find(|path| !path.ends_with(".html")) {
@@ -434,7 +713,11 @@ impl CloudflareClient {
             let mut verified = true;
             for (path, expected) in &samples {
                 let mut url = base.clone();
-                url.set_path(if path == "/index.html" { "/" } else { path });
+                url.set_path(if path == "/index.html" && html_handling != "none" {
+                    "/"
+                } else {
+                    path
+                });
                 url.query_pairs_mut()
                     .append_pair("regressify-verify", &uuid::Uuid::new_v4().to_string());
                 let response = self.client.get(url).timeout(self.read_timeout).send().await;
@@ -445,7 +728,11 @@ impl CloudflareClient {
                             .get("Content-Type")
                             .and_then(|value| value.to_str().ok())
                             .unwrap_or_default();
-                        if content_type.split(';').next() != mime_type(path).split(';').next()
+                        let expected_type = match mime_type(path) {
+                            "application/null" => "",
+                            mime => mime.split(';').next().unwrap_or_default(),
+                        };
+                        if content_type.split(';').next() != Some(expected_type)
                             || !response_bytes(response, MAX_FILE_BYTES as usize)
                                 .await
                                 .is_ok_and(|bytes| bytes.as_slice() == expected.as_slice())
@@ -469,6 +756,71 @@ impl CloudflareClient {
     }
 }
 
+fn single_asset_upload(token: &str) -> bool {
+    token_payload(token).is_some_and(|value| value["wrangler_single_asset_uploads"] == true)
+}
+
+fn upload_concurrency(token: &str) -> usize {
+    if !single_asset_upload(token) {
+        return 3;
+    }
+    token_payload(token)
+        .and_then(|value| value["edge_kv_upload_concurrency"].as_u64())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
+        .min(8) as usize
+}
+
+fn token_payload(token: &str) -> Option<serde_json::Value> {
+    // These unverified claims select upload transport and bounded concurrency, not authorization.
+    token
+        .split('.')
+        .nth(1)
+        .and_then(|payload| URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok())
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+}
+
+fn upload_timeout(bytes: u64) -> Duration {
+    Duration::from_secs(
+        180_u64
+            .saturating_add(bytes.div_ceil(64 * 1024))
+            .min(30 * 60),
+    )
+}
+
+fn publication_error(error: anyhow::Error) -> anyhow::Error {
+    let rejected = error
+        .downcast_ref::<ApiFailure>()
+        .is_some_and(|failure| failure.rejected);
+    error.context(if rejected {
+        "Cloudflare rejected publication; the Worker was not updated"
+    } else {
+        "Cloudflare publication outcome is uncertain; check the Worker's deployment history before retrying"
+    })
+}
+
+fn network_failure(error: reqwest::Error) -> ApiFailure {
+    let kind = if error.is_timeout() {
+        "request timed out"
+    } else if error.is_connect() {
+        "connection failed (check DNS, TLS certificates, and proxy settings)"
+    } else if error.is_body() || error.is_decode() {
+        "response body was interrupted or invalid"
+    } else {
+        "request transport failed"
+    };
+    // Raw error sources can include URLs with proxy credentials; only report structured I/O kinds.
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let mut detail = String::new();
+    while let Some(current) = source {
+        if let Some(error) = current.downcast_ref::<std::io::Error>() {
+            detail = format!(": {:?}", error.kind());
+        }
+        source = current.source();
+    }
+    ApiFailure::new(format!("Cloudflare {kind}{detail}"), !error.is_builder())
+}
+
 fn bearer(token: &str) -> Result<HeaderValue> {
     ensure!(
         !token.is_empty()
@@ -484,7 +836,7 @@ fn bearer(token: &str) -> Result<HeaderValue> {
 }
 
 fn worker_url(worker: &str, subdomain: &str) -> Result<Url> {
-    validate_dns_label(worker, "Worker name")?;
+    validate_public_worker_name(worker)?;
     validate_dns_label(subdomain, "account subdomain")?;
     Url::parse(&format!("https://{worker}.{subdomain}.workers.dev/"))
         .context("Invalid Cloudflare public URL")
@@ -502,7 +854,10 @@ fn hosting_policy(root: &Path, name: &str) -> Result<String> {
     String::from_utf8(bytes).context("Cloudflare hosting policies must be UTF-8")
 }
 
-fn cloudflare_redirects(policy: &str) -> String {
+fn cloudflare_redirects(policy: &str, html_handling: &str) -> String {
+    if html_handling == "none" {
+        return policy.to_owned();
+    }
     policy
         .lines()
         .map(|line| {
@@ -525,23 +880,56 @@ fn mime_type(path: &str) -> &'static str {
         .to_ascii_lowercase()
         .as_str()
     {
-        "html" => "text/html; charset=utf-8",
-        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "html" | "htm" => "text/html; charset=utf-8",
+        "js" | "mjs" | "cjs" => "text/javascript; charset=utf-8",
         "css" => "text/css; charset=utf-8",
-        "json" => "application/json; charset=utf-8",
+        "json" | "map" => "application/json",
+        "webmanifest" => "application/manifest+json",
+        "jsonld" => "application/ld+json",
+        "md" => "text/markdown; charset=utf-8",
+        "vtt" => "text/vtt; charset=utf-8",
+        "ics" => "text/calendar; charset=utf-8",
+        "csv" => "text/csv; charset=utf-8",
+        "xhtml" => "application/xhtml+xml",
+        "rss" => "application/rss+xml",
+        "atom" => "application/atom+xml",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "svg" => "image/svg+xml",
         "webp" => "image/webp",
         "gif" => "image/gif",
+        "avif" => "image/avif",
+        "apng" => "image/apng",
+        "jxl" => "image/jxl",
+        "tif" | "tiff" => "image/tiff",
         "ico" => "image/x-icon",
+        "bmp" => "image/bmp",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
         "otf" => "font/otf",
-        "xml" | "xsl" => "application/xml; charset=utf-8",
-        "txt" | "map" | "sh" | "ps1" => "text/plain; charset=utf-8",
-        _ => "application/octet-stream",
+        "eot" => "application/vnd.ms-fontobject",
+        "xml" | "xsl" => "application/xml",
+        "txt" | "sh" | "ps1" => "text/plain; charset=utf-8",
+        "wasm" => "application/wasm",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" => "application/gzip",
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "mp4" | "m4v" => "video/mp4",
+        "mov" => "video/quicktime",
+        "webm" => "video/webm",
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "mpd" => "application/dash+xml",
+        "glb" => "model/gltf-binary",
+        "gltf" => "model/gltf+json",
+        "bin" => "application/octet-stream",
+        _ => "application/null",
     }
 }
 
@@ -561,12 +949,7 @@ async fn response_bytes(
     let mut bytes = Vec::new();
     let mut chunks = response.bytes_stream();
     while let Some(chunk) = chunks.next().await {
-        let chunk = chunk.map_err(|_| {
-            ApiFailure::new(
-                "Cloudflare response body was interrupted or timed out",
-                true,
-            )
-        })?;
+        let chunk = chunk.map_err(network_failure)?;
         if bytes.len() + chunk.len() > limit {
             return Err(ApiFailure::new(
                 "Cloudflare response exceeds its size limit",
@@ -603,19 +986,22 @@ async fn api_response<Value: DeserializeOwned>(
         .unwrap_or_default()
         .to_string();
     let bytes = zeroize::Zeroizing::new(response_bytes(response, MAX_RESPONSE_BYTES).await?);
-    let envelope: ApiEnvelope<Value> = serde_json::from_slice(&bytes).map_err(|_| {
-        ApiFailure::new(
-            format!(
-                "Cloudflare returned an invalid API response (HTTP {})",
-                status.as_u16()
-            ),
-            status.is_server_error() || status.as_u16() == 429,
-        )
-    })?;
+    let envelope: ApiEnvelope<serde_json::Value> =
+        serde_json::from_slice(&bytes).map_err(|_| {
+            ApiFailure::new(
+                format!(
+                    "Cloudflare returned an invalid API response (HTTP {})",
+                    status.as_u16()
+                ),
+                status.is_server_error() || matches!(status.as_u16(), 408 | 429),
+            )
+        })?;
     if status.is_success() && envelope.success {
-        return envelope
+        let result = envelope
             .result
-            .ok_or_else(|| ApiFailure::new("Cloudflare returned no API result", false));
+            .ok_or_else(|| ApiFailure::new("Cloudflare returned no API result", false))?;
+        return serde_json::from_value(result)
+            .map_err(|_| ApiFailure::new("Cloudflare returned a malformed API result", false));
     }
     let errors = envelope.errors.unwrap_or_default();
     let codes = errors
@@ -648,7 +1034,7 @@ async fn api_response<Value: DeserializeOwned>(
     }
     let hint = match status.as_u16() {
         401 | 403 => "Check the API token's Workers Scripts Write permission and selected account",
-        404 => "Check the Account ID and existing Worker name",
+        404 => "Check the Account ID and Worker name",
         413 => "Check the 25 MiB per-file and account file-count limits",
         429 => "Cloudflare rate limit reached",
         _ => "Check the Worker's deployment history and Cloudflare account limits",
@@ -660,6 +1046,14 @@ async fn api_response<Value: DeserializeOwned>(
         ),
         retryable: status.is_server_error() || matches!(status.as_u16(), 408 | 429),
         retry_after,
+        missing_worker: status.as_u16() == 404
+            && !envelope.success
+            && errors.len() == 1
+            && errors[0].code == 10007,
+        rejected: status.is_client_error()
+            && status.as_u16() != 408
+            && !envelope.success
+            && !errors.is_empty(),
     })
 }
 
@@ -677,8 +1071,16 @@ struct Manifest {
 }
 
 impl Manifest {
+    #[cfg(test)]
     fn create(root: &Path, deadline: Instant) -> Result<Self> {
-        Self::create_bounded(root, deadline, MAX_FILES, MAX_CONTENT_BYTES, MAX_FILE_BYTES)
+        Self::create_bounded(
+            root,
+            deadline,
+            MAX_FILES,
+            MAX_CONTENT_BYTES,
+            MAX_FILE_BYTES,
+            &[],
+        )
     }
 
     fn create_bounded(
@@ -687,6 +1089,7 @@ impl Manifest {
         file_limit: usize,
         byte_limit: u64,
         file_byte_limit: u64,
+        excludes: &[String],
     ) -> Result<Self> {
         let metadata = std::fs::symlink_metadata(root)?;
         ensure!(
@@ -699,16 +1102,56 @@ impl Manifest {
             contents: BTreeMap::new(),
             bytes: 0,
         };
+        ensure!(
+            super::artifact_source(&manifest.root, Path::new(".assetsignore"), true)?.is_none(),
+            ".assetsignore is not supported; use the target's Cloudflare exclusion patterns"
+        );
+        let patterns = excludes
+            .iter()
+            .map(|pattern| glob::Pattern::new(pattern).context("Invalid Cloudflare exclusion glob"))
+            .collect::<Result<Vec<_>>>()?;
         let mut last_update = Instant::now();
         for entry in walkdir::WalkDir::new(&manifest.root)
             .follow_links(false)
             .sort_by_file_name()
+            .into_iter()
+            .filter_entry(|entry| {
+                if entry.depth() == 0 {
+                    return true;
+                }
+                let name = entry
+                    .file_name()
+                    .to_str()
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let private = matches!(
+                    name.as_str(),
+                    ".git" | ".wrangler" | "node_modules" | ".env" | ".dev.vars"
+                ) || name.starts_with(".env.")
+                    || name.starts_with(".dev.vars.");
+                let relative = entry
+                    .path()
+                    .strip_prefix(&manifest.root)
+                    .unwrap_or(entry.path());
+                !private
+                    && !patterns
+                        .iter()
+                        .any(|pattern| pattern.matches_path(relative))
+            })
         {
             ensure!(
                 Instant::now() < deadline,
                 "Cloudflare hashing exceeded the deployment deadline"
             );
             let entry = entry?;
+            let relative = entry.path().strip_prefix(&manifest.root)?;
+            ensure!(
+                relative
+                    .components()
+                    .next()
+                    .is_none_or(|part| !part.as_os_str().eq_ignore_ascii_case("_worker.js")),
+                "Pages server code cannot be deployed as public assets; exclude _worker.js in the target"
+            );
             ensure!(
                 !entry.file_type().is_symlink(),
                 "Cloudflare deployment cannot contain symlinks"
@@ -720,7 +1163,6 @@ impl Manifest {
                 entry.file_type().is_file(),
                 "Cloudflare deployment requires regular files"
             );
-            let relative = entry.path().strip_prefix(&manifest.root)?;
             let path = relative
                 .components()
                 .map(|component| {
@@ -806,8 +1248,9 @@ impl Manifest {
         Ok((path.clone(), bytes))
     }
 
-    fn validate_buckets(&self, buckets: &[Vec<String>]) -> Result<()> {
+    fn validate_buckets(&self, buckets: &[Vec<String>]) -> Result<Vec<u64>> {
         let mut seen = BTreeSet::new();
+        let mut sizes = Vec::with_capacity(buckets.len());
         for bucket in buckets {
             ensure!(
                 !bucket.is_empty(),
@@ -835,8 +1278,9 @@ impl Manifest {
                     "Cloudflare upload bucket exceeds its memory limit"
                 );
             }
+            sizes.push(bytes);
         }
-        Ok(())
+        Ok(sizes)
     }
 }
 
@@ -856,14 +1300,20 @@ fn read_file(path: &Path, expected: u64) -> Result<Vec<u8>> {
 }
 
 fn asset_hash(bytes: &[u8], path: &str) -> String {
+    hash_with_content_type(bytes, path, mime_type(path))
+}
+
+fn hash_with_content_type(bytes: &[u8], path: &str, mime: &str) -> String {
     let extension = Path::new(path)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or_default();
-    // Cloudflare's upload identity includes the extension because identical bytes can have different MIME types.
+    // MIME changes must invalidate cached response headers even when file bytes are unchanged.
     let mut digest = Sha256::new();
     digest.update(STANDARD.encode(bytes));
     digest.update(extension);
+    digest.update(b"\0");
+    digest.update(mime);
     format!("{:x}", digest.finalize())[..32].to_string()
 }
 
@@ -886,6 +1336,551 @@ mod tests {
         client.verify_attempts = 2;
         client.verification_url = Some(Url::parse(&format!("{origin}/")).unwrap());
         client
+    }
+
+    #[tokio::test]
+    async fn private_and_preserved_routes_never_publish_unrequested_public_access() -> Result<()> {
+        for (requested, exists, initially_enabled) in [
+            (Some(false), false, false),
+            (None, false, false),
+            (None, true, false),
+            (None, true, true),
+        ] {
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "report")?;
+            let reads = Arc::new(AtomicUsize::new(0));
+            let writes = Arc::new(AtomicUsize::new(0));
+            let publications = Arc::new(AtomicUsize::new(0));
+            let captured_reads = reads.clone();
+            let captured_writes = writes.clone();
+            let captured_publications = publications.clone();
+            let site = crate::test::browser_tests::Site::new(move |mut request| {
+                let path = request.url().to_owned();
+                let method = request.method().as_str().to_owned();
+                let result = if path.ends_with("/workers/subdomain") {
+                    json!({"subdomain":"account"})
+                } else if path.ends_with("/subdomain") && method == "GET" {
+                    let initial = captured_reads.fetch_add(1, Ordering::SeqCst) == 0;
+                    if !exists {
+                        let _ = request.respond(
+                            tiny_http::Response::from_string(
+                                json!({"success":false,"errors":[{"code":10007}]}).to_string(),
+                            )
+                            .with_status_code(404),
+                        );
+                        return;
+                    }
+                    json!({"enabled":initial && initially_enabled,"previews_enabled":true})
+                } else if path.ends_with("/subdomain") && method == "POST" {
+                    assert_eq!(captured_publications.load(Ordering::SeqCst), 1);
+                    let body: serde_json::Value =
+                        serde_json::from_reader(request.as_reader()).unwrap();
+                    assert_eq!(body, json!({"enabled":false,"previews_enabled":false}));
+                    captured_writes.fetch_add(1, Ordering::SeqCst);
+                    body
+                } else if path.ends_with("/assets-upload-session") {
+                    json!({"jwt":"cached","buckets":[]})
+                } else {
+                    assert_eq!(method, "PUT");
+                    assert!(path.ends_with("/workers/scripts/report-worker"));
+                    captured_publications.fetch_add(1, Ordering::SeqCst);
+                    json!({"id":"report-worker","has_assets":true})
+                };
+                let _ = request.respond(tiny_http::Response::from_string(
+                    json!({"success":true,"result":result}).to_string(),
+                ));
+            })?;
+            let settings = CloudflareTarget {
+                workers_dev: requested,
+                ..target()
+            };
+            assert!(
+                client(&site.origin)
+                    .deploy(root.path(), &settings)
+                    .await?
+                    .is_none()
+            );
+            assert_eq!(publications.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                writes.load(Ordering::SeqCst),
+                usize::from(requested.is_some() || !exists)
+            );
+            assert_eq!(
+                reads.load(Ordering::SeqCst),
+                if requested.is_some() {
+                    0
+                } else if exists {
+                    2
+                } else {
+                    1
+                }
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preserve_routing_rejects_permission_and_malformed_responses_without_writes()
+    -> Result<()> {
+        for (status, response) in [
+            (403, json!({"success":false,"errors":[{"code":10007}]})),
+            (404, json!({"success":false,"errors":[{"code":10000}]})),
+            (
+                404,
+                json!({"success":false,"errors":[{"code":10007},{"code":10000}]}),
+            ),
+            (200, json!({"success":true,"result":{"enabled":false}})),
+            (
+                200,
+                json!({"success":true,"result":{"enabled":"false","previews_enabled":false}}),
+            ),
+        ] {
+            let site = crate::test::browser_tests::Site::new(move |request| {
+                assert_eq!(request.method().as_str(), "GET");
+                assert!(request.url().ends_with("/scripts/report-worker/subdomain"));
+                let _ = request.respond(
+                    tiny_http::Response::from_string(response.to_string()).with_status_code(status),
+                );
+            })?;
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "report")?;
+            assert!(
+                client(&site.origin)
+                    .deploy(
+                        root.path(),
+                        &CloudflareTarget {
+                            workers_dev: None,
+                            ..target()
+                        }
+                    )
+                    .await
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn publication_and_route_identity_failures_are_not_reported_as_success() -> Result<()> {
+        for mode in ["wrong-worker", "no-assets", "route-disabled", "route-error"] {
+            let root = tempfile::tempdir()?;
+            std::fs::write(root.path().join("index.html"), "report")?;
+            let publications = Arc::new(AtomicUsize::new(0));
+            let captured = publications.clone();
+            let site = crate::test::browser_tests::Site::new(move |request| {
+                let path = request.url();
+                let result = if path.ends_with("/workers/subdomain") {
+                    json!({"subdomain":"account"})
+                } else if path.ends_with("/assets-upload-session") {
+                    json!({"jwt":"cached","buckets":[]})
+                } else if request.method().as_str() == "PUT" {
+                    captured.fetch_add(1, Ordering::SeqCst);
+                    json!({"id":if mode == "wrong-worker" { "other" } else { "report-worker" },"has_assets":mode != "no-assets"})
+                } else {
+                    assert!(path.ends_with("/subdomain"));
+                    assert!(mode.starts_with("route-"));
+                    if mode == "route-error" {
+                        let _ = request.respond(
+                            tiny_http::Response::from_string(
+                                json!({"success":false,"errors":[{"code":10000}]}).to_string(),
+                            )
+                            .with_status_code(403),
+                        );
+                        return;
+                    }
+                    json!({"enabled":false,"previews_enabled":false})
+                };
+                let _ = request.respond(tiny_http::Response::from_string(
+                    json!({"success":true,"result":result}).to_string(),
+                ));
+            })?;
+            assert!(
+                client(&site.origin)
+                    .deploy(root.path(), &target())
+                    .await
+                    .is_err()
+            );
+            assert_eq!(publications.load(Ordering::SeqCst), 1);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "creates, updates, and deletes a unique temporary Worker; requires explicit REGRESSIFY_ALLOW_CLOUDFLARE_TEMP=1 plus Cloudflare API token and Account ID"]
+    async fn live_create_update_and_delete_temporary_worker() -> Result<()> {
+        ensure!(
+            std::env::var("REGRESSIFY_ALLOW_CLOUDFLARE_TEMP").as_deref() == Ok("1"),
+            "Explicit temporary Worker test authorization is required"
+        );
+        let token = zeroize::Zeroizing::new(
+            std::env::var("CLOUDFLARE_API_TOKEN").context("Set CLOUDFLARE_API_TOKEN")?,
+        );
+        let target = CloudflareTarget {
+            account_id: std::env::var("CLOUDFLARE_ACCOUNT_ID")
+                .context("Set CLOUDFLARE_ACCOUNT_ID")?,
+            worker_name: format!("regressify-verify-{}", uuid::Uuid::new_v4().simple()),
+            ..CloudflareTarget::default()
+        };
+        target.validate()?;
+        let client = CloudflareClient::new(&token)?;
+        let worker = format!(
+            "accounts/{}/workers/scripts/{}",
+            target.account_id, target.worker_name
+        );
+        let absent = client
+            .get::<WorkerRoute>(&format!("{worker}/subdomain"))
+            .await
+            .err()
+            .is_some_and(|error| {
+                error
+                    .downcast_ref::<ApiFailure>()
+                    .is_some_and(|failure| failure.missing_worker)
+            });
+        ensure!(
+            absent,
+            "Could not confirm that the temporary Worker is absent; no publication attempted"
+        );
+        let verification = async {
+            let root = tempfile::tempdir()?;
+            std::fs::write(
+                root.path().join("index.html"),
+                "<!doctype html><title>Worker check</title><h1>Initial deployment</h1>",
+            )?;
+            std::fs::write(
+                root.path().join("captions.vtt"),
+                "WEBVTT\n\n00:00.000 --> 00:01.000\nVerified\n",
+            )?;
+            std::fs::write(root.path().join("data.json"), "{\"verified\":true}")?;
+            std::fs::write(root.path().join("opaque.unknown"), "opaque bytes")?;
+            let mut published = None;
+            for attempt in 0..3 {
+                if attempt == 1 {
+                    std::fs::write(
+                        root.path().join("index.html"),
+                        "<!doctype html><title>Worker check</title><h1>Updated deployment</h1>",
+                    )?;
+                }
+                let url = client
+                    .deploy(root.path(), &target)
+                    .await?
+                    .context("Expected production publication URL")?;
+                if let Some(previous) = &published {
+                    ensure!(previous == &url, "Worker URL changed between deployments");
+                }
+                published = Some(url.clone());
+                let route: WorkerRoute = client.get(&format!("{worker}/subdomain")).await?;
+                ensure!(
+                    route.enabled,
+                    "Production workers.dev route was not enabled"
+                );
+                let manifest = Manifest::create(root.path(), deadline())?;
+                for path in manifest.files.keys() {
+                    let mut asset_url = Url::parse(&url)?;
+                    asset_url.set_path(if path == "/index.html" { "/" } else { path });
+                    asset_url
+                        .query_pairs_mut()
+                        .append_pair("verify", &uuid::Uuid::new_v4().to_string());
+                    let response = client
+                        .client
+                        .get(asset_url)
+                        .send()
+                        .await
+                        .map_err(network_failure)?;
+                    ensure!(
+                        response.status().is_success(),
+                        "Published test asset is unavailable"
+                    );
+                    let expected_type = mime_type(path);
+                    if expected_type == "application/null" {
+                        ensure!(
+                            response.headers().get("Content-Type").is_none(),
+                            "Unknown asset MIME omission was not preserved"
+                        );
+                    } else {
+                        ensure!(
+                            response
+                                .headers()
+                                .get("Content-Type")
+                                .and_then(|value| value.to_str().ok())
+                                .and_then(|value| value.split(';').next())
+                                == expected_type.split(';').next(),
+                            "Published test asset has the wrong MIME type"
+                        );
+                    }
+                    let expected = manifest.read_asset(&manifest.files[path].hash)?.1;
+                    ensure!(
+                        response_bytes(response, MAX_FILE_BYTES as usize).await? == expected,
+                        "Published test asset differs from its source"
+                    );
+                }
+                println!("Temporary Worker deployment {}/3 verified", attempt + 1);
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        let delete_url = client.endpoint.join(&worker)?;
+        let deletion = client
+            .request::<serde_json::Value>(
+                || {
+                    Ok(client
+                        .client
+                        .delete(delete_url.clone())
+                        .header(AUTHORIZATION, client.authorization.clone())
+                        .timeout(client.read_timeout))
+                },
+                true,
+            )
+            .await;
+        let removed = client
+            .get::<WorkerRoute>(&format!("{worker}/subdomain"))
+            .await
+            .err()
+            .is_some_and(|error| {
+                error
+                    .downcast_ref::<ApiFailure>()
+                    .is_some_and(|failure| failure.missing_worker)
+            });
+        if !removed {
+            if let Err(error) = &verification {
+                eprintln!("Temporary Worker verification failed: {error:#}");
+            }
+            deletion.context("Temporary Worker cleanup failed")?;
+            bail!(
+                "Temporary Worker removal could not be confirmed: {}",
+                target.worker_name
+            );
+        }
+        println!("Temporary Worker cleanup confirmed");
+        verification
+    }
+
+    #[tokio::test]
+    async fn publication_diagnostics_distinguish_rejection_from_uncertain_outcomes() -> Result<()> {
+        for (status, valid, rejected) in [
+            (400, true, true),
+            (403, true, true),
+            (429, true, true),
+            (408, true, false),
+            (503, true, false),
+            (200, false, false),
+            (400, false, false),
+        ] {
+            let count = Arc::new(AtomicUsize::new(0));
+            let captured = count.clone();
+            let site = crate::test::browser_tests::Site::new(move |request| {
+                captured.fetch_add(1, Ordering::SeqCst);
+                let body = if valid {
+                    json!({"success":false,"errors":[{"code":10016,"message":"Invalid Worker"}]})
+                        .to_string()
+                } else {
+                    "<html>proxy error</html>".into()
+                };
+                let _ = request
+                    .respond(tiny_http::Response::from_string(body).with_status_code(status));
+            })?;
+            let client = client(&site.origin);
+            let error = client
+                .request::<serde_json::Value>(
+                    || Ok(client.client.put(client.endpoint.clone())),
+                    false,
+                )
+                .await
+                .err()
+                .context("Expected publication failure")?;
+            let error = publication_error(error).to_string();
+            assert_eq!(error.contains("rejected publication"), rejected, "{error}");
+            assert_eq!(error.contains("uncertain"), !rejected, "{error}");
+            assert_eq!(count.load(Ordering::SeqCst), 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn asset_hashes_invalidate_mime_changes_and_cover_static_web_formats() {
+        assert_eq!(asset_hash(b"", "empty"), "3a198499e4549a4ccc0f62676814bb26");
+        assert_ne!(
+            asset_hash(b"WEBVTT\n", "captions.vtt"),
+            hash_with_content_type(b"WEBVTT\n", "captions.vtt", "application/octet-stream")
+        );
+        for (extension, expected) in [
+            ("htm", "text/html; charset=utf-8"),
+            ("CJS", "text/javascript; charset=utf-8"),
+            ("map", "application/json"),
+            ("webmanifest", "application/manifest+json"),
+            ("jsonld", "application/ld+json"),
+            ("vtt", "text/vtt; charset=utf-8"),
+            ("avif", "image/avif"),
+            ("wasm", "application/wasm"),
+            ("pdf", "application/pdf"),
+            ("opus", "audio/ogg"),
+            ("mov", "video/quicktime"),
+            ("m3u8", "application/vnd.apple.mpegurl"),
+            ("gltf", "model/gltf+json"),
+            ("bin", "application/octet-stream"),
+            ("unknown", "application/null"),
+        ] {
+            assert_eq!(mime_type(&format!("asset.{extension}")), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn single_asset_uploads_use_raw_bytes_and_keep_earlier_completion_tokens() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        std::fs::write(root.path().join("style.css"), "body {}")?;
+        let manifest = Arc::new(Manifest::create(
+            root.path(),
+            Instant::now() + Duration::from_secs(30),
+        )?);
+        let expected = manifest.clone();
+        let count = Arc::new(AtomicUsize::new(0));
+        let captured = count.clone();
+        let token = format!(
+            "header.{}.signature",
+            URL_SAFE_NO_PAD.encode(
+                br#"{"wrangler_single_asset_uploads":true,"edge_kv_upload_concurrency":1}"#
+            )
+        );
+        let expected_token = token.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            assert_eq!(request.method().as_str(), "POST");
+            let hash = request
+                .url()
+                .strip_prefix("/api/account/workers/assets/upload/")
+                .unwrap();
+            let (path, bytes) = expected.read_asset(hash).unwrap();
+            assert!(request.headers().iter().any(|header| {
+                header.field.equiv("Content-Type") && header.value.as_str() == mime_type(&path)
+            }));
+            assert!(request.headers().iter().any(|header| {
+                header.field.equiv("Authorization")
+                    && header.value.as_str() == format!("Bearer {expected_token}")
+            }));
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            assert_eq!(body, bytes);
+            let result = if captured.fetch_add(1, Ordering::SeqCst) == 0 {
+                json!({"jwt":"raw-completion"})
+            } else {
+                json!({})
+            };
+            let _ = request.respond(tiny_http::Response::from_string(
+                json!({"success":true,"result":result}).to_string(),
+            ));
+        })?;
+        let buckets = vec![manifest.contents.keys().cloned().collect()];
+        let completion = client(&site.origin)
+            .upload_assets_bounded(manifest, buckets, "account", bearer(&token)?, 1, 7)
+            .await?;
+        assert_eq!(completion.as_str(), "raw-completion");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn upload_mode_concurrency_and_timeouts_are_bounded() {
+        for token in [
+            "",
+            "opaque-token",
+            "header.invalid.signature",
+            "header.e30.signature",
+        ] {
+            assert!(!single_asset_upload(token));
+            assert_eq!(upload_concurrency(token), 3);
+        }
+        for claim in [json!(true), json!(false), json!("true"), json!(null)] {
+            for (hint, expected) in [
+                (json!(null), 8),
+                (json!(0), 8),
+                (json!(1), 1),
+                (json!(4), 4),
+                (json!(99), 8),
+                (json!(-1), 8),
+            ] {
+                let token = format!(
+                    "header.{}.signature",
+                    URL_SAFE_NO_PAD.encode(
+                        serde_json::to_vec(&json!({
+                            "wrangler_single_asset_uploads":claim,
+                            "edge_kv_upload_concurrency":hint,
+                        }))
+                        .unwrap()
+                    )
+                );
+                assert_eq!(single_asset_upload(&token), claim == true);
+                assert_eq!(
+                    upload_concurrency(&token),
+                    if claim == true { expected } else { 3 }
+                );
+            }
+        }
+        assert_eq!(upload_timeout(0), Duration::from_secs(180));
+        assert_eq!(upload_timeout(64 * 1024), Duration::from_secs(181));
+        assert_eq!(upload_timeout(u64::MAX), Duration::from_secs(1800));
+    }
+
+    #[tokio::test]
+    async fn missing_worker_is_created_and_its_public_route_is_enabled() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        let published = Arc::new(AtomicUsize::new(0));
+        let routed = Arc::new(AtomicUsize::new(0));
+        let captured_published = published.clone();
+        let captured_routed = routed.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let path = request.url().to_owned();
+            let method = request.method().as_str().to_owned();
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let value = if path.ends_with("/workers/subdomain") {
+                json!({"subdomain":"account"})
+            } else if path.ends_with("/settings")
+                || (path.ends_with("/subdomain") && method == "GET")
+            {
+                let _ = request.respond(
+                    tiny_http::Response::from_string(
+                        json!({"success":false,"errors":[{"code":10007,"message":"Worker not found"}]}).to_string(),
+                    )
+                    .with_status_code(404),
+                );
+                return;
+            } else if path.ends_with("/assets-upload-session") {
+                json!({"jwt":"cached-completion-token","buckets":[]})
+            } else if method == "PUT" {
+                assert!(path.ends_with("/workers/scripts/report-worker"));
+                assert!(body.contains("cached-completion-token"));
+                captured_published.fetch_add(1, Ordering::SeqCst);
+                json!({"id":"report-worker","has_assets":true})
+            } else if path.ends_with("/subdomain") && method == "POST" {
+                assert_eq!(captured_published.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+                    json!({"enabled":true})
+                );
+                captured_routed.fetch_add(1, Ordering::SeqCst);
+                json!({"enabled":true,"previews_enabled":false})
+            } else {
+                assert!(path.starts_with("/?regressify-verify="));
+                assert_eq!(captured_routed.load(Ordering::SeqCst), 1);
+                let _ = request.respond(
+                    tiny_http::Response::from_string("report").with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+                            .unwrap(),
+                    ),
+                );
+                return;
+            };
+            let _ = request.respond(tiny_http::Response::from_string(
+                json!({"success":true,"result":value}).to_string(),
+            ));
+        })?;
+        assert_eq!(
+            client(&site.origin).deploy(root.path(), &target()).await?,
+            Some(format!("{}/", site.origin))
+        );
+        assert_eq!(published.load(Ordering::SeqCst), 1);
+        assert_eq!(routed.load(Ordering::SeqCst), 1);
+        Ok(())
     }
 
     #[tokio::test]
@@ -945,7 +1940,7 @@ mod tests {
         })?;
         assert_eq!(
             client(&site.origin).deploy(root.path(), &target()).await?,
-            format!("{}/", site.origin)
+            Some(format!("{}/", site.origin))
         );
         let methods = methods.lock().unwrap();
         assert_eq!(
@@ -953,13 +1948,13 @@ mod tests {
                 .iter()
                 .filter(|(method, _)| method == "POST")
                 .count(),
-            1
+            2
         );
         assert_eq!(
             methods.iter().filter(|(method, _)| method == "PUT").count(),
             1
         );
-        assert_eq!(methods.len(), 6);
+        assert_eq!(methods.len(), 5);
         Ok(())
     }
 
@@ -1003,7 +1998,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_routes_and_unknown_hashes_fail_before_publication() -> Result<()> {
-        for mode in ["disabled", "unsafe-subdomain", "unknown-hash"] {
+        for mode in ["unsafe-subdomain", "unknown-hash"] {
             let root = tempfile::tempdir()?;
             std::fs::write(root.path().join("index.html"), "report")?;
             let writes = Arc::new(AtomicUsize::new(0));
@@ -1048,6 +2043,7 @@ mod tests {
                 .context("Set CLOUDFLARE_ACCOUNT_ID")?,
             worker_name: std::env::var("CLOUDFLARE_WORKER_NAME")
                 .context("Set CLOUDFLARE_WORKER_NAME")?,
+            ..CloudflareTarget::default()
         };
         target.validate()?;
         let expected_url = std::env::var("CLOUDFLARE_EXPECTED_URL")
@@ -1090,7 +2086,10 @@ mod tests {
         let manifest = Manifest::create(&staging, deadline())?;
         let mut published = String::new();
         for attempt in 1..=2 {
-            published = client.deploy(&staging, &target).await?;
+            published = client
+                .deploy(&staging, &target)
+                .await?
+                .context("Expected a public Cloudflare deployment URL")?;
             ensure!(
                 published == expected_url,
                 "Published URL differs from the authorized destination"
@@ -1356,22 +2355,26 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_deadline_stops_waiting_for_provider_headers() -> Result<()> {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
         let site = crate::test::browser_tests::Site::new(move |request| {
-            std::thread::sleep(Duration::from_millis(100));
+            captured.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_secs(1));
             let _ = request.respond(tiny_http::Response::empty(500));
         })?;
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("index.html"), "report")?;
         let mut client = client(&site.origin);
-        client.deadline = Duration::from_millis(10);
+        client.deadline = Duration::from_millis(250);
         let error = tokio::time::timeout(
-            Duration::from_secs(1),
+            Duration::from_secs(3),
             client.deploy(root.path(), &target()),
         )
         .await?
         .err()
         .context("Expected deadline")?;
         assert!(error.to_string().contains("exceeded its deadline"));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
         Ok(())
     }
 
@@ -1407,7 +2410,7 @@ mod tests {
             let _ = request.respond(response);
         })?;
         client(&site.origin)
-            .verify_publication(&Url::parse(&site.origin)?, manifest)
+            .verify_publication(&Url::parse(&site.origin)?, manifest, "auto-trailing-slash")
             .await?;
         assert_eq!(paths.lock().unwrap().len(), 2);
         assert!(worker_url("worker", "bad.example").is_err());
@@ -1423,6 +2426,7 @@ mod tests {
         CloudflareTarget {
             account_id: "0123456789abcdef0123456789abcdef".into(),
             worker_name: "report-worker".into(),
+            ..CloudflareTarget::default()
         }
     }
 
@@ -1433,14 +2437,24 @@ mod tests {
     #[test]
     fn suite_rewrites_use_cloudflare_canonical_html_without_a_catch_all() {
         assert_eq!(
-            cloudflare_redirects(include_str!("../../snapshot/data/_redirects")),
+            cloudflare_redirects(
+                include_str!("../../snapshot/data/_redirects"),
+                "auto-trailing-slash"
+            ),
             "/suites/* / 200"
         );
         assert_eq!(
-            cloudflare_redirects("# comment\n/suites/* /index.html 200\n/old /new 301"),
+            cloudflare_redirects(
+                "# comment\n/suites/* /index.html 200\n/old /new 301",
+                "auto-trailing-slash"
+            ),
             "# comment\n/suites/* / 200\n/old /new 301"
         );
-        assert_eq!(cloudflare_redirects(""), "");
+        assert_eq!(cloudflare_redirects("", "auto-trailing-slash"), "");
+        assert_eq!(
+            cloudflare_redirects("/suites/* /index.html 200", "none"),
+            "/suites/* /index.html 200"
+        );
     }
 
     #[test]
@@ -1467,7 +2481,7 @@ mod tests {
             "-worker",
             "worker-",
             "worker.name",
-            "worker_name",
+            "Worker",
             "worker name",
             &"a".repeat(64),
         ] {
@@ -1484,6 +2498,100 @@ mod tests {
         for invalid in ["", "token with space", "token\n", &"a".repeat(1025)] {
             assert!(validate_token(invalid).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn saved_cloudflare_options_default_to_production_and_validate() -> Result<()> {
+        let saved: CloudflareTarget = serde_json::from_value(json!({
+            "accountId":target().account_id,
+            "workerName":"worker_name",
+        }))?;
+        saved.validate()?;
+        assert_eq!(saved.workers_dev, Some(true));
+        assert_eq!(saved.html_handling, "auto-trailing-slash");
+        assert_eq!(saved.not_found_handling, "none");
+        assert_eq!(saved.compatibility_date, "2026-09-25");
+        for workers_dev in [None, Some(false), Some(true)] {
+            let settings = CloudflareTarget {
+                workers_dev,
+                ..saved.clone()
+            };
+            assert_eq!(
+                serde_json::from_value::<CloudflareTarget>(serde_json::to_value(&settings)?)?,
+                settings
+            );
+        }
+        let mut private = saved.clone();
+        private.workers_dev = Some(false);
+        private.worker_name = "worker-".into();
+        private.validate()?;
+        assert!(worker_url("worker-", "account").is_err());
+        for (field, value) in [
+            ("htmlHandling", json!("bad")),
+            ("notFoundHandling", json!("bad")),
+            ("compatibilityDate", json!("2026-02-30")),
+            ("exclude", json!(["["])),
+        ] {
+            let mut invalid = serde_json::to_value(&saved)?;
+            invalid[field] = value;
+            assert!(
+                serde_json::from_value::<CloudflareTarget>(invalid)?
+                    .validate()
+                    .is_err()
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_exclusions_prune_private_files_and_reject_pages_code() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        for name in [
+            ".env",
+            ".ENV.local",
+            ".dev.vars",
+            ".dev.vars.preview",
+            "debug.map",
+        ] {
+            std::fs::write(root.path().join(name), "private")?;
+        }
+        for name in [
+            ".git",
+            ".wrangler",
+            "node_modules",
+            "private",
+            ".well-known",
+            "_worker.js",
+        ] {
+            std::fs::create_dir(root.path().join(name))?;
+            std::fs::write(root.path().join(name).join("file.txt"), "content")?;
+        }
+        assert!(Manifest::create(root.path(), deadline()).is_err());
+        let manifest = Manifest::create_bounded(
+            root.path(),
+            deadline(),
+            MAX_FILES,
+            MAX_CONTENT_BYTES,
+            MAX_FILE_BYTES,
+            &["private".into(), "*.map".into(), "_worker.js".into()],
+        )?;
+        assert_eq!(manifest.files.len(), 2);
+        assert!(manifest.files.contains_key("/index.html"));
+        assert!(manifest.files.contains_key("/.well-known/file.txt"));
+        std::fs::write(root.path().join(".assetsignore"), "private")?;
+        assert!(
+            Manifest::create_bounded(
+                root.path(),
+                deadline(),
+                MAX_FILES,
+                MAX_CONTENT_BYTES,
+                MAX_FILE_BYTES,
+                &["_worker.js".into()]
+            )
+            .is_err()
+        );
         Ok(())
     }
 
@@ -1525,11 +2633,11 @@ mod tests {
         let root = tempfile::tempdir()?;
         assert!(Manifest::create(root.path(), deadline()).is_err());
         std::fs::write(root.path().join("index.html"), "report")?;
-        assert!(Manifest::create_bounded(root.path(), deadline(), 0, 6, 6).is_err());
-        assert!(Manifest::create_bounded(root.path(), deadline(), 1, 5, 6).is_err());
-        assert!(Manifest::create_bounded(root.path(), deadline(), 1, 6, 5).is_err());
+        assert!(Manifest::create_bounded(root.path(), deadline(), 0, 6, 6, &[]).is_err());
+        assert!(Manifest::create_bounded(root.path(), deadline(), 1, 5, 6, &[]).is_err());
+        assert!(Manifest::create_bounded(root.path(), deadline(), 1, 6, 5, &[]).is_err());
         assert!(Manifest::create(root.path(), Instant::now()).is_err());
-        let manifest = Manifest::create_bounded(root.path(), deadline(), 1, 6, 6)?;
+        let manifest = Manifest::create_bounded(root.path(), deadline(), 1, 6, 6, &[])?;
         let hash = &manifest.files["/index.html"].hash;
         assert_eq!(manifest.read_asset(hash)?.1, b"report");
         for content in ["change", "short", "longer report"] {

@@ -113,7 +113,7 @@ pub enum Event {
     },
     Deployed {
         target: String,
-        url: String,
+        url: Option<String>,
     },
     Finished {
         error: Option<String>,
@@ -360,18 +360,20 @@ mod capture_index {
 #[serde(rename_all = "camelCase")]
 pub struct DeploymentResult {
     pub target: String,
-    pub url: String,
+    pub url: Option<String>,
 }
 
 impl DeploymentResult {
     pub fn has_safe_url(&self) -> bool {
-        reqwest::Url::parse(&self.url).is_ok_and(|parsed| {
-            parsed.scheme() == "https"
-                && parsed.host_str().is_some()
-                && parsed.username().is_empty()
-                && parsed.password().is_none()
-                && parsed.query().is_none()
-                && parsed.fragment().is_none()
+        self.url.as_ref().is_none_or(|url| {
+            reqwest::Url::parse(url).is_ok_and(|parsed| {
+                parsed.scheme() == "https"
+                    && parsed.host_str().is_some()
+                    && parsed.username().is_empty()
+                    && parsed.password().is_none()
+                    && parsed.query().is_none()
+                    && parsed.fragment().is_none()
+            })
         })
     }
 }
@@ -765,20 +767,29 @@ mod tests {
         ] {
             live.apply(record(Event::Deployed {
                 target: "QA".into(),
-                url: url.into(),
+                url: Some(url.into()),
             }));
             assert!(live.deployment.is_none());
         }
         live.apply(record(Event::Deployed {
             target: "QA".into(),
-            url: "https://reports.example.com/".into(),
+            url: Some("https://reports.example.com/".into()),
         }));
         live.apply(record(Event::Finished { error: None }));
         assert_eq!(live.deployment.as_ref().unwrap().target, "QA");
         assert_eq!(
-            live.deployment.as_ref().unwrap().url,
-            "https://reports.example.com/"
+            live.deployment.as_ref().unwrap().url.as_deref(),
+            Some("https://reports.example.com/")
         );
+        let legacy: DeploymentResult =
+            serde_json::from_str(r#"{"target":"QA","url":"https://reports.example.com/"}"#)
+                .unwrap();
+        assert!(legacy.has_safe_url());
+        live.apply(record(Event::Deployed {
+            target: "Private".into(),
+            url: None,
+        }));
+        assert!(live.deployment.as_ref().unwrap().url.is_none());
     }
     use super::*;
 

@@ -194,7 +194,15 @@ Cloudflare Workers deployment consumes the same header and redirect policies as
 asset metadata and excludes the policy files from public assets. Its canonical
 HTML rules require `/suites/* / 200`, not `/suites/* /index.html 200`; the provider
 client translates that rewrite without changing Netlify output. Keep
-`not_found_handling` as `none` so missing report assets remain 404s.
+`not_found_handling` as `none` so missing report assets remain 404s. When a saved
+target explicitly disables HTML normalization (`htmlHandling: none`), the client
+retains the `index.html` rewrite instead.
+
+Desktop Cloudflare deployment creates missing Workers and publishes their
+production `workers.dev` route by default. Saved targets also support explicit
+private or preserve-routing modes and asset settings. Uploads support both raw
+single-asset and Base64 multipart transport, with MIME-aware cache identities.
+See [desktop deployment](../docs/desktop.md#deploy-reports) for setup and limits.
 
 Azure and Netlify share the global security policy, including
 `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. Change hosting

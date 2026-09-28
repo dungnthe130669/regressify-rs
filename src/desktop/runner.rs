@@ -513,10 +513,10 @@ impl RunSnapshot {
                     .deployment
                     .as_ref()
                     .context("Completed deployment is missing its target")?;
-                super::deployment::DeployTargets::record_published_url(
+                super::deployment::DeployTargets::record_publication(
                     deployment_path,
                     &job.target,
-                    &deployment.url,
+                    deployment.url.as_deref(),
                 )
                 .context("Site deployed, but its URL could not be saved to the target")?;
             }
@@ -1201,6 +1201,7 @@ mod tests {
                                 || crate::desktop::deployment::cloudflare::CloudflareTarget {
                                     account_id: "0123456789abcdef0123456789abcdef".into(),
                                     worker_name: "reports".into(),
+                                    ..crate::desktop::deployment::cloudflare::CloudflareTarget::default()
                                 },
                             ),
                         },
@@ -1654,7 +1655,7 @@ mod tests {
         invalid[1].progress.finished = false;
         invalid[2].progress.deployment = Some(crate::progress::DeploymentResult {
             target: "Unsafe".into(),
-            url: "file:///C:/untrusted.exe".into(),
+            url: Some("file:///C:/untrusted.exe".into()),
         });
         for snapshot in invalid {
             std::fs::write(&path, serde_json::to_vec(&snapshot).unwrap()).unwrap();
@@ -1716,7 +1717,7 @@ mod tests {
             if has_url {
                 manager.progress.deployment = Some(crate::progress::DeploymentResult {
                     target: "Display name is not the target ID".into(),
-                    url: "https://latest.example.com/".into(),
+                    url: Some("https://latest.example.com/".into()),
                 });
             }
             manager.progress.end(false, None);

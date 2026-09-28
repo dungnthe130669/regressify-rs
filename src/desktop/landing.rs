@@ -459,6 +459,7 @@ mod tests {
                 Some(CloudflareTarget {
                     account_id: std::env::var("CLOUDFLARE_ACCOUNT_ID")?,
                     worker_name: std::env::var("CLOUDFLARE_WORKER_NAME")?,
+                    ..CloudflareTarget::default()
                 })
             } else {
                 None
@@ -497,7 +498,10 @@ mod tests {
         }
         let client = DeploymentClient::new(&target, &token)?;
         drop(token);
-        let published = client.deploy(staging.path(), &target).await?;
+        let published = client
+            .deploy(staging.path(), &target)
+            .await?
+            .context("Expected a public deployment URL")?;
         let base = reqwest::Url::parse(&published)?;
         let public = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))

@@ -1,6 +1,6 @@
 # Desktop Publishing
 
-Verified: 2026-09-26
+Verified: 2026-09-28
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
@@ -19,6 +19,10 @@ Verified: 2026-09-26
   URLs with completed activity; landing completion saves before notifying the UI.
   Target/runner regressions and `saved_deployment_urls_reopen_and_copy` cover reload,
   provider isolation, unsafe links, failure preservation, and native copy controls.
+- Cloudflare publication may succeed without a public URL. Nullable progress and
+  saved results retain compatibility with existing strings; confirmed private
+  results clear stale URLs. Asset-option edits preserve URLs, routing edits clear
+  them. The native target test covers production defaults and advanced settings.
 - [Status summaries](../../src/snapshot/site.rs) use `/_snapshot/status.json`
   with aggregate counts and generation time. They revalidate and permit anonymous
   CORS reads; exact ZIP/Netlify inventories include this extra file.
@@ -31,6 +35,9 @@ Verified: 2026-09-26
 - Native password clicks require the existing post-click `Wait-Control` settling
   before typing. Menu selection also needs a rendered-state wait before checking
   hidden fields. GPUI scroll tests must settle dialog animations before geometry.
+- GPUI `label()` returns an explicit accessibility name, not overridden visible
+  button text. Assert selected routing in model state separately. Conditional
+  scrollbar branches need type erasure because the wrapper changes element type.
 - Six production landing browser checks pass on desktop/mobile, including
   no-JavaScript content, anonymous remote fetches, errors/retry, and accessibility.
   Live Azure/Cloudflare publication and Azure-to-Cloudflare status loading passed.

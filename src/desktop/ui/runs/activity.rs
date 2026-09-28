@@ -764,18 +764,21 @@ impl RunPanel {
                             ),
                     )
                     .when_some(
-                        progress.deployment.as_ref().filter(|_| {
-                            matches!(self.manager.outcome, Some(RunOutcome::Completed))
-                        }),
-                        |row, deployment| {
-                            let url = deployment.url.clone();
+                        progress
+                            .deployment
+                            .as_ref()
+                            .filter(|_| matches!(self.manager.outcome, Some(RunOutcome::Completed)))
+                            .and_then(|deployment| {
+                                deployment.url.clone().map(|url| (deployment, url))
+                            }),
+                        |row, (deployment, url)| {
                             row.child(
                                 Button::new("deployment-open-site")
                                     .small()
                                     .primary()
                                     .icon(gpui_kit::assets::IconName::ExternalLink)
                                     .label("Open Site")
-                                    .tooltip(format!("{}: {}", deployment.target, deployment.url))
+                                    .tooltip(format!("{}: {url}", deployment.target))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         if let Err(error) = open::that_detached(&url) {
                                             this.status =
@@ -1188,7 +1191,7 @@ mod tests {
                             elapsed_ms: 2400,
                             event: Event::Deployed {
                                 target: "QA reports".into(),
-                                url: "https://reports.example.com".into(),
+                                url: Some("https://reports.example.com".into()),
                             },
                         });
                         panel.manager.outcome = Some(outcome.clone());

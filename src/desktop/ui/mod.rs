@@ -2739,6 +2739,7 @@ impl Render for Workbench {
             .on_action(cx.listener(Self::change_theme))
             .on_action(cx.listener(Self::choose_deploy_target))
             .on_action(cx.listener(Self::choose_deploy_provider))
+            .on_action(cx.listener(Self::choose_cloudflare_setting))
             .on_action(cx.listener(Self::choose_deploy_token))
             .on_action(cx.listener(Self::choose_named_token))
             .on_action(cx.listener(Self::choose_named_token_provider))

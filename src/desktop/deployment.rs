@@ -279,7 +279,15 @@ impl DeployTarget {
         self.provider == other.provider
             && self.environment == other.environment
             && self.site_id == other.site_id
-            && self.cloudflare == other.cloudflare
+            && match (&self.cloudflare, &other.cloudflare) {
+                (Some(left), Some(right)) => {
+                    left.account_id.eq_ignore_ascii_case(&right.account_id)
+                        && left.worker_name == right.worker_name
+                        && left.workers_dev == right.workers_dev
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 }
 
@@ -349,7 +357,22 @@ impl DeployTargets {
     }
 
     pub fn record_published_url(path: &Path, target: &DeployTarget, url: &str) -> Result<Self> {
-        validate_published_url(url)?;
+        Self::record_publication(path, target, Some(url))
+    }
+
+    pub fn record_publication(
+        path: &Path,
+        target: &DeployTarget,
+        url: Option<&str>,
+    ) -> Result<Self> {
+        if let Some(url) = url {
+            validate_published_url(url)?;
+        } else {
+            ensure!(
+                target.provider == DeploymentProvider::CloudflareWorkers,
+                "This provider must return a published URL"
+            );
+        }
         let mut settings = Self::load(path)?;
         let saved = settings
             .targets
@@ -362,7 +385,7 @@ impl DeployTargets {
                     || saved.credential_id == target.credential_id),
             "Deployment target changed while publishing; the deployed URL was not saved"
         );
-        saved.published_url = Some(url.into());
+        saved.published_url = url.map(str::to_owned);
         settings.save(path)?;
         Ok(settings)
     }
@@ -595,11 +618,11 @@ impl DeploymentClient {
         }
     }
 
-    pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+    pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<Option<String>> {
         target.validate()?;
         match self {
-            Self::Azure(client) => client.deploy(root, target).await,
-            Self::Netlify(client) => client.deploy(root, target).await,
+            Self::Azure(client) => client.deploy(root, target).await.map(Some),
+            Self::Netlify(client) => client.deploy(root, target).await.map(Some),
             Self::Cloudflare(client) => {
                 ensure!(
                     target.provider == DeploymentProvider::CloudflareWorkers,
@@ -1386,10 +1409,43 @@ mod tests {
         invalid.cloudflare = Some(cloudflare::CloudflareTarget {
             account_id: "a".repeat(32),
             worker_name: "reports".into(),
+            ..cloudflare::CloudflareTarget::default()
         });
         assert!(invalid.named_token(&catalog).is_err());
         catalog.remove(&catalog_path, &entry.id)?;
         assert!(target.named_token(&catalog).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn cloudflare_content_options_preserve_urls_and_private_publication_clears_them() -> Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("targets.json");
+        let target: DeployTarget = serde_json::from_value(serde_json::json!({
+            "id":"cloudflare", "name":"Reports", "provider":"cloudflareWorkers", "publishedUrl":"https://reports.account.workers.dev/",
+            "cloudflare":{"accountId":"0123456789abcdef0123456789abcdef", "workerName":"reports"}
+        }))?;
+        DeployTargets {
+            targets: vec![target.clone()],
+            selected: Some(target.id.clone()),
+        }
+        .save(&path)?;
+        let mut updated = target.clone();
+        let settings = updated.cloudflare.as_mut().unwrap();
+        settings.html_handling = "none".into();
+        settings.not_found_handling = "404-page".into();
+        settings.compatibility_date = "2026-09-28".into();
+        settings.exclude = vec!["*.map".into()];
+        assert!(target.same_destination(&updated));
+        updated.cloudflare.as_mut().unwrap().workers_dev = Some(false);
+        assert!(!target.same_destination(&updated));
+        let saved = DeployTargets::record_publication(&path, &target, None)?;
+        assert!(saved.targets[0].published_url.is_none());
+        let mut azure = target.clone();
+        azure.provider = DeploymentProvider::AzureSwa;
+        azure.cloudflare = None;
+        assert!(DeployTargets::record_publication(&path, &azure, None).is_err());
         Ok(())
     }
 

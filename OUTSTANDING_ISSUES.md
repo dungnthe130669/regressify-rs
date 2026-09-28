@@ -68,6 +68,16 @@ it was risk-focused, not an exhaustive security certification.
   still fails for `_snapshot/assets/app.js`; Cargo stops before later test targets.
   No frontend assets were changed during the save repair.
 
+## Cloudflare Validation (2026-09-28)
+
+- The guarded temporary-Worker check passes automatic creation, production routing,
+  changed-content and cached deployments, public bytes/MIME, and confirmed cleanup.
+  The configured Worker was not changed. Native Cloudflare target editing passes
+  production defaults, advanced settings, save/reopen, and credential preservation.
+- The full headless desktop library run has 656 passing tests, 17 ignored checks,
+  and the already tracked embedded frontend JavaScript version mismatch. No
+  frontend assets were changed in the Cloudflare port.
+
 ## Validation Notes (2026-09-26)
 
 - Deployment URL checks pass, but the full desktop model gate has 641 passing
@@ -129,6 +139,11 @@ it was risk-focused, not an exhaustive security certification.
   confirmed report bytes, suite deep links, headers, missing-file 404s, and reuse
   on an unchanged redeploy. The client translates the Netlify index-page rewrite
   to Cloudflare's canonical root and rejects Azure access policies before API calls.
+- Cloudflare deployment creates missing Workers and publishes to production by
+  default. Saved targets also expose private/preserve routing, HTML behavior,
+  compatibility date, and exclusions. Uploads honor single-asset/concurrency hints,
+  invalidate MIME changes, bound raw memory, and distinguish rejected publications
+  from uncertain outcomes without retrying publication.
 - [Azure release preparation](.ado/workflows/tuyen-release.yaml) waits for `vswhere`
   to finish before selecting MSBuild, avoiding a stale exit code that rejected a
   valid installation. Native Windows reproduction and [offline release tests](ci/test-release.py)

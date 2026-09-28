@@ -30,6 +30,12 @@ pub(super) struct ChooseDeployToken {
     id: Option<String>,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct ChooseCloudflareSetting {
+    setting: String,
+    value: String,
+}
+
 pub(super) struct DeploymentPanel {
     settings: DeployTargets,
     tokens: TokenCatalog,
@@ -56,6 +62,10 @@ pub(super) struct DeploymentPanel {
     site_id: Entity<InputState>,
     account_id: Entity<InputState>,
     worker_name: Entity<InputState>,
+    cloudflare: CloudflareTarget,
+    cloudflare_options: bool,
+    compatibility_date: Entity<InputState>,
+    excludes: Entity<InputState>,
 }
 
 impl DeploymentPanel {
@@ -89,6 +99,11 @@ impl DeploymentPanel {
             account_id: cx
                 .new(|cx| InputState::new(window, cx).placeholder("Cloudflare Account ID")),
             worker_name: cx.new(|cx| InputState::new(window, cx).placeholder("reports")),
+            cloudflare: CloudflareTarget::default(),
+            cloudflare_options: false,
+            compatibility_date: cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD")),
+            excludes: cx
+                .new(|cx| InputState::new(window, cx).placeholder("[\"*.map\", \"private/**\"]")),
         }
     }
 
@@ -289,6 +304,50 @@ impl Workbench {
                             }
                             menu
                         }})));
+                if state.provider == DeploymentProvider::CloudflareWorkers {
+                    let routing = match state.cloudflare.workers_dev {
+                        Some(true) => "Public (production)",
+                        Some(false) => "Private",
+                        None => "Preserve existing routing",
+                    };
+                    body = body.child(div().flex().items_center().gap_2().min_w_0()
+                        .child(div().text_sm().child("workers.dev"))
+                        .child(Button::new("deploy-cloudflare-routing").small().flex_1().min_w_0().label(routing)
+                            .accessibility_label("Cloudflare public routing").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
+                            .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
+                                let mut menu = menu.action_context(focus.clone());
+                                for (label, value) in [("Public (production)", "public"), ("Private", "private"), ("Preserve existing routing", "preserve")] {
+                                    menu = menu.menu(label, Box::new(ChooseCloudflareSetting { setting: "routing".into(), value: value.into() }));
+                                }
+                                menu
+                            }}))
+                        .child(Button::new("deploy-cloudflare-options").small().ghost().icon(gpui_kit::assets::IconName::Settings2)
+                            .tooltip("Cloudflare asset settings").accessibility_label("Cloudflare asset settings").disabled(saving)
+                            .on_click(window.listener_for(&view, |this, _, _, cx| {
+                                this.deployment.update(cx, |state, cx| { state.cloudflare_options = !state.cloudflare_options; cx.notify(); });
+                            }))));
+                    if state.cloudflare_options {
+                        for (label, id, setting, value, choices) in [
+                            ("HTML handling", "deploy-cloudflare-html", "html", state.cloudflare.html_handling.clone(), vec!["auto-trailing-slash", "force-trailing-slash", "drop-trailing-slash", "none"]),
+                            ("Not-found handling", "deploy-cloudflare-not-found", "notFound", state.cloudflare.not_found_handling.clone(), vec!["none", "404-page", "single-page-application"]),
+                        ] {
+                            body = body.child(div().flex().items_center().gap_2().min_w_0().child(div().text_sm().child(label))
+                                .child(Button::new(id).small().flex_1().min_w_0().label(value).accessibility_label(label)
+                                    .icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
+                                    .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
+                                        let mut menu = menu.action_context(focus.clone());
+                                        for value in &choices {
+                                            menu = menu.menu(*value, Box::new(ChooseCloudflareSetting { setting: setting.into(), value: (*value).into() }));
+                                        }
+                                        menu
+                                    }})));
+                        }
+                        for (label, id, input) in [("Compatibility date", "deploy-cloudflare-date", &state.compatibility_date), ("Excluded paths (JSON array)", "deploy-cloudflare-excludes", &state.excludes)] {
+                            body = body.child(div().flex().flex_col().gap_1().child(label)
+                                .child(Input::new(input).id(id).aria_label(label).small().disabled(saving)));
+                        }
+                    }
+                }
                 let token_label = match state.provider {
                     DeploymentProvider::AzureSwa => "Deployment token",
                     DeploymentProvider::Netlify => "Personal access token",
@@ -367,7 +426,7 @@ impl Workbench {
             }
             if !state.status.is_empty() { body = body.child(div().id("deploy-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             let starting = saving && !editing && !state.removing;
-            dialog.title(if state.landing.is_some() { "Deploy landing page" } else { "Deploy reports" }).overlay_closable(!saving && state.landing.is_none()).keyboard(!saving && state.landing.is_none()).close_button(!saving && state.landing.is_none()).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(body))
+            dialog.title(if state.landing.is_some() { "Deploy landing page" } else { "Deploy reports" }).overlay_closable(!saving && state.landing.is_none()).keyboard(!saving && state.landing.is_none()).close_button(!saving && state.landing.is_none()).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(if state.cloudflare_options && editing && state.provider == DeploymentProvider::CloudflareWorkers { div().max_h(px(390.)).overflow_y_scrollbar().child(body).into_any_element() } else { body.into_any_element() }))
                 .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx)))
                 .footer(div().flex().justify_end().gap_2()
                     .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| {
@@ -435,6 +494,37 @@ impl Workbench {
         });
     }
 
+    pub(super) fn choose_cloudflare_setting(
+        &mut self,
+        action: &ChooseCloudflareSetting,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.deployment.update(cx, |state, cx| {
+            if state.saving
+                || !state.editing
+                || state.provider != DeploymentProvider::CloudflareWorkers
+            {
+                return;
+            }
+            match (action.setting.as_str(), action.value.as_str()) {
+                ("routing", "public") => state.cloudflare.workers_dev = Some(true),
+                ("routing", "private") => state.cloudflare.workers_dev = Some(false),
+                ("routing", "preserve") => state.cloudflare.workers_dev = None,
+                (
+                    "html",
+                    "auto-trailing-slash" | "force-trailing-slash" | "drop-trailing-slash" | "none",
+                ) => state.cloudflare.html_handling = action.value.clone(),
+                ("notFound", "none" | "404-page" | "single-page-application") => {
+                    state.cloudflare.not_found_handling = action.value.clone()
+                }
+                _ => return,
+            }
+            state.status.clear();
+            cx.notify();
+        });
+    }
+
     fn cancel_deploy_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.deployment.update(cx, |state, cx| {
             state.editing = false;
@@ -487,6 +577,22 @@ impl Workbench {
                 return;
             }
             let target = existing.then(|| state.selected().cloned()).flatten();
+            state.cloudflare = target
+                .as_ref()
+                .and_then(|target| target.cloudflare.clone())
+                .unwrap_or_default();
+            state.cloudflare_options = false;
+            state.compatibility_date.update(cx, |input, cx| {
+                input.set_value(state.cloudflare.compatibility_date.clone(), window, cx)
+            });
+            state.excludes.update(cx, |input, cx| {
+                input.set_value(
+                    serde_json::to_string(&state.cloudflare.exclude)
+                        .unwrap_or_else(|_| "[]".into()),
+                    window,
+                    cx,
+                )
+            });
             state.editing_id = target.as_ref().map(|target| target.id.clone());
             state.named_token_id = target
                 .as_ref()
@@ -565,6 +671,21 @@ impl Workbench {
         if state.saving || !state.editing {
             return;
         }
+        let mut cloudflare = state.cloudflare.clone();
+        if state.provider == DeploymentProvider::CloudflareWorkers {
+            cloudflare.compatibility_date = state.compatibility_date.read(cx).value().trim().into();
+            match serde_json::from_str::<Vec<String>>(&state.excludes.read(cx).value()) {
+                Ok(exclude) => cloudflare.exclude = exclude,
+                Err(_) => {
+                    self.deployment.update(cx, |state, cx| {
+                        state.status =
+                            "Cloudflare excluded paths must be a JSON array of glob strings".into();
+                        cx.notify();
+                    });
+                    return;
+                }
+            }
+        }
         let target = DeployTarget {
             id: state
                 .editing_id
@@ -599,6 +720,7 @@ impl Workbench {
                         .value()
                         .trim()
                         .to_ascii_lowercase(),
+                    ..cloudflare
                 }
             }),
         };
@@ -856,8 +978,7 @@ impl Workbench {
                     result = client.deploy(staging.path(), &target) => result,
                 }
             })?;
-            crate::desktop::deployment::validate_published_url(&url)?;
-            let saved = DeployTargets::record_published_url(&path, &target, &url);
+            let saved = DeployTargets::record_publication(&path, &target, url.as_deref());
             Ok::<_, anyhow::Error>((url, saved))
         });
         cx.spawn_in(window, async move |view, cx| {
@@ -870,7 +991,7 @@ impl Workbench {
                     match result {
                         Ok((url, saved)) => {
                             if let Some(target) = state.settings.targets.iter_mut().find(|target| target.id == target_id) {
-                                target.published_url = Some(url);
+                                target.published_url = url;
                             }
                             match saved {
                                 Ok(settings) => {
@@ -1255,6 +1376,14 @@ mod tests {
             window.render_frame(cx);
             assert!(window.try_find("deploy-environment").is_none());
             assert!(window.try_find("deploy-site-id").is_none());
+            assert_eq!(
+                window.find("deploy-cloudflare-routing").label(),
+                Some("Cloudflare public routing")
+            );
+            assert_eq!(
+                view.read(cx).deployment.read(cx).cloudflare.workers_dev,
+                Some(true)
+            );
             window.click("deploy-name", cx);
             window.input("Cloudflare QA", cx);
             window.click("deploy-account-id", cx);
@@ -1284,6 +1413,7 @@ mod tests {
             assert_eq!(target.provider, DeploymentProvider::CloudflareWorkers);
             assert_eq!(target.cloudflare.as_ref().unwrap().account_id, account);
             assert_eq!(target.cloudflare.as_ref().unwrap().worker_name, "reports");
+            assert_eq!(target.cloudflare.as_ref().unwrap().workers_dev, Some(true));
             assert!(target.environment.is_empty() && target.site_id.is_empty());
             assert!(
                 !std::fs::read_to_string(state.path.as_ref().unwrap())
@@ -1294,6 +1424,45 @@ mod tests {
             window.render_frame(cx);
             assert_eq!(window.find("deploy-account-id").value(), Some(account));
             assert_eq!(window.find("deploy-worker-name").value(), Some("reports"));
+            window.click("deploy-cloudflare-options", cx);
+            window.render_frame(cx);
+            assert!(window.find("deploy-cloudflare-html").visible());
+            view.update(cx, |this, cx| {
+                this.choose_cloudflare_setting(
+                    &super::ChooseCloudflareSetting {
+                        setting: "routing".into(),
+                        value: "private".into(),
+                    },
+                    window,
+                    cx,
+                );
+                this.choose_cloudflare_setting(
+                    &super::ChooseCloudflareSetting {
+                        setting: "html".into(),
+                        value: "none".into(),
+                    },
+                    window,
+                    cx,
+                );
+                this.choose_cloudflare_setting(
+                    &super::ChooseCloudflareSetting {
+                        setting: "notFound".into(),
+                        value: "404-page".into(),
+                    },
+                    window,
+                    cx,
+                );
+                this.deployment.update(cx, |state, cx| {
+                    state
+                        .compatibility_date
+                        .update(cx, |input, cx| input.set_value("2026-09-28", window, cx));
+                    state
+                        .excludes
+                        .update(cx, |input, cx| input.set_value("[\"*.map\"]", window, cx));
+                });
+            });
+            window.click("deploy-cloudflare-options", cx);
+            window.render_frame(cx);
             assert!(
                 view.read(cx)
                     .deployment
@@ -1312,6 +1481,17 @@ mod tests {
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
             window.click("deploy-target-edit", cx);
+            let saved = view.read(cx).deployment.read(cx).settings.targets[0]
+                .cloudflare
+                .as_ref()
+                .unwrap()
+                .clone();
+            assert_eq!(saved.workers_dev, Some(false));
+            assert_eq!(saved.html_handling, "none");
+            assert_eq!(saved.not_found_handling, "404-page");
+            assert_eq!(saved.compatibility_date, "2026-09-28");
+            assert_eq!(saved.exclude, ["*.map"]);
+            assert_eq!(view.read(cx).deployment.read(cx).cloudflare, saved);
             view.update(cx, |this, cx| {
                 this.choose_deploy_provider(
                     &super::ChooseDeployProvider {

@@ -439,7 +439,10 @@ deployed URL**. These controls do not require suite selection or a saved token,
 and remain available after switching tabs or restarting the app. Failed or
 cancelled deployments keep the previous URL. Renaming a target preserves it;
 changing provider, Azure environment, Netlify Site ID, Cloudflare account/Worker,
-or replacing an Azure token clears it until the next successful deployment.
+Cloudflare routing mode, or replacing an Azure token clears it until the next
+successful deployment. Cloudflare HTML, compatibility-date, and exclusion edits
+preserve the URL. A successful private Cloudflare deployment clears any previous
+public URL; it still appears as a completed deployment without an Open Site button.
 Azure tokens identify the destination app as well as authorize it. If saving a
 successful deployment's URL fails, the app reports the local persistence error.
 
@@ -456,21 +459,40 @@ The app publishes to the existing site's production deployment, replacing its
 contents with the selected reports. It does not create or delete Netlify sites,
 change domains, run builds, or require the Netlify CLI.
 
-For **Cloudflare Workers**, create a dedicated Worker first and enable its
-`workers.dev` route. Select Cloudflare Workers, enter its Account ID and Worker
-name, and provide an API token with **Workers Scripts Write** permission for that
+For **Cloudflare Workers**, select the provider, enter an Account ID and dedicated
+Worker name, and provide an API token with **Workers Scripts Write** permission for that
 account. The Account ID is the 32-character hexadecimal identifier in the account
 dashboard; it is also the first hostname component of an R2 S3 endpoint. R2 Access
 Key IDs and Secret Access Keys are not used. The desktop does not read `.env.local`;
 enter the token in its masked field to save it securely.
 
-Cloudflare deployments replace the dedicated Worker's code/assets with an
-assets-only report, preserving its configured route. The app does not create
-Workers, change DNS or domains, manage Access policies, or require Wrangler, Bun,
-or Node.js. It returns `https://<worker>.<account-subdomain>.workers.dev/` only after
-checking the published HTML and a companion asset. The first version requires a
-publicly reachable `workers.dev` route; Access-protected responses cannot pass
-that verification. Reports are public unless protection is configured separately.
+Deployment creates the Worker if it does not exist, or replaces its code/assets
+with an assets-only report. **Public (production)** is the default for both new
+and existing targets: deployment publishes the production version and enables
+its `workers.dev` route. Register an account-level `workers.dev` subdomain in
+Cloudflare first. The desktop does not change DNS, custom domains, or Access
+policies, and does not require Wrangler, Bun, or Node.js.
+
+Choose **Private** to disable both the production `workers.dev` route and preview
+URLs, or **Preserve existing routing** to leave an existing Worker's routing
+untouched, including dashboard changes made during upload. Preserve mode creates
+a missing Worker privately; unreadable routing or permission errors never imply
+that a Worker is missing. A public deployment returns
+`https://<worker>.<account-subdomain>.workers.dev/` only after checking the published
+HTML and a companion asset without sending credentials. Access-protected public
+responses cannot pass that verification. Private deployments succeed without a
+public URL; configure any custom-domain access separately.
+
+The Cloudflare asset-settings control saves HTML handling, not-found handling,
+compatibility date, and excluded paths with each target. Defaults are
+`auto-trailing-slash`, `none`, and `2026-09-25`, with no extra exclusions.
+Excluded paths are an app-relative JSON array of globs, such as
+`["debug/**", "*.map"]`; matching directories are pruned. Keep required report
+JSON, images, scripts, and `index.html` included. Private environment files,
+`.dev.vars` variants, `.git`, `.wrangler`, and `node_modules` are always excluded.
+An unsupported `.assetsignore` file or included Pages `_worker.js` code causes
+local validation to fail before API requests. These options use saved target
+settings, not CLI flags or environment-variable fallbacks.
 
 Tokens are stored in the operating system's secure credential store, outside the
 repository: Windows Credential Manager (current user, this machine only), macOS
@@ -590,14 +612,23 @@ retain a 10-second timeout; manifest creation and read/poll requests use 30 seco
 Azure retains its ZIP/block-upload protocol and 30-minute deployment deadline.
 All providers keep tokens out of URLs and logs.
 
-Cloudflare creates a path/hash/size manifest, uploads only requested content in
-Base64 multipart batches, and publishes the completed asset set. Identical content
-with the same extension is uploaded once. Fully cached deployments skip uploads
-but still publish and verify the site. At most two batches upload concurrently;
-each contains at most 50 MiB of raw content. Asset MIME types are sent explicitly.
+Cloudflare creates a path/hash/size manifest, uploads only requested content, and
+publishes the completed asset set. Upload-session hints select raw, single-asset
+requests or Base64 multipart batches. Identical content with the same extension
+and MIME type is uploaded once; MIME changes invalidate cached response headers.
+Fully cached deployments skip uploads but still publish. Public sites are then
+verified. Multipart mode permits three concurrent requests; single-asset mode
+honors the server's concurrency hint up to eight. Uploads share a 50 MiB raw-content
+budget, retained through reads and retries; encoded bodies and request copies
+use additional memory. Individual multipart buckets also have a 50 MiB raw limit.
+MIME support includes manifests, WebVTT, WebAssembly, media, and document formats;
+unknown formats use Cloudflare's MIME-header omission marker.
 The provider's one-hour temporary tokens are bounded by a 55-minute client
-deadline. Safe reads and content-addressed uploads retry transient failures up to
-six attempts; session creation and publication are not automatically retried.
+deadline. Upload request timeouts scale with content size, up to 30 minutes.
+Safe reads, upload-session creation, explicit route updates, and content-addressed
+uploads retry transient failures up to six attempts. Publication is never
+automatically retried: a confirmed API rejection means the Worker was not updated,
+while an interrupted or ambiguous response requires checking deployment history.
 Stop cancels local work, not a publication already accepted by Cloudflare.
 
 Cloudflare limits individual files to 25 MiB, including screenshots. Free accounts
@@ -619,9 +650,11 @@ guidance. The full error is shown in deployment Activity and View Log.
 All providers send `X-Robots-Tag: noindex,nofollow` for report URLs. Snapshots
 include matching Azure/Netlify security and cache policies, plus clean-URL SPA
 fallback rules. Cloudflare passes the header and redirect rules as asset metadata,
-not public files. It translates `/suites/* /index.html 200` to `/suites/* / 200`
-because Workers rejects the former as a canonical-HTML redirect loop. Missing
-`/_snapshot/*` assets remain real 404s. HTML and `/_snapshot/status.json` revalidate;
+not public files. With HTML normalization enabled, it translates
+`/suites/* /index.html 200` to `/suites/* / 200` because Workers rejects the former
+as a canonical-HTML redirect loop. With HTML handling set to `none`, the original
+`index.html` rewrite is retained. Default not-found handling keeps missing
+`/_snapshot/*` assets as real 404s. HTML and `/_snapshot/status.json` revalidate;
 versioned assets use immutable one-year caching. Versioned resource URLs include
 `?v=...`; any additional CDN must include that parameter
 in its cache key. Stable origin files contain only the current report version.
