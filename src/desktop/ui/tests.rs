@@ -3360,6 +3360,7 @@ fn navigator_list_keyboard_scrolls_viewports_and_handles_empty_filters(cx: &mut 
                     .open_document(Entry {
                         path: "viewports.yaml".into(),
                         kind: DocumentKind::Viewports,
+                        editable: true,
                     })
                     .unwrap(),
             );
@@ -3736,6 +3737,173 @@ async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_su
 }
 
 #[gpui_kit::test]
+async fn workspace_files_text_documents_support_source_editing_and_save(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    let files = [
+        ("common/_on-ready.js", "module.exports = async () => {};\n"),
+        ("common/_on-ready.css", "body { color: red; }\n"),
+        ("common/_override.css", "* { animation: none; }\n"),
+    ];
+    for (path, source) in files {
+        std::fs::write(directory.path().join(path), source).unwrap();
+    }
+    std::fs::write(
+        directory.path().join("common/0-binary.css"),
+        b"binary\0data",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.workspace_files_open = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let original = view
+            .read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .entry
+            .path
+            .clone();
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.path == Path::new("common/0-binary.css"))
+            .unwrap();
+        assert!(!view.read(cx).session.entries[index].supports_editing());
+        window.click(("file", index), cx);
+        view.update(cx, |this, cx| {
+            this.workspace_list
+                .focus_item("common/0-binary.css".into(), window, cx);
+        });
+        window.press("enter", cx);
+        window.press("space", cx);
+        assert!(!view.read(cx).busy);
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            original
+        );
+    })
+    .unwrap();
+    for (path, source) in files {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let index = view
+                .read(cx)
+                .session
+                .entries
+                .iter()
+                .position(|entry| entry.path == Path::new(path))
+                .unwrap();
+            assert!(view.read(cx).session.entries[index].supports_editing());
+            if path.ends_with(".js") {
+                view.update(cx, |this, cx| {
+                    this.workspace_list.focus_item(path.into(), window, cx);
+                });
+                window.press("enter", cx);
+            } else {
+                window.click(("file", index), cx);
+            }
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            !view.read(cx).busy
+                && view.read(cx).session.open.as_ref().unwrap().entry.path == Path::new(path)
+        })
+        .await;
+        let updated = format!("{source}\n/* Keep raw text: [ */\n");
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(view.read(cx).tab, 1);
+            assert!(view.read(cx).source_issues.is_empty());
+            assert!(view.read(cx).diagnostic.is_none());
+            assert_eq!(
+                view.read(cx).source.read(cx).language_name().as_ref(),
+                "text"
+            );
+            assert!(window.try_find("advanced-fields").is_none());
+            window.click("breadcrumb-document", cx);
+            assert_eq!(view.read(cx).tab, 1);
+            view.update(cx, |this, cx| {
+                assert!(!this.select_editor_tab(0, window, cx));
+                assert!(!this.select_editor_tab(2, window, cx));
+                window.focus(&this.source.read(cx).focus_handle(cx), cx);
+            });
+            window.render_frame(cx);
+            window.press(&format!("{modifier}-a"), cx);
+            window.input(&updated, cx);
+            window.press(&format!("{modifier}-z"), cx);
+            assert_ne!(view.read(cx).source.read(cx).value().as_ref(), updated);
+            window.press(&format!("{modifier}-shift-z"), cx);
+            assert_eq!(view.read(cx).source.read(cx).value().as_ref(), updated);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(view.read(cx).session.dirty());
+            assert!(view.read(cx).diagnostic.is_none());
+            window.press(&format!("{modifier}-s"), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            !view.read(cx).busy && !view.read(cx).session.dirty()
+        })
+        .await;
+        assert_eq!(
+            std::fs::read_to_string(directory.path().join(path)).unwrap(),
+            updated
+        );
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("open-commands", cx);
+        window.input("Save As", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:Save As").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("command:Save As", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("file-name", cx);
+        window.press(&format!("{modifier}-a"), cx);
+        window.input("common/copied.css", cx);
+        window.click("file-confirm", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).busy
+            && view.read(cx).session.open.as_ref().unwrap().entry.path
+                == Path::new("common/copied.css")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(view.read(cx).tab, 1);
+        assert!(window.find("source-find").visible());
+        assert!(view.read(cx).source_issues.is_empty());
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+    assert_eq!(
+        std::fs::read(directory.path().join("common/copied.css")).unwrap(),
+        std::fs::read(directory.path().join("common/_override.css")).unwrap(),
+    );
+}
+
+#[gpui_kit::test]
 async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut TestAppContext) {
     use std::path::PathBuf;
 
@@ -3772,6 +3940,7 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                     Entry {
                         path,
                         kind: DocumentKind::Workspace,
+                        editable: true,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -3793,7 +3962,6 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                     this.session.entries.len() - 1
                 });
                 window.render_frame(cx);
-                let original_path = view.read(cx).session.open.as_ref().unwrap().entry.path.clone();
                 for path in ["common/_on-ready.js", "common/_override.css"] {
                     let index = view
                         .read(cx)
@@ -3804,17 +3972,7 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                         .expect("Common helpers must appear in Workspace files");
                     assert!(window.find(("file", index)).visible());
                     assert_eq!(window.find(("file", index)).label(), Some(path));
-                    window.click(("file", index), cx);
-                    view.update(cx, |this, cx| {
-                        this.workspace_list.focus_item(path.into(), window, cx);
-                    });
-                    window.press("enter", cx);
-                    window.press("space", cx);
-                    assert!(!view.read(cx).busy, "Unsupported files must not start loading");
-                    assert_eq!(
-                        view.read(cx).session.open.as_ref().unwrap().entry.path,
-                        original_path
-                    );
+                    assert!(view.read(cx).session.entries[index].supports_editing());
                 }
                 let sidebar = window.find("workspace-navigation").bounds();
                 let files = window.find("workspace-files").bounds();

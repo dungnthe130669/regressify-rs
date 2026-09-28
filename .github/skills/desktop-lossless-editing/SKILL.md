@@ -1,6 +1,6 @@
 ---
 name: desktop-lossless-editing
-description: 'Use when changing desktop YAML/JSON document edits, Source/Fields transitions, undo/redo, invalid drafts, batch edits, or asynchronous save acknowledgement.'
+description: 'Use when changing desktop YAML/JSON or plain-text document edits, Source/Fields transitions, undo/redo, invalid drafts, batch edits, or asynchronous save acknowledgement.'
 ---
 
 # Lossless Desktop Editing
@@ -18,6 +18,7 @@ description: 'Use when changing desktop YAML/JSON document edits, Source/Fields 
 1. Source line commands use one native text replacement, not `set_value`, so undo retains the edit. Cover UTF-8 selections, CRLF, reversed ranges, exclusive column-zero ends, empty/final lines, and JSON comment rejection. Native change events are deferred; settle them before checking the session's document text.
 1. An asynchronous save acknowledges the exact bytes written, not the latest source that may have changed while I/O ran. Newer edits must remain dirty.
 1. Guard document/workspace switches and destructive actions with existing session transitions; do not silently discard source when a derived view cannot parse it.
+1. `Format::Text` is raw UTF-8 source, not a YAML scalar or a structured data mapping. Preserve bytes and history; accept empty text, reject binary controls, and do not expose Fields, Effective, schema diagnostics, or YAML/JSON conversion through Save As.
 
 ## Checks
 

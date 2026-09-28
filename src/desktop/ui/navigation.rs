@@ -1446,7 +1446,7 @@ impl Workbench {
                         .tooltip(if editable {
                             entry.label()
                         } else {
-                            format!("{} (unsupported file type)", entry.label())
+                            format!("{} (not editable UTF-8 text; 4 MiB limit)", entry.label())
                         })
                         .child(
                             div()

@@ -380,6 +380,10 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
         .as_ref()
         .map_err(|error| anyhow!("{error:#}"))
         .and_then(|value| {
+            if document.format == Format::Text {
+                document.validate()?;
+                return Ok(Vec::new());
+            }
             let issues = validation::diagnostics(document.kind, value)?;
             if issues.is_empty() {
                 validate_semantics(document.kind, value)?;
@@ -422,6 +426,7 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
                     Format::Json => {
                         "\nUse double quotes for JSON field names and text, commas between fields, and no trailing commas."
                     }
+                    Format::Text => "",
                 }
             } else {
                 ""
@@ -712,6 +717,15 @@ impl Workbench {
         let Some(open) = &self.session.open else {
             return;
         };
+        if open.document.format == Format::Text {
+            self.source.update(cx, |state, cx| {
+                state.set_highlighter("text", cx);
+                state.clear_hover_state(cx);
+                state.lsp_mut().completion_provider = None;
+                state.lsp_mut().hover_provider = None;
+            });
+            return;
+        }
         let catalog = match CompletionCatalog::new() {
             Ok(catalog) => Arc::new(catalog),
             Err(error) => {

@@ -1,0 +1,19 @@
+debug: true
+scenarios:
+  - label: Login
+    url: https://www.medthority.com/
+    viewportNames: desktop
+    actions:
+      - click: '#onetrust-accept-btn-handler'
+      - click: .epg-header-button a[href^="/login"]
+      - wait: 3000
+        url: https://auth.medthority.com/**
+      - click: '#btn-email-login'
+      - input: '#email'
+        value: duedue2101@gmail.com
+      - input: '#password'
+        value: 12345678910#
+      - click: '#btn-login'
+      - wait: .epg-login-col li.salutation
+        url: https://www.medthority.com/**
+      - persist: duyen

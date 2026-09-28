@@ -297,6 +297,14 @@ async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()>
                 exec_test_action(context(), &action).await?;
             }
             let target = runtime.target(&frame, Duration::from_secs(4)).await?;
+            let expected_url = if frame.is_some() {
+                format!("{}/", inner.origin.replace("127.0.0.1", "localhost"))
+            } else {
+                format!("{}/", outer.origin)
+            };
+            anyhow::ensure!(target.url().await?.as_deref() == Some(expected_url.as_str()), "URL read did not use the selected frame");
+            let action: TestAction = serde_json::from_value(serde_json::json!({"wait":"#typed", "url":expected_url, "frame":frame}))?;
+            exec_test_action(context(), &action).await?;
             let values: serde_json::Value = target.evaluate("(() => { const input = document.querySelector('#typed'); return {value:input.value, keys:JSON.parse(input.dataset.keys), trusted:input.dataset.trusted, choice:document.querySelector('#choice').value}; })()").await?.into_value()?;
             anyhow::ensure!(values["value"] == "Ab+", "maxlength was bypassed: {values}");
             anyhow::ensure!(values["keys"] == serde_json::json!(["A", "b", "+", "c"]), "typing did not dispatch per-character key events: {values}");
@@ -314,6 +322,129 @@ async fn action_keyboard_selection_and_navigation_work_in_frames() -> Result<()>
         anyhow::ensure!(loaded == "yes", "click completed before the navigation loaded");
         Ok(())
     }.await;
+    browser.close().await?;
+    handler.await?;
+    let _ = std::fs::remove_dir_all(directory);
+    result
+}
+
+#[tokio::test]
+#[ignore = "requires managed Chromium; run regressify install"]
+async fn url_waits_follow_delayed_redirects_and_same_document_navigation() -> Result<()> {
+    use super::{
+        runtime::Runtime,
+        storage_state::StorageState,
+        test_action::{ActionExecutionContext, exec_test_action},
+    };
+    use crate::{
+        config::ResolvedConfig,
+        types::{TestAction, TestScenario, TestSuite},
+    };
+
+    let destination = Site::new(|request| {
+        let content = if request.url() == "/callback" {
+            "<body><script>setTimeout(() => location.replace('/done?flow=login#signed-in'), 150);</script></body>"
+        } else {
+            "<body><div id='signed-in'>Signed in</div></body>"
+        };
+        let _ =
+            request.respond(Response::from_string(content).with_header(
+                Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
+            ));
+    })?;
+    let destination_origin = destination.origin.replace("127.0.0.1", "localhost");
+    let callback_url = format!("{destination_origin}/callback");
+    let source = Site::new(move |request| {
+        let response = if request.url() == "/authorize" {
+            Response::from_string("")
+                .with_status_code(StatusCode(302))
+                .with_header(Header::from_bytes("Location", callback_url.as_str()).unwrap())
+        } else {
+            Response::from_string(
+                "<body><button id='login' onclick=\"setTimeout(() => location.assign('/authorize'), 250)\">Log in</button></body>",
+            )
+        };
+        let _ =
+            request.respond(response.with_header(
+                Header::from_bytes("Content-Type", "text/html; charset=utf-8").unwrap(),
+            ));
+    })?;
+    let (mut browser, handler, directory) =
+        launch_browser("url-waits", LaunchOptions::default()).await?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = Runtime::new(&browser, &page).await?;
+        let storage = StorageState::install(&browser, &page, None, &source.origin).await?;
+        page.goto(source.origin.as_str()).await?;
+        let suite = TestSuite::default();
+        let scenario = TestScenario {
+            url: source.origin.clone(),
+            ..Default::default()
+        };
+        let config = ResolvedConfig {
+            element_timeout_ms: 6000,
+            actionability_timeout_ms: 2000,
+            ..Default::default()
+        };
+        let context = || ActionExecutionContext {
+            page: &page,
+            runtime: &runtime,
+            storage: &storage,
+            test_suite: &suite,
+            scenario: &scenario,
+            config: &config,
+            url_replacements: &[],
+            viewport_label: None,
+            log_prefix: "fixture",
+        };
+        for action in [
+            serde_json::json!({"click": "#login"}),
+            serde_json::json!({
+                "wait": "#signed-in",
+                "url": format!("{destination_origin}/done?flow=login#signed-in")
+            }),
+        ] {
+            let action: TestAction = serde_json::from_value(action)?;
+            exec_test_action(context(), &action).await?;
+        }
+        let target = runtime.target(&None, Duration::from_secs(5)).await?;
+        target
+            .evaluate("history.pushState({}, '', '?flow=spa#ready')")
+            .await?;
+        let action: TestAction = serde_json::from_value(serde_json::json!({
+            "wait": "#signed-in",
+            "url": format!("{destination_origin}/done?flow=spa#ready")
+        }))?;
+        exec_test_action(context(), &action).await?;
+
+        let timeout_config = ResolvedConfig {
+            element_timeout_ms: 300,
+            ..Default::default()
+        };
+        let action: TestAction = serde_json::from_value(serde_json::json!({
+            "wait": 0,
+            "url": format!("{destination_origin}/never")
+        }))?;
+        let error = tokio::time::timeout(
+            Duration::from_secs(3),
+            exec_test_action(
+                ActionExecutionContext {
+                    config: &timeout_config,
+                    ..context()
+                },
+                &action,
+            ),
+        )
+        .await?
+        .err()
+        .ok_or_else(|| anyhow!("URL wait unexpectedly matched a different destination"))?;
+        anyhow::ensure!(
+            error.to_string().contains("Timeout waiting for URL"),
+            "unexpected URL wait error: {error}"
+        );
+        Ok(())
+    }
+    .await;
     browser.close().await?;
     handler.await?;
     let _ = std::fs::remove_dir_all(directory);

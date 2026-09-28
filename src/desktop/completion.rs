@@ -55,6 +55,7 @@ impl SourceIndex {
         let language = match format {
             Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             Format::Json => tree_sitter_json::LANGUAGE.into(),
+            Format::Text => return index,
         };
         if parser.set_language(&language).is_ok()
             && let Some(tree) = parser.parse(source, None)
@@ -296,6 +297,7 @@ impl CompletionCatalog {
         let language = match format {
             Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             Format::Json => tree_sitter_json::LANGUAGE.into(),
+            Format::Text => return Vec::new(),
         };
         if parser.set_language(&language).is_err() {
             return Vec::new();

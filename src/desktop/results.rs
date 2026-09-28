@@ -918,6 +918,7 @@ mod tests {
             entry: Entry {
                 path: "visual_tests/checkout.tests.yaml".into(),
                 kind: DocumentKind::Suite,
+                editable: true,
             },
             name: "checkout".into(),
             display_name: None,

@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-09-27
+Verified: 2026-09-28
 
 - [Source commands](../../src/desktop/ui/source.rs) bind inside
   `RegressifySource > Input` and additionally check the source focus handle and
@@ -28,3 +28,11 @@ Verified: 2026-09-27
   file and refresh after Save succeeds. The `corrected_invalid_source` filter in
   `cargo test --locked --features gui-tests --lib corrected_invalid_source -- --test-threads=1`
   covers YAML/JSON repairs, conflicts, and the native Save interaction.
+- Non-YAML/JSON UTF-8 files use `Format::Text`, not YAML parsing. Workspace
+  discovery checks content within the 4 MiB limit, and open rechecks the bytes;
+  binary controls, invalid UTF-8, and oversized files remain non-editable.
+- Plain text uses Source only, including breadcrumb and Save As transitions.
+  The toolkit's `text` highlighter disables configuration highlighting; schema
+  completion and hover providers are cleared. The `common_text_files_` model and
+  `workspace_files_text_documents_support_source_editing_and_save` native tests
+  cover saves, conflicts, binary guards, and native undo/redo.

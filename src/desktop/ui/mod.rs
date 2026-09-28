@@ -23,7 +23,7 @@ use gpui_kit::{prelude::*, *};
 use serde_json::{Value, json};
 
 use super::{
-    document::{ACTIONS, Document, DocumentKind},
+    document::{ACTIONS, Document, DocumentKind, Format},
     instance::{DesktopInstance, OpenInstance},
     schema::{self, Field, FieldKind},
     session::{Selection, Session},
@@ -1434,12 +1434,10 @@ impl Workbench {
             Ok(()) => {
                 self.reset_field_view(window, cx);
                 self.tab = if self.session.selection == Selection::Root
-                    && self
-                        .session
-                        .open
-                        .as_ref()
-                        .is_some_and(|open| open.entry.kind == DocumentKind::Suite)
-                {
+                    && self.session.open.as_ref().is_some_and(|open| {
+                        open.entry.kind == DocumentKind::Suite
+                            || open.document.format == Format::Text
+                    }) {
                     1
                 } else {
                     0
@@ -2132,7 +2130,16 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.busy || self.session.open.is_none() || index > 2 {
+        if self.busy
+            || self.session.open.is_none()
+            || index > 2
+            || (index != 1
+                && self
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.document.format == Format::Text))
+        {
             return false;
         }
         if let Err(error) = self.flush_drafts(window, cx) {
@@ -2175,6 +2182,11 @@ impl Workbench {
                 )
             })
             .unwrap_or_else(|| "Workspace".into());
+        let text_document = self
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| open.document.format == Format::Text);
         let content = match self.tab {
             1 => self.render_source(cx),
             2 => div()
@@ -2370,18 +2382,22 @@ impl Workbench {
                                 this.select_editor_tab([1, 0, 2][*index], window, cx);
                             }))
                             .child(Tab::new().label("Source"))
-                            .child(Tab::new().label("Fields"))
-                            .child(Tab::new().label("Effective")),
+                            .when(!text_document, |tabs| {
+                                tabs.child(Tab::new().label("Fields"))
+                                    .child(Tab::new().label("Effective"))
+                            }),
                     )
-                    .child(
-                        Checkbox::new("advanced-fields")
-                            .label("Advanced")
-                            .checked(self.advanced)
-                            .on_change(cx.listener(|this, checked, _, cx| {
-                                this.advanced = *checked;
-                                cx.notify();
-                            })),
-                    ),
+                    .when(!text_document, |bar| {
+                        bar.child(
+                            Checkbox::new("advanced-fields")
+                                .label("Advanced")
+                                .checked(self.advanced)
+                                .on_change(cx.listener(|this, checked, _, cx| {
+                                    this.advanced = *checked;
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .when(self.tab == 0, |editor| {
                 editor.child(
@@ -2490,6 +2506,19 @@ impl Workbench {
     }
 
     fn selection_title(&self) -> String {
+        if let Some(open) = self
+            .session
+            .open
+            .as_ref()
+            .filter(|open| open.document.format == Format::Text)
+        {
+            return open
+                .entry
+                .path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| open.entry.label());
+        }
         match self.session.selection {
             Selection::Root => self.value["displayName"]
                 .as_str()

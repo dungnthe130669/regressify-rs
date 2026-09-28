@@ -17,6 +17,7 @@ description: 'Use when changing generated JSON Schema, desktop validation messag
 1. Do not echo secrets or arbitrary values in messages/hover help. Escape literal Markdown/HTML characters in selectable diagnostic text without breaking copying.
 1. Compute valid byte ranges for Unicode, quoted keys, lists, missing values, and incomplete syntax. Completion must not replace neighboring source text.
 1. Keep source parseability separate from schema validity. Do not block all editing or Fields navigation because a parseable draft contains an invalid property.
+1. `Format::Text` must not pass through YAML/JSON source indexing, completion, or schema validation. Clear source completion/hover providers when opening plain text; validate only the text-editing limits and content guard.
 1. Route Enter and Tab through the open completion menu; retain normal Tab indentation and Shift+Tab outdent otherwise. On window reactivation, restore lost source focus only for the same visible document that previously held it, without displacing another control.
 
 ## Checks

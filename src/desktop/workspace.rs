@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
-use super::document::{Document, DocumentKind, Format, MAX_DOCUMENT_BYTES};
+use super::document::{Document, DocumentKind, Format, MAX_DOCUMENT_BYTES, is_text};
 use crate::helpers::{is_windows_reserved_path_component, write_file_atomically};
 
 mod artifacts;
@@ -38,6 +38,7 @@ pub struct Workspace {
 pub struct Entry {
     pub path: PathBuf,
     pub kind: DocumentKind,
+    pub editable: bool,
 }
 
 impl Entry {
@@ -45,11 +46,7 @@ impl Entry {
         display_path(&self.path)
     }
     pub fn supports_editing(&self) -> bool {
-        self.path.extension().is_some_and(|extension| {
-            ["yaml", "yml", "json"]
-                .iter()
-                .any(|supported| extension.eq_ignore_ascii_case(supported))
-        })
+        self.editable
     }
     pub fn suite_name(&self) -> Option<String> {
         let filename = self.path.file_name()?.to_str()?.to_ascii_lowercase();
@@ -396,6 +393,7 @@ impl Workspace {
             let path = PathBuf::from(name);
             if self.resolve(&path)?.is_file() {
                 entries.push(Entry {
+                    editable: read_document(&self.resolve(&path)?).is_ok(),
                     path,
                     kind: DocumentKind::Workspace,
                 });
@@ -417,12 +415,10 @@ impl Workspace {
                     && [".tests.yaml", ".tests.yml", ".tests.json"]
                         .iter()
                         .any(|suffix| name.ends_with(suffix));
-                let data = folder == "common"
-                    && ["yaml", "yml", "json"].iter().any(|extension| {
-                        path.extension().is_some_and(|actual| actual == *extension)
-                    });
+                let data = folder == "common" && Format::for_path(&path) != Format::Text;
                 if suite || folder == "common" {
                     entries.push(Entry {
+                        editable: read_document(&self.resolve(&path)?).is_ok(),
                         path,
                         kind: if suite {
                             DocumentKind::Suite
@@ -442,8 +438,9 @@ impl Workspace {
     pub fn open_document(&self, entry: Entry) -> Result<OpenDocument> {
         ensure!(
             entry.supports_editing(),
-            "The desktop editor supports only YAML and JSON files"
+            "This file is not editable UTF-8 text (4 MiB limit)"
         );
+        // Recheck the bytes and workspace boundary; discovery is only a UI hint.
         let source = read_document(&self.resolve(&entry.path)?)?;
         let document = Document::new(entry.kind, Format::for_path(&entry.path), source)?;
         Ok(OpenDocument { entry, document })
@@ -467,6 +464,7 @@ impl Workspace {
             .open_document(Entry {
                 path: path.into(),
                 kind: DocumentKind::Viewports,
+                editable: true,
             })?
             .document;
         document.validate()?;
@@ -484,6 +482,7 @@ impl Workspace {
                 let entry = Entry {
                     path: input.path.strip_prefix(&self.root)?.into(),
                     kind: DocumentKind::Suite,
+                    editable: true,
                 };
                 let parsed = (|| -> Result<crate::types::TestSuite> {
                     ensure!(input.name != "all", "The suite name 'all' is reserved");
@@ -616,6 +615,10 @@ impl Workspace {
         open.document.validate()?;
         validate_typed_source(&open.document)?;
         let format = Format::for_path(relative);
+        ensure!(
+            (format == Format::Text) == (open.document.format == Format::Text),
+            "Cannot convert between plain text and YAML/JSON; choose a matching file type"
+        );
         let source = if format == open.document.format {
             open.document.source().to_string()
         } else {
@@ -658,6 +661,7 @@ impl Workspace {
             entry: Entry {
                 path: relative.into(),
                 kind,
+                editable: true,
             },
             document,
         })
@@ -815,6 +819,7 @@ impl Workspace {
                         Entry {
                             path: path.into(),
                             kind: DocumentKind::Suite,
+                            editable: true,
                         }
                         .suite_name()
                     })
@@ -864,7 +869,8 @@ impl Workspace {
                     entry.suite_name()
                         != (Entry {
                             path: destination.into(),
-                            kind: DocumentKind::Suite
+                            kind: DocumentKind::Suite,
+                            editable: true,
                         })
                         .suite_name(),
                     "Another file format already uses the destination suite name"
@@ -941,6 +947,12 @@ pub fn suite_path(name: &str) -> Result<PathBuf> {
 fn read_document(path: &Path) -> Result<String> {
     let file =
         fs::File::open(path).with_context(|| format!("Cannot read '{}'", display_path(path)))?;
+    let metadata = file.metadata()?;
+    ensure!(metadata.is_file(), "Document must be a regular file");
+    ensure!(
+        metadata.len() <= MAX_DOCUMENT_BYTES as u64,
+        "Document exceeds the 4 MiB editing limit"
+    );
     let mut source = String::new();
     file.take(MAX_DOCUMENT_BYTES as u64 + 1)
         .read_to_string(&mut source)?;
@@ -948,6 +960,7 @@ fn read_document(path: &Path) -> Result<String> {
         source.len() <= MAX_DOCUMENT_BYTES,
         "Document exceeds the 4 MiB editing limit"
     );
+    ensure!(is_text(&source), "Binary content cannot be edited as text");
     Ok(source)
 }
 
@@ -960,6 +973,7 @@ fn validate_typed_source(document: &Document) -> Result<()> {
             Format::Json => {
                 serde_json::from_str::<T>(document.source())?;
             }
+            Format::Text => return Err(anyhow!("Configuration documents must use YAML or JSON")),
         }
         Ok(())
     }
@@ -1092,6 +1106,149 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn common_text_files_are_editable_and_save_without_structured_validation() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        for (relative, source) in [
+            (
+                "common/_on-ready.js",
+                "module.exports = async ({ page }) => {\r\n  await page.title();\r\n};\r\n",
+            ),
+            (
+                "common/_on-ready.css",
+                "body::before { content: \"ready: [\"; }\n",
+            ),
+            (
+                "common/_override.css",
+                "* { animation: none !important; }\n",
+            ),
+            ("common/nested/README", "Text with [unfinished markup\n"),
+            ("common/notes.custom", "caf\u{00e9}\t[\r\n"),
+            ("common/.keep", ""),
+        ] {
+            let path = directory.path().join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, source).unwrap();
+            let entry = workspace
+                .entries()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.path == Path::new(relative))
+                .unwrap();
+            assert!(entry.supports_editing(), "{relative}");
+            let mut open = workspace.open_document(entry).unwrap();
+            assert_eq!(open.document.format, Format::Text);
+            assert_eq!(open.document.source(), source);
+            open.document.validate().unwrap();
+            let updated = format!("{source}\nUpdated: [\n");
+            open.document.set_source(updated.clone()).unwrap();
+            open.document.undo();
+            assert_eq!(open.document.source(), source);
+            open.document.redo();
+            assert_eq!(open.document.source(), updated);
+            workspace.save(&mut open).unwrap();
+            assert_eq!(fs::read_to_string(&path).unwrap(), updated);
+            assert!(!open.document.dirty());
+        }
+    }
+
+    #[test]
+    fn common_text_files_reject_binary_and_oversized_content_even_after_discovery() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        fs::create_dir(directory.path().join("common")).unwrap();
+        for (relative, bytes) in [
+            ("common/image.png", b"\x89PNG\r\n\x1a\n".as_slice()),
+            ("common/invalid.js", b"invalid\xFF".as_slice()),
+            ("common/binary.css", b"binary\0text".as_slice()),
+            ("common/control.txt", b"binary\x01text".as_slice()),
+            ("common/binary.yaml", b"binary\0text".as_slice()),
+        ] {
+            fs::write(directory.path().join(relative), bytes).unwrap();
+        }
+        for mut entry in workspace.entries().unwrap() {
+            assert!(!entry.supports_editing(), "{}", entry.label());
+            assert!(workspace.open_document(entry.clone()).is_err());
+            entry.editable = true;
+            assert!(workspace.open_document(entry).is_err());
+        }
+
+        let path = directory.path().join("common/large.txt");
+        let source = "a".repeat(MAX_DOCUMENT_BYTES);
+        fs::write(&path, &source).unwrap();
+        let entry = workspace
+            .entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.path == Path::new("common/large.txt"))
+            .unwrap();
+        assert!(entry.supports_editing());
+        let mut open = workspace.open_document(entry.clone()).unwrap();
+        assert_eq!(open.document.source().len(), MAX_DOCUMENT_BYTES);
+        assert!(open.document.set_source(format!("{source}a")).is_err());
+        fs::write(&path, format!("{source}a")).unwrap();
+        assert!(workspace.open_document(entry.clone()).is_err());
+        assert!(
+            workspace
+                .entries()
+                .unwrap()
+                .iter()
+                .all(|entry| !entry.supports_editing())
+        );
+        fs::write(&path, b"changed to binary\0").unwrap();
+        assert!(workspace.open_document(entry).is_err());
+    }
+
+    #[test]
+    fn common_text_files_preserve_drafts_conflicts_and_save_as_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let path = Path::new("common/hook.js");
+        let original = "// caf\u{00e9}\r\nconst ready = () => {};\r\n";
+        let mut open = workspace
+            .create_document(path, DocumentKind::Data, original)
+            .unwrap();
+        let draft = "// Updated\r\nconst ready = () => {\r\n";
+        open.document.set_source(draft.into()).unwrap();
+        fs::write(directory.path().join(path), "External change\n").unwrap();
+        assert!(workspace.save(&mut open).is_err());
+        assert_eq!(
+            fs::read_to_string(directory.path().join(path)).unwrap(),
+            "External change\n"
+        );
+        assert_eq!(open.document.source(), draft);
+        assert!(open.document.dirty());
+        fs::remove_file(directory.path().join(path)).unwrap();
+        assert!(workspace.save(&mut open).is_err());
+        assert_eq!(open.document.source(), draft);
+        let copy_path = Path::new("common/nested/copy.custom");
+        let copy = workspace.save_as(&open, copy_path).unwrap();
+        assert_eq!(copy.document.source(), draft);
+        assert_eq!(copy.document.format, Format::Text);
+        assert_eq!(
+            fs::read(directory.path().join(copy_path)).unwrap(),
+            draft.as_bytes()
+        );
+        assert!(!copy.document.dirty());
+        assert!(open.document.dirty());
+        assert!(workspace.save_as(&open, copy_path).is_err());
+        assert!(workspace.save_as(&open, Path::new("../escape.js")).is_err());
+        assert!(
+            workspace
+                .save_as(&open, Path::new("common/copy.yaml"))
+                .is_err()
+        );
+        assert!(!directory.path().join("common/copy.yaml").exists());
+        open.document.set_source("binary\0data".into()).unwrap();
+        assert!(
+            workspace
+                .save_as(&open, Path::new("common/binary.js"))
+                .is_err()
+        );
+        assert!(!directory.path().join("common/binary.js").exists());
+    }
+
+    #[test]
     fn entries_include_all_common_files_and_only_visual_test_suites() {
         let directory = tempfile::tempdir().unwrap();
         let workspace = Workspace::open(directory.path()).unwrap();
@@ -1142,7 +1299,7 @@ mod tests {
             let error = workspace.open_document(entry).unwrap_err();
             assert_eq!(
                 error.to_string(),
-                "The desktop editor supports only YAML and JSON files"
+                "This file is not editable UTF-8 text (4 MiB limit)"
             );
         }
     }

@@ -30,6 +30,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 ## Topic Notes
 
+- [Browser runtime](browser-runtime.md): context-independent URL reads and
+  out-of-process iframe session routing.
 - [Workspace initialization](workspace-initialization.md): shared CLI/desktop
   runtime defaults, automatic folder-open setup, and preservation boundaries.
 - [Results review](desktop-results.md): report-versus-activity counts and in-place

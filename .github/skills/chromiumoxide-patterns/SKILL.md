@@ -21,6 +21,7 @@ description: 'Use when changing Chromium launch, CDP commands, browser handler p
 1. `Page::find_element` is not an existence wait or an actionability guarantee. Use project helpers before interacting; inspect the pinned implementation instead of assuming what high-level click/hover methods dispatch.
 1. Construct typed CDP parameters with their builders. Decode evaluation results to the expected type and propagate protocol, timeout, and JS execution errors.
 1. Keep profile isolation and bounded launch/navigation shutdown. Distinguish a browser fetch/launch infrastructure failure from a failing website scenario.
+1. Read wait URLs from CDP frame metadata, not `location.href` evaluation: redirects can destroy cached execution contexts before invalidation arrives. Preserve query/fragment matching, target frame identity, and out-of-process frame session routing.
 
 The runtime uses a vendored selector engine for CSS/text/XPath/shadow DOM and CDP contexts for cross-origin frames. Preserve that contract rather than substituting raw querySelector. The optional Node hook layer attaches Playwright to an existing Chromium session; it does not replace the Rust CDP action engine.
 
@@ -33,6 +34,8 @@ cargo test --lib test::runtime::tests
 ```
 
 For live browser changes inspect the relevant ignored fixture and its managed Chromium prerequisite. Verify headed local behavior, headless CI, launch failure, and cleanup after action error/cancellation; never use a personal browser profile.
+
+For URL reads, explicitly run `url_reads_do_not_require_a_live_execution_context` and `url_waits_follow_delayed_redirects_and_same_document_navigation` with `--ignored`. Run the frame interaction fixture as well; the main frame tree does not include out-of-process iframe URLs.
 
 ## Maintain
 

@@ -33,17 +33,20 @@ pub enum DocumentKind {
 pub enum Format {
     Yaml,
     Json,
+    Text,
 }
 
 impl Format {
     pub fn for_path(path: &Path) -> Self {
-        if path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-        {
-            Self::Json
-        } else {
-            Self::Yaml
+        match path.extension().and_then(|extension| extension.to_str()) {
+            Some(extension) if extension.eq_ignore_ascii_case("json") => Self::Json,
+            Some(extension)
+                if extension.eq_ignore_ascii_case("yaml")
+                    || extension.eq_ignore_ascii_case("yml") =>
+            {
+                Self::Yaml
+            }
+            _ => Self::Text,
         }
     }
 
@@ -55,6 +58,10 @@ impl Format {
         match self {
             Self::Json => serde_json::from_str(source).context("Invalid JSON"),
             Self::Yaml => serde_yaml::from_str(source).context("Invalid YAML"),
+            Self::Text => {
+                ensure!(is_text(source), "Binary content cannot be edited as text");
+                Ok(Value::String(source.to_string()))
+            }
         }
     }
 
@@ -62,8 +69,18 @@ impl Format {
         match self {
             Self::Json => Ok(format!("{}\n", serde_json::to_string_pretty(value)?)),
             Self::Yaml => Ok(serde_yaml::to_string(value)?),
+            Self::Text => value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("Expected plain text")),
         }
     }
+}
+
+pub(super) fn is_text(source: &str) -> bool {
+    !source.chars().any(|character| {
+        character.is_control() && !matches!(character, '\t' | '\r' | '\n' | '\u{000c}')
+    })
 }
 
 /// JSON-pointer paths avoid ambiguity for selectors and keys containing dots.
@@ -149,7 +166,16 @@ impl Document {
     }
 
     pub fn validate(&self) -> Result<()> {
-        validate_value(self.kind, &self.value()?)
+        let value = self.value()?;
+        if self.format == Format::Text {
+            ensure!(
+                self.kind == DocumentKind::Data,
+                "Configuration documents must use YAML or JSON"
+            );
+            Ok(())
+        } else {
+            validate_value(self.kind, &value)
+        }
     }
 
     /// Invalid drafts are editable, but validation remains a mandatory save gate.
@@ -201,6 +227,7 @@ impl Document {
         let source = match self.format {
             Format::Json => self.format.serialize(&expected)?,
             Format::Yaml => apply_yaml(&self.source, &edit)?,
+            Format::Text => return Err(anyhow!("Plain text has no structured fields")),
         };
         // A CST editor must never silently change the meaning of unrelated YAML.
         ensure!(

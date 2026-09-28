@@ -950,10 +950,12 @@ scenario selection IDs, or capture filenames.
 
 The Workspace files section contains workspace configuration and every regular
 file under `common`, including nested files, JavaScript helpers such as
-`_on-ready.js`, CSS, images, and files without extensions. YAML/JSON files open in
-the built-in editor; unsupported formats remain visible but disabled, with an
-unsupported-file tooltip. Suite-like filenames under `common` remain in this
-section rather than the runnable suite list. Opening a viewport file displays its
+`_on-ready.js`, CSS, images, and files without extensions. UTF-8 text files up to
+4 MiB open in the built-in editor regardless of extension. YAML/JSON retain their
+configuration editing; other text files use Source only. Binary, non-UTF-8,
+unreadable, and oversized files remain visible but disabled, with a reason in
+their tooltip. Suite-like filenames under `common` remain in this section rather
+than the runnable suite list. Opening a viewport file displays its
 definitions in the lower pane. Open configuration file adds other workspace-relative
 data files, including custom viewport definitions.
 
@@ -1095,7 +1097,8 @@ the single active workspace and links to live execution while a run is active.
 
 Fields provides typed controls derived from the Rust schemas. Advanced reveals
 optional root settings. Source exposes complete YAML/JSON with highlighting,
-selection, native text editing, and search. Effective uses the real CLI resolver.
+selection, native text editing, and search, and opens other text files without
+configuration highlighting or validation. Effective uses the real CLI resolver.
 
 Related fields are grouped into General, Capture, Session and dependencies,
 Execution, Page setup, and Behavior. Short values use a two-column layout; URLs
@@ -1138,6 +1141,12 @@ the editor opens Source, including reselecting an already-open suite. Selecting
 a scenario or action opens its Fields. Suite selection while reviewing Results
 stays in Results and switches the displayed suite.
 
+JavaScript, CSS, and other non-YAML/JSON text files have only the Source tab, with
+search, undo/redo, Save, and Save As. Empty text files are editable. Saving keeps
+the source bytes, including comments and line endings, and detects external edits
+or deletion before replacing a file. Save As does not overwrite an existing file
+or convert between plain text and YAML/JSON; use a matching destination type.
+
 Switching Source, Fields, and Effective reads pending input before changing the
 view. Invalid source stays in Source when Fields cannot represent it, with its
 diagnostic retained. File-menu actions use the same availability rules as command
@@ -1153,7 +1162,7 @@ external-change protection still apply.
 Blank or comment-only `regressify.yaml` and `regressify.yml` files use defaults,
 just like `{}`. Opening, validating, and saving preserve their source text. Fields
 can add the first setting, and undo restores the original text. Explicit `null`
-or `~` values remain invalid, as do blank suite, viewport, data, and JSON documents.
+or `~` values remain invalid, as do blank suite, viewport, structured data, and JSON documents.
 
 Source has local YAML/JSON schema completion. Suggestions appear while typing
 property names, supported values, and documented examples; Ctrl+Space opens the menu
@@ -1173,6 +1182,7 @@ Hover over a field or value for its schema description, required/optional status
 expected type, and examples. These hints contain schema metadata, not entered
 credential values. Arbitrary data files, JavaScript, and live-page CSS selectors
 are not completed. JSON files and Effective use JSON highlighting; YAML uses YAML.
+Other text files use plain-text editing without schema diagnostics or hover help.
 
 Schemas are generated automatically from the Rust types with `schemars`.
 Field documentation, examples, and constraints live beside those types and feed

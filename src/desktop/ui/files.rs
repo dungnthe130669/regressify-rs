@@ -609,7 +609,16 @@ impl Workbench {
                     .open
                     .as_ref()
                     .map(|open| open.entry.path.clone());
-                this.tab = 0;
+                this.tab = if this
+                    .session
+                    .open
+                    .as_ref()
+                    .is_some_and(|open| open.document.format == Format::Text)
+                {
+                    1
+                } else {
+                    0
+                };
                 this.sync_editor(window, cx);
                 this.refresh_results(window, cx);
                 this.status = "File saved".into();
@@ -796,7 +805,11 @@ impl Workbench {
                         } else {
                             DocumentKind::Data
                         };
-                        let entry = Entry { path, kind };
+                        let entry = Entry {
+                            path,
+                            kind,
+                            editable: true,
+                        };
                         if !this
                             .session
                             .entries

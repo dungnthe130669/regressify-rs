@@ -345,6 +345,19 @@ impl Runtime {
     }
 }
 
+fn frame_url(tree: &Value, frame_id: &str) -> Option<String> {
+    let frame = &tree["frame"];
+    if frame["id"].as_str() == Some(frame_id) {
+        let url = frame["url"].as_str()?;
+        let fragment = frame["urlFragment"].as_str().unwrap_or_default();
+        return Some(format!("{url}{fragment}"));
+    }
+    tree["childFrames"]
+        .as_array()?
+        .iter()
+        .find_map(|child| frame_url(child, frame_id))
+}
+
 fn check_evaluation(result: &Value) -> Result<()> {
     if let Some(details) = result.get("exceptionDetails") {
         bail!(
@@ -662,7 +675,29 @@ impl Target {
     }
 
     pub async fn url(&self) -> Result<Option<String>> {
-        Ok(Some(self.evaluate("location.href").await?.into_value()?))
+        // Redirects replace JavaScript contexts; frame metadata does not depend on them.
+        let tree = self
+            .runtime
+            .client
+            .call(Some(&self.realm.session), "Page.getFrameTree", json!({}))
+            .await?;
+        if let Some(url) = frame_url(&tree["frameTree"], &self.realm.frame) {
+            return Ok(Some(url));
+        }
+        let session = {
+            let mut cache = self.runtime.cache.lock().await;
+            cache.drain();
+            cache.sessions.get(&self.realm.frame).cloned()
+        };
+        let Some(session) = session else {
+            return Ok(None);
+        };
+        let tree = self
+            .runtime
+            .client
+            .call(Some(&session), "Page.getFrameTree", json!({}))
+            .await?;
+        Ok(frame_url(&tree["frameTree"], &self.realm.frame))
     }
 
     pub async fn wait_for_ready(&self, timeout: Duration) -> Result<()> {
@@ -752,6 +787,79 @@ impl Target {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn frame_urls_follow_target_identity_and_preserve_fragments() {
+        let tree = serde_json::json!({
+            "frame": {"id": "main", "url": "https://example.com/?tab=one", "urlFragment": "#top"},
+            "childFrames": [
+                {"frame": {"id": "sibling", "url": "about:blank"}},
+                {
+                    "frame": {"id": "child", "url": "https://auth.example.com/login"},
+                    "childFrames": [{
+                        "frame": {"id": "nested", "url": "https://other.example.com/", "urlFragment": "#ready"}
+                    }]
+                }
+            ]
+        });
+        for (frame, expected) in [
+            ("main", "https://example.com/?tab=one#top"),
+            ("sibling", "about:blank"),
+            ("child", "https://auth.example.com/login"),
+            ("nested", "https://other.example.com/#ready"),
+        ] {
+            assert_eq!(super::frame_url(&tree, frame).as_deref(), Some(expected));
+        }
+        assert_eq!(super::frame_url(&tree, "missing"), None);
+    }
+
+    #[test]
+    fn frame_urls_do_not_substitute_an_unavailable_target() {
+        for tree in [
+            serde_json::Value::Null,
+            serde_json::json!({"frame": {"id": "main"}}),
+            serde_json::json!({"frame": {"id": "main", "url": 123}}),
+            serde_json::json!({"frame": {"id": "other", "url": "https://example.com/"}}),
+        ] {
+            assert_eq!(super::frame_url(&tree, "main"), None);
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn url_reads_do_not_require_a_live_execution_context() -> anyhow::Result<()> {
+        let (mut browser, handler, directory) = super::super::browser_tests::launch_browser(
+            "url-context",
+            super::super::browsers::LaunchOptions::default(),
+        )
+        .await?;
+        let result: anyhow::Result<()> = async {
+            let page = browser.new_page("about:blank").await?;
+            let runtime = super::Runtime::new(&browser, &page).await?;
+            let target = runtime
+                .target(&None, std::time::Duration::from_secs(5))
+                .await?;
+            {
+                let mut cache = runtime.cache.lock().await;
+                cache.drain();
+                // Navigation can destroy a cached context before its invalidation event arrives.
+                cache.frames.insert(
+                    (target.realm.session.clone(), target.realm.frame.clone()),
+                    (target.realm.session.clone(), 1_000_000),
+                );
+            }
+            anyhow::ensure!(
+                target.url().await?.as_deref() == Some("about:blank"),
+                "URL read failed with a stale execution context"
+            );
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
+
     #[test]
     fn context_cache_invalidates_after_navigation_or_event_overflow() {
         let (sender, receiver) = tokio::sync::broadcast::channel(1);

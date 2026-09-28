@@ -20,7 +20,8 @@ description: 'Use when changing desktop file discovery, Save/Save As, suite crea
 1. Suite rename/delete use [staged artifact updates](../../../src/desktop/workspace/artifacts.rs) across default/environment and caller-supplied custom roots. Preserve explicit IDs, reject shared IDs/collisions, update historical raw reports and published snapshots, and roll back on document failure. This is not crash-atomic or a lock against external writers. Never touch browser states or remote deployments.
 1. `displayName` is presentation-only. Fields saves and Rename update local report labels without changing file/output identity. Pass active and saved-history roots from the UI; remap selections/activity after successful mutations. F2/Delete are scoped to the suite list and retain draft/confirmation guards.
 1. Keep discovery precedence aligned with the CLI; runnable_suite must reject a selected file shadowed by another format. Merge preferences without losing another window's recent workspaces or settings.
-1. List every regular file under `common`, including nested files and unsupported formats. Only `visual_tests` entries become suites. Keep unsupported rows visible but non-editable, guard mouse/keyboard activation, and enforce `Entry::supports_editing` at `Workspace::open_document` before parsing. Never treat JavaScript, CSS, or binary files as YAML.
+1. List every regular file under `common`, including nested and binary files. Only `visual_tests` entries become suites. Compute `Entry::supports_editing` from bounded UTF-8 text reads, not an extension whitelist. Keep binary, unreadable, and oversized rows visible but disabled; guard mouse/keyboard activation and recheck content and containment at `Workspace::open_document`. Never treat JavaScript or CSS as YAML.
+1. Non-YAML/JSON text uses `Format::Text` and Source only. Preserve exact source, undo/redo, conflict detection, and no-clobber Save As; reject binary controls and conversion between text and structured formats. Keep Source selected after Save As and breadcrumb navigation.
 
 ## Checks
 
@@ -35,7 +36,7 @@ cargo test --features gui-tests --lib corrected_invalid_source -- --test-threads
 
 Cover repairs of existing syntax/schema errors, suite status refresh after saving, external edits/deletion, existing destinations, path traversal/symlinks, reserved names, duplicate/shadowed suites, read-only paths, and concurrent settings.
 
-GUI fixtures use `Session::connect`, so initialized default files already exist. Validate only editable documents, but assert every runtime file is listed, including `_on-ready.js` and `_override.css`. Suite-creation assertions must preserve that inventory; sidebar-scroll fixtures must count total non-suite entries, including unsupported files, and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
+GUI fixtures use `Session::connect`, so initialized default files already exist. Validate only editable documents, and assert `_on-ready.js` and `_override.css` are listed and editable. `common_text_files_` covers raw saves, content/size boundaries, conflicts, and Save As; `workspace_files_text_documents_support_source_editing_and_save` covers native editing and binary activation guards. Suite-creation assertions preserve the runtime inventory; sidebar-scroll fixtures count all non-suite entries and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
 
 ## Maintain
 

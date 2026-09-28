@@ -423,9 +423,16 @@ In `test` mode, URL replacements from the active replacement profile and suite/w
 URL patterns support `*` within a path segment, `**` across path depth, and
 wildcards in query values.
 
+The URL is matched before the delay or selector wait, within `elementTimeout`.
+URL checks follow redirects and same-document navigation without depending on
+JavaScript execution contexts. Query strings and fragments are included in the
+match; a `frame` option scopes the URL check to that frame.
+
 > Important:
 >
-> Within a scenario, whenever there is an action that leads to a navigation to other URL, please ensure that the very next action wait for that URL to fully load before performing any other steps.
+> After an action that triggers navigation, wait for the destination URL and a
+> visible element on that page before continuing. A matching URL alone does not
+> guarantee that the page has finished loading.
 
 Example:
 

@@ -93,6 +93,11 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- URL waits now read CDP frame metadata instead of evaluating `location.href` in
+  a JavaScript context that a redirect can destroy. A deterministic Chromium
+  regression reproduces the original missing-context error and passes after the
+  fix. Local fixtures cover delayed cross-origin redirects, selector readiness,
+  SPA query/fragment changes, bounded timeouts, and frame-scoped URL checks.
 - Git review now uses a side-by-side text comparison instead of schema-dependent
   settings/scenario grouping. Invalid YAML/JSON and ordinary UTF-8 files retain
   line-numbered, aligned red/green changes with shared scrolling, change navigation,
@@ -109,9 +114,12 @@ it was risk-focused, not an exhaustive security certification.
   safe URLs, destination edits, disk reload, and compact light/dark layouts.
 - Desktop Workspace files now lists every regular file under `common`, including
   `_on-ready.js`, `_override.css`, and nested, extensionless, or binary assets.
-  Suite-like helper names stay separate from runnable suites. Unsupported formats
-  remain visible but non-editable. Model and native-event regressions cover
-  discovery, mouse/keyboard guards, and sidebar scrolling in both themes/window sizes.
+  Suite-like helper names stay separate from runnable suites. UTF-8 text files up
+  to 4 MiB are editable regardless of extension; JavaScript, CSS, and other text
+  use Source without configuration parsing. Binary, non-UTF-8, unreadable, and
+  oversized files remain visible but disabled. Model and native-event regressions
+  cover discovery, raw Save/Save As, undo/redo, external conflicts, size limits,
+  mouse/keyboard guards, and sidebar scrolling in both themes/window sizes.
 - Duplicate scenario-ID errors now identify the suite, source file, and both
   conflicting scenario entries, including numbers, labels, and URLs with
   only passwords redacted. Parser and multi-suite regressions cover

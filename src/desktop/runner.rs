@@ -1233,6 +1233,7 @@ mod tests {
                     entry: Entry {
                         path: format!("visual_tests/{name}.tests.yaml").into(),
                         kind: DocumentKind::Suite,
+                        editable: true,
                     },
                     name: name.into(),
                     display_name: None,
