@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, ensure};
-use serde_json::Value;
 
 use super::{
     bounded_read, phase, read_report_configuration, report_image_relative, validate_suite_id,
@@ -18,38 +17,6 @@ use crate::helpers::png::{
 const MIB: u64 = 1024 * 1024;
 const QUALITY_STEPS: [u8; 8] = [99, 95, 90, 85, 80, 70, 60, 50];
 const MIN_COMPARISON_QUALITY: u8 = 80;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum SwaTier {
-    Free,
-    Standard,
-    Unknown,
-}
-
-impl SwaTier {
-    pub fn from_response(info: &Value) -> Self {
-        match info["sku"].as_str() {
-            Some(sku) if sku.eq_ignore_ascii_case("Standard") => Self::Standard,
-            Some(sku) if sku.eq_ignore_ascii_case("Free") => Self::Free,
-            _ => Self::Unknown,
-        }
-    }
-
-    pub fn limit(self) -> u64 {
-        match self {
-            Self::Standard => 500 * MIB,
-            Self::Free | Self::Unknown => 250 * MIB,
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Free => "Free",
-            Self::Standard => "Standard",
-            Self::Unknown => "unknown (using the Free limit conservatively)",
-        }
-    }
-}
 
 pub(super) struct PreparedReport {
     source: PathBuf,
@@ -112,15 +79,9 @@ fn inventory(root: &Path) -> Result<(Vec<ReportFile>, u64)> {
         });
         ensure!(
             files.len() <= 100_000,
-            "Azure deployment exceeds the 100000-file package limit; select fewer suites"
+            "Deployment exceeds the 100000-file package limit; select fewer suites"
         );
     }
-    files.sort_by(|left, right| {
-        right
-            .bytes
-            .cmp(&left.bytes)
-            .then_with(|| left.relative.cmp(&right.relative))
-    });
     Ok((files, total))
 }
 
@@ -197,9 +158,11 @@ fn classify_images(root: &Path, files: &mut [ReportFile], deadline: Instant) -> 
     Ok(())
 }
 
-fn read_png(path: &Path) -> Result<Vec<u8>> {
-    let bytes = bounded_read(fs::File::open(path)?, 128 * MIB as usize, "Deployment PNG")?;
-    read_bounded_png_dimensions_from_reader(bytes.as_slice(), path)?;
+fn read_png(root: &Path, relative: &Path) -> Result<Vec<u8>> {
+    let path = super::artifact_source(root, relative, false)?
+        .context("Deployment image is unavailable")?;
+    let bytes = bounded_read(fs::File::open(&path)?, 128 * MIB as usize, "Deployment PNG")?;
+    read_bounded_png_dimensions_from_reader(bytes.as_slice(), &path)?;
     Ok(bytes)
 }
 
@@ -311,7 +274,7 @@ fn reduce_images(
                     break;
                 }
                 let result = (|| -> Result<Option<(Vec<u8>, u8)>> {
-                    let image = lodepng::decode32(&read_png(&root.join(&file.relative))?)?;
+                    let image = lodepng::decode32(&read_png(root, &file.relative)?)?;
                     let Some(bytes) = quantize(&image, quality, deadline)? else {
                         return Ok(None);
                     };
@@ -373,8 +336,57 @@ fn reduce_images(
 
 pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<PreparedReport> {
     check_deadline(deadline)?;
-    phase("Measuring uncompressed Azure report content");
-    let (mut files, original_bytes) = inventory(root)?;
+    phase("Measuring uncompressed deployment content");
+    let (files, original_bytes) = inventory(root)?;
+    prepare_report(root, files, original_bytes, limit, deadline)
+}
+
+pub(super) fn prepare_files(
+    root: &Path,
+    paths: impl IntoIterator<Item = PathBuf>,
+    limit: u64,
+    deadline: Instant,
+) -> Result<PreparedReport> {
+    let mut files = Vec::new();
+    let mut total = 0_u64;
+    check_deadline(deadline)?;
+    for relative in paths {
+        check_deadline(deadline)?;
+        let source = super::artifact_source(root, &relative, false)?
+            .context("Deployment file is unavailable")?;
+        let bytes = fs::metadata(source)?.len();
+        total = total
+            .checked_add(bytes)
+            .context("Deployment content size overflow")?;
+        files.push(ReportFile {
+            relative,
+            bytes,
+            priority: Priority::Protected,
+            quality: 100,
+            optimizable: true,
+        });
+        ensure!(
+            files.len() <= 100_000,
+            "Deployment exceeds the 100000-file package limit; select fewer suites"
+        );
+    }
+    prepare_report(root, files, total, limit, deadline)
+}
+
+fn prepare_report(
+    root: &Path,
+    mut files: Vec<ReportFile>,
+    original_bytes: u64,
+    limit: u64,
+    deadline: Instant,
+) -> Result<PreparedReport> {
+    check_deadline(deadline)?;
+    files.sort_by(|left, right| {
+        right
+            .bytes
+            .cmp(&left.bytes)
+            .then_with(|| left.relative.cmp(&right.relative))
+    });
     phase(&format!(
         "Deployment content: {:.2} MiB; storage budget: {:.2} MiB (uncompressed)",
         original_bytes as f64 / MIB as f64,
@@ -388,7 +400,8 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
         return Ok(prepared);
     }
 
-    classify_images(root, &mut files, deadline)?;
+    let source_root = root.canonicalize()?;
+    classify_images(&source_root, &mut files, deadline)?;
     let temporary = tempfile::Builder::new()
         .prefix("regressify-deploy-")
         .tempdir()
@@ -405,7 +418,9 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
                 .parent()
                 .context("Deployment file has no parent")?,
         )?;
-        let copied = fs::copy(root.join(&file.relative), &destination).with_context(|| {
+        let source = super::artifact_source(&source_root, &file.relative, false)?
+            .context("Deployment file is unavailable")?;
+        let copied = fs::copy(source, &destination).with_context(|| {
             format!(
                 "Cannot copy '{}' to temporary deployment storage; check available disk space",
                 file.relative.display()
@@ -456,10 +471,12 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
         {
             continue;
         }
-        let source = root.join(&file.relative);
         options.timeout = Some(deadline.saturating_duration_since(Instant::now()));
         let optimized = (|| -> Result<Vec<u8>> {
-            Ok(oxipng::optimize_from_memory(&read_png(&source)?, &options)?)
+            Ok(oxipng::optimize_from_memory(
+                &read_png(&source_root, &file.relative)?,
+                &options,
+            )?)
         })();
         check_deadline(deadline)?;
         processed += 1;
@@ -492,7 +509,7 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
     }
     if total > limit {
         reduce_images(
-            root,
+            &source_root,
             prepared.path(),
             &mut files,
             &mut total,
@@ -503,7 +520,7 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
     }
     ensure!(
         total <= limit,
-        "Report cannot fit the Azure storage limit: {:.2} MiB originally, {:.2} MiB after optimization, {:.2} MiB allowed ({skipped} images could not be optimized). Failed diffs, error placeholders, and image dimensions were preserved. Select fewer suites or upgrade Free to Standard; also check Azure's total storage usage across preview environments. Original reports and baselines are unchanged.",
+        "Report cannot fit the deployment storage limit: {:.2} MiB originally, {:.2} MiB after optimization, {:.2} MiB allowed ({skipped} images could not be optimized). Failed diffs, error placeholders, and image dimensions were preserved. Select fewer suites or use a larger deployment storage budget. Original reports and baselines are unchanged.",
         original_bytes as f64 / MIB as f64,
         total as f64 / MIB as f64,
         limit as f64 / MIB as f64
@@ -527,7 +544,7 @@ pub(super) fn prepare(root: &Path, limit: u64, deadline: Instant) -> Result<Prep
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use serde_json::json;
 
@@ -584,7 +601,7 @@ mod tests {
         Ok(())
     }
 
-    fn report_fixture() -> Result<tempfile::TempDir> {
+    pub(crate) fn report_fixture() -> Result<tempfile::TempDir> {
         let root = tempfile::tempdir()?;
         fs::create_dir_all(root.path().join("one/html_report"))?;
         fs::create_dir_all(root.path().join("one/bitmaps_reference"))?;
@@ -613,7 +630,8 @@ mod tests {
                 "reference":format!("../bitmaps_reference/{label}.png?original-hash"),
                 "test":format!("../bitmaps_test/run/{label}.png?original-hash"),
                 "diffImage":format!("../bitmaps_test/run/{label}-diff.png?original-hash"),
-                "diff":{"misMatchPercentage":"12.34"}}}));
+                "diff":{"misMatchPercentage":"12.34","isSameDimensions":true,
+                    "dimensionDifference":{"width":0,"height":0}}}}));
         }
         fs::write(
             root.path().join("one/html_report/config.js"),
@@ -711,19 +729,6 @@ mod tests {
     }
 
     #[test]
-    fn storage_budget_uses_the_detected_tier_and_falls_back_conservatively() {
-        for (info, expected) in [
-            (json!({"sku":"Free"}), 250),
-            (json!({"sku":"Standard"}), 500),
-            (json!({"sku":"standard"}), 500),
-            (json!({}), 250),
-            (json!({"sku":"unexpected"}), 250),
-        ] {
-            assert_eq!(SwaTier::from_response(&info).limit(), expected * MIB);
-        }
-    }
-
-    #[test]
     fn fitting_reports_are_byte_identical_and_need_no_optimization_copy() -> Result<()> {
         let root = tempfile::tempdir()?;
         fs::write(root.path().join("index.html"), "report")?;
@@ -731,6 +736,26 @@ mod tests {
         assert!(prepared.temporary.is_none());
         assert_eq!(prepared.path(), root.path());
         assert_eq!(fs::read(root.path().join("index.html"))?, b"report");
+        Ok(())
+    }
+
+    #[test]
+    fn selected_files_validate_paths_without_measuring_unselected_content() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().canonicalize()?;
+        fs::write(root.join("index.html"), "report")?;
+        fs::write(root.join("unselected.txt"), "unselected content")?;
+        let prepared = prepare_files(&root, [PathBuf::from("index.html")], 6, deadline())?;
+        assert_eq!(prepared.path(), root);
+        for relative in [
+            PathBuf::from("../outside"),
+            PathBuf::from("missing.png"),
+            PathBuf::from("index.html?version"),
+            root.join("index.html"),
+        ] {
+            assert!(prepare_files(&root, [relative], 6, deadline()).is_err());
+        }
+        assert_eq!(fs::read(root.join("index.html"))?, b"report");
         Ok(())
     }
 
@@ -745,11 +770,10 @@ mod tests {
         let error = prepare(root.path(), 1, deadline())
             .err()
             .context("Expected a size failure")?;
-        assert!(
-            error
-                .to_string()
-                .contains("Original reports and baselines are unchanged")
-        );
+        let message = error.to_string();
+        assert!(message.contains("Original reports and baselines are unchanged"));
+        assert!(message.contains("deployment storage limit"));
+        assert!(!message.contains("Azure"));
         assert_eq!(fs::read(path)?, original);
         assert_eq!(fs::read(root.path().join("index.html"))?, b"report");
         Ok(())

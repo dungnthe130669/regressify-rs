@@ -558,7 +558,9 @@ Deployment budgets are 250 MiB for Free and 500 MiB for Standard per environment
 not the ZIP size. An unrecognized tier is logged and conservatively uses the Free
 budget. Reports already within budget are uploaded without image changes.
 
-Oversized Azure reports are optimized only in a separate OS-temporary directory.
+Oversized Azure and Cloudflare reports use the same image optimizer, only in a
+separate OS-temporary directory. Cloudflare uses a 2 GiB budget for selected public
+assets; excluded files and hosting policies do not count toward that budget.
 Local screenshots, references, report metadata, and files used by future
 comparisons are never overwritten. Lossless PNG recompression comes first. If
 more savings are needed, perceptual palette reduction tries progressively lower
@@ -575,8 +577,8 @@ The deployment log reports the budget, savings, reduced images, and skipped
 images. If the report cannot fit within these safeguards, deployment stops before
 upload with sizes and recovery steps. Choose fewer suites or a larger plan;
 Azure may also reject a fitting report if other environments exhaust total app
-storage. Optimization shares the deployment deadline and does not affect Netlify
-or Cloudflare.
+storage. Optimization shares each provider's deployment deadline and does not
+affect Netlify.
 
 Netlify verifies site access, hashes the staged files, and creates an asynchronous
 file-digest deployment; it does not build or upload a ZIP. The manifest includes
@@ -634,11 +636,15 @@ Stop cancels local work, not a publication already accepted by Cloudflare.
 Cloudflare limits individual files to 25 MiB, including screenshots. Free accounts
 allow 20,000 files per Worker version; Paid accounts allow 100,000. The client
 checks the per-file limit, caps content at 2 GiB and 100,000 paths, and lets the
-manifest API enforce the account's file-count allowance. Manifests and API
-responses are bounded to 32 MiB and 8 MiB respectively. Oversized files fail
-without reducing image quality or uploading to R2. Deploy fewer suites or reduce
-capture sizes when needed. Azure access restrictions are rejected before any
-Cloudflare API request instead of silently publishing unprotected reports.
+manifest API enforce the account's file-count allowance. Reports above the total
+content budget use the shared image optimizer before any API request; asset hashes
+and sizes are rebuilt from the optimized copy, which stays available through
+upload and public verification. Reports already within budget are unchanged.
+Manifests and API responses are bounded to 32 MiB and 8 MiB respectively. Individual
+files above 25 MiB still fail before optimization; they are never uploaded to R2.
+Deploy fewer suites or reduce capture sizes when needed. Azure access restrictions
+are rejected before any Cloudflare API request instead of silently publishing
+unprotected reports.
 
 Provider failures include available structured error details, HTTP status,
 request/deployment identifiers, and recovery guidance for access, storage,

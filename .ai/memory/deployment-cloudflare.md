@@ -1,6 +1,6 @@
 # Cloudflare Deployment
 
-Verified: 2026-09-28
+Verified: 2026-09-29
 
 - [CloudflareClient](../../src/desktop/deployment/cloudflare.rs) uses Workers Static
   Assets directly: MIME-aware manifest, missing-content raw/Base64 uploads,
@@ -21,7 +21,13 @@ Verified: 2026-09-28
   Azure access-policy guard before contacting their APIs.
 - Client limits: 25 MiB per file, 100,000 paths, 2 GiB raw content, 32 MiB manifest,
   8 MiB responses, a shared 50 MiB raw upload budget, and a 55-minute deadline. The
-  provider enforces Free's 20,000-file allowance. Uploads never reduce image quality.
+  provider enforces Free's 20,000-file allowance. Over-budget reports use the
+  [shared optimizer](../../src/desktop/deployment/optimization.rs) on validated
+  public assets only; excluded files and policies do not consume the budget.
+  Per-file limits are still checked before optimization. Rebuilt hashes describe
+  optimized bytes, and the temporary copy survives uploads and public verification.
+  PNG optimization is lossless first, with guarded palette reduction if needed;
+  snapshot cache versions are refreshed without renaming files or changing sources.
   JWT hints select raw per-hash uploads (up to eight concurrent) or multipart
   (three). Size-based upload timeouts cap at 30 minutes. Permits cover reads/retries.
 - Saved targets retain validated HTML/not-found modes, compatibility date, and

@@ -20,6 +20,8 @@ use reqwest::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
+use super::optimization::{self, PreparedReport};
+
 const MAX_FILES: usize = 100_000;
 const MAX_FILE_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_CONTENT_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -327,15 +329,11 @@ impl CloudflareClient {
         let directory = root.to_path_buf();
         let exclude = target.exclude.clone();
         let html_handling = target.html_handling.clone();
-        let (manifest, headers, redirects) = tokio::task::spawn_blocking(move || {
-            let manifest = Manifest::create_bounded(
-                &directory,
-                deadline,
-                MAX_FILES,
-                MAX_CONTENT_BYTES,
-                MAX_FILE_BYTES,
-                &exclude,
-            )?;
+        // Keep optimized files alive until asset uploads and public verification have finished.
+        let (manifest, headers, redirects, _prepared) = tokio::task::spawn_blocking(move || {
+            let (manifest, prepared) =
+                Manifest::prepare(&directory, deadline, MAX_CONTENT_BYTES, &exclude)?;
+            let directory = directory.canonicalize()?;
             let patterns = exclude
                 .iter()
                 .map(|pattern| glob::Pattern::new(pattern))
@@ -347,12 +345,12 @@ impl CloudflareClient {
                 {
                     Ok(String::new())
                 } else {
-                    hosting_policy(&manifest.root, name)
+                    hosting_policy(&directory, name)
                 }
             };
             let headers = policy("_headers")?;
             let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
-            Ok::<_, anyhow::Error>((manifest, headers, redirects))
+            Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
         })
         .await??;
         let body = serde_json::to_vec(&serde_json::json!({"manifest": &manifest.files}))?;
@@ -1071,6 +1069,47 @@ struct Manifest {
 }
 
 impl Manifest {
+    fn prepare(
+        root: &Path,
+        deadline: Instant,
+        byte_limit: u64,
+        excludes: &[String],
+    ) -> Result<(Self, PreparedReport)> {
+        // Validate and select assets before optimization; only the total-byte limit is deferred.
+        let manifest = Self::create_bounded(
+            root,
+            deadline,
+            MAX_FILES,
+            u64::MAX,
+            MAX_FILE_BYTES,
+            excludes,
+        )?;
+        let prepared = optimization::prepare_files(
+            &manifest.root,
+            manifest.files.keys().map(|path| PathBuf::from(&path[1..])),
+            byte_limit,
+            deadline,
+        )?;
+        let manifest = if prepared.path() == manifest.root {
+            manifest
+        } else {
+            Self::create_bounded(
+                prepared.path(),
+                deadline,
+                MAX_FILES,
+                byte_limit,
+                MAX_FILE_BYTES,
+                excludes,
+            )?
+        };
+        ensure!(
+            manifest.bytes <= byte_limit,
+            "Cloudflare deployment exceeds its {} MiB client content limit",
+            byte_limit as f64 / (1024.0 * 1024.0)
+        );
+        Ok((manifest, prepared))
+    }
+
     #[cfg(test)]
     fn create(root: &Path, deadline: Instant) -> Result<Self> {
         Self::create_bounded(
@@ -2643,6 +2682,151 @@ mod tests {
         for content in ["change", "short", "longer report"] {
             std::fs::write(root.path().join("index.html"), content)?;
             assert!(manifest.read_asset(hash).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_reports_use_shared_optimization_and_hash_the_prepared_assets() -> Result<()> {
+        let root = optimization::tests::report_fixture()?;
+        let original = Manifest::create(root.path(), deadline())?;
+        let limit = original.bytes * 85 / 100;
+        let original_files = original
+            .files
+            .iter()
+            .map(|(path, asset)| Ok((path.clone(), original.read_asset(&asset.hash)?.1)))
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        std::fs::write(root.path().join("_headers"), "x".repeat(limit as usize))?;
+        std::fs::write(root.path().join(".env"), "private")?;
+        std::fs::write(root.path().join("debug.map"), "x".repeat(limit as usize))?;
+        std::fs::create_dir(root.path().join("_worker.js"))?;
+        let excludes = ["*.map".into(), "_worker.js".into()];
+        let (manifest, prepared) = Manifest::prepare(root.path(), deadline(), limit, &excludes)?;
+        assert!(manifest.bytes <= limit);
+        assert_eq!(manifest.files.len(), original.files.len());
+        assert_eq!(manifest.root, prepared.path().canonicalize()?);
+        assert_ne!(manifest.root, root.path().canonicalize()?);
+        assert!(!manifest.root.join("_headers").exists());
+        assert!(!manifest.root.join(".env").exists());
+        assert!(!manifest.root.join("debug.map").exists());
+        let mut reduced = 0;
+        for (path, asset) in &manifest.files {
+            let (relative, bytes) = manifest.read_asset(&asset.hash)?;
+            assert_eq!(asset.hash, asset_hash(&bytes, &relative));
+            assert_eq!(asset.size, bytes.len() as u64);
+            let source = &original_files[path];
+            assert_eq!(std::fs::read(root.path().join(&path[1..]))?, *source);
+            if path.ends_with(".png") {
+                let source = lodepng::decode32(source)?;
+                let optimized = lodepng::decode32(&bytes)?;
+                assert_eq!(
+                    (source.width, source.height),
+                    (optimized.width, optimized.height)
+                );
+                if path.contains("failed") {
+                    assert_eq!(source.buffer, optimized.buffer);
+                } else if source.buffer != optimized.buffer {
+                    reduced += 1;
+                }
+            }
+        }
+        assert!(reduced > 0);
+        drop(prepared);
+        assert!(!manifest.root.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn preparation_preserves_fitting_reports_and_rejects_unfittable_content() -> Result<()> {
+        assert_eq!(MAX_CONTENT_BYTES, 2 * 1024 * 1024 * 1024);
+        let root = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        let (manifest, prepared) = Manifest::prepare(root.path(), deadline(), 6, &[])?;
+        assert_eq!(manifest.bytes, 6);
+        assert_eq!(prepared.path(), root.path().canonicalize()?);
+        assert!(Manifest::prepare(root.path(), deadline(), 5, &[]).is_err());
+        assert!(Manifest::prepare(root.path(), Instant::now(), 6, &[]).is_err());
+        assert_eq!(std::fs::read(root.path().join("index.html"))?, b"report");
+        std::fs::write(root.path().join(".assetsignore"), "*")?;
+        assert!(Manifest::prepare(root.path(), deadline(), 6, &[".assetsignore".into()]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn optimized_snapshots_refresh_image_suite_and_manifest_versions() -> Result<()> {
+        let source = optimization::tests::report_fixture()?;
+        let report = super::super::read_report_configuration(
+            &source.path().join("one/html_report/config.js"),
+        )?;
+        std::fs::write(
+            source.path().join("one/bitmaps_test/run/report.json"),
+            serde_json::to_vec(&report)?,
+        )?;
+        let suites = vec!["one".into()];
+        crate::snapshot::generate_site(
+            source.path(),
+            &suites,
+            &crate::cli::args::SnapshotArgs {
+                test_suite: suites.clone(),
+                title: None,
+                heading: None,
+                subheading: None,
+            },
+            &crate::config::WorkspaceConfig::default(),
+        )?;
+        let staging = tempfile::tempdir()?;
+        let root = staging.path().join("report");
+        super::super::stage_reports(source.path(), &suites, &root)?;
+        let original = Manifest::create(&root, deadline())?;
+        let original_index = std::fs::read(root.join("index.html"))?;
+        let image_bytes: u64 = original
+            .files
+            .iter()
+            .filter(|(path, _)| path.ends_with(".png"))
+            .map(|(_, asset)| asset.size)
+            .sum();
+        let limit = original.bytes - image_bytes * 15 / 100;
+        let (manifest, prepared) = Manifest::prepare(&root, deadline(), limit, &[])?;
+        assert!(manifest.bytes <= limit);
+        assert_eq!(
+            manifest.files.keys().collect::<Vec<_>>(),
+            original.files.keys().collect::<Vec<_>>()
+        );
+        let versioned_bytes = |value: &str| -> Result<Vec<u8>> {
+            let url = Url::parse("https://reports.invalid/")?.join(value)?;
+            let bytes = std::fs::read(prepared.path().join(url.path().trim_start_matches('/')))?;
+            let versions = url.query_pairs().collect::<Vec<_>>();
+            assert_eq!(versions.len(), 1);
+            assert_eq!(versions[0].0, "v");
+            assert_eq!(
+                versions[0].1,
+                crate::snapshot::get_asset_version(&bytes, 20)
+            );
+            Ok(bytes)
+        };
+        let index = std::fs::read_to_string(prepared.path().join("index.html"))?;
+        let manifest_bytes = std::fs::read(prepared.path().join("_snapshot/data/manifest.json"))?;
+        assert!(index.contains(&crate::snapshot::get_asset_version(&manifest_bytes, 20)));
+        assert_ne!(index.as_bytes(), original_index);
+        let data: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
+        let suite: serde_json::Value = serde_json::from_slice(&versioned_bytes(
+            data["suites"][0]["report"]
+                .as_str()
+                .context("Expected suite URL")?,
+        )?)?;
+        for capture in suite["tests"].as_array().context("Expected captures")? {
+            for key in ["reference", "test", "diff"] {
+                if let Some(image) = capture[key].as_str() {
+                    versioned_bytes(image)?;
+                }
+            }
+        }
+        assert_eq!(std::fs::read(root.join("index.html"))?, original_index);
+        for (path, asset) in &original.files {
+            assert_eq!(
+                asset_hash(&std::fs::read(root.join(&path[1..]))?, path),
+                asset.hash
+            );
         }
         Ok(())
     }

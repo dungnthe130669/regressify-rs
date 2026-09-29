@@ -1,11 +1,17 @@
 # Deployment Packaging
 
-Verified: 2026-09-23
+Verified: 2026-09-29
 
 - The [worker](../../src/desktop/worker.rs) regenerates selected snapshots, then
-  stages only the active SPA manifest and its versioned dependencies. Azure's
-  [optimization copy](../../src/desktop/deployment/budget.rs) inventories staging,
-  not the original output tree.
+  stages only the active SPA manifest and its versioned dependencies. The shared
+  [optimizer](../../src/desktop/deployment/optimization.rs) uses Azure's staged
+  files or Cloudflare's validated asset list, never the original output tree.
+  Budgets are 250 MiB for Azure Free/unknown, 500 MiB for Standard, and 2 GiB for
+  Cloudflare. Fitting reports need no optimization copy; Netlify is unchanged.
+- [Artifact reads](../../src/desktop/deployment.rs) require a canonical root for
+  containment checks, including Windows extended-length paths. Cloudflare reads
+  hosting policies from the original canonical staging root; its temporary
+  optimization copy contains only public assets and stays alive through verification.
 - The [runner](../../src/desktop/runner.rs) must keep unchosen report text as
   `None`, otherwise generated CLI flags override workspace snapshot settings.
   Saved activity version 1 prefilled built-in text; loading it migrates those
@@ -23,7 +29,8 @@ Verified: 2026-09-23
 - Compression roles come from suite data. Post-compression updates image query
   versions, suite JSON versions, and the entry manifest without changing paths.
   Versions use `get_asset_version(bytes, 20)` (SHA-384/base64url). Regression coverage:
-  `cargo test --features desktop --lib snapshot::site::tests`.
+  `cargo test --features desktop --lib snapshot::site::tests` and
+  `cargo test --features desktop --lib desktop::deployment::cloudflare::tests::optimized_snapshots_refresh_image_suite_and_manifest_versions`.
 - Verification: `cargo test --features desktop --lib desktop::deployment::tests::staging_includes_only_selected_report_dependencies`
   asserts the exact ZIP entry set and unchanged source files. Checking only that
   required files exist does not detect extra uploaded files.

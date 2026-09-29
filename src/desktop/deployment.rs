@@ -9,11 +9,11 @@ use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-mod budget;
 pub mod cloudflare;
 pub mod credentials;
 mod diagnostics;
 pub mod netlify;
+mod optimization;
 mod package;
 pub mod swa;
 pub mod tokens;

@@ -79,6 +79,17 @@ it was risk-focused, not an exhaustive security certification.
   still fails for `_snapshot/assets/app.js`; Cargo stops before later test targets.
   No frontend assets were changed during the save repair.
 
+## Shared Deployment Optimization (2026-09-29)
+
+- Azure and Cloudflare now share budget-aware PNG optimization in temporary
+  copies: 250 MiB for Azure Free/unknown, 500 MiB for Standard, and 2 GiB for
+  Cloudflare's selected assets. Sources stay unchanged, Cloudflare exclusions and
+  per-file limits remain enforced, and snapshot cache versions follow optimized bytes.
+- `cargo test --locked --features desktop --lib -- --quiet` passes with 661 tests
+  and 17 optional checks ignored. Coverage includes optimized Cloudflare manifests,
+  source preservation, limits, exclusions, cleanup, and snapshot cache versions.
+  No live deployment was attempted.
+
 ## Cloudflare Validation (2026-09-28)
 
 - The guarded temporary-Worker check passes automatic creation, production routing,

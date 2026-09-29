@@ -9,15 +9,41 @@ use reqwest::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use super::{
-    DeployTarget, DeploymentProvider,
-    budget::{self, SwaTier},
-    diagnostics,
-    package::Package,
-    phase,
-};
+use super::{DeployTarget, DeploymentProvider, diagnostics, optimization, package::Package, phase};
 
 const BLOCK_BYTES: usize = 4 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SwaTier {
+    Free,
+    Standard,
+    Unknown,
+}
+
+impl SwaTier {
+    fn from_response(info: &Value) -> Self {
+        match info["sku"].as_str() {
+            Some(sku) if sku.eq_ignore_ascii_case("Standard") => Self::Standard,
+            Some(sku) if sku.eq_ignore_ascii_case("Free") => Self::Free,
+            _ => Self::Unknown,
+        }
+    }
+
+    fn limit(self) -> u64 {
+        match self {
+            Self::Standard => 500 * 1024 * 1024,
+            Self::Free | Self::Unknown => 250 * 1024 * 1024,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Free => "Free",
+            Self::Standard => "Standard",
+            Self::Unknown => "unknown (using the Free limit conservatively)",
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -346,7 +372,7 @@ impl SwaClient {
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
             let package = tokio::task::spawn_blocking(move || {
-                let prepared = budget::prepare(&directory, tier.limit(), deadline)?;
+                let prepared = optimization::prepare(&directory, tier.limit(), deadline)?;
                 let package = Package::create(prepared.path(), 100_000)?;
                 ensure!(package.bytes <= tier.limit(), "Report size changed during packaging and exceeds the Azure {} storage limit; retry deployment", tier.label());
                 Ok::<_, anyhow::Error>(package)
@@ -469,6 +495,22 @@ mod tests {
 
     fn token() -> String {
         format!("{}-{}00f", "a".repeat(64), "b".repeat(36))
+    }
+
+    #[test]
+    fn storage_budget_uses_the_detected_tier_and_falls_back_conservatively() {
+        for (info, expected) in [
+            (json!({"sku":"Free"}), 250),
+            (json!({"sku":"Standard"}), 500),
+            (json!({"sku":"standard"}), 500),
+            (json!({}), 250),
+            (json!({"sku":"unexpected"}), 250),
+        ] {
+            assert_eq!(
+                SwaTier::from_response(&info).limit(),
+                expected * 1024 * 1024
+            );
+        }
     }
 
     #[tokio::test]
