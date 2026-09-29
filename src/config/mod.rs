@@ -21,6 +21,7 @@ pub const DEFAULT_DELAY_MS: f64 = 1000.0;
 pub const DEFAULT_POST_INTERACTION_WAIT_MS: f64 = 1000.0;
 pub const DEFAULT_ASYNC_COMPARE_LIMIT: usize = 2;
 pub const DEFAULT_ASYNC_CAPTURE_LIMIT: usize = 5;
+pub const DEFAULT_PIXEL_MATCH_THRESHOLD: f64 = 5.0;
 
 /// Workspace-level configuration loaded from `regressify.yaml` or `regressify.yml`.
 /// All fields are optional — missing fields inherit defaults.
@@ -63,6 +64,9 @@ pub struct WorkspaceConfig {
     /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
+    /// Per-pixel color tolerance from 0 to 100. Lower values highlight subtler color changes; this is not the allowed percentage of different pixels. Default: 5.
+    #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
+    pub pixel_match_threshold: Option<f64>,
     /// Skip the automatic page scroll used to load lazy content (default: false).
     pub no_scroll_top: Option<bool>,
     /// Delay after interactions in milliseconds. Non-negative; default: 1000.
@@ -127,6 +131,7 @@ pub struct ResolvedConfig {
     pub ignore_ssl_errors: bool,
     pub js_on_ready_path: Option<String>,
     pub mis_match_threshold: f64,
+    pub pixel_match_threshold: f64,
     pub no_scroll_top: bool,
     pub post_interaction_wait: Option<f64>,
     pub remove_selectors: Vec<String>,
@@ -159,6 +164,7 @@ impl Default for ResolvedConfig {
             ignore_ssl_errors: false,
             js_on_ready_path: None,
             mis_match_threshold: 0.1,
+            pixel_match_threshold: DEFAULT_PIXEL_MATCH_THRESHOLD,
             no_scroll_top: false,
             post_interaction_wait: Some(DEFAULT_POST_INTERACTION_WAIT_MS),
             remove_selectors: Vec::new(),
@@ -397,6 +403,12 @@ pub fn resolve_config(
             .or(workspace.mis_match_threshold)
             .unwrap_or(defaults.mis_match_threshold),
 
+        pixel_match_threshold: scenario
+            .pixel_match_threshold
+            .or(suite.pixel_match_threshold)
+            .or(workspace.pixel_match_threshold)
+            .unwrap_or(defaults.pixel_match_threshold),
+
         no_scroll_top: scenario
             .no_scroll_top
             .or(workspace.no_scroll_top)
@@ -540,6 +552,63 @@ mod tests {
                 .unwrap()
                 .contains("private")
         );
+    }
+
+    #[test]
+    fn pixel_match_threshold_cascades_and_preserves_explicit_zero() {
+        for (workspace_value, suite_value, scenario_value, expected) in [
+            (None, None, None, 5.0),
+            (Some(20.0), None, None, 20.0),
+            (Some(20.0), Some(10.0), None, 10.0),
+            (Some(20.0), Some(10.0), Some(3.1), 3.1),
+            (Some(20.0), Some(10.0), Some(0.0), 0.0),
+            (Some(20.0), Some(0.0), None, 0.0),
+            (Some(0.0), None, None, 0.0),
+        ] {
+            let workspace = WorkspaceConfig {
+                pixel_match_threshold: workspace_value,
+                ..Default::default()
+            };
+            let suite = TestSuite {
+                pixel_match_threshold: suite_value,
+                ..suite()
+            };
+            let scenario = TestScenario {
+                pixel_match_threshold: scenario_value,
+                ..scenario()
+            };
+            let resolved = resolve_config(&workspace, &suite, &scenario);
+
+            assert_eq!(resolved.pixel_match_threshold, expected);
+            assert_eq!(resolved.mis_match_threshold, 0.1);
+            assert_eq!(
+                serde_json::to_value(&resolved).unwrap()["pixelMatchThreshold"],
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_match_threshold_round_trips_at_all_configuration_levels() {
+        let workspace: WorkspaceConfig = serde_yaml::from_str("pixelMatchThreshold: 10\n").unwrap();
+        let suite: TestSuite = serde_yaml::from_str(
+            "pixelMatchThreshold: 3.1\nscenarios:\n  - url: https://example.com\n    pixelMatchThreshold: 0\n",
+        )
+        .unwrap();
+
+        assert_eq!(workspace.pixel_match_threshold, Some(10.0));
+        assert_eq!(suite.pixel_match_threshold, Some(3.1));
+        assert_eq!(suite.scenarios[0].pixel_match_threshold, Some(0.0));
+        assert_eq!(
+            serde_json::to_value(workspace).unwrap()["pixelMatchThreshold"],
+            10.0
+        );
+        let serialized = serde_json::to_value(suite).unwrap();
+        assert_eq!(serialized["pixelMatchThreshold"], 3.1);
+        assert_eq!(serialized["scenarios"][0]["pixelMatchThreshold"], 0.0);
+        let round_trip: TestSuite = serde_json::from_value(serialized).unwrap();
+        assert_eq!(round_trip.pixel_match_threshold, Some(3.1));
+        assert_eq!(round_trip.scenarios[0].pixel_match_threshold, Some(0.0));
     }
 
     #[test]

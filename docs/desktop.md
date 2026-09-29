@@ -1113,6 +1113,15 @@ steppers start from the effective inherited value; mismatch percentages remain
 within 0-100 and concurrency counts remain positive. File pickers sit beside
 their input. Field-issue links reveal the affected control even under filters.
 
+Pixel color threshold (`pixelMatchThreshold`) is available in the Capture group
+for workspace, suite, and scenario Fields, without enabling Advanced. It ranges
+from `0` to `100`, defaults to `5`, and steps by `0.1`. Lower values highlight
+subtler color changes; Mismatch threshold (%) only controls pass/fail. The pixel
+threshold is divided by `100` internally, so `5` means a normalized tolerance of
+`0.05`. Inheritance and Reset work as for other numeric settings, including an
+explicit `0` override. New captures save the resolved value; comparing a saved
+run reuses that run's threshold.
+
 Viewport and dependency lists retain free-form input and also offer checked
 choice menus. Viewports load asynchronously from the effective viewport file,
 including custom names and dimensions. Inherited or empty viewport lists mean

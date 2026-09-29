@@ -339,6 +339,7 @@ fn screenshot_path_in(
 /// alphabetical filename sorting.
 pub const REPORT_ORDER_FILE: &str = ".report-order.json";
 pub const REPORT_THRESHOLDS_FILE: &str = ".report-thresholds.json";
+pub const REPORT_PIXEL_THRESHOLDS_FILE: &str = ".report-pixel-thresholds.json";
 pub const REPORT_URLS_FILE: &str = ".report-urls.json";
 pub(crate) const REPORT_ORDER_VERSION: u8 = 1;
 pub(crate) const REPORT_URLS_VERSION: u8 = 1;
@@ -623,12 +624,38 @@ pub fn write_report_order(test_suite: &TestSuite, prefixes: &[String]) -> Result
 }
 
 pub fn write_report_thresholds(test_suite: &TestSuite, thresholds: &[(String, f64)]) -> Result<()> {
-    let run_dir = run_dir(test_suite)?;
-    create_dir_all(&run_dir)?;
+    write_threshold_manifest(&run_dir(test_suite)?, REPORT_THRESHOLDS_FILE, thresholds)
+}
+
+pub(crate) fn write_report_pixel_thresholds(
+    test_suite: &TestSuite,
+    thresholds: &[(String, f64)],
+) -> Result<()> {
+    write_threshold_manifest(
+        &run_dir(test_suite)?,
+        REPORT_PIXEL_THRESHOLDS_FILE,
+        thresholds,
+    )
+}
+
+fn write_threshold_manifest(
+    run_dir: &Path,
+    file_name: &str,
+    thresholds: &[(String, f64)],
+) -> Result<()> {
+    for (key, value) in thresholds {
+        anyhow::ensure!(
+            !key.trim().is_empty() && value.is_finite() && (0.0..=100.0).contains(value),
+            "Invalid report threshold manifest '{}': '{}' must be a finite value between 0 and 100",
+            file_name,
+            key
+        );
+    }
+    create_dir_all(run_dir)?;
 
     let map = thresholds.iter().cloned().collect::<HashMap<String, f64>>();
     let manifest = serde_json::to_vec_pretty(&map)?;
-    write_file_atomically(&run_dir.join(REPORT_THRESHOLDS_FILE), &manifest)?;
+    write_file_atomically(&run_dir.join(file_name), &manifest)?;
     Ok(())
 }
 

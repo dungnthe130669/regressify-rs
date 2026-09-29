@@ -247,6 +247,38 @@ Max value: `100`.
 
 This parameter represents the percentage of permissible differing pixels for a test to pass. A lower value ensures more precise test results. The choice of a suitable value depends entirely on your project's specific requirements.
 
+It controls pass/fail, not which pixels are highlighted. Use `pixelMatchThreshold`
+to adjust sensitivity to color differences.
+
+{% end %}
+
+{% spoiler() %}
+
+pixelMatchThreshold
+
+:::::
+
+Type: `number`.
+Default value: Workspace value, otherwise `5`.
+Min value: `0`.
+Max value: `100`.
+
+Per-pixel color tolerance. Lower values highlight subtler background and other
+color changes; higher values ignore more rendering differences. This is separate
+from the percentage of mismatched pixels permitted by `misMatchThreshold`.
+The comparer divides the value by `100`, so `5` is a normalized tolerance of `0.05`.
+
+Scenario values override this suite value. The desktop field uses `0.1` steps.
+An explicit `0` removes color tolerance, while anti-alias filtering remains active
+for equal-size images. Resolved values are saved with each capture and reused by
+standalone `compare`; configuration changes apply to new captures.
+
+```yaml
+pixelMatchThreshold: 3
+scenarios:
+  - url: https://example.com
+```
+
 {% end %}
 
 {% spoiler() %}

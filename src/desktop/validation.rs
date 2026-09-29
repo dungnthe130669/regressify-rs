@@ -458,6 +458,51 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn pixel_match_threshold_diagnostics_cover_every_configuration_level() {
+        for (value, valid) in [
+            (json!(null), true),
+            (json!(0), true),
+            (json!(0.1), true),
+            (json!(5), true),
+            (json!(100), true),
+            (json!(-0.01), false),
+            (json!(100.01), false),
+            (json!("1"), false),
+            (json!(true), false),
+        ] {
+            for (kind, config, pointer) in [
+                (
+                    DocumentKind::Workspace,
+                    json!({"pixelMatchThreshold": value}),
+                    "/pixelMatchThreshold",
+                ),
+                (
+                    DocumentKind::Suite,
+                    json!({"pixelMatchThreshold": value, "scenarios": []}),
+                    "/pixelMatchThreshold",
+                ),
+                (
+                    DocumentKind::Suite,
+                    json!({"scenarios": [{"url": "/", "pixelMatchThreshold": value}]}),
+                    "/scenarios/0/pixelMatchThreshold",
+                ),
+            ] {
+                let issues = diagnostics(kind, &config).unwrap();
+                assert_eq!(issues.is_empty(), valid, "{issues:?}");
+                assert_eq!(
+                    crate::desktop::document::validate_semantics(kind, &config).is_ok(),
+                    valid
+                );
+                if !valid {
+                    assert_eq!(issues.len(), 1);
+                    assert_eq!(issues[0].pointer, pointer);
+                    assert!(issues[0].message.contains("pixelMatchThreshold"));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn snapshot_report_settings_accept_optional_text_and_reject_other_types() {
         for key in ["snapshotTitle", "snapshotHeading", "snapshotSubheading"] {
             for value in [json!(null), json!(""), json!("**Staging** <results>")] {

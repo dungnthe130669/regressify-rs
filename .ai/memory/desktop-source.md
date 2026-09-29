@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-09-28
+Verified: 2026-09-29
 
 - [Source commands](../../src/desktop/ui/source.rs) bind inside
   `RegressifySource > Input` and additionally check the source focus handle and
@@ -15,6 +15,11 @@ Verified: 2026-09-28
   Ctrl+Shift+Z to native redo so it cannot fall through to document history.
 - Native input-change notifications are deferred. [GUI tests](../../src/desktop/ui/tests.rs)
   settle the executor before asserting that Source edits reached the session.
+- [YAML field removal](../../src/desktop/document.rs) removes an orphaned preceding
+  `INDENT` token when deleting the last mapping entry. yaml-edit 0.3.1 otherwise
+  indents the following parent key into the scenario in the starter suite.
+  `pixel_match_threshold_reset_preserves_suite_override` reproduced the semantic
+  guard failure; document tests and native threshold-reset interactions now pass.
 - `cargo test --locked --features gui-tests --lib source_line_commands -- --test-threads=1`
   covers text boundaries, CRLF/Unicode, reverse selections, keyboard undo/redo,
   disabled/read-only/focus guards, strict JSON, and actual menu clicks.

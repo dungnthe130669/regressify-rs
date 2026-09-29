@@ -357,7 +357,28 @@ fn apply_yaml(source: &str, edit: &Edit) -> Result<String> {
                     mapping.set(key.as_str(), yaml_node(value)?);
                 }
                 None => {
+                    // yaml-edit leaves the last entry's indentation behind, which can
+                    // pull the following parent-level key into this nested mapping.
+                    let trailing_indent = mapping.as_node().and_then(|syntax| {
+                        let index = mapping.find_entry_index_by_key(key.as_str())?;
+                        let children = syntax.children_with_tokens().collect::<Vec<_>>();
+                        if children[index + 1..].iter().any(|child| {
+                            child
+                                .as_node()
+                                .is_some_and(|node| node.kind() == SyntaxKind::MAPPING_ENTRY)
+                        }) {
+                            return None;
+                        }
+                        children
+                            .get(index.checked_sub(1)?)
+                            .and_then(|child| child.as_token())
+                            .filter(|token| token.kind() == SyntaxKind::INDENT)
+                            .cloned()
+                    });
                     mapping.remove(key.as_str());
+                    if let Some(indent) = trailing_indent {
+                        indent.detach();
+                    }
                 }
             }
         }
@@ -587,12 +608,12 @@ fn validate_numbers(value: &Value) -> Result<()> {
     if let Some(mapping) = value.as_object() {
         for (key, value) in mapping {
             if !value.is_null() {
-                if key == "misMatchThreshold" {
+                if matches!(key.as_str(), "misMatchThreshold" | "pixelMatchThreshold") {
                     ensure!(
                         value
                             .as_f64()
                             .is_some_and(|number| (0.0..=100.0).contains(&number)),
-                        "misMatchThreshold must be between 0 and 100"
+                        "{key} must be between 0 and 100"
                     );
                 }
                 if matches!(key.as_str(), "asyncCaptureLimit" | "asyncCompareLimit") {
@@ -1081,6 +1102,107 @@ mod tests {
             })
             .unwrap();
         assert!(document.value().unwrap().get("debug").is_none());
+    }
+
+    #[test]
+    fn pixel_match_threshold_reset_preserves_suite_override() {
+        let source = Format::Yaml
+            .serialize(&json!({
+                "scenarios": [{"label": "Scenario 1", "url": "https://example.com", "actions": []}]
+            }))
+            .unwrap();
+        let mut document = suite(&source);
+        document
+            .apply(Edit::Set {
+                parent: "".into(),
+                key: "pixelMatchThreshold".into(),
+                value: Some(json!(3.0)),
+            })
+            .unwrap();
+        document
+            .apply(Edit::Set {
+                parent: "/scenarios/0".into(),
+                key: "pixelMatchThreshold".into(),
+                value: Some(json!(3.1)),
+            })
+            .unwrap();
+        let reset = Edit::Set {
+            parent: "/scenarios/0".into(),
+            key: "pixelMatchThreshold".into(),
+            value: None,
+        };
+        let mut expected = document.value().unwrap();
+        apply_value(&mut expected, &reset).unwrap();
+        let changed = apply_yaml(document.source(), &reset).unwrap();
+        assert_eq!(Format::Yaml.parse(&changed).unwrap(), expected, "{changed}");
+        document.apply(reset).unwrap();
+    }
+
+    #[test]
+    fn pixel_match_threshold_edits_reset_and_undo_losslessly() {
+        for (kind, yaml, parent) in [
+            (
+                DocumentKind::Workspace,
+                "# Workspace settings\npixelMatchThreshold: 10\n",
+                "",
+            ),
+            (
+                DocumentKind::Suite,
+                "# Suite settings\npixelMatchThreshold: 10\nscenarios:\n  - url: 'https://example.com'\n",
+                "",
+            ),
+            (
+                DocumentKind::Suite,
+                "# Scenario settings\nscenarios:\n  - url: 'https://example.com'\n    pixelMatchThreshold: 10\n",
+                "/scenarios/0",
+            ),
+        ] {
+            for format in [Format::Yaml, Format::Json] {
+                let source = if format == Format::Yaml {
+                    yaml.to_string()
+                } else {
+                    format
+                        .serialize(&Format::Yaml.parse(yaml).unwrap())
+                        .unwrap()
+                };
+                let mut document = Document::new(kind, format, source.clone()).unwrap();
+                document
+                    .apply(Edit::Set {
+                        parent: parent.into(),
+                        key: "pixelMatchThreshold".into(),
+                        value: Some(json!(0.0)),
+                    })
+                    .unwrap();
+                document.validate().unwrap();
+                assert_eq!(
+                    document.value().unwrap().pointer(parent).unwrap()["pixelMatchThreshold"],
+                    0.0
+                );
+                document.undo();
+                assert_eq!(document.source(), source);
+                document.redo();
+                document
+                    .apply(Edit::Set {
+                        parent: parent.into(),
+                        key: "pixelMatchThreshold".into(),
+                        value: None,
+                    })
+                    .unwrap();
+                document.validate().unwrap();
+                assert!(
+                    document
+                        .value()
+                        .unwrap()
+                        .pointer(parent)
+                        .unwrap()
+                        .get("pixelMatchThreshold")
+                        .is_none()
+                );
+                if format == Format::Yaml {
+                    assert!(document.source().starts_with(yaml.lines().next().unwrap()));
+                }
+            }
+        }
     }
 
     #[test]

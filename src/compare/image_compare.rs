@@ -4,7 +4,10 @@ use anyhow::{Result, anyhow};
 use lodepng::Image;
 use rgb::RGBA8;
 
-use crate::helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions};
+use crate::{
+    config::DEFAULT_PIXEL_MATCH_THRESHOLD,
+    helpers::png::{MAX_VISUAL_IMAGE_PIXELS, read_bounded_png_dimensions},
+};
 
 /// Result of comparing two images.
 pub struct CompareResult {
@@ -54,9 +57,6 @@ pub(super) fn load_png(path: &Path) -> Result<(Vec<RGBA8>, usize, usize)> {
 
 // ─── Perceptual comparison (pixelmatch-style) ────────────────────────────────
 
-/// Matching threshold (0 = exact, 1 = very loose). 0.1 mirrors pixelmatch's
-/// default and tolerates subpixel/anti-aliasing rendering noise.
-const MATCH_THRESHOLD: f64 = 0.1;
 /// Maximum possible YIQ color delta squared (pixelmatch constant).
 const MAX_YIQ_DELTA: f64 = 35215.0;
 const MAX_VERTICAL_SHIFT: usize = 512;
@@ -381,6 +381,18 @@ pub fn compare_images(
     reference_path: &Path,
     test_path: &Path,
 ) -> Result<(CompareResult, Option<Vec<u8>>)> {
+    compare_images_with_threshold(reference_path, test_path, DEFAULT_PIXEL_MATCH_THRESHOLD)
+}
+
+/// Compare images with a per-pixel perceptual tolerance between 0 and 100.
+pub fn compare_images_with_threshold(
+    reference_path: &Path,
+    test_path: &Path,
+    pixel_match_threshold: f64,
+) -> Result<(CompareResult, Option<Vec<u8>>)> {
+    if !pixel_match_threshold.is_finite() || !(0.0..=100.0).contains(&pixel_match_threshold) {
+        anyhow::bail!("pixelMatchThreshold must be a finite value between 0 and 100");
+    }
     let start = Instant::now();
 
     let (ref_pixels, ref_w, ref_h) = load_png(reference_path)?;
@@ -409,7 +421,8 @@ pub fn compare_images(
         ));
     }
 
-    let max_delta = MAX_YIQ_DELTA * MATCH_THRESHOLD * MATCH_THRESHOLD;
+    let normalized_threshold = pixel_match_threshold / 100.0;
+    let max_delta = MAX_YIQ_DELTA * normalized_threshold * normalized_threshold;
     let mut reference = ImageView {
         pixels: &ref_pixels,
         width: ref_w,
@@ -671,6 +684,67 @@ mod tests {
         assert_eq!(result.dimension_difference, (1, 0));
         assert_eq!(result.raw_mis_match_percentage, 50.0);
         assert!(diff.is_some());
+    }
+
+    #[test]
+    fn default_threshold_highlights_subtle_background_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let reference_path = dir.path().join("reference.png");
+        let test_path = dir.path().join("test.png");
+        fs::write(
+            &reference_path,
+            lodepng::encode32(&[RGBA8::new(255, 255, 255, 255); 9], 3, 3).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            &test_path,
+            lodepng::encode32(&[RGBA8::new(230, 240, 237, 255); 9], 3, 3).unwrap(),
+        )
+        .unwrap();
+
+        let (result, diff) = compare_images(&reference_path, &test_path).unwrap();
+
+        assert_eq!(result.raw_mis_match_percentage, 100.0);
+        let diff = lodepng::decode32(diff.unwrap()).unwrap();
+        assert!(
+            diff.buffer
+                .iter()
+                .all(|pixel| *pixel == RGBA8::new(255, 0, 255, 200))
+        );
+
+        for (threshold, expected_mismatch) in
+            [(0.0, 100.0), (5.0, 100.0), (10.0, 0.0), (100.0, 0.0)]
+        {
+            let (result, diff) =
+                compare_images_with_threshold(&reference_path, &test_path, threshold).unwrap();
+            assert_eq!(result.raw_mis_match_percentage, expected_mismatch);
+            assert_eq!(diff.is_some(), expected_mismatch > 0.0);
+        }
+    }
+
+    #[test]
+    fn pixel_match_threshold_rejects_invalid_values_before_reading_images() {
+        for threshold in [
+            -1.0,
+            -0.01,
+            100.01,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            let error = compare_images_with_threshold(
+                Path::new("missing-reference.png"),
+                Path::new("missing-test.png"),
+                threshold,
+            )
+            .err()
+            .expect("invalid pixel tolerance must fail");
+            assert!(
+                error
+                    .to_string()
+                    .contains("pixelMatchThreshold must be a finite value between 0 and 100")
+            );
+        }
     }
 
     #[test]

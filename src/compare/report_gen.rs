@@ -8,12 +8,13 @@ use colored::Colorize;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::compare::image_compare::{CompareResult, compare_images};
+use crate::compare::image_compare::{CompareResult, compare_images_with_threshold};
+use crate::config::DEFAULT_PIXEL_MATCH_THRESHOLD;
 use crate::helpers::{copy_file_atomically, write_file_atomically};
 use crate::progress::{self, Event as ProgressEvent};
 use crate::test::capture::{
-    REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_THRESHOLDS_FILE, REPORT_URLS_FILE,
-    REPORT_URLS_VERSION, ReportOrderManifest, ReportPageUrls, ReportUrlsManifest,
+    REPORT_ORDER_FILE, REPORT_ORDER_VERSION, REPORT_PIXEL_THRESHOLDS_FILE, REPORT_THRESHOLDS_FILE,
+    REPORT_URLS_FILE, REPORT_URLS_VERSION, ReportOrderManifest, ReportPageUrls, ReportUrlsManifest,
     read_error_marker,
 };
 
@@ -102,10 +103,17 @@ struct ReportPair {
     selector: String,
     file_name: String,
     mis_match_threshold: f64,
+    #[serde(default = "legacy_pixel_match_threshold")]
+    pixel_match_threshold: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     diff: Option<ReportDiff>,
     #[serde(skip_serializing_if = "Option::is_none")]
     engine_error_msg: Option<String>,
+}
+
+fn legacy_pixel_match_threshold() -> f64 {
+    // Approval of reports predating this setting must retain their original tolerance.
+    10.0
 }
 
 struct ComparisonJob {
@@ -196,7 +204,18 @@ fn read_report_order(tests_dir: &Path) -> Result<Option<ReportOrder>> {
 }
 
 fn read_report_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64>>> {
-    let path = tests_dir.join(REPORT_THRESHOLDS_FILE);
+    read_threshold_manifest(tests_dir, REPORT_THRESHOLDS_FILE)
+}
+
+fn read_report_pixel_thresholds(tests_dir: &Path) -> Result<Option<HashMap<String, f64>>> {
+    read_threshold_manifest(tests_dir, REPORT_PIXEL_THRESHOLDS_FILE)
+}
+
+fn read_threshold_manifest(
+    tests_dir: &Path,
+    file_name: &str,
+) -> Result<Option<HashMap<String, f64>>> {
+    let path = tests_dir.join(file_name);
     match fs::read_to_string(&path) {
         Ok(content) => {
             let thresholds: HashMap<String, f64> =
@@ -444,6 +463,7 @@ fn report_pair(
     screenshot_name: &str,
     relative_test: String,
     threshold: f64,
+    pixel_threshold: f64,
     page_urls: Option<&ReportPageUrls>,
 ) -> ReportPair {
     ReportPair {
@@ -459,6 +479,7 @@ fn report_pair(
         selector: report_selector(screenshot_name),
         file_name: screenshot_name.to_string(),
         mis_match_threshold: threshold,
+        pixel_match_threshold: pixel_threshold,
         diff: None,
         engine_error_msg: None,
     }
@@ -491,12 +512,16 @@ fn compare_report_work(
         work.par_iter()
             .map(|entry| match entry {
                 ReportWork::Immediate(_) => None,
-                ReportWork::Compare(job) => {
-                    Some(match compare_images(&job.reference_path, &job.test_path) {
+                ReportWork::Compare(job) => Some(
+                    match compare_images_with_threshold(
+                        &job.reference_path,
+                        &job.test_path,
+                        job.pair.pixel_match_threshold,
+                    ) {
                         Ok((result, diff_png)) => ComparisonOutcome::Compared { result, diff_png },
                         Err(error) => ComparisonOutcome::Failed(error),
-                    })
-                }
+                    },
+                ),
             })
             .collect()
     }))
@@ -597,6 +622,7 @@ fn generate_selected_report(
     };
     let order = report_order.captures;
     let thresholds = read_report_thresholds(&tests_dir)?.unwrap_or_default();
+    let pixel_thresholds = read_report_pixel_thresholds(&tests_dir)?.unwrap_or_default();
     let report_urls = read_report_urls(&tests_dir)?;
     if let Some(page_urls) = &report_urls {
         let expected_captures: Vec<String> = page_urls.keys().cloned().collect();
@@ -631,6 +657,11 @@ fn generate_selected_report(
             .or_else(|| thresholds.get(screenshot_prefix(&screenshot_name)))
             .copied()
             .unwrap_or(mis_match_threshold);
+        let pixel_threshold = pixel_thresholds
+            .get(screenshot_key(&screenshot_name))
+            .or_else(|| pixel_thresholds.get(screenshot_prefix(&screenshot_name)))
+            .copied()
+            .unwrap_or(DEFAULT_PIXEL_MATCH_THRESHOLD);
 
         let reference_path = reference_dir.join(&screenshot_name);
 
@@ -645,7 +676,14 @@ fn generate_selected_report(
         let page_urls = report_urls
             .as_ref()
             .and_then(|urls| urls.get(screenshot_key(&screenshot_name)));
-        let mut pair = report_pair(label, &screenshot_name, relative_test, threshold, page_urls);
+        let mut pair = report_pair(
+            label,
+            &screenshot_name,
+            relative_test,
+            threshold,
+            pixel_threshold,
+            page_urls,
+        );
         if let Some(previous) = reviewed_report.and_then(|report| {
             report
                 .tests
@@ -1051,6 +1089,7 @@ pub(crate) fn approve_scenario_viewport(
         run.join(REPORT_URLS_FILE),
         run.join(REPORT_ORDER_FILE),
         run.join(REPORT_THRESHOLDS_FILE),
+        run.join(REPORT_PIXEL_THRESHOLDS_FILE),
         html.join("config.js"),
     ] {
         match fs::symlink_metadata(&path) {
@@ -1091,6 +1130,7 @@ pub(crate) fn approve_scenario_viewport(
         &screenshots,
     )?;
     read_report_thresholds(&run)?;
+    read_report_pixel_thresholds(&run)?;
     let mut seen = HashSet::new();
     for test in &report.tests {
         let pair = &test.pair;
@@ -1102,6 +1142,8 @@ pub(crate) fn approve_scenario_viewport(
             pair.test == format!("../bitmaps_test/{run_id}/{}", pair.file_name)
                 && pair.mis_match_threshold.is_finite()
                 && (0.0..=100.0).contains(&pair.mis_match_threshold)
+                && pair.pixel_match_threshold.is_finite()
+                && (0.0..=100.0).contains(&pair.pixel_match_threshold)
                 && urls
                     .get(screenshot_key(&pair.file_name))
                     .is_some_and(|metadata| metadata.scenario_id == pair.scenario_id),
@@ -1171,6 +1213,123 @@ mod tests {
 
     fn png_bytes(red: u8) -> Vec<u8> {
         lodepng::encode32(&[red, 20, 30, 255], 1, 1).unwrap()
+    }
+
+    #[test]
+    fn pixel_match_threshold_manifest_controls_each_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let suite = directory.path().join("shop");
+        let run = suite.join("bitmaps_test/run");
+        let reference = suite.join("bitmaps_reference");
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir_all(&reference).unwrap();
+        let reference_png =
+            lodepng::encode32(&[rgb::RGBA8::new(255, 255, 255, 255); 9], 3, 3).unwrap();
+        let test_png = lodepng::encode32(&[rgb::RGBA8::new(230, 240, 237, 255); 9], 3, 3).unwrap();
+        for key in [
+            "default__FINAL",
+            "loose__FINAL",
+            "precise__FINAL",
+            "precise__$step",
+        ] {
+            fs::write(reference.join(format!("{key}.png")), &reference_png).unwrap();
+            fs::write(run.join(format!("{key}.png")), &test_png).unwrap();
+        }
+        let mut thresholds =
+            serde_json::json!({"loose": 10.0, "precise": 10.0, "precise__FINAL": 0.0});
+        fs::write(
+            run.join(REPORT_PIXEL_THRESHOLDS_FILE),
+            serde_json::to_vec(&thresholds).unwrap(),
+        )
+        .unwrap();
+
+        for workers in [1, 3] {
+            generate_comparison_report(&suite, "shop", "run", 0.0, workers).unwrap();
+            let report: ReportConfig =
+                serde_json::from_slice(&fs::read(run.join("report.json")).unwrap()).unwrap();
+            assert_eq!(report.tests.len(), 4);
+            for test in &report.tests {
+                let expected = match test.pair.file_name.as_str() {
+                    "default__FINAL.png" => 5.0,
+                    "precise__FINAL.png" => 0.0,
+                    _ => 10.0,
+                };
+                assert_eq!(test.pair.pixel_match_threshold, expected);
+                assert_eq!(test.pair.mis_match_threshold, 0.0);
+                assert_eq!(test.status, if expected < 10.0 { "fail" } else { "pass" });
+                assert_eq!(test.pair.diff_image.is_some(), expected < 10.0);
+                assert_eq!(
+                    test.pair.diff.as_ref().unwrap().raw_mis_match_percentage,
+                    if expected < 10.0 { 100.0 } else { 0.0 }
+                );
+            }
+        }
+
+        thresholds["default"] = serde_json::json!(100.0);
+        fs::write(
+            run.join(REPORT_PIXEL_THRESHOLDS_FILE),
+            serde_json::to_vec(&thresholds).unwrap(),
+        )
+        .unwrap();
+        generate_comparison_report(&suite, "shop", "run", 0.0, 1).unwrap();
+        assert!(!run.join("default__FINAL_diff.png").exists());
+    }
+
+    #[test]
+    fn pixel_match_threshold_manifest_rejects_invalid_values() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(
+            read_report_pixel_thresholds(directory.path())
+                .unwrap()
+                .is_none()
+        );
+        for contents in [
+            "not json",
+            r#"{"home":-0.01}"#,
+            r#"{"home":100.01}"#,
+            r#"{"home":null}"#,
+            r#"{"home":"1"}"#,
+            r#"{"":1}"#,
+        ] {
+            fs::write(
+                directory.path().join(REPORT_PIXEL_THRESHOLDS_FILE),
+                contents,
+            )
+            .unwrap();
+            assert!(
+                read_report_pixel_thresholds(directory.path())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("Invalid report threshold manifest")
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_reports_retain_the_original_pixel_match_threshold_on_approval() {
+        let directory = viewport_approval_fixture();
+        let suite = directory.path().join("shop");
+        let report_path = suite.join("bitmaps_test/reviewed/report.json");
+        let mut report: serde_json::Value =
+            serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+        for test in report["tests"].as_array_mut().unwrap() {
+            test["pair"]
+                .as_object_mut()
+                .unwrap()
+                .remove("pixelMatchThreshold");
+        }
+        fs::write(&report_path, serde_json::to_vec(&report).unwrap()).unwrap();
+
+        approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__FINAL")
+            .unwrap();
+
+        let report: ReportConfig = serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+        assert!(
+            report
+                .tests
+                .iter()
+                .all(|test| test.pair.pixel_match_threshold == 10.0)
+        );
     }
 
     #[test]
@@ -1414,6 +1573,11 @@ mod tests {
             r#"{"checkout_mobile__FINAL":25.0}"#,
         )
         .unwrap();
+        fs::write(
+            run.join(REPORT_PIXEL_THRESHOLDS_FILE),
+            r#"{"checkout_mobile__FINAL":2.0}"#,
+        )
+        .unwrap();
         generate_comparison_report_for_scenarios(
             &suite,
             "shop",
@@ -1446,6 +1610,11 @@ mod tests {
             r#"{"checkout_mobile__FINAL":100.0}"#,
         )
         .unwrap();
+        fs::write(
+            run.join(REPORT_PIXEL_THRESHOLDS_FILE),
+            r#"{"checkout_mobile__FINAL":100.0}"#,
+        )
+        .unwrap();
         approve_scenario_viewport(&suite, "reviewed", "checkout", "checkout_desktop__FINAL")
             .unwrap();
         let report_bytes = fs::read(run.join("report.json")).unwrap();
@@ -1464,6 +1633,10 @@ mod tests {
             assert_eq!(
                 previous.pair.mis_match_threshold,
                 current.pair.mis_match_threshold
+            );
+            assert_eq!(
+                previous.pair.pixel_match_threshold,
+                current.pair.pixel_match_threshold
             );
             assert_eq!(previous.pair.scenario_label, current.pair.scenario_label);
             assert_eq!(

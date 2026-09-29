@@ -1837,6 +1837,7 @@ impl Workbench {
                     "browser",
                     "viewportNames",
                     "misMatchThreshold",
+                    "pixelMatchThreshold",
                     "postInteractionWait",
                     "asyncCaptureLimit",
                     "asyncCompareLimit",

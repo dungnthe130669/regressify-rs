@@ -4286,6 +4286,134 @@ async fn setting_search_reveals_advanced_fields_without_changing_the_draft(
 }
 
 #[gpui_kit::test]
+async fn pixel_match_threshold_controls_inherit_edit_and_reset(cx: &mut TestAppContext) {
+    for (selection, parent, inherited) in [
+        (Selection::Root, "", 10.0),
+        (Selection::Scenario(0), "/scenarios/0", 3.0),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("regressify.yaml"),
+            "pixelMatchThreshold: 10\n",
+        )
+        .unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.select(Selection::Root, window, cx);
+                if selection == Selection::Scenario(0) {
+                    this.edit(
+                        |session| {
+                            session.set_field("pixelMatchThreshold", Some(serde_json::json!(3.0)))
+                        },
+                        window,
+                        cx,
+                    );
+                }
+                this.select(selection.clone(), window, cx);
+                this.select_editor_tab(0, window, cx);
+            });
+            window.render_frame(cx);
+            assert!(!view.read(cx).advanced);
+            assert!(window.try_find("field-pixelMatchThreshold").is_some());
+            window.click("field-search", cx);
+            window.input("pixelMatchThreshold", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window
+                .try_find("increase-pixelMatchThreshold")
+                .is_some_and(|field| field.visible())
+                && window.try_find("field-url").is_none()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("increase-pixelMatchThreshold", cx);
+            let value = view.read(cx).session.value().unwrap();
+            let threshold = value.pointer(parent).unwrap()["pixelMatchThreshold"]
+                .as_f64()
+                .unwrap();
+            assert!((threshold - inherited - 0.1).abs() < 1e-10);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window
+                .try_find("hint-pixelMatchThreshold")
+                .is_some_and(|hint| hint.label() == Some("Override"))
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("reset-pixelMatchThreshold", cx);
+            assert!(
+                view.read(cx)
+                    .session
+                    .value()
+                    .unwrap()
+                    .pointer(parent)
+                    .unwrap()
+                    .get("pixelMatchThreshold")
+                    .is_none(),
+                "{:?}",
+                view.read(cx).field_errors
+            );
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("field-pixelMatchThreshold", cx);
+            window.press("ctrl-a", cx);
+            window.input("0", cx);
+            window.click("field-search", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .session
+                .value()
+                .unwrap()
+                .pointer(parent)
+                .unwrap()["pixelMatchThreshold"]
+                .as_f64()
+                == Some(0.0)
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("decrease-pixelMatchThreshold", cx);
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .value()
+                    .unwrap()
+                    .pointer(parent)
+                    .unwrap()["pixelMatchThreshold"],
+                0.0
+            );
+            window.click("reset-pixelMatchThreshold", cx);
+            assert!(
+                view.read(cx)
+                    .session
+                    .value()
+                    .unwrap()
+                    .pointer(parent)
+                    .unwrap()
+                    .get("pixelMatchThreshold")
+                    .is_none()
+            );
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .validate()
+                .unwrap();
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
 async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

@@ -519,6 +519,10 @@ fn validate_workspace_config(workspace_config: &config::WorkspaceConfig) -> Resu
         "workspace misMatchThreshold",
         workspace_config.mis_match_threshold,
     )?;
+    validate_pixel_match_threshold(
+        "workspace pixelMatchThreshold",
+        workspace_config.pixel_match_threshold,
+    )?;
     validate_duration("workspace delay", workspace_config.delay)?;
     validate_duration(
         "workspace postInteractionWait",
@@ -576,6 +580,15 @@ fn validate_duration(name: &str, value: Option<f64>) -> Result<()> {
     Ok(())
 }
 
+fn validate_pixel_match_threshold(name: &str, value: Option<f64>) -> Result<()> {
+    if let Some(value) = value
+        && (!value.is_finite() || !(0.0..=100.0).contains(&value))
+    {
+        anyhow::bail!("{} must be a finite value between 0 and 100", name);
+    }
+    Ok(())
+}
+
 fn validate_output_identifier(name: &str, value: Option<&str>) -> Result<()> {
     let value = value.ok_or_else(|| anyhow!("{} is required", name))?;
     if value.trim().is_empty()
@@ -603,6 +616,10 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
     validate_percentage(
         &format!("test suite '{}' misMatchThreshold", input.name),
         suite.mis_match_threshold,
+    )?;
+    validate_pixel_match_threshold(
+        &format!("test suite '{}' pixelMatchThreshold", input.name),
+        suite.pixel_match_threshold,
     )?;
     validate_duration(
         &format!("test suite '{}' postInteractionWait", input.name),
@@ -640,6 +657,10 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
         validate_percentage(
             &format!("scenario '{}' misMatchThreshold", scenario_name),
             scenario.mis_match_threshold,
+        )?;
+        validate_pixel_match_threshold(
+            &format!("scenario '{}' pixelMatchThreshold", scenario_name),
+            scenario.pixel_match_threshold,
         )?;
         validate_duration(
             &format!("scenario '{}' delay", scenario_name),
@@ -1018,6 +1039,7 @@ fn write_capture_run_manifests(
         };
         let mut order = Vec::new();
         let mut thresholds = Vec::new();
+        let mut pixel_thresholds = Vec::new();
         let mut urls = Vec::new();
 
         // Resolve against the complete suite before filtering or replacing URLs.
@@ -1041,8 +1063,10 @@ fn write_capture_run_manifests(
             page_urls.scenario_display_name = Some(names[index].clone());
             for order_key in &order_keys {
                 thresholds.push((order_key.clone(), resolved.mis_match_threshold));
+                pixel_thresholds.push((order_key.clone(), resolved.pixel_match_threshold));
                 if let Some(prefix) = order_key.split("__").next() {
                     thresholds.push((prefix.to_string(), resolved.mis_match_threshold));
+                    pixel_thresholds.push((prefix.to_string(), resolved.pixel_match_threshold));
                 }
                 urls.push((order_key.clone(), page_urls.clone()));
             }
@@ -1059,6 +1083,13 @@ fn write_capture_run_manifests(
         capture::write_report_thresholds(suite, &thresholds).map_err(|error| {
             anyhow!(
                 "Failed to write report threshold manifest for '{}': {:?}",
+                input.name,
+                error
+            )
+        })?;
+        capture::write_report_pixel_thresholds(suite, &pixel_thresholds).map_err(|error| {
+            anyhow!(
+                "Failed to write report pixel threshold manifest for '{}': {:?}",
                 input.name,
                 error
             )
@@ -1489,6 +1520,49 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
             ..Default::default()
+        }
+    }
+
+    #[test]
+    fn pixel_match_threshold_validates_every_configuration_level() {
+        for (threshold, valid) in [
+            (0.0, true),
+            (0.1, true),
+            (5.0, true),
+            (100.0, true),
+            (-1.0, false),
+            (-0.01, false),
+            (100.01, false),
+            (f64::NAN, false),
+            (f64::INFINITY, false),
+            (f64::NEG_INFINITY, false),
+        ] {
+            let workspace = config::WorkspaceConfig {
+                pixel_match_threshold: Some(threshold),
+                ..Default::default()
+            };
+            let mut suite = suite(vec![scenario("home", None)]);
+            suite.pixel_match_threshold = Some(threshold);
+            let suite_result = validate_test_suite_config(&input(), &suite);
+            suite.pixel_match_threshold = None;
+            suite.scenarios[0].pixel_match_threshold = Some(threshold);
+
+            for result in [
+                validate_workspace_config(&workspace),
+                suite_result,
+                validate_test_suite_config(&input(), &suite),
+            ] {
+                if valid {
+                    result.unwrap();
+                } else {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("pixelMatchThreshold")
+                    );
+                }
+            }
         }
     }
 

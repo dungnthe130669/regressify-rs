@@ -59,6 +59,20 @@ it was risk-focused, not an exhaustive security certification.
   [asset-sync regression](frontend/scripts/sync-assets.test.ts) covers LF and
   CRLF inputs with Git autocrlf enabled.
 
+## Pixel Threshold Validation (2026-09-29)
+
+- The default CLI all-targets gate passes with 376 tests and 9 optional checks
+  ignored. The GUI all-targets gate passes with 863 library tests and 18 ignored,
+  plus 9 worker integration tests and 2 ignored. Production GUI Clippy with
+  warnings denied, the desktop build, Rust formatting, and guidance checks pass.
+- Native `./ci/desktop-smoke.ps1 -SchemaFlows -SkipBuild` passed through
+  Source/Fields diagnostics, issue selection/copy, compact light/dark layouts,
+  and Enter/Tab/Escape completion after reactivation. It then stopped in the
+  existing source-line command check because `Ln 3, Col 1` was not found.
+  Root cause is not established; this is not a full schema-smoke pass. Cleanup
+  discarded the fixture draft and restored original desktop preferences.
+  The isolated native `pixel_match_threshold_controls` test passes.
+
 ## Validation Notes (2026-09-27)
 
 - The side-by-side Git text comparison passes all 49 checks in
@@ -125,6 +139,15 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Pixel-color tolerance is now configurable through `pixelMatchThreshold` at
+  workspace, suite, and scenario levels, including desktop Fields. The range is
+  0-100, the default is 5, and desktop steps are 0.1. Comparisons normalize by 100
+  and retain captured/reviewed thresholds. Background-color, inheritance, bounds,
+  regeneration, legacy approval, and native-editing regressions cover the change.
+- Resetting the last scenario field no longer leaves orphaned YAML indentation
+  that would move a following suite property into the scenario. The lossless
+  semantic guard remains intact; document and native-event regressions cover
+  the starter suite's indentationless list and inherited threshold reset.
 - URL waits now read CDP frame metadata instead of evaluating `location.href` in
   a JavaScript context that a redirect can destroy. A deterministic Chromium
   regression reproduces the original missing-context error and passes after the

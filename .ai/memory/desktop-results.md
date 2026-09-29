@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-09-24
+Verified: 2026-09-29
 
 - Suite `displayName` is independent of file/output identity. The
   [workspace model](../../src/desktop/workspace.rs) stages reference/history/site
@@ -31,6 +31,13 @@ Verified: 2026-09-24
   confirmation on capture changes/refresh, and refreshes its existing output root
   without resetting the current capture or view. It still uses the
   [run guard](../../src/desktop/ui/mod.rs) for drafts and suite preflight.
+- [Pixel tolerance](../../src/config/mod.rs) cascades as `pixelMatchThreshold`,
+  0-100 with default 5 and desktop steps of 0.1. [Comparison](../../src/compare/report_gen.rs)
+  reads `.report-pixel-thresholds.json` and stores the value on report pairs.
+  Approval retains reviewed values; missing fields on legacy reports mean 10
+  (their original normalized 0.1), while a fresh comparison without metadata uses 5.
+  `cargo test --features gui-tests --lib pixel_match_threshold -- --test-threads=1`
+  covers the cascade, reports, validation, and native editing/reset.
 - Regression evidence: `suite_panel_restores_all_saved_statuses_and_keeps_them_during_other_runs`
   and `approval_completion_preserves_comparison_and_updates_suite_counts`, run with
   `cargo test --features gui-tests --lib <filter> -- --test-threads=1`.

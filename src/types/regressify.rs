@@ -77,6 +77,10 @@ pub struct TestSuite {
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
 
+    /// Per-pixel color tolerance from 0 to 100. Lower values highlight subtler color changes; this is not the allowed percentage of different pixels. Inherits the workspace setting (default: 5).
+    #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
+    pub pixel_match_threshold: Option<f64>,
+
     /// Milliseconds to wait after interactions before capturing. Non-negative; inherits the workspace setting (default: 1000).
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
@@ -196,6 +200,10 @@ pub struct TestScenario {
     /// Allowed percentage of different pixels, from 0 to 100. Inherits the suite or workspace setting (default: 0.1%).
     #[schemars(range(min = 0.0, max = 100.0), example = 0.1)]
     pub mis_match_threshold: Option<f64>,
+
+    /// Per-pixel color tolerance from 0 to 100. Lower values highlight subtler color changes; this is not the allowed percentage of different pixels. Inherits the suite or workspace setting (default: 5).
+    #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
+    pub pixel_match_threshold: Option<f64>,
 
     /// ID or list of IDs of other scenarios in this suite whose actions run first. Do not reference this scenario or create cycles.
     #[schemars(example = "sign-in")]

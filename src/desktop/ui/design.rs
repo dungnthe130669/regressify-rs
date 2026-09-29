@@ -203,6 +203,7 @@ pub(super) fn group(key: &str) -> (usize, &'static str) {
         | "viewportsPath"
         | "selectors"
         | "misMatchThreshold"
+        | "pixelMatchThreshold"
         | "delay"
         | "postInteractionWait"
         | "width"

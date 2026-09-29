@@ -93,6 +93,7 @@ impl Field {
         let number = value.as_f64().unwrap_or(0.0);
         let (step, minimum, maximum) = match self.key.as_str() {
             "misMatchThreshold" => (0.1, 0.0, 100.0),
+            "pixelMatchThreshold" => (0.1, 0.0, 100.0),
             "asyncCaptureLimit" | "asyncCompareLimit" | "width" | "height" => {
                 (1.0, 1.0, u32::MAX as f64)
             }
@@ -464,6 +465,7 @@ fn priority(key: &str) -> usize {
         "description" => 3,
         "viewportNames" => 4,
         "misMatchThreshold" => 5,
+        "pixelMatchThreshold" => 6,
         _ => 10,
     }
 }
@@ -471,6 +473,7 @@ fn priority(key: &str) -> usize {
 pub(crate) fn label(key: &str) -> String {
     match key {
         "misMatchThreshold" => return "Mismatch threshold (%)".into(),
+        "pixelMatchThreshold" => return "Pixel color threshold".into(),
         "url" => return "URL".into(),
         "jsOnReadyPath" => return "Ready script".into(),
         "cssOverridePath" => return "CSS override file".into(),
@@ -630,6 +633,67 @@ mod tests {
                 .map(|scenario| scenario.id.as_str())
                 .collect::<Vec<_>>(),
             vec!["sign-in", "setup"]
+        );
+    }
+
+    #[test]
+    fn pixel_match_threshold_fields_support_all_scopes_and_effective_values() {
+        for scope in [Scope::Workspace, Scope::Suite, Scope::Scenario] {
+            let fields = fields(&scope).unwrap();
+            let field = fields
+                .iter()
+                .find(|field| field.key == "pixelMatchThreshold")
+                .unwrap();
+            assert_eq!(field.kind, FieldKind::Number { integer: false });
+            assert_eq!(field.label, "Pixel color threshold");
+            assert!(
+                field.description.contains("default: 5")
+                    || field.description.contains("Default: 5")
+            );
+            assert!(!field.required);
+            assert_eq!(field.parse("1.1").unwrap(), json!(1.1));
+            assert_eq!(field.stepped_value(&json!(5.0), true).unwrap(), json!(5.1));
+            assert_eq!(field.stepped_value(&json!(5.0), false).unwrap(), json!(4.9));
+            assert_eq!(field.stepped_value(&json!(0.0), false).unwrap(), json!(0.0));
+            assert_eq!(
+                field.stepped_value(&json!(100.0), true).unwrap(),
+                json!(100.0)
+            );
+        }
+
+        let workspace = json!({"pixelMatchThreshold": 10.0});
+        let suite = json!({"pixelMatchThreshold": 3.0, "scenarios": [
+            {"url": "/", "pixelMatchThreshold": 0.0}, {"url": "/other"}
+        ]});
+        for (workspace, suite, scenario, expected) in [
+            (None, None, None, 5.0),
+            (Some(&workspace), None, None, 10.0),
+            (Some(&workspace), Some(&suite), None, 3.0),
+            (Some(&workspace), Some(&suite), Some(0), 0.0),
+            (Some(&workspace), Some(&suite), Some(1), 3.0),
+        ] {
+            assert_eq!(
+                effective(workspace, suite, scenario).unwrap()["pixelMatchThreshold"],
+                expected
+            );
+        }
+        assert_eq!(origin("pixelMatchThreshold", None, None, None), "Default");
+        assert_eq!(
+            origin("pixelMatchThreshold", Some(&workspace), None, None),
+            "Workspace"
+        );
+        assert_eq!(
+            origin("pixelMatchThreshold", Some(&workspace), Some(&suite), None),
+            "Suite"
+        );
+        assert_eq!(
+            origin(
+                "pixelMatchThreshold",
+                Some(&workspace),
+                Some(&suite),
+                Some(&suite["scenarios"][0])
+            ),
+            "Scenario"
         );
     }
 

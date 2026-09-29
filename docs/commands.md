@@ -332,6 +332,42 @@ prevents old screenshots from being mixed into a new comparison.
 
 Comparison reports retain diff artifacts only for current mismatches. The standalone `compare` command accepts `--async-compare-limit` (default `2`); `test` and `ref` use the suite or workspace `asyncCompareLimit` value.
 
+Two independent settings control comparison:
+
+- `pixelMatchThreshold` controls how different two pixel colors must be to count
+  as a mismatch and receive a diff highlight. Range: `0` to `100`; default: `5`.
+  Lower values detect subtler changes. The comparer divides this value by `100`,
+  so `5` corresponds to a normalized tolerance of `0.05`. `0` removes color
+  tolerance; anti-alias filtering still applies to equal-size images.
+- `misMatchThreshold` is the percentage of mismatched pixels allowed for a pass.
+  Range: `0` to `100`; default: `0.1`. It does not change diff highlighting.
+
+Set `pixelMatchThreshold` in `regressify.yaml` or `regressify.yml`, at the root of
+a test suite, or on an individual scenario. Resolution is scenario, then suite,
+then workspace, then the default. An explicit `0` overrides inherited values.
+
+Workspace example:
+
+```yaml
+pixelMatchThreshold: 5
+misMatchThreshold: 0.1
+```
+
+Suite and scenario overrides:
+
+```yaml
+pixelMatchThreshold: 3
+scenarios:
+  - url: https://example.com
+    pixelMatchThreshold: 0.5
+```
+
+Capture runs save the resolved pixel threshold for each screenshot, including
+intermediate saves and selector captures. Standalone `compare` reuses these
+values; changing configuration applies to new captures, not saved runs. Runs
+without pixel-threshold metadata use `5`. Desktop viewport approval retains the
+thresholds from the report being reviewed.
+
 New capture runs record both the raw reference page URL and the resolved test
 page URL for every report entry. The report links to the reference page and,
 when URL replacements are active, its corresponding test page. Run `test` or
@@ -344,4 +380,4 @@ fields. The desktop uses the captured name even if the scenario is later renamed
 or removed. Screenshot names, matching keys, and exit-code behavior are unchanged.
 Older manifests without these fields remain readable.
 
-Older capture runs without ordering or threshold manifests remain comparable: missing ordering data uses alphabetical output and missing threshold data uses the command threshold. A present malformed manifest is treated as an artifact error and fails the command.
+Older capture runs without ordering or threshold manifests remain comparable: missing ordering data uses alphabetical output and missing mismatch-percentage data uses the command threshold. A present malformed manifest is treated as an artifact error and fails the command.
