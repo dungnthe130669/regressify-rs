@@ -172,8 +172,16 @@ pub(super) fn checked_file(
         }
     }
     ensure!(
-        path.is_file() && path.canonicalize()?.starts_with(root),
-        "Snapshot artifact must be a regular file inside its output directory"
+        path.is_file()
+            && path
+                .canonicalize()
+                .with_context(|| format!(
+                    "Failed to resolve snapshot artifact '{}'",
+                    path.display()
+                ))?
+                .starts_with(root),
+        "Snapshot artifact must be a regular file inside its output directory: {}",
+        path.display()
     );
     Ok(Some(path))
 }
@@ -182,12 +190,17 @@ pub(super) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
     let file = fs::File::open(path)
         .with_context(|| format!("Failed to open snapshot artifact '{}'", path.display()))?;
     ensure!(
-        file.metadata()?.len() <= limit as u64,
+        file.metadata()
+            .with_context(|| format!("Failed to inspect snapshot artifact '{}'", path.display()))?
+            .len()
+            <= limit as u64,
         "Snapshot artifact exceeds its size limit: {}",
         path.display()
     );
     let mut bytes = Vec::new();
-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    file.take(limit as u64 + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("Failed to read snapshot artifact '{}'", path.display()))?;
     ensure!(
         bytes.len() <= limit,
         "Snapshot artifact grew beyond its size limit"
@@ -208,18 +221,40 @@ fn output_file(root: &Path, relative: &str, bytes: &[u8]) -> Result<()> {
         match fs::symlink_metadata(&parent) {
             Ok(metadata) => ensure!(
                 metadata.is_dir() && !metadata.file_type().is_symlink(),
-                "Snapshot output parent must be a real directory"
+                "Snapshot output parent must be a real directory: {}",
+                parent.display()
             ),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir(&parent)?,
-            Err(error) => return Err(error.into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                fs::create_dir(&parent).with_context(|| {
+                    format!(
+                        "Failed to create snapshot output directory '{}'",
+                        parent.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to inspect snapshot output directory '{}'",
+                        parent.display()
+                    )
+                });
+            }
         }
     }
     if let Some(existing) = checked_file(root, relative, true)?
-        && fs::read(&existing)? == bytes
+        && fs::read(&existing).with_context(|| {
+            format!(
+                "Failed to read existing snapshot artifact '{}'",
+                existing.display()
+            )
+        })? == bytes
     {
         return Ok(());
     }
-    write_file_atomically(&root.join(relative), bytes)
+    let path = root.join(relative);
+    write_file_atomically(&path, bytes)
+        .with_context(|| format!("Failed to write snapshot artifact '{}'", path.display()))
 }
 
 fn encoded_path(relative: &str) -> Result<String> {
@@ -288,11 +323,27 @@ pub(crate) fn generate_site(
     args: &SnapshotArgs,
     workspace: &WorkspaceConfig,
 ) -> Result<()> {
-    let root = root.canonicalize()?;
+    let root = root.canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve snapshot output directory '{}'",
+            root.display()
+        )
+    })?;
     let staging = tempfile::Builder::new()
         .prefix(".snapshot-")
-        .tempdir_in(&root)?;
-    let staged_root = staging.path().canonicalize()?;
+        .tempdir_in(&root)
+        .with_context(|| {
+            format!(
+                "Failed to create snapshot staging directory in '{}'",
+                root.display()
+            )
+        })?;
+    let staged_root = staging.path().canonicalize().with_context(|| {
+        format!(
+            "Failed to resolve snapshot staging directory '{}'",
+            staging.path().display()
+        )
+    })?;
     let mut summaries = Vec::new();
     let mut images = BTreeMap::new();
     for id in suites {
@@ -380,12 +431,12 @@ pub(crate) fn generate_site(
     output_file(
         &root,
         ".gitignore",
-        &fs::read(staged_root.join(".gitignore"))?,
+        &read_bounded(&staged_root.join(".gitignore"), MAX_REPORT_BYTES)?,
     )?;
     output_file(
         &root,
         "index.html",
-        &fs::read(staged_root.join("index.html"))?,
+        &read_bounded(&staged_root.join("index.html"), MAX_REPORT_BYTES)?,
     )?;
     prune_generated_files(&root, &dependencies)?;
     for suite in &manifest.suites {
@@ -439,24 +490,46 @@ fn remove_legacy(root: &Path, relative: &str) -> Result<()> {
                 "Legacy snapshot artifacts cannot be symlinks"
             );
             if metadata.is_dir() {
-                fs::remove_dir_all(path)?;
+                fs::remove_dir_all(&path).with_context(|| {
+                    format!(
+                        "Failed to remove legacy snapshot artifact '{}'",
+                        path.display()
+                    )
+                })?;
             } else {
-                fs::remove_file(path)?;
+                fs::remove_file(&path).with_context(|| {
+                    format!(
+                        "Failed to remove legacy snapshot artifact '{}'",
+                        path.display()
+                    )
+                })?;
             }
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to inspect legacy snapshot artifact '{}'",
+                path.display()
+            )
+        }),
     }
 }
 
 fn prune_generated_files(root: &Path, active: &[PathBuf]) -> Result<()> {
     let active: BTreeSet<_> = active.iter().collect();
-    let entries = walkdir::WalkDir::new(root.join("_snapshot"))
+    let generated = root.join("_snapshot");
+    let entries = walkdir::WalkDir::new(&generated)
         .follow_links(false)
         .contents_first(true)
         .into_iter()
-        .collect::<std::result::Result<Vec<_>, _>>()?;
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| {
+            format!(
+                "Failed to list generated snapshot files in '{}'",
+                generated.display()
+            )
+        })?;
     ensure!(
         entries.iter().all(|entry| !entry.file_type().is_symlink()),
         "Generated snapshot files cannot be symlinks"
@@ -465,9 +538,30 @@ fn prune_generated_files(root: &Path, active: &[PathBuf]) -> Result<()> {
         if entry.file_type().is_file()
             && !active.contains(&entry.path().strip_prefix(root)?.to_path_buf())
         {
-            fs::remove_file(entry.path())?;
-        } else if entry.file_type().is_dir() && fs::read_dir(entry.path())?.next().is_none() {
-            fs::remove_dir(entry.path())?;
+            fs::remove_file(entry.path()).with_context(|| {
+                format!(
+                    "Failed to remove stale snapshot artifact '{}'",
+                    entry.path().display()
+                )
+            })?;
+        } else if entry.file_type().is_dir() {
+            let empty = fs::read_dir(entry.path())
+                .and_then(|mut entries| entries.next().transpose())
+                .with_context(|| {
+                    format!(
+                        "Failed to inspect generated snapshot directory '{}'",
+                        entry.path().display()
+                    )
+                })?
+                .is_none();
+            if empty {
+                fs::remove_dir(entry.path()).with_context(|| {
+                    format!(
+                        "Failed to remove empty snapshot directory '{}'",
+                        entry.path().display()
+                    )
+                })?;
+            }
         }
     }
     Ok(())
@@ -1095,6 +1189,125 @@ mod tests {
         fs::create_dir(root.join("not-a-file")).unwrap();
         assert!(checked_file(&root, Path::new("not-a-file"), true).is_err());
         assert!(read_bounded(&root.join("index.html"), 2).is_err());
+    }
+
+    #[test]
+    fn snapshot_io_errors_identify_output_and_staging_directories() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().join("report-output");
+        let error = generate_site(&root, &[], &args(), &WorkspaceConfig::default()).unwrap_err();
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Failed to resolve snapshot output directory"),
+            "{message}"
+        );
+        assert!(message.contains(&root.display().to_string()), "{message}");
+
+        fs::write(&root, b"private blocking contents")?;
+        let canonical = root.canonicalize()?;
+        let error = generate_site(&root, &[], &args(), &WorkspaceConfig::default()).unwrap_err();
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Failed to create snapshot staging directory"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&canonical.display().to_string()),
+            "{message}"
+        );
+        assert!(!message.contains("private blocking contents"), "{message}");
+        assert_eq!(fs::read(&root)?, b"private blocking contents");
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_io_errors_identify_locked_existing_artifacts() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().canonicalize()?;
+        let path = root.join("index.html");
+        fs::write(&path, b"private old report")?;
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)?;
+        let result = generate_site(&root, &[], &args(), &WorkspaceConfig::default());
+        drop(locked);
+
+        let error = result.unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(32)
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Failed to read existing snapshot artifact"),
+            "{message}"
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        assert!(!message.contains("private old report"), "{message}");
+        assert_eq!(fs::read(&path)?, b"private old report");
+        generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+        assert!(artifact_paths(&root, &[]).is_ok());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_io_errors_identify_cleanup_paths() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 1;
+        for (relative, operation) in [
+            ("styles.css", "Failed to remove legacy snapshot artifact"),
+            (
+                "_snapshot/stale.png",
+                "Failed to remove stale snapshot artifact",
+            ),
+        ] {
+            let temporary = tempfile::tempdir()?;
+            let root = temporary.path().canonicalize()?;
+            generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+            let path = root.join(relative);
+            let contents = b"private obsolete artifact contents";
+            fs::write(&path, contents)?;
+            let locked = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ)
+                .open(&path)?;
+
+            let result = generate_site(&root, &[], &args(), &WorkspaceConfig::default());
+            drop(locked);
+
+            let error = result.expect_err("Protected snapshot artifacts must not be deleted");
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(32)
+            );
+            assert_eq!(fs::read(&path)?, contents);
+            assert!(artifact_paths(&root, &[]).is_ok());
+            let message = format!("{error:#}");
+            assert!(message.contains(operation), "{message}");
+            assert!(message.contains(&path.display().to_string()), "{message}");
+            assert!(
+                !message.contains("private obsolete artifact contents"),
+                "{message}"
+            );
+
+            generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+            assert!(!path.exists());
+        }
+        Ok(())
     }
 
     #[cfg(unix)]

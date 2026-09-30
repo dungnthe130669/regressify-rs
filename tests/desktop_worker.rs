@@ -15,6 +15,49 @@ fn invoke(executable: &Path, request: &RunRequest) -> Output {
 
 #[cfg(windows)]
 #[test]
+fn snapshot_worker_reports_locked_output_path() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join(".regressify");
+    std::fs::create_dir(&output).unwrap();
+    let path = output.canonicalize().unwrap().join("index.html");
+    std::fs::write(&path, b"private old report").unwrap();
+    let locked = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&path)
+        .unwrap();
+    let request = RunRequest {
+        root: root.path().into(),
+        command: RunCommand::Snapshot,
+        options: RunOptions::default(),
+    };
+    let result = invoke(executable, &request);
+    drop(locked);
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(!result.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Failed to read existing snapshot artifact"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&path.display().to_string()), "{stderr}");
+    assert!(stderr.contains("os error 32"), "{stderr}");
+    assert!(!stderr.contains("private old report"), "{stderr}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"private old report");
+
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+}
+
+#[cfg(windows)]
+#[test]
 #[ignore = "requires cached managed Chromium and no running installer"]
 fn installer_browser_mode_reuses_cache_without_network_during_setup() {
     use std::os::windows::io::{FromRawHandle, OwnedHandle};

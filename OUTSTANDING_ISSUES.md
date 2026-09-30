@@ -4,9 +4,9 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Windows Cloudflare Access Denied (2026-09-30)
 
-- QA reported only `Access is denied (os error 5)` on Windows 11. The failing
-  operation and machine-specific cause remain unconfirmed; this is not evidence
-  of a Cloudflare API permission failure.
+- QA's follow-up reports `Cannot generate report snapshots for deployment: Access is denied (os error 5)`
+  on Windows 11. This narrows the failure to the local snapshot step before staging
+  or Cloudflare upload. The denied path and machine-specific cause remain unconfirmed.
 - Local deployment-settings and Cloudflare preparation errors now include their
   operation and path. The report worker labels token loading, snapshot generation,
   and staging failures. Filesystem causes and existing access-policy rejections
@@ -14,9 +14,15 @@ Issues identified during adversarial review that remain after the September 2026
 - Isolated Windows tests cover error 5 for settings access/replacement, blocked
   settings directories, and locked report files. Loopback tests confirm local
   preparation failures make no API requests and preserve source files.
+- Snapshot discovery, staging, artifact access, and cleanup now name the operation
+  and path. Snapshot tests and a native-worker stderr regression cover blocked
+  output and successful retry after releasing Windows sharing locks (error 32).
+  A read-only legacy-file probe did not fail on this runtime, so neither a
+  read-only attribute nor the tested sharing conflict establishes QA's cause.
 - QA must retry a build containing these diagnostics and provide the complete
-  error before the original access failure can be resolved. No live deployment
-  or change to user credentials was performed for this investigation.
+  error, or reproduce using Snapshot with the same output settings, before the
+  original access failure can be resolved. No live deployment or change to user
+  credentials was performed for this investigation.
 
 ## Open Review Findings (2026-09-23)
 

@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-09-28
+Verified: 2026-09-30
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -41,6 +41,12 @@ Verified: 2026-09-28
   replacing stable paths; an invalid later suite preserves the old report. Repeated
   generation changes image/suite/manifest versions without file-list churn and
   removes obsolete files only inside generated `_snapshot` directories.
+- [Snapshot I/O](../../src/snapshot/site.rs) stages inside the report output root,
+  not the OS temp directory, and errors retain their operation, path, and OS cause.
+  The `snapshot_io_errors_` tests cover discovery/staging and Windows sharing locks;
+  [worker stderr](../../tests/desktop_worker.rs) preserves the exact path. Lock tests
+  assert error 32, not access-denied error 5. A read-only attribute alone did not
+  block legacy cleanup on the tested Windows runtime.
 - Editor symbol rename may skip desktop-gated references when rust-analyzer uses
   default features. Always run the desktop-feature check after a shared rename.
 - [Review navigation](../../frontend/src/components/ReviewNavigation.tsx) loads only

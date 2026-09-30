@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::Path;
 
@@ -18,7 +18,13 @@ pub fn snapshot(args: SnapshotArgs) -> Result<()> {
         bail!("Regressify directory does not exist: {:?}", regressify_dir);
     }
 
-    let workspace_config = load_workspace_config(common::ROOT_DIR.get_required()?)?;
+    let root = common::ROOT_DIR.get_required()?;
+    let workspace_config = load_workspace_config(root).with_context(|| {
+        format!(
+            "Failed to load snapshot workspace configuration in '{}'",
+            root.display()
+        )
+    })?;
     generate_site(
         regressify_dir,
         &selected_snapshot_suites(regressify_dir, &args.test_suite)?,
@@ -40,12 +46,27 @@ fn selected_snapshot_suites(regressify_dir: &Path, patterns: &[String]) -> Resul
 }
 
 fn snapshot_suite_directories(regressify_dir: &Path) -> Result<Vec<String>> {
-    let mut entries: Vec<_> = fs::read_dir(regressify_dir)?.collect::<std::io::Result<_>>()?;
+    let mut entries: Vec<_> = fs::read_dir(regressify_dir)
+        .and_then(|entries| entries.collect::<std::io::Result<_>>())
+        .with_context(|| {
+            format!(
+                "Failed to list snapshot suite directories in '{}'",
+                regressify_dir.display()
+            )
+        })?;
     entries.sort_by_key(|entry| entry.file_name());
     let mut directories = Vec::new();
     for entry in entries {
         let path = entry.path();
-        if entry.file_type()?.is_dir()
+        if entry
+            .file_type()
+            .with_context(|| {
+                format!(
+                    "Failed to inspect snapshot suite directory '{}'",
+                    path.display()
+                )
+            })?
+            .is_dir()
             && let Some(name) = path.file_name().and_then(|name| name.to_str())
             && name != "_snapshot"
         {
@@ -86,6 +107,23 @@ mod tests {
         );
         assert!(selected_snapshot_suites(root.path(), &["missing".into()]).is_err());
         assert!(selected_snapshot_suites(root.path(), &["[".into()]).is_err());
+    }
+
+    #[test]
+    fn snapshot_io_errors_identify_suite_discovery_directory() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("missing-output");
+        let error = selected_snapshot_suites(&path, &[]).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::NotFound
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Failed to list snapshot suite directories"),
+            "{message}"
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
     }
 
     #[test]

@@ -112,6 +112,14 @@ generated files are removed, and desktop deployment stages only the active
 manifest's dependencies. Legacy entry pages are removed. Comparison data remains
 compatible with the desktop app.
 
+Snapshot needs write and cleanup access to the selected report output directory,
+not just read access to its captures. Temporary `.snapshot-*` directories are
+created inside that output directory. Filesystem errors identify the operation
+and affected path, including staging, existing-file reads, publication, and
+obsolete-file cleanup. On Windows, error 5 means access denied; error 32 indicates
+a file-sharing conflict. Check the named path and OS protection history without
+deleting captures or disabling protection. See [deployment troubleshooting](desktop.md#deploy-reports).
+
 Scenario names follow the desktop's [URL-based naming rules](create-scenario.md)
 when labels are omitted. Report headings and navigation use readable names;
 capture IDs, image filenames, and image routes remain unchanged. New captures

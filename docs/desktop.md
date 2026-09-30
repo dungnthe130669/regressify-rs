@@ -657,6 +657,14 @@ On Windows, `Access is denied (os error 5)` is an operating-system access failur
 not a Cloudflare API permission code. Local target-settings errors include the
 operation and settings path; report-worker errors identify snapshot generation or
 staging, and Cloudflare file-preparation errors identify the staging location.
+`Cannot generate report snapshots for deployment` occurs before staging or any
+Cloudflare upload. Run Snapshot with the same workspace, suites, environment, and
+output-directory settings to isolate that local step without deploying.
+Snapshot errors identify output discovery, `.snapshot-*` staging creation,
+artifact reads/writes, or cleanup and the affected path. Snapshot staging is
+inside the selected report output directory (normally `.regressify`), which needs
+write and cleanup access as well as read access. A Windows file-sharing conflict
+uses error 32 and is distinct from access-denied error 5.
 Cloudflare asset reads and staging copies include the affected paths. Check the full error
 and last activity step before changing permissions or replacing a token. Confirm
 that the Windows account can read the report output and write the application
