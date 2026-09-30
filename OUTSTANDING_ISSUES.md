@@ -4,25 +4,23 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Windows Cloudflare Access Denied (2026-09-30)
 
-- QA's follow-up reports `Cannot generate report snapshots for deployment: Access is denied (os error 5)`
-  on Windows 11. This narrows the failure to the local snapshot step before staging
-  or Cloudflare upload. The denied path and machine-specific cause remain unconfirmed.
-- Local deployment-settings and Cloudflare preparation errors now include their
-  operation and path. The report worker labels token loading, snapshot generation,
-  and staging failures. Filesystem causes and existing access-policy rejections
-  are preserved; permissions and security settings are not changed automatically.
-- Isolated Windows tests cover error 5 for settings access/replacement, blocked
-  settings directories, and locked report files. Loopback tests confirm local
-  preparation failures make no API requests and preserve source files.
-- Snapshot discovery, staging, artifact access, and cleanup now name the operation
-  and path. Snapshot tests and a native-worker stderr regression cover blocked
-  output and successful retry after releasing Windows sharing locks (error 32).
-  A read-only legacy-file probe did not fail on this runtime, so neither a
-  read-only attribute nor the tested sharing conflict establishes QA's cause.
-- QA must retry a build containing these diagnostics and provide the complete
-  error, or reproduce using Snapshot with the same output settings, before the
-  original access failure can be resolved. No live deployment or change to user
-  credentials was performed for this investigation.
+- QA's final log identifies error 5 when removing a confirmed-empty generated
+  `_snapshot/images/<suite>/diff` directory in a OneDrive workspace. Snapshot
+  publication had completed; optional directory cleanup incorrectly aborted
+  deployment before upload. No additional log is needed to identify this blocker.
+- Fixed: failure to remove a confirmed-empty generated directory now warns and
+  leaves it in place; an already-removed directory needs no warning. Directory
+  reads, artifact writes, stale-file deletion, and symlink checks remain strict.
+  Empty directories are excluded from the deployment inventory; captures and
+  permissions are unchanged.
+- Windows model and native-worker regressions block directory deletion with a
+  sharing handle, verify successful snapshots and warnings, preserve captures and
+  manifest paths, and confirm cleanup on a later unblocked run. Existing locked
+  artifact tests still fail as required. The simulated OS error is 32, not the
+  exact OneDrive/ACL error 5; both use the fixed removal-error branch.
+- QA should retry deployment with this fix. The particular Windows component
+  denying deletion is not established. No live deployment or change to user
+  credentials/security settings was performed.
 
 ## Open Review Findings (2026-09-23)
 

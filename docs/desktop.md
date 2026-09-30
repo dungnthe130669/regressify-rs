@@ -665,6 +665,12 @@ artifact reads/writes, or cleanup and the affected path. Snapshot staging is
 inside the selected report output directory (normally `.regressify`), which needs
 write and cleanup access as well as read access. A Windows file-sharing conflict
 uses error 32 and is distinct from access-denied error 5.
+Removal of confirmed-empty generated directories is optional cleanup. If Windows
+or a sync client blocks it, Snapshot logs `Warning: Could not remove empty snapshot directory`
+and continues deployment, leaving the folder for a later cleanup attempt.
+Empty folders are not deployed. Artifact read/write failures, stale-file deletion,
+and directory inspection errors still stop deployment; permissions are never
+changed automatically.
 Cloudflare asset reads and staging copies include the affected paths. Check the full error
 and last activity step before changing permissions or replacing a token. Confirm
 that the Windows account can read the report output and write the application

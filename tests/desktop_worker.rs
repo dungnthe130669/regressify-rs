@@ -58,6 +58,57 @@ fn snapshot_worker_reports_locked_output_path() {
 
 #[cfg(windows)]
 #[test]
+fn snapshot_worker_warns_for_blocked_empty_directory() {
+    use std::os::windows::fs::OpenOptionsExt;
+
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    const FILE_SHARE_READ_WRITE: u32 = 3;
+    let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
+    let root = tempfile::tempdir().unwrap();
+    let output = root.path().join(".regressify");
+    std::fs::create_dir(&output).unwrap();
+    let blocked = output
+        .canonicalize()
+        .unwrap()
+        .join("_snapshot/images/suite/diff");
+    std::fs::create_dir_all(&blocked).unwrap();
+    let locked = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ_WRITE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(&blocked)
+        .unwrap();
+    let request = RunRequest {
+        root: root.path().into(),
+        command: RunCommand::Snapshot,
+        options: RunOptions::default(),
+    };
+    let result = invoke(executable, &request);
+    drop(locked);
+
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(result.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("Warning: Could not remove empty snapshot directory"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&blocked.display().to_string()), "{stderr}");
+    assert!(stderr.contains("Snapshot generated at:"), "{stderr}");
+    assert!(output.join("index.html").is_file());
+    assert!(blocked.is_dir());
+    assert!(std::fs::read_dir(&blocked).unwrap().next().is_none());
+
+    let result = invoke(executable, &request);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!blocked.exists());
+}
+
+#[cfg(windows)]
+#[test]
 #[ignore = "requires cached managed Chromium and no running installer"]
 fn installer_browser_mode_reuses_cache_without_network_during_setup() {
     use std::os::windows::io::{FromRawHandle, OwnedHandle};

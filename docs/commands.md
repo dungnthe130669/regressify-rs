@@ -116,7 +116,10 @@ Snapshot needs write and cleanup access to the selected report output directory,
 not just read access to its captures. Temporary `.snapshot-*` directories are
 created inside that output directory. Filesystem errors identify the operation
 and affected path, including staging, existing-file reads, publication, and
-obsolete-file cleanup. On Windows, error 5 means access denied; error 32 indicates
+obsolete-file cleanup. Failure to remove a confirmed-empty generated directory
+only produces a warning: the directory stays out of deployment assets and cleanup
+is retried on the next snapshot. Directory reads and obsolete-file deletion must
+still succeed. On Windows, error 5 means access denied; error 32 indicates
 a file-sharing conflict. Check the named path and OS protection history without
 deleting captures or disabling protection. See [deployment troubleshooting](desktop.md#deploy-reports).
 

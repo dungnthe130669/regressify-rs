@@ -554,13 +554,15 @@ fn prune_generated_files(root: &Path, active: &[PathBuf]) -> Result<()> {
                     )
                 })?
                 .is_none();
-            if empty {
-                fs::remove_dir(entry.path()).with_context(|| {
-                    format!(
-                        "Failed to remove empty snapshot directory '{}'",
-                        entry.path().display()
-                    )
-                })?;
+            // Empty directories carry no report data; sync clients can block their deletion.
+            if empty
+                && let Err(error) = fs::remove_dir(entry.path())
+                && error.kind() != std::io::ErrorKind::NotFound
+            {
+                eprintln!(
+                    "Warning: Could not remove empty snapshot directory '{}'; leaving it in place: {error}",
+                    entry.path().display()
+                );
             }
         }
     }
@@ -1256,6 +1258,54 @@ mod tests {
         assert_eq!(fs::read(&path)?, b"private old report");
         generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
         assert!(artifact_paths(&root, &[]).is_ok());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn snapshot_cleanup_keeps_blocked_empty_directories_without_failing() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        const FILE_SHARE_READ: u32 = 1;
+        const FILE_SHARE_WRITE: u32 = 2;
+        const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+
+        let temporary = tempfile::tempdir()?;
+        let root = temporary.path().canonicalize()?;
+        generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+        let before = artifact_paths(&root, &[])?;
+        let relative = Path::new("_snapshot/images/suite/diff");
+        let directory = root.join(relative);
+        fs::create_dir_all(&directory)?;
+        let removable = root.join("_snapshot/images/obsolete/test");
+        fs::create_dir_all(&removable)?;
+        let capture = root.join("suite/bitmaps_reference/capture.png");
+        fs::create_dir_all(capture.parent().unwrap())?;
+        fs::write(&capture, b"original capture")?;
+
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(&directory)?;
+        let removal = fs::remove_dir(&directory).expect_err("Directory deletion must be blocked");
+        assert!(matches!(removal.raw_os_error(), Some(5 | 32)), "{removal}");
+        let result = generate_site(&root, &[], &args(), &WorkspaceConfig::default());
+        drop(locked);
+
+        result?;
+        assert!(directory.is_dir());
+        assert!(fs::read_dir(&directory)?.next().is_none());
+        assert!(!removable.exists());
+        let inventory = artifact_paths(&root, &[])?;
+        assert_eq!(inventory, before);
+        assert!(!inventory.iter().any(|path| path.starts_with(relative)));
+        assert_eq!(fs::read(&capture)?, b"original capture");
+
+        generate_site(&root, &[], &args(), &WorkspaceConfig::default())?;
+        assert!(!root.join("_snapshot/images").exists());
+        assert_eq!(artifact_paths(&root, &[])?, before);
+        assert_eq!(fs::read(&capture)?, b"original capture");
         Ok(())
     }
 

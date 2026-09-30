@@ -47,6 +47,12 @@ Verified: 2026-09-30
   [worker stderr](../../tests/desktop_worker.rs) preserves the exact path. Lock tests
   assert error 32, not access-denied error 5. A read-only attribute alone did not
   block legacy cleanup on the tested Windows runtime.
+- Removal of confirmed-empty generated directories is best-effort after publishing:
+  deletion errors warn and retain the directory; already-removed paths are ignored.
+  Directory reads, stale-file deletion, artifact I/O, and symlink checks remain fatal.
+  `snapshot_cleanup_keeps_blocked_empty_directories_without_failing` and the worker's
+  `snapshot_worker_warns_for_blocked_empty_directory` cover Windows directory locks,
+  unchanged capture/inventory data, warning output, and later cleanup.
 - Editor symbol rename may skip desktop-gated references when rust-analyzer uses
   default features. Always run the desktop-feature check after a shared rename.
 - [Review navigation](../../frontend/src/components/ReviewNavigation.tsx) loads only
