@@ -45,6 +45,16 @@ Verified: 2026-09-30
 - [List keyboard state](../../src/desktop/ui/lists.rs) is scoped to each list's
   focus handle. [Navigator tests](../../src/desktop/ui/tests.rs) cover filters,
   other-suite preservation, text-input isolation, disabled state, and scrolling.
+- [Suite filename dialogs](../../src/desktop/ui/files.rs) focus/select the stem
+  after opening. `suite_name_dialog_` GUI tests cover Enter in inputs/buttons,
+  keyboard/pointer X and Cancel, failed writes, retry, and busy locks. gpui-kit
+  styled buttons replace supplied focus handles: track a parent focus region to
+  distinguish the primary action from Cancel/X in the dialog-wide Enter handler.
+  Button wrappers may omit disabled metadata; verify ignored interactions instead.
+  X dismissal is deferred, so wait for the dialog to disappear before asserting it.
+  The native artifact flow passes creation/rename focus, Enter, and X checks. Scope
+  the New suite lookup by button role because status text repeats that name after
+  cancellation. Set and verify native Create focus before Enter; GUI tests cover Tab.
 - Keyboard-scrolled rows share an explicit `track_scroll`/`scrollbar` handle;
   append the scrollbar after rows so direct-child indices stay aligned. The
   convenience scroll wrapper owns a separate handle. [Workspace-file tests](../../src/desktop/ui/tests.rs)

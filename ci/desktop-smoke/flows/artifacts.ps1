@@ -1,4 +1,42 @@
 function Test-ArtifactFlows {
+    Write-Host 'Checking create-dialog initial selection and X dismissal'
+    Invoke-Control 'New suite' -Pointer
+    Wait-Control 'Filename' | Out-Null
+    Capture-Window 'suite-create-selected'
+    Send-FixtureText 'cancelled-suite'
+    Write-Host 'Checking the filename after typing into the initial selection'
+    Wait-SourceText 'cancelled-suite.tests.yaml' 'Filename'
+    Invoke-Control 'Close' -Pointer
+    Wait-WindowState { $null -eq (Find-Control 'Create') } 'The suite dialog X button did not close it.'
+    if (Test-Path (Join-Path $workspace 'visual_tests/cancelled-suite.tests.yaml')) { throw 'Closing the create dialog saved a suite.' }
+    foreach ($mode in @('input', 'button')) {
+        Write-Host "Checking create-dialog Enter from $mode"
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+        $buttonCondition = [System.Windows.Automation.AndCondition]::new(
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'New suite'),
+            [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+        )
+        $newSuite = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+        if ($null -eq $newSuite) { throw 'The New suite button is unavailable.' }
+        $invoke = [System.Windows.Automation.InvokePattern]$newSuite.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)
+        $invoke.Invoke()
+        Wait-Control 'Filename' | Out-Null
+        Send-FixtureText ('dialog-' + $mode)
+        $filename = 'dialog-' + $mode + '.tests.yaml'
+        Wait-SourceText $filename 'Filename'
+        if ((Read-ControlText 'Filename') -cne $filename) { throw 'The create dialog did not focus and select only the filename stem.' }
+        if ($mode -eq 'button') {
+            $create = Wait-Control 'Create'
+            $create.SetFocus()
+            Wait-WindowState {
+                [System.Windows.Automation.Automation]::Compare($create, [System.Windows.Automation.AutomationElement]::FocusedElement)
+            } 'The Create button did not receive native focus.'
+        }
+        Capture-Window ('suite-create-enter-' + $mode)
+        Send-FixtureKeys Enter
+        Wait-Control 'File saved' | Out-Null
+        if (-not (Test-Path (Join-Path $workspace ('visual_tests/' + $filename)))) { throw "Enter from the $mode did not create the suite." }
+    }
     Invoke-Control 'account.tests.json'
     Invoke-Control 'Profile'
     Wait-Control '0 reference images / 0 saved test runs' | Out-Null
@@ -81,10 +119,21 @@ function Test-ArtifactFlows {
     Invoke-Control 'account.tests.json' -Pointer
     Send-FixtureKeys F2
     Wait-Control 'Filename' | Out-Null
-    Write-FixtureControlText 'Filename' 'customers.tests.json'
+    Capture-Window 'suite-rename-selected'
+    Send-FixtureText 'cancelled-rename'
+    Wait-SourceText 'cancelled-rename.tests.json' 'Filename'
+    Invoke-Control 'Close' -Pointer
+    Wait-WindowState { $null -eq (Find-Control 'Filename') } 'The rename dialog X button did not close it.'
+    if (-not (Test-Path (Join-Path $workspace 'visual_tests/account.tests.json'))) { throw 'Closing the rename dialog moved the suite.' }
+    Invoke-Control 'account.tests.json' -Pointer
+    Send-FixtureKeys F2
+    Wait-Control 'Filename' | Out-Null
+    Send-FixtureText 'customers'
+    Wait-SourceText 'customers.tests.json' 'Filename'
+    if ((Read-ControlText 'Filename') -cne 'customers.tests.json') { throw 'The rename dialog did not focus and select only the filename stem.' }
     Write-FixtureControlText 'Display name' 'Customer accounts'
     Capture-Window 'suite-rename-dialog'
-    Invoke-Control 'Save'
+    Send-FixtureKeys Enter
     Wait-Control 'File saved' | Out-Null
     Wait-Control 'Customer accounts' | Out-Null
     $renamedOutput = Join-Path $workspace '.regressify/customers'
@@ -116,5 +165,5 @@ function Test-ArtifactFlows {
     Wait-Control 'Suite deleted' | Out-Null
     if ((Test-Path $renamedSource) -or (Test-Path $renamedOutput)) { throw 'Suite deletion did not remove its source and artifacts.' }
     if (-not (Test-Path $reportPath)) { throw 'Suite deletion removed another suite report.' }
-    Write-Output 'Artifact gating, persistent activity, suite rename/display labels, and confirmed deletion passed without browser capture.'
+    Write-Output 'Suite dialog focus/Enter/X controls, artifact gating, persistent activity, rename/display labels, and confirmed deletion passed without browser capture.'
 }

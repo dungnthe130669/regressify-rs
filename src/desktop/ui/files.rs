@@ -416,11 +416,22 @@ impl Workbench {
             ),
             _ => return,
         };
+        let selection_end = match operation {
+            Operation::New => "new-suite".len(),
+            Operation::Rename => self
+                .session
+                .open
+                .as_ref()
+                .and_then(|open| open.entry.suite_name())
+                .map_or(initial.len(), |name| name.len()),
+            _ => initial.len(),
+        };
         let name = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Filename")
                 .default_value(initial)
         });
+        let initial_focus = name.clone();
         let display_name = (operation == Operation::Rename).then(|| {
             cx.new(|cx| {
                 InputState::new(window, cx)
@@ -432,15 +443,47 @@ impl Workbench {
         self.status = title.into();
         self.sync_modal(cx);
         let modal = self.modal.clone();
+        // Styled buttons own their focus handles; track the parent for dialog Enter routing.
+        let confirm_focus = cx.focus_handle();
         window.open_dialog(cx, move |dialog, window, cx| {
             let name = name.clone();
             let display_name = display_name.clone();
+            let submit_name = name.clone();
+            let submit_display_name = display_name.clone();
+            let submit_focus = confirm_focus.clone();
+            let submit = window.listener_for(&view, move |this, _, window, cx| {
+                if this.busy {
+                    return;
+                }
+                let input_focused = submit_name.read(cx).focus_handle(cx).is_focused(window)
+                    || submit_display_name
+                        .as_ref()
+                        .is_some_and(|input| input.read(cx).focus_handle(cx).is_focused(window));
+                if !input_focused && !submit_focus.contains_focused(window, cx) {
+                    window.close_dialog(cx);
+                    return;
+                }
+                this.commit_named_file(
+                    operation,
+                    submit_name.read(cx).value().to_string(),
+                    submit_display_name
+                        .as_ref()
+                        .map(|input| input.read(cx).value().to_string()),
+                    window,
+                    cx,
+                );
+            });
             let state = modal.read(cx);
             let busy = state.busy;
             dialog
                 .title(title)
-                .close_button(false)
+                .close_button(!busy)
                 .keyboard(!busy)
+                .overlay_closable(!busy)
+                .on_ok(move |event, window, cx| {
+                    submit(event, window, cx);
+                    false
+                })
                 .when(operation == Operation::Rename, |dialog| {
                     dialog.child(div().text_sm().child("Filename"))
                 })
@@ -470,30 +513,39 @@ impl Workbench {
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
-                            Button::new("file-confirm")
-                                .primary()
-                                .label(if operation == Operation::New {
-                                    "Create"
-                                } else {
-                                    "Save"
-                                })
-                                .disabled(busy)
-                                .on_click(window.listener_for(
-                                    &view,
-                                    move |this, _, window, cx| {
-                                        this.commit_named_file(
-                                            operation,
-                                            name.read(cx).value().to_string(),
-                                            display_name
-                                                .as_ref()
-                                                .map(|input| input.read(cx).value().to_string()),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                )),
+                            div()
+                                .id("file-confirm-focus")
+                                .track_focus(&confirm_focus)
+                                .child(
+                                    Button::new("file-confirm")
+                                        .primary()
+                                        .label(if operation == Operation::New {
+                                            "Create"
+                                        } else {
+                                            "Save"
+                                        })
+                                        .disabled(busy)
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            move |this, _, window, cx| {
+                                                this.commit_named_file(
+                                                    operation,
+                                                    name.read(cx).value().to_string(),
+                                                    display_name.as_ref().map(|input| {
+                                                        input.read(cx).value().to_string()
+                                                    }),
+                                                    window,
+                                                    cx,
+                                                );
+                                            },
+                                        )),
+                                ),
                         ),
                 )
+        });
+        initial_focus.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.set_selected_range(0..selection_end, cx);
         });
     }
 
@@ -523,6 +575,9 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.busy {
+            return;
+        }
         let Some(workspace) = self.session.workspace.clone() else {
             return;
         };

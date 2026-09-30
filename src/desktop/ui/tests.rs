@@ -138,6 +138,345 @@ fn file_action_availability_matches_document_and_workspace_state(cx: &mut TestAp
 }
 
 #[gpui_kit::test]
+async fn suite_name_dialog_create_selects_name_and_submits_enter(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("navigator-new-suite", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("file-name").value(),
+            Some("new-suite.tests.yaml")
+        );
+        window.input("checkout", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("file-name").value(),
+            Some("checkout.tests.yaml"),
+            "The filename stem must be selected in the focused input"
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy && view.read(cx).status == "File saved"
+    })
+    .await;
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/checkout.tests.yaml")
+            .is_file()
+    );
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("file-confirm").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn suite_name_dialog_rename_selects_name_and_submits_enter(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        let entry = view.read(cx).session.open.as_ref().unwrap().entry.clone();
+        view.update(cx, |this, cx| {
+            this.begin_suite_operation(entry, super::files::Operation::Rename, window, cx)
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("file-name").focused(), Some(true));
+        window.input("renamed-suite", cx);
+        assert_eq!(
+            window.find("file-name").value(),
+            Some("renamed-suite.tests.yaml")
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        !view.read(cx).busy && view.read(cx).status == "File saved"
+    })
+    .await;
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/renamed-suite.tests.yaml")
+            .is_file()
+    );
+    assert!(
+        !directory
+            .path()
+            .join("visual_tests/ui-test.tests.yaml")
+            .exists()
+    );
+}
+
+#[gpui_kit::test]
+async fn suite_name_dialog_enter_activates_focused_create_and_save_buttons(
+    cx: &mut TestAppContext,
+) {
+    use super::files::{Operation, Pending};
+    for operation in [Operation::New, Operation::Rename] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.guard(Pending::Name(operation), window, cx)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(window.find("file-name").focused(), Some(true));
+            window.input("keyboard-submit", cx);
+            for _ in 0..6 {
+                if window.find("file-confirm").focused() == Some(true) {
+                    break;
+                }
+                window.press("tab", cx);
+            }
+            assert_eq!(window.find("file-confirm").focused(), Some(true));
+            assert_eq!(
+                window.find("file-confirm").label(),
+                Some(if operation == Operation::New {
+                    "Create"
+                } else {
+                    "Save"
+                })
+            );
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            !view.read(cx).busy && view.read(cx).status == "File saved"
+        })
+        .await;
+        assert!(
+            directory
+                .path()
+                .join("visual_tests/keyboard-submit.tests.yaml")
+                .is_file()
+        );
+        assert_eq!(
+            directory
+                .path()
+                .join("visual_tests/ui-test.tests.yaml")
+                .exists(),
+            operation == Operation::New
+        );
+    }
+}
+
+#[gpui_kit::test]
+async fn suite_name_dialog_close_cancel_and_escape_preserve_files(cx: &mut TestAppContext) {
+    use super::files::{Operation, Pending};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original_path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let original = std::fs::read(&original_path).unwrap();
+    for operation in [Operation::New, Operation::Rename] {
+        for dismissal in [
+            "close",
+            "file-cancel",
+            "escape",
+            "cancel-enter",
+            "close-enter",
+        ] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.guard(Pending::Name(operation), window, cx)
+                });
+                window.render_frame(cx);
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert!(window.find("close").visible());
+                window.input("abandoned-suite", cx);
+                match dismissal {
+                    "escape" => window.press("escape", cx),
+                    "cancel-enter" | "close-enter" => {
+                        let target = if dismissal == "cancel-enter" {
+                            "file-cancel"
+                        } else {
+                            "close"
+                        };
+                        for _ in 0..6 {
+                            if window.find(target).focused() == Some(true) {
+                                break;
+                            }
+                            window.press("tab", cx);
+                        }
+                        assert_eq!(window.find(target).focused(), Some(true));
+                        window.press("enter", cx);
+                    }
+                    button => window.click(button, cx),
+                }
+                window.render_frame(cx);
+                assert!(!view.read(cx).busy);
+                assert!(!view.read(cx).session.dirty());
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("file-confirm").is_none()
+            })
+            .await;
+            assert_eq!(std::fs::read(&original_path).unwrap(), original);
+            assert!(
+                !directory
+                    .path()
+                    .join("visual_tests/abandoned-suite.tests.yaml")
+                    .exists()
+            );
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn suite_name_dialog_failed_enter_preserves_input_and_allows_retry(cx: &mut TestAppContext) {
+    use super::files::{Operation, Pending};
+    for operation in [Operation::New, Operation::Rename] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        let original_path = directory.path().join("visual_tests/ui-test.tests.yaml");
+        let original = std::fs::read(&original_path).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("occupied")
+                    .unwrap();
+                this.guard(Pending::Name(operation), window, cx);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let occupied_path = directory.path().join("visual_tests/occupied.tests.yaml");
+        let occupied = std::fs::read(&occupied_path).unwrap();
+        settle_dialog(cx, handle).await;
+        for invalid_name in ["", "occupied.tests.yaml"] {
+            let previous_status = cx.update(|cx| view.read(cx).status.clone());
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("file-name", cx);
+                window.press("ctrl-a", cx);
+                window.press("backspace", cx);
+                if !invalid_name.is_empty() {
+                    window.input(invalid_name, cx);
+                }
+                window.press("enter", cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+                !view.read(cx).busy && view.read(cx).status != previous_status
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert_ne!(view.read(cx).status, "File saved");
+                assert!(window.find("file-confirm").visible());
+                assert_eq!(window.find("file-name").value(), Some(invalid_name));
+                assert!(window.find("close").visible());
+            })
+            .unwrap();
+            assert_eq!(std::fs::read(&original_path).unwrap(), original);
+            assert_eq!(std::fs::read(&occupied_path).unwrap(), occupied);
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("file-name", cx);
+            window.press("ctrl-a", cx);
+            window.input("recovered-suite.tests.yaml", cx);
+            if operation == Operation::Rename {
+                window.click("suite-display-name", cx);
+                window.input("Recovered suite", cx);
+            }
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            !view.read(cx).busy && view.read(cx).status == "File saved"
+        })
+        .await;
+        let saved = directory
+            .path()
+            .join("visual_tests/recovered-suite.tests.yaml");
+        assert!(saved.is_file());
+        assert_eq!(original_path.exists(), operation == Operation::New);
+        assert_eq!(std::fs::read(&occupied_path).unwrap(), occupied);
+        if operation == Operation::Rename {
+            let suite: crate::types::TestSuite =
+                serde_yaml::from_slice(&std::fs::read(saved).unwrap()).unwrap();
+            assert_eq!(suite.display_name.as_deref(), Some("Recovered suite"));
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn suite_name_dialog_busy_state_blocks_submission_and_dismissal(cx: &mut TestAppContext) {
+    use super::files::{Operation, Pending};
+    for operation in [Operation::New, Operation::Rename] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.guard(Pending::Name(operation), window, cx)
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.input("busy-suite", cx);
+            view.update(cx, |this, cx| {
+                this.busy = true;
+                this.sync_modal(cx);
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("close").is_none());
+            window.press("enter", cx);
+            window.press("escape", cx);
+            window.click("file-confirm", cx);
+            window.click("file-cancel", cx);
+            assert!(window.find("file-confirm").visible());
+            assert!(view.read(cx).busy);
+            view.update(cx, |this, cx| {
+                this.busy = false;
+                this.sync_modal(cx);
+            });
+            window.render_frame(cx);
+            window.click("close", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("file-confirm").is_none()
+        })
+        .await;
+        assert!(
+            !directory
+                .path()
+                .join("visual_tests/busy-suite.tests.yaml")
+                .exists()
+        );
+        assert!(
+            directory
+                .path()
+                .join("visual_tests/ui-test.tests.yaml")
+                .is_file()
+        );
+    }
+}
+
+#[gpui_kit::test]
 async fn command_palette_preserves_the_unsaved_guard_when_opening_another_dialog(
     cx: &mut TestAppContext,
 ) {

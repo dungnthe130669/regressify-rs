@@ -971,6 +971,14 @@ focused, F2 renames the focused suite and Delete opens its deletion confirmation
 These commands target one row, including in Results; they do not apply to every
 checked suite or intercept keys in text inputs. Active runs block both operations.
 
+New suite (`+`) and Rename suite focus the filename input and select the name
+without its `.tests.yaml`, `.tests.yml`, or `.tests.json` suffix. Start typing to
+replace `new-suite` or the current name. Enter submits from the filename input,
+Rename's Display name input, or the focused Create/Save button. The top-right X,
+Cancel, and Escape close without saving; Enter on a focused Cancel or X also
+cancels. Invalid or existing names keep the dialog open for correction. During a
+write, submission and dismissal controls are locked until the operation finishes.
+
 Runs > Suites supports Ctrl+A, Ctrl+Shift+A, and Escape for its checklist. Git's
 Changes and Comparison Changes trees support the same selection shortcuts within
 the focused group, keeping comparison artifacts separate and excluding conflicts

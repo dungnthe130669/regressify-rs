@@ -307,6 +307,10 @@ it was risk-focused, not an exhaustive security certification.
   and scenario Ctrl+A/ranges respect filters; run checklists and Git trees retain
   their selection boundaries. Viewport, capture, workspace-file, and action lists
   support keyboard navigation without intercepting text-editing shortcuts.
+- New and Rename suite dialogs now focus and select the filename stem, accept
+  Enter from inputs and focused Create/Save buttons, and include a close X.
+  Keyboard Cancel/X remain non-destructive; GUI regressions cover dismissal,
+  busy-state locks, invalid names, collision preservation, and retry.
 - Snapshot overview, suite results, and image review now share a responsive React
   SPA with clean URLs, light/dark themes, and quick suite navigation. Generated
   JS, CSS, fonts, JSON, and every image use stable filenames with `?v=` versions.
