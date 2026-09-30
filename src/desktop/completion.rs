@@ -633,6 +633,42 @@ mod tests {
     }
 
     #[test]
+    fn switch_tab_completes_in_yaml_and_json_without_frame_options() {
+        let actions = suggestions("scenarios:\n- url: /\n  actions:\n  - swi|", Format::Yaml);
+        assert!(actions.iter().any(|item| item.label == "switchTab"));
+        for (source, format) in [
+            (
+                "scenarios:\n- url: /\n  actions:\n  - switchTab: |",
+                Format::Yaml,
+            ),
+            (
+                r#"{"scenarios":[{"url":"/","actions":[{"switchTab":|}]}]}"#,
+                Format::Json,
+            ),
+        ] {
+            let items = suggestions(source, format);
+            for target in ["new", "previous", "original"] {
+                assert!(
+                    items
+                        .iter()
+                        .any(|item| item.text == format!("\"{target}\"")),
+                    "{items:?}"
+                );
+            }
+        }
+        let fields = suggestions(
+            "scenarios:\n- url: /\n  actions:\n  - switchTab: new\n    |",
+            Format::Yaml,
+        );
+        assert!(fields.iter().any(|item| item.label == "url"));
+        assert!(
+            !fields
+                .iter()
+                .any(|item| item.label == "frame" || item.label == "click")
+        );
+    }
+
+    #[test]
     fn generated_schema_completes_nested_objects_lists_and_navigation_choices() {
         for source in [
             "scenarios: []\nbasicAuth:\n  ori|",

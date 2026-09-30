@@ -117,6 +117,39 @@ impl Client {
             .await
     }
 
+    pub async fn call_all(
+        &self,
+        session: &str,
+        commands: Vec<(&'static str, Value)>,
+    ) -> Result<()> {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let mut responses = Vec::with_capacity(commands.len());
+            for (method, params) in commands {
+                let (reply, response) = oneshot::channel();
+                self.requests
+                    .send(Request {
+                        session: Some(session.to_string()),
+                        method,
+                        params,
+                        reply,
+                    })
+                    .await
+                    .map_err(|_| anyhow!("CDP connection closed during {method}"))?;
+                responses.push((method, response));
+            }
+            // Paused targets can defer setup replies until runIfWaitingForDebugger.
+            // Send the complete ordered batch before awaiting any of its replies.
+            for (method, response) in responses {
+                response
+                    .await
+                    .map_err(|_| anyhow!("CDP connection closed during {method}"))??;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|_| anyhow!("Timed out initializing CDP target"))?
+    }
+
     pub async fn call_with_timeout(
         &self,
         session: Option<&str>,

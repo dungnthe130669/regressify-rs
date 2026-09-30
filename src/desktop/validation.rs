@@ -616,6 +616,34 @@ mod tests {
     }
 
     #[test]
+    fn switch_tab_diagnostics_follow_the_typed_action_schema() {
+        for action in [
+            json!({"switchTab": "new", "url": "**/quote"}),
+            json!({"switchTab": "previous"}),
+            json!({"switchTab": "original"}),
+        ] {
+            let issues = diagnostics(
+                DocumentKind::Suite,
+                &json!({"scenarios": [{"url": "/", "actions": [action]}]}),
+            )
+            .unwrap();
+            assert!(issues.is_empty(), "{issues:?}");
+        }
+        for (action, key) in [
+            (json!({"switchTab": "unknown"}), "switchTab"),
+            (json!({"switchTab": "new", "frame": "iframe"}), "frame"),
+        ] {
+            let issues = diagnostics(
+                DocumentKind::Suite,
+                &json!({"scenarios": [{"url": "/", "actions": [action]}]}),
+            )
+            .unwrap();
+            assert_eq!(issues.len(), 1, "{issues:?}");
+            assert_eq!(issues[0].pointer, format!("/scenarios/0/actions/0/{key}"));
+        }
+    }
+
+    #[test]
     fn integer_spelling_errors_do_not_fall_back_to_untagged_enum_messages() {
         for (value, pointer) in [
             (

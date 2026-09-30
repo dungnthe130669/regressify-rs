@@ -38,3 +38,16 @@ Verified: 2026-09-30
   scenario -> workspace -> default, not through the suite; `postInteractionWait`
   remains final-only. The [save regression](../../src/test/test_action.rs) checks
   pixels, repeated checkpoints, opt-outs, and animations started by finish callbacks.
+- [Tab selection](../../src/test/tabs.rs) is explicit: `new` selects an unvisited
+  direct popup of the active page (including iframe openers and `noopener`),
+  `previous` steps through selection history, and `original` selects the initial
+  page. URL filters share wait matching/replacements; multiple matches fail.
+- Popup CDP setup must queue commands before resuming, then await responses:
+  `Page.enable` can block while the target is paused. Chromiumoxide also reapplies
+  launch emulation to popups, so each capture's launch viewport must match.
+  The live tab fixtures verify first-script dimensions, redirects, and nested tabs.
+- The [popup capture regression](../../src/test/test_scenario.rs) verifies actual
+  `_blank` screenshot pixels, cross-origin Basic Auth and pre-script storage,
+  persistence across tabs, once-per-document hooks, and return after popup closure.
+  Desktop schema/completion checks and the native `switch_tab_can_be_added_from_navigation_menu`
+  regression verify authoring the same action in the app.

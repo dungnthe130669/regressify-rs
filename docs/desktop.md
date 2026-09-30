@@ -1165,6 +1165,13 @@ in document undo. The Add action menu groups navigation, interactions, page
 utilities, and capture/state actions. Search settings for `actions` to isolate
 the sequence. Input values are not included in the sequence summaries.
 
+The navigation group includes `switchTab`. Add it after a click that opens a
+`target="_blank"` link or JavaScript popup, choose `new`, and optionally supply a
+destination URL or glob. Following waits, actions, checkpoint captures, and the
+final screenshot use that tab. Choose `previous` to step back through selection
+history or `original` to return to the initial scenario tab. The Source editor
+completes the same choices in YAML and JSON. Tab selection needs no Node runtime.
+
 The workspace opens to an overview with suite/scenario totals, selection counts,
 configuration issues, and per-suite status. Edit opens the selected suite; Overview
 returns to the workspace without discarding an open draft. The header identifies
@@ -1180,7 +1187,7 @@ Execution, Page setup, and Behavior. Short values use a two-column layout; URLs
 and lists use the full width. Document actions stay with the editor. Light and
 dark appearances share restrained teal accents and consistent native typography.
 
-The Add menu supports scenarios, viewports, and all 15 action types. Selected
+The Add menu supports scenarios, viewports, and all 16 action types. Selected
 items can be duplicated, reordered, and removed. Removal is confirmed and
 undoable. Compound changes form one undo step. Scenario copies omit explicit IDs
 and receive unique labels; suite copies omit the suite ID to avoid sharing output

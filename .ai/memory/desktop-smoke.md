@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-09-24
+Verified: 2026-09-30
 
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
@@ -29,6 +29,12 @@ Verified: 2026-09-24
   after Alt+Tab to an owned temporary window and native return activation without
   clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;
   the source wrapper's `HasKeyboardFocus` stays false even while its input works.
+- Exact line-command selections finish with `Shift+Home` after `Shift+Down`.
+  The keyboard-driven [GUI regression](../../src/desktop/ui/tests.rs) reproduced
+  a one-character drift into the third line without it. Keep the column-zero
+  status/range checks and exact output assertions; do not increase the wait or
+  change the expected label. The full native `-SchemaFlows` run passes with this
+  boundary normalization, including line edits and restored preferences.
 - The [default flow](../../ci/desktop-smoke/flows/default.ps1) includes pointer-focused
   Ctrl+A, Ctrl+Shift+A, and Escape checks for suite/scenario selection and the Runs
   checklist. It verifies accessible selection counts without launching a worker.

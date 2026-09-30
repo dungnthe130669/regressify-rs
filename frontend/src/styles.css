@@ -565,11 +565,13 @@ svg {
 }
 .results-table-wrap {
   border-top: 1px solid var(--border);
+  overflow-x: auto;
 }
 .results-table {
   --suite-cell-padding: 16px;
   --suite-name-gap: 12px;
   width: 100%;
+  min-width: 620px;
   border-collapse: collapse;
   text-align: left;
   table-layout: fixed;
@@ -590,21 +592,18 @@ svg {
   padding: 0;
   text-align: left;
 }
-.results-table :is(th, td):nth-child(n + 2):nth-child(-n + 4) {
+.results-table :is(th, td):nth-child(n + 2) {
   text-align: center;
 }
-.results-table :where(th:nth-child(3), th:nth-child(4)) button {
+.results-table :where(th:nth-child(n + 2)) button {
   margin-inline: auto;
 }
 .results-table th:first-child {
-  width: 37%;
+  width: 40%;
   padding-left: calc(var(--suite-cell-padding) + 7px + var(--suite-name-gap));
 }
 .results-table th:last-child {
-  width: 44px;
-}
-.results-table th:nth-last-child(2) {
-  width: 21%;
+  width: 24%;
 }
 .results-table td {
   padding: 15px 12px;
@@ -668,6 +667,21 @@ svg {
   background: var(--error-soft);
   color: var(--error);
 }
+.result-count {
+  display: inline-block;
+  min-width: 34px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  color: var(--muted);
+}
+.result-count.pass {
+  background: var(--accent-soft);
+  color: var(--pass);
+}
+.result-count.fail {
+  background: var(--fail-soft);
+  color: var(--fail);
+}
 .rate {
   display: flex;
   gap: 12px;
@@ -679,17 +693,21 @@ svg {
   height: 4px;
   border-radius: 0;
   appearance: none;
-  background: var(--fail-soft);
+  background: var(--border);
+  color: var(--pass);
   border: 0;
 }
+.rate progress.fail {
+  color: var(--muted);
+}
 .rate progress::-webkit-progress-bar {
-  background: var(--fail-soft);
+  background: var(--border);
 }
 .rate progress::-webkit-progress-value {
-  background: var(--pass);
+  background: currentColor;
 }
 .rate progress::-moz-progress-bar {
-  background: var(--pass);
+  background: currentColor;
 }
 .rate span {
   width: 52px;
@@ -1526,10 +1544,7 @@ figcaption {
     display: none;
   }
   .results-table th:first-child {
-    width: 52%;
-  }
-  .results-table th:nth-last-child(2) {
-    width: auto;
+    width: 34%;
   }
   .snapshot-date {
     display: none;
@@ -1605,6 +1620,7 @@ figcaption {
   .results-table {
     --suite-cell-padding: 8px;
     --suite-name-gap: 8px;
+    min-width: 560px;
   }
   .results-table th {
     font-size: 12px;
@@ -1615,12 +1631,6 @@ figcaption {
   }
   .suite-name {
     font-size: 14px;
-  }
-  .results-table th:last-child {
-    width: 34px;
-  }
-  .results-table td .icon-button {
-    width: 26px;
   }
   .suite-toolbar {
     gap: 0;

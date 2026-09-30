@@ -6,6 +6,7 @@ fn action_icon(kind: &str) -> gpui_kit::assets::IconName {
     use gpui_kit::assets::IconName as Icon;
     match kind {
         "goto" => Icon::Globe,
+        "switchTab" => Icon::ExternalLink,
         "wait" => Icon::Timer,
         "input" | "press" => Icon::Keyboard,
         "check" | "uncheck" => Icon::SquareCheck,
@@ -21,7 +22,7 @@ fn action_icon(kind: &str) -> gpui_kit::assets::IconName {
 
 fn action_group(kind: &str) -> usize {
     match kind {
-        "goto" | "wait" => 0,
+        "goto" | "switchTab" | "wait" => 0,
         "hide" | "remove" => 2,
         "save" | "persist" => 3,
         _ => 1,

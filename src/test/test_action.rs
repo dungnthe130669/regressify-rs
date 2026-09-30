@@ -267,6 +267,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
     let navigation = page.navigation_watch().await?;
 
     match action {
+        TestAction::SwitchTab(_) => {
+            anyhow::bail!("Tab selection must run through the scenario page manager");
+        }
         TestAction::Check(CheckAction { check, .. }) => {
             crate::progress::scenario_log!("{} Check element: {}", log_prefix, check);
             let frame_selectors = get_frame_selectors(frame);
@@ -793,13 +796,13 @@ fn apply_action_url_replacements(url: &str, replacements: &[UrlReplacement]) -> 
     config::replacements::apply_replacements(url, replacements)
 }
 
-enum UrlMatcher {
+pub(super) enum UrlMatcher {
     Exact(String),
     Glob(globset::GlobMatcher),
 }
 
 impl UrlMatcher {
-    fn compile(pattern: &str) -> Result<Self> {
+    pub(super) fn compile(pattern: &str) -> Result<Self> {
         if !pattern.contains(['*', '{', '\\']) {
             return Ok(Self::Exact(pattern.to_string()));
         }
@@ -813,7 +816,7 @@ impl UrlMatcher {
         Ok(Self::Glob(glob.compile_matcher()))
     }
 
-    fn matches(&self, url: &str) -> bool {
+    pub(super) fn matches(&self, url: &str) -> bool {
         match self {
             Self::Exact(expected) => url == expected,
             Self::Glob(regex) => regex.is_match(url),

@@ -72,6 +72,10 @@ Click an element.
 > Click-triggered document navigation is awaited automatically. Use an explicit
 > URL or selector `wait` for delayed application transitions and SPA readiness.
 
+Links with `target="_blank"` (including `rel="noopener"`) and JavaScript
+`window.open()` open separate pages. Follow the click with `switchTab: new` to
+use that page for subsequent actions and captures. A URL wait alone never switches tabs.
+
 Example:
 
 ```yml
@@ -397,6 +401,54 @@ actions:
 
 {% spoiler() %}
 
+switchTab
+
+:::::
+
+Select the browser tab used by subsequent actions, waits, `save`, `persist`, and
+the final screenshot. This works in both the CLI and desktop app and does not
+require Node.js or change the link's `target` behavior.
+
+- `new`: wait for an open, not-yet-selected tab opened by the currently selected
+  page or one of its frames. Supports `_blank`, `noopener`, and `window.open()`.
+- `previous`: step back through the tab-selection history.
+- `original`: select the tab where the scenario started.
+
+An optional `url` on `switchTab: new` filters the destination using the same
+exact URL/glob rules as `wait`. It follows redirects and includes query strings
+and fragments. Test-mode URL replacements also apply; reference-mode URLs stay
+as written. Omit `url` for `previous` and `original`.
+
+Tab selection is bounded by `elementTimeout`. Missing or closed tabs fail the
+scenario. If several new tabs match, use a more specific `url`; Regressify does
+not choose one arbitrarily. Previously selected or unrelated tabs are not new
+tab candidates. `switchTab` has no `frame` property; later frame actions are
+relative to the selected tab.
+
+```yaml
+actions:
+  - click: 'a.quote-link'
+  - switchTab: new
+    url: '**/quote'
+  - wait: '#my-form'
+```
+
+The final screenshot now captures the quote page. To capture it and then return
+to the original page, append:
+
+```yaml
+  - save: quote-page
+  - switchTab: original
+```
+
+Switching does not close other tabs. Returning to a tab preserves its state and
+does not repeat initial lazy-load scrolling. New tabs inherit the capture
+viewport, origin-scoped authentication and storage, and document hooks.
+
+{% end %}
+
+{% spoiler() %}
+
 uncheck
 
 :::::
@@ -436,6 +488,9 @@ URL checks follow redirects and same-document navigation without depending on
 JavaScript execution contexts. Query strings and fragments are included in the
 match; a `frame` option scopes the URL check to that frame.
 
+URL waits only observe the selected tab or frame. Use `switchTab: new` first
+when a preceding click opens another browser tab.
+
 > Important:
 >
 > After an action that triggers navigation, wait for the destination URL and a
@@ -467,7 +522,7 @@ actions:
 
 ## Shared properties
 
-The following properties are applicable to all actions.
+The following properties are applicable to page actions, except `switchTab`.
 
 {% spoiler() %}
 

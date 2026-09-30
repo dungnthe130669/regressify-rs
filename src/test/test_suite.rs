@@ -195,6 +195,9 @@ pub async fn exec_single_scenario(
     let launch_options = LaunchOptions {
         debug: resolved.debug,
         ignore_ssl_errors: resolved.ignore_ssl_errors,
+        viewport: req
+            .viewport
+            .map(|viewport| (viewport.width, viewport.height)),
     };
     let (mut browser, handle, user_data_dir) =
         match launch_browser(exe_path, &log_prefix, launch_options).await {

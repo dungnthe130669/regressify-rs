@@ -1,21 +1,29 @@
-import { ArrowDown, ArrowUp, ArrowUpRight, Check, Layers, ScanLine, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Percent, ScanLine, X } from "lucide-react";
 import Markdown from "react-markdown";
-import { Link } from "react-router";
-import { Filters, StatePanel, StatusBadge, useFilters } from "../components/ui";
+import { Link, useSearchParams } from "react-router";
+import { Filters, StatePanel, useFilters } from "../components/ui";
 import { passRate, safePageUrl, suiteLabel, suitePath } from "../data/report";
 import { useManifest } from "../data/store";
 
+const columns = [
+  { key: "name", label: "Test suite" },
+  { key: "total", label: "Total tests" },
+  { key: "passed", label: "Passed" },
+  { key: "failed", label: "Failed" },
+  { key: "rate", label: "Pass rate" },
+] as const;
+
 export function OverviewPage() {
   const manifest = useManifest();
-  const { query, status, params, set } = useFilters();
+  const { query, status } = useFilters();
+  const [params, setParams] = useSearchParams();
   const totals = manifest.suites.reduce(
     (sum, suite) => ({
       total: sum.total + suite.total,
       passed: sum.passed + suite.passed,
       failed: sum.failed + suite.failed,
-      errors: sum.errors + suite.errors,
     }),
-    { total: 0, passed: 0, failed: 0, errors: 0 },
+    { total: 0, passed: 0, failed: 0 },
   );
   const counts = {
     all: manifest.suites.length,
@@ -23,7 +31,7 @@ export function OverviewPage() {
     fail: manifest.suites.filter((suite) => suite.failed).length,
     error: manifest.suites.filter((suite) => suite.errors).length,
   };
-  const sort = params.get("sort") || "name";
+  const sort = columns.find((column) => column.key === params.get("sort"))?.key || "name";
   const descending = params.get("direction") === "desc";
   const suites = manifest.suites
     .filter(
@@ -38,16 +46,19 @@ export function OverviewPage() {
     )
     .sort((first, second) => {
       const order =
-        sort === "failed"
-          ? first.failed - second.failed
-          : sort === "total"
-            ? first.total - second.total
-            : suiteLabel(first).localeCompare(suiteLabel(second));
+        sort === "name"
+          ? suiteLabel(first).localeCompare(suiteLabel(second))
+          : sort === "rate"
+            ? first.passed / (first.total || 1) - second.passed / (second.total || 1)
+            : first[sort] - second[sort];
       return descending ? -order : order;
     });
-  const toggleSort = (key: string) => {
-    if (sort === key) set("direction", descending ? "" : "desc");
-    else set("sort", key);
+  const toggleSort = (key: (typeof columns)[number]["key"]) => {
+    const next = new URLSearchParams(params);
+    next.set("sort", key);
+    if (sort === key && !descending) next.set("direction", "desc");
+    else next.delete("direction");
+    setParams(next, { replace: true, preventScrollReset: true });
   };
   return (
     <div className="page overview-page">
@@ -83,27 +94,19 @@ export function OverviewPage() {
       <section className="metrics" aria-label="Snapshot totals">
         <div>
           <span>
-            <Layers size={16} />
-            Test suites
-          </span>
-          <strong>{manifest.suites.length}</strong>
-          <small>{counts.fail} with failures</small>
-        </div>
-        <div>
-          <span>
             <ScanLine size={16} />
-            Captures
+            Total tests
           </span>
           <strong>{totals.total}</strong>
-          <small>Across all test suites</small>
         </div>
         <div>
           <span>
             <Check size={16} />
             Passed
           </span>
-          <strong className="text-pass">{totals.passed}</strong>
-          <small>{passRate(totals.passed, totals.total)}% pass rate</small>
+          <strong className={totals.total > 0 && !totals.failed ? "text-pass" : ""}>
+            {totals.passed}
+          </strong>
         </div>
         <div>
           <span>
@@ -111,7 +114,13 @@ export function OverviewPage() {
             Failed
           </span>
           <strong className={totals.failed ? "text-fail" : ""}>{totals.failed}</strong>
-          <small>{totals.errors} engine errors</small>
+        </div>
+        <div>
+          <span>
+            <Percent size={16} />
+            Pass rate
+          </span>
+          <strong>{passRate(totals.passed, totals.total)}%</strong>
         </div>
       </section>
       <div className="section-title">
@@ -122,38 +131,28 @@ export function OverviewPage() {
       </div>
       <Filters counts={counts} />
       {suites.length ? (
-        <div className="results-table-wrap">
+        <section className="results-table-wrap" aria-label="Test suite results">
           <table className="results-table">
             <thead>
               <tr>
-                <th
-                  aria-sort={sort === "name" ? (descending ? "descending" : "ascending") : "none"}
-                >
-                  <button type="button" onClick={() => toggleSort("name")}>
-                    Suite{" "}
-                    {sort === "name" &&
-                      (descending ? <ArrowDown size={13} /> : <ArrowUp size={13} />)}
-                  </button>
-                </th>
-                <th className="optional-column">Status</th>
-                <th
-                  aria-sort={sort === "total" ? (descending ? "descending" : "ascending") : "none"}
-                >
-                  <button type="button" onClick={() => toggleSort("total")}>
-                    Captures
-                  </button>
-                </th>
-                <th
-                  aria-sort={sort === "failed" ? (descending ? "descending" : "ascending") : "none"}
-                >
-                  <button type="button" onClick={() => toggleSort("failed")}>
-                    Failed
-                  </button>
-                </th>
-                <th className="optional-column">Pass rate</th>
-                <th>
-                  <span className="sr-only">Open</span>
-                </th>
+                {columns.map(({ key, label }) => (
+                  <th
+                    key={key}
+                    scope="col"
+                    aria-sort={sort === key ? (descending ? "descending" : "ascending") : "none"}
+                  >
+                    <button type="button" onClick={() => toggleSort(key)}>
+                      {label}
+                      {sort !== key ? (
+                        <ArrowUpDown size={13} aria-hidden="true" />
+                      ) : descending ? (
+                        <ArrowDown size={13} aria-hidden="true" />
+                      ) : (
+                        <ArrowUp size={13} aria-hidden="true" />
+                      )}
+                    </button>
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody>
@@ -170,14 +169,23 @@ export function OverviewPage() {
                       </span>
                     )}
                   </td>
-                  <td className="optional-column">
-                    <StatusBadge status={suite.failed ? "fail" : "pass"} />
-                  </td>
                   <td className="mono">{suite.total}</td>
-                  <td className={`mono ${suite.failed ? "text-fail" : "muted"}`}>{suite.failed}</td>
-                  <td className="optional-column">
+                  <td className="mono">
+                    <span
+                      className={`result-count${suite.total > 0 && !suite.failed ? " pass" : ""}`}
+                    >
+                      {suite.passed}
+                    </span>
+                  </td>
+                  <td className="mono">
+                    <span className={`result-count${suite.failed ? " fail" : ""}`}>
+                      {suite.failed}
+                    </span>
+                  </td>
+                  <td>
                     <div className="rate">
                       <progress
+                        className={suite.failed ? "fail" : "pass"}
                         value={suite.passed}
                         max={suite.total || 1}
                         aria-label={`${suiteLabel(suite)} pass rate`}
@@ -185,21 +193,11 @@ export function OverviewPage() {
                       <span className="mono">{passRate(suite.passed, suite.total)}%</span>
                     </div>
                   </td>
-                  <td>
-                    <Link
-                      className="icon-button"
-                      to={suitePath(suite.id)}
-                      aria-label={`Open ${suiteLabel(suite)}`}
-                      title={`Open ${suiteLabel(suite)}`}
-                    >
-                      <ArrowUpRight size={17} />
-                    </Link>
-                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
+        </section>
       ) : (
         <StatePanel
           title={manifest.suites.length ? "No matching suites" : "No comparisons yet"}

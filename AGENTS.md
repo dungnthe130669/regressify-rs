@@ -46,7 +46,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 
 - Core browser automation uses `chromiumoxide`/CDP. Chromium is the only supported
   browser. Interactive actions must wait for existence, visibility, stability,
-  scrolling, unobscured targeting, and enabled controls, including frames.
+  scrolling, unobscured targeting, and enabled controls, including frames. Popup actions/captures require explicit `switchTab`, opener isolation, and setup before scripts.
 - A scenario failure stops that scenario, not its peers. Website/action/visual
   failures are report results with zero exit; config, infrastructure, and artifact
   write failures are process errors. Do not panic or swallow errors in these paths.

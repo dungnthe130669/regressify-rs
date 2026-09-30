@@ -1,4 +1,4 @@
-use std::{future::Future, path::PathBuf};
+use std::{future::Future, path::PathBuf, sync::Arc};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::Browser;
@@ -234,6 +234,87 @@ struct CaptureContext<'a> {
     log_prefix: &'a str,
 }
 
+struct ScenarioPage {
+    page: chromiumoxide::Page,
+    runtime: super::runtime::Runtime,
+    storage: Arc<super::storage_state::StorageState>,
+    tabs: Option<super::tabs::Tabs>,
+}
+
+impl ScenarioPage {
+    async fn exec(
+        &mut self,
+        browser: &Browser,
+        ctx: CaptureContext<'_>,
+        hooks: &super::hooks::DocumentHooks,
+        action: &TestAction,
+    ) -> Result<()> {
+        // A popup can close itself. Handle switching before touching the old
+        // document so returning to a surviving tab does not depend on that page.
+        if let TestAction::SwitchTab(selection) = action {
+            let tabs = self
+                .tabs
+                .as_mut()
+                .ok_or_else(|| anyhow!("Tab tracking was not initialized"))?;
+            crate::progress::scenario_log!(
+                "{} Switching to {:?} tab...",
+                ctx.log_prefix,
+                selection.switch_tab
+            );
+            let (page, runtime, first_visit) = tabs
+                .switch(browser, selection, ctx.url_replacements)
+                .await?;
+            self.page = page;
+            self.runtime = runtime;
+            hooks.apply(&self.page).await?;
+            if first_visit {
+                prepare_page_for_actions(&self.page, ctx.resolved, ctx.log_prefix).await?;
+            }
+            return Ok(());
+        }
+        if let Some(tabs) = &self.tabs {
+            tabs.check().await?;
+        }
+        hooks.apply(&self.page).await?;
+        exec_test_action(
+            ActionExecutionContext {
+                page: &self.page,
+                runtime: &self.runtime,
+                storage: &self.storage,
+                test_suite: ctx.test_suite,
+                scenario: ctx.scenario,
+                config: ctx.resolved,
+                url_replacements: ctx.url_replacements,
+                viewport_label: ctx.viewport.map(|viewport| viewport.label.as_str()),
+                log_prefix: ctx.log_prefix,
+            },
+            action,
+        )
+        .await
+    }
+}
+
+async fn prepare_page_for_actions(
+    page: &chromiumoxide::Page,
+    resolved: &ResolvedConfig,
+    log_prefix: &str,
+) -> Result<()> {
+    if resolved.freeze_animations {
+        stabilize_capture_animations(page, log_prefix).await?;
+    }
+    if !resolved.no_scroll_top {
+        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
+        let scroll_start = std::time::Instant::now();
+        trigger_lazy_loading(page).await?;
+        crate::progress::scenario_log!(
+            "{} Lazy-load scroll completed in {} ms.",
+            log_prefix,
+            scroll_start.elapsed().as_millis()
+        );
+    }
+    Ok(())
+}
+
 pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> Result<()> {
     let ScenarioRequest {
         test_suite,
@@ -441,9 +522,9 @@ async fn run_scenario_capture_inner(
         all_scenarios,
         resolved,
         url,
-        url_replacements,
         viewport,
         log_prefix,
+        ..
     } = ctx;
     let viewport_label = viewport.map(|v| v.label.as_str());
 
@@ -480,7 +561,27 @@ async fn run_scenario_capture_inner(
         .unwrap_or("common/_cookies.yaml");
     load_cookie_path(&page, cookie_path, log_prefix).await?;
 
-    let run_hook = |script: Option<&str>| {
+    let mut visited = Vec::new();
+    let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
+    let storage = Arc::new(storage);
+    let tabs = if needs_actions
+        .iter()
+        .copied()
+        .chain(scenario.actions.iter().flatten())
+        .any(|action| matches!(action, TestAction::SwitchTab(_)))
+    {
+        Some(super::tabs::Tabs::install(&page, storage.clone(), resolved, viewport).await?)
+    } else {
+        None
+    };
+    let mut active = ScenarioPage {
+        page,
+        runtime,
+        storage,
+        tabs,
+    };
+
+    let run_hook = |script: Option<&str>, page: &chromiumoxide::Page| {
         let script = script.map(str::to_string);
         let endpoint = browser.websocket_address().to_string();
         let target = page.target_id().as_ref().to_string();
@@ -505,9 +606,10 @@ async fn run_scenario_capture_inner(
             Ok::<_, anyhow::Error>(())
         }
     };
-    run_hook(scenario.on_before_script.as_deref()).await?;
+    run_hook(scenario.on_before_script.as_deref(), &active.page).await?;
 
-    let target = runtime
+    let target = active
+        .runtime
         .target(
             &None,
             std::time::Duration::from_millis(resolved.element_timeout_ms),
@@ -533,26 +635,10 @@ async fn run_scenario_capture_inner(
         crate::test::actionability::wait_for_selector(&target, selector, &None, &readiness).await?;
     }
 
-    hooks.apply(&page).await?;
-
-    if resolved.freeze_animations {
-        stabilize_capture_animations(&page, log_prefix).await?;
-    }
-
-    if !resolved.no_scroll_top {
-        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
-        let scroll_start = std::time::Instant::now();
-        trigger_lazy_loading(&page).await?;
-        crate::progress::scenario_log!(
-            "{} Lazy-load scroll completed in {} ms.",
-            log_prefix,
-            scroll_start.elapsed().as_millis()
-        );
-    }
+    hooks.apply(&active.page).await?;
+    prepare_page_for_actions(&active.page, resolved, log_prefix).await?;
 
     // Execute prerequisite actions from `needs` dependencies
-    let mut visited = Vec::new();
-    let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
     if !needs_actions.is_empty() {
         crate::progress::scenario_log!(
             "{} Executing {} prerequisite actions from dependencies...",
@@ -560,22 +646,7 @@ async fn run_scenario_capture_inner(
             needs_actions.len()
         );
         for action in &needs_actions {
-            hooks.apply(&page).await?;
-            exec_test_action(
-                ActionExecutionContext {
-                    page: &page,
-                    runtime: &runtime,
-                    storage: &storage,
-                    test_suite,
-                    scenario,
-                    config: resolved,
-                    url_replacements,
-                    viewport_label,
-                    log_prefix,
-                },
-                action,
-            )
-            .await?;
+            active.exec(browser, ctx, &hooks, action).await?;
         }
     }
 
@@ -583,48 +654,18 @@ async fn run_scenario_capture_inner(
     if let Some(actions) = &scenario.actions {
         crate::progress::scenario_log!("{} Executing {} actions...", log_prefix, actions.len());
         for action in actions {
-            hooks.apply(&page).await?;
-            exec_test_action(
-                ActionExecutionContext {
-                    page: &page,
-                    runtime: &runtime,
-                    storage: &storage,
-                    test_suite,
-                    scenario,
-                    config: resolved,
-                    url_replacements,
-                    viewport_label,
-                    log_prefix,
-                },
-                action,
-            )
-            .await?;
+            active.exec(browser, ctx, &hooks, action).await?;
         }
     }
 
-    hooks.apply(&page).await?;
+    hooks.apply(&active.page).await?;
 
     for action in &legacy_actions(scenario) {
-        hooks.apply(&page).await?;
-        exec_test_action(
-            ActionExecutionContext {
-                page: &page,
-                runtime: &runtime,
-                storage: &storage,
-                test_suite,
-                scenario,
-                config: resolved,
-                url_replacements,
-                viewport_label,
-                log_prefix,
-            },
-            action,
-        )
-        .await?;
+        active.exec(browser, ctx, &hooks, action).await?;
     }
 
-    run_hook(scenario.on_ready_script.as_deref()).await?;
-    hooks.apply(&page).await?;
+    run_hook(scenario.on_ready_script.as_deref(), &active.page).await?;
+    hooks.apply(&active.page).await?;
 
     // Apply postInteractionWait from resolved config
     if let Some(wait_ms) = resolved.post_interaction_wait
@@ -638,10 +679,13 @@ async fn run_scenario_capture_inner(
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
-    prepare_screenshot(&page, resolved, log_prefix).await?;
+    prepare_screenshot(&active.page, resolved, log_prefix).await?;
 
     for screenshot_type in screenshot_types {
-        hooks.apply(&page).await?;
+        hooks.apply(&active.page).await?;
+        if let Some(tabs) = &active.tabs {
+            tabs.check().await?;
+        }
         if let Some(authentication) = &authentication {
             authentication.check()?;
         }
@@ -654,7 +698,7 @@ async fn run_scenario_capture_inner(
         save_screenshot(
             test_suite,
             scenario,
-            &page,
+            &active.page,
             screenshot_type.clone(),
             viewport_label,
         )
@@ -908,6 +952,175 @@ mod tests {
 
     fn scenario(id: &str, yaml: &str) -> TestScenario {
         serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn popup_actions_and_captures_follow_the_selected_tab() -> Result<()> {
+        let root = match std::env::var_os("REGRESSIFY_POPUP_CAPTURE_FIXTURE") {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let workspace = tempfile::tempdir()?;
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "test::test_scenario::tests::popup_actions_and_captures_follow_the_selected_tab",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("REGRESSIFY_POPUP_CAPTURE_FIXTURE", workspace.path())
+                    .output()?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Ok(());
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        let output_dir = root.join(".regressify");
+        common::REGRESSIFY_DIR.set(output_dir.clone()).unwrap();
+        std::fs::create_dir_all(root.join("common"))?;
+        std::fs::write(
+            root.join("common/_on-ready.js"),
+            "window.hookCount = (window.hookCount || 0) + 1;",
+        )?;
+        let authenticated = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let authenticated_request = authenticated.clone();
+        let destination = crate::test::browser_tests::Site::new(move |request| {
+            let authorized = request.headers().iter().any(|header| {
+                header.field.equiv("Authorization") && header.value.as_str() == "Basic dXNlcjpwYXNz"
+            });
+            let response = if authorized {
+                authenticated_request.store(true, std::sync::atomic::Ordering::Relaxed);
+                tiny_http::Response::from_string(
+                    r#"<!doctype html>
+                    <script>window.restored = localStorage.getItem('fixture'); window.firstWidth = innerWidth;</script>
+                    <style>body{margin:0;min-height:100vh;background:rgb(0,255,0)}</style>
+                    <button id="change" style="margin:40px" onclick="document.body.style.background='rgb(0,0,255)'; localStorage.setItem('popup', 'changed')">Change</button>
+                    <button id="close" onclick="window.close()">Close</button>"#,
+                )
+            } else {
+                tiny_http::Response::from_string("unauthorized")
+                    .with_status_code(tiny_http::StatusCode(401))
+                    .with_header(
+                        tiny_http::Header::from_bytes(
+                            "WWW-Authenticate",
+                            "Basic realm=\"popup-fixture\"",
+                        )
+                        .unwrap(),
+                    )
+            };
+            let _ =
+                request.respond(response.with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap(),
+                ));
+        })?;
+        let destination_origin = destination.origin.clone();
+        let leaked_auth = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let unexpected_auth = leaked_auth.clone();
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            if request
+                .headers()
+                .iter()
+                .any(|header| header.field.equiv("Authorization"))
+            {
+                unexpected_auth.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            let content = format!(
+                r#"<!doctype html>
+                <script>localStorage.setItem('original', 'retained');</script>
+                <style>body{{margin:0;min-height:100vh;background:rgb(255,0,0)}}</style>
+                <a id="open" style="margin:40px;display:block" href="{destination_origin}/popup" target="_blank" rel="noopener">Open popup</a>
+                <button id="second" onclick="window.open('{destination_origin}/popup?second')">Second popup</button>"#
+            );
+            let _ =
+                request.respond(tiny_http::Response::from_string(content).with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap(),
+                ));
+        })?;
+        let state_path = super::super::capture::state_path("popup-initial")?;
+        std::fs::create_dir_all(state_path.parent().unwrap())?;
+        std::fs::write(
+            state_path,
+            serde_json::to_vec(&serde_json::json!({
+                "cookies": [], "origins": [{"origin": destination.origin,
+                    "localStorage": [{"name": "fixture", "value": "restored-before-scripts"}]}]
+            }))?,
+        )?;
+        let viewport = config::viewports::ViewportDef {
+            label: "phone".into(),
+            width: 360,
+            height: 240,
+        };
+        let (mut browser, handler, directory) = crate::test::browser_tests::launch_browser(
+            "popup-capture",
+            super::super::browsers::LaunchOptions {
+                viewport: Some((viewport.width, viewport.height)),
+                ..Default::default()
+            },
+        )
+        .await?;
+        let result: Result<()> = async {
+            let suite = TestSuite { id: Some("tabs".into()), test_date: Some("run".into()), ..Default::default() };
+            let resolved = ResolvedConfig {
+                no_scroll_top: true, delay: Some(0.0), post_interaction_wait: Some(0.0),
+                settle_timeout_ms: 0, freeze_animations: false, element_timeout_ms: 5000,
+                state: Some(Needs::String("popup-initial".into())),
+                basic_auth: vec![crate::types::BasicAuth { origin: destination.origin.clone(), username: "user".into(), password: "pass".into() }],
+                ..Default::default()
+            };
+            let setup = scenario("open-popup", "actions:\n  - click: '#open'\n  - switchTab: new\n  - wait: '#change'\n    url: '**/popup'\n  - save: popup\n");
+            let mut current = scenario("popup-capture", "needs: open-popup\nselectors: [viewport]\nactions:\n  - click: '#change'\n  - save: changed\n  - persist: after-popup\n  - click: '#close'\n  - switchTab: previous\n  - wait: '#open'\n  - save: original\n  - click: '#second'\n  - switchTab: new\n    url: '**/popup?second'\n  - wait: '#change'\n");
+            current.url = site.origin.clone();
+            let all_scenarios = [setup, current.clone()];
+            run_scenario_capture_inner(&browser, CaptureContext {
+                is_reference: false, test_suite: &suite, scenario: &current,
+                all_scenarios: &all_scenarios, resolved: &resolved, url: &current.url,
+                url_replacements: &[], viewport: Some(&viewport), log_prefix: "popup-capture",
+            }, &final_screenshot_types(&current)?).await?;
+            for (kind, color) in [
+                (ScreenshotType::Step("popup".into()), (0, 255, 0)),
+                (ScreenshotType::Step("changed".into()), (0, 0, 255)),
+                (ScreenshotType::Step("original".into()), (255, 0, 0)),
+                (ScreenshotType::Viewport, (0, 255, 0)),
+            ] {
+                let key = final_screenshot_order_key("popup-capture", Some(&viewport.label), &kind);
+                let path = output_dir.join("tabs/bitmaps_test/run").join(format!("{key}.png"));
+                let image = lodepng::decode32(std::fs::read(path)?)?;
+                let pixel = image.buffer.first().ok_or_else(|| anyhow!("empty tab screenshot"))?;
+                anyhow::ensure!((pixel.r, pixel.g, pixel.b) == color, "{key} captured the wrong tab: {pixel:?}");
+                anyhow::ensure!(image.width == viewport.width as usize, "{key} used the wrong viewport");
+            }
+            let mut pages_checked = 0;
+            for page in browser.pages().await? {
+                if page.url().await?.is_some_and(|url| url.starts_with(&site.origin) || url.starts_with(&destination.origin)) {
+                    let hooks: u32 = page.evaluate("window.hookCount").await?.into_value()?;
+                    anyhow::ensure!(hooks == 1, "document hooks did not run exactly once on each tab");
+                    if page.url().await?.is_some_and(|url| url.starts_with(&destination.origin)) {
+                        let restored: String = page.evaluate("window.restored").await?.into_value()?;
+                        anyhow::ensure!(restored == "restored-before-scripts", "popup scripts ran before storage restoration");
+                        let width: u32 = page.evaluate("window.firstWidth").await?.into_value()?;
+                        anyhow::ensure!(width == viewport.width, "popup first-load viewport was incorrect");
+                    }
+                    pages_checked += 1;
+                }
+            }
+            anyhow::ensure!(pages_checked == 2, "scenario did not retain the original and the surviving popup");
+            anyhow::ensure!(authenticated.load(std::sync::atomic::Ordering::Relaxed), "popup authentication was not handled");
+            anyhow::ensure!(!leaked_auth.load(std::sync::atomic::Ordering::Relaxed), "credentials reached an unconfigured origin");
+            let (_, persisted) = super::super::capture::load_persisted_state("after-popup")?;
+            let origins = super::super::storage_state::validate_origins(&persisted)?;
+            anyhow::ensure!(origins[&site.origin]["original"] == "retained", "persist lost the original tab's origin");
+            anyhow::ensure!(origins[&destination.origin]["popup"] == "changed", "persist lost popup storage");
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
     }
 
     #[tokio::test]

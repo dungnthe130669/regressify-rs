@@ -12,7 +12,7 @@ description: 'Use when changing regressify test orchestration, scenario isolatio
 ## Procedure and Invariants
 
 1. Validate configuration and selection before launching browser jobs. Keep scenario/suite/output IDs distinct when translating exact selections.
-1. Test mode applies validated replacement profiles to initial, goto, and wait URLs. Keep raw reference URLs in capture metadata for later review links.
+1. Test mode applies validated replacement profiles to initial, goto, wait, and new-tab URL filters. Keep raw reference URLs in capture metadata for later review links.
 1. Bound capture concurrency and launch ramping. Isolate each job's browser and profile; stop subsequent actions only within the failing scenario.
 1. Compare captured output unless `--skip-compare` is set. Missing references, mismatches, and website/action failures are report results, not non-zero exits.
 1. Preserve infrastructure/artifact error classification through spawned tasks and joins. A failed error-placeholder write must not masquerade as page failure.

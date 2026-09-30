@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use anyhow::{Result, anyhow};
 use chromiumoxide::{Browser, Page};
@@ -67,6 +70,8 @@ fn restoration_script(origins: &Origins) -> Result<String> {
 }
 
 pub(super) struct StorageState {
+    client: Client,
+    sessions: Arc<Mutex<BTreeSet<String>>>,
     snapshots: mpsc::Sender<oneshot::Sender<Origins>>,
     error: Arc<Mutex<Option<String>>>,
     task: tokio::task::JoinHandle<()>,
@@ -109,25 +114,24 @@ impl StorageState {
     }
 
     async fn install_origins(browser: &Browser, page: &Page, mut origins: Origins) -> Result<Self> {
-        page.evaluate_on_new_document(restoration_script(&origins)?)
-            .await?;
         let client = Client::connect(browser).await?;
-        let session = client.attach(page.target_id().as_ref()).await?;
         let mut events = client.subscribe();
-        client
-            .call(Some(&session), "DOMStorage.enable", json!({}))
-            .await?;
+        let sessions = Arc::new(Mutex::new(BTreeSet::new()));
+        let watched_sessions = sessions.clone();
         let (snapshots, mut requests) = mpsc::channel::<oneshot::Sender<Origins>>(4);
         let error = Arc::new(Mutex::new(None));
         let error_sink = error.clone();
+        let connection = client.clone();
         let task = tokio::spawn(async move {
-            let _connection = client;
+            let _connection = connection;
             loop {
                 tokio::select! {
                     biased;
                     event = events.recv() => match event {
                         Ok(event) => {
-                            if event.session_id.as_deref() == Some(session.as_str()) {
+                            if let Some(session) = &event.session_id
+                                && watched_sessions.lock().await.contains(session)
+                            {
                                 update_storage(&mut origins, &event.method, &event.params);
                             }
                         }
@@ -140,11 +144,58 @@ impl StorageState {
                 }
             }
         });
-        Ok(Self {
+        let state = Self {
+            client,
+            sessions,
             snapshots,
             error,
             task,
-        })
+        };
+        state.attach_target(page.target_id().as_ref()).await?;
+        Ok(state)
+    }
+
+    pub fn client(&self) -> Client {
+        self.client.clone()
+    }
+
+    pub async fn prepare_session(&self, session: &str) -> Result<String> {
+        // Use live origin state for new tabs so restored values cannot overwrite
+        // changes made earlier in this scenario. Install before resuming the tab.
+        let origins = self.origins().await?;
+        self.sessions.lock().await.insert(session.to_string());
+        restoration_script(&origins)
+    }
+
+    pub async fn attach_target(&self, target: &str) -> Result<()> {
+        let session = self.client.attach(target).await?;
+        let source = self.prepare_session(&session).await?;
+        self.client
+            .call(Some(&session), "Page.enable", json!({}))
+            .await?;
+        self.client
+            .call(
+                Some(&session),
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({"source": source}),
+            )
+            .await?;
+        self.client
+            .call(Some(&session), "DOMStorage.enable", json!({}))
+            .await?;
+        Ok(())
+    }
+
+    async fn origins(&self) -> Result<Origins> {
+        if let Some(error) = self.error.lock().await.as_ref() {
+            return Err(anyhow!("{error}"));
+        }
+        let (reply, response) = oneshot::channel();
+        self.snapshots
+            .send(reply)
+            .await
+            .map_err(|_| anyhow!("State tracker stopped"))?;
+        response.await.map_err(|_| anyhow!("State tracker stopped"))
     }
 
     pub async fn capture(&self, page: &Page) -> Result<Value> {
@@ -154,17 +205,7 @@ impl StorageState {
             )
             .await?
             .into_value()?;
-        if let Some(error) = self.error.lock().await.as_ref() {
-            return Err(anyhow!("{error}"));
-        }
-        let (reply, response) = oneshot::channel();
-        self.snapshots
-            .send(reply)
-            .await
-            .map_err(|_| anyhow!("State tracker stopped"))?;
-        let mut origins = response
-            .await
-            .map_err(|_| anyhow!("State tracker stopped"))?;
+        let mut origins = self.origins().await?;
         if let (Some(origin), Some(items)) =
             (current["origin"].as_str(), current["items"].as_array())
         {
@@ -305,6 +346,24 @@ mod tests {
                     .map(String::as_str)
                     == Some("second"),
                 "previous origin storage missing"
+            );
+            let popup = browser.new_page("about:blank").await?;
+            tracker.attach_target(popup.target_id().as_ref()).await?;
+            popup.goto(second.origin.as_str()).await?;
+            let observed: String = popup.evaluate("window.initialToken").await?.into_value()?;
+            anyhow::ensure!(observed == "second", "new tab restored stale origin state");
+            popup
+                .evaluate("localStorage.setItem('token', 'popup-updated')")
+                .await?;
+            let captured = tracker.capture(&popup).await?;
+            anyhow::ensure!(
+                validate_origins(&captured)?[&first.origin]["token"] == "changed",
+                "popup persistence lost the original tab's origin"
+            );
+            let captured = tracker.capture(&page).await?;
+            anyhow::ensure!(
+                validate_origins(&captured)?[&second.origin]["token"] == "popup-updated",
+                "original tab persistence lost the popup's storage changes"
             );
             Ok(())
         }

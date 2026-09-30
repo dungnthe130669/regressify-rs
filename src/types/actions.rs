@@ -19,6 +19,7 @@ pub enum TestAction {
     Save(SaveAction),
     Select(SelectAction),
     Scroll(ScrollAction),
+    SwitchTab(SwitchTabAction),
     Uncheck(UncheckAction),
     Wait(WaitAction),
 }
@@ -39,6 +40,7 @@ impl TestAction {
             Self::Save(action) => &action.frame,
             Self::Select(action) => &action.frame,
             Self::Scroll(action) => &action.frame,
+            Self::SwitchTab(_) => &None,
             Self::Uncheck(action) => &action.frame,
             Self::Wait(action) => &action.frame,
         }
@@ -236,6 +238,26 @@ pub struct UncheckAction {
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
+pub struct SwitchTabAction {
+    /// Select a new tab opened by the current page, the previously selected tab, or the scenario's original tab. Subsequent actions and screenshots use the selected tab.
+    pub switch_tab: TabTarget,
+    /// Optional URL or glob for a new tab. Waits for its navigation to match; * stays within one path segment and ** matches across segments. Only valid with switchTab: new.
+    #[schemars(example = "**/quote")]
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[derive(schemars::JsonSchema)]
+pub enum TabTarget {
+    New,
+    Previous,
+    Original,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[derive(schemars::JsonSchema)]
 pub struct WaitAction {
     /// Whole milliseconds to pause, or a CSS selector to wait for. When url is supplied, a numeric wait is the URL timeout in milliseconds.
     #[schemars(example = 1000, example = "#ready")]
@@ -258,6 +280,34 @@ pub enum Wait {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_tab_actions_use_explicit_camel_case_targets() {
+        for yaml in [
+            "switchTab: new\nurl: '**/quote'\n",
+            "switchTab: original\n",
+            "switchTab: previous\n",
+        ] {
+            let expected: serde_json::Value = serde_yaml::from_str(yaml).unwrap();
+            let action: TestAction =
+                serde_yaml::from_str(yaml).expect("valid tab selection action");
+            let actual = serde_json::to_value(action).unwrap();
+            assert_eq!(actual["switchTab"], expected["switchTab"]);
+            assert_eq!(actual["url"], expected["url"]);
+        }
+    }
+
+    #[test]
+    fn switch_tab_actions_reject_unknown_targets_and_properties() {
+        for yaml in [
+            "switchTab: missing\n",
+            "switch_tab: new\n",
+            "switchTab: new\nframe: '#frame'\n",
+            "switchTab: new\nclick: '#link'\n",
+        ] {
+            assert!(serde_yaml::from_str::<TestAction>(yaml).is_err(), "{yaml}");
+        }
+    }
 
     #[test]
     fn action_structs_reject_unknown_properties() {

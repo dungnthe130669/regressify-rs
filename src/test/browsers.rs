@@ -23,6 +23,7 @@ mod install;
 pub struct LaunchOptions {
     pub debug: bool,
     pub ignore_ssl_errors: bool,
+    pub viewport: Option<(u32, u32)>,
 }
 
 pub async fn fetcher() -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -277,11 +278,14 @@ pub async fn launch_browser(
         args.push("--ignore-certificate-errors-spki-list");
     }
 
+    let (viewport_width, viewport_height) = options.viewport.unwrap_or((1920, 1080));
+    // Chromiumoxide initializes every popup with this viewport as well as the
+    // first page. Keep it aligned with the capture to avoid a first-load resize.
     config_builder = config_builder
         .window_size(1920, 1080)
         .viewport(Some(Viewport {
-            width: 1920,
-            height: 1080,
+            width: viewport_width,
+            height: viewport_height,
             device_scale_factor: Some(1.0),
             emulating_mobile: false,
             has_touch: false,

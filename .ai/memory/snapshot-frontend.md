@@ -56,10 +56,21 @@ Verified: 2026-09-30
 - Editor symbol rename may skip desktop-gated references when rust-analyzer uses
   default features. Always run the desktop-feature check after a shared rename.
 - [Review navigation](../../frontend/src/components/ReviewNavigation.tsx) loads only
-  the selected suite's scenarios. [Shell](../../frontend/src/App.tsx) owns separate
+  the selected suite's scenarios. The suite disclosure starts collapsed on desktop
+  and mobile; selected-suite scenarios stay visible. Suite-switching, suite-search,
+  and sidebar-overflow tests must expand it first.
+  [Shell](../../frontend/src/App.tsx) owns separate
   left/right scroll areas and pointer-captured divider resizing; preferred desktop
   width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,
   so the vertical divider explicitly needs `height: 100%`.
+- [Overview](../../frontend/src/pages/OverviewPage.tsx) sorts all five columns,
+  using raw counts/ratios instead of formatted percentages. `overview sorts every
+  column` covers direction changes, filter preservation, and refresh. Fully passing
+  nonempty suites highlight passed counts green; failures highlight failed counts
+  red but use neutral bar fills. `pass-rate bars distinguish` checks actual PNG
+  pixels in both themes, including empty bars and rounded 100% failures. Phones
+  retain every column in a horizontally scrollable table. Mocked suite IDs must
+  be explicit: search includes IDs, and Vite/production manifest orders differ.
 - The main/footer wrapper in [Shell](../../frontend/src/App.tsx) must be a growing
   flex column; otherwise `#main` growth and footer auto margins have no effect.
   `bun run test:e2e --grep footer` covers short/filtered/missing pages and long

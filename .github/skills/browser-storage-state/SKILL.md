@@ -21,6 +21,9 @@ description: 'Use when changing persist/restore, cookies, origin-scoped localSto
    origin's values to the current page during navigation or multi-origin capture.
 1. Surface state-stream overflow/closure, malformed files, and write failures.
    Keep tracker shutdown tied to browser/scenario ownership.
+1. Share origin tracking across a scenario's tabs. Seed popup document scripts
+   from live tracked state, register storage/auth listeners before resuming the
+   target, and preserve origins from other tabs when persisting the selected page.
 1. Treat state, cookies, and Basic Auth as secrets. Never log their contents or
    place real account data in fixtures, reports, examples, or completion help.
 

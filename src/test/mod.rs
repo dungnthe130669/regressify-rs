@@ -9,6 +9,7 @@ mod node_hook;
 mod page_stability;
 pub mod runtime;
 mod storage_state;
+mod tabs;
 mod test_action;
 mod test_scenario;
 mod test_suite;

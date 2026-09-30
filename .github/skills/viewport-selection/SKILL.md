@@ -21,6 +21,8 @@ description: 'Use when changing viewport files, labels, dimensions, viewportName
    requested name must not silently broaden selection or drop a job.
 1. Keep desktop choices, CLI capture expansion, and effective configuration in
    agreement. Test scenario overrides independently from suite/workspace choices.
+1. Pass the selected dimensions into browser launch emulation as well as page
+   setup, so chromiumoxide's popup initialization cannot restore default dimensions.
 
 ## Checks
 

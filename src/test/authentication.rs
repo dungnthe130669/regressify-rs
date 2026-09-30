@@ -21,10 +21,9 @@ impl Authentication {
         if entries.is_empty() {
             return Ok(None);
         }
-        let entries = basic_auth::resolve(entries)?;
         let client = Client::connect(browser).await?;
         let session = client.attach(page.target_id().as_ref()).await?;
-        let mut events = client.subscribe();
+        let authentication = Self::prepare_session(client.clone(), &session, entries)?;
         client
             .call(
                 Some(&session),
@@ -32,6 +31,20 @@ impl Authentication {
                 json!({"handleAuthRequests": true}),
             )
             .await?;
+        Ok(authentication)
+    }
+
+    pub(super) fn prepare_session(
+        client: Client,
+        session: &str,
+        entries: &[BasicAuth],
+    ) -> Result<Option<Self>> {
+        if entries.is_empty() {
+            return Ok(None);
+        }
+        let entries = basic_auth::resolve(entries)?;
+        let session = session.to_string();
+        let mut events = client.subscribe();
         let task = tokio::spawn(async move {
             let mut attempted = HashSet::new();
             loop {

@@ -104,6 +104,8 @@ function Test-SchemaFlows {
             Send-FixtureKeys Home -Control
             Send-FixtureKeys DownArrow -Shift
             Send-FixtureKeys DownArrow -Shift
+            # Finish at column zero instead of depending on vertical hit-testing.
+            Send-FixtureKeys Home -Shift
             Wait-Control 'Ln 3, Col 1' | Out-Null
         }
         $draft = "debug: true`nheadless: true`nscenarios: []`n"

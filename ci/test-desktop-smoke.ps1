@@ -73,6 +73,8 @@ function Test-SmokeKeySequence([ConsoleKey]$Key, [bool]$Control, [bool]$Shift, [
     }
 }
 Test-SmokeKeySequence Home $true $false @('17:0', '36:1', '36:3', '17:2')
+Test-SmokeKeySequence Home $false $true @('16:0', '36:1', '36:3', '16:2')
+Test-SmokeKeySequence DownArrow $false $true @('16:0', '40:1', '40:3', '16:2')
 Test-SmokeKeySequence End $true $false @('17:0', '35:1', '35:3', '17:2')
 Test-SmokeKeySequence End $false $true @('16:0', '35:1', '35:3', '16:2')
 Test-SmokeKeySequence RightArrow $false $false @('39:1', '39:3')
@@ -93,6 +95,22 @@ try { $keyboardType::KeySequence([ConsoleKey]0, $true, $false, $false) | Out-Nul
     $invalidKeyRejected = $true
 }
 Assert-SmokeEqual $invalidKeyRejected $true 'An invalid key must fail before constructing input events'
+
+$schemaSelection = @($definitions['Test-SchemaFlows'].FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Select-SchemaFirstLines'
+}, $true))
+Assert-SmokeEqual $schemaSelection.Count 1 'Schema line selection helper is missing or ambiguous'
+& {
+    $events = [System.Collections.Generic.List[string]]::new()
+    function Send-FixtureKeys([ConsoleKey]$Key, [switch]$Control, [switch]$Shift) {
+        $events.Add("${Key}:$($Control.IsPresent):$($Shift.IsPresent)")
+    }
+    function Wait-Control([string]$Name) { $events.Add("Wait:$Name") }
+    . ([scriptblock]::Create($schemaSelection[0].Extent.Text))
+    Select-SchemaFirstLines
+    Assert-SmokeEqual @($events) @('Home:True:False', 'DownArrow:False:True', 'DownArrow:False:True', 'Home:False:True', 'Wait:Ln 3, Col 1') 'Schema line selection must end at an explicit line boundary before checking the caret'
+}
 
 $pointerTypeName = 'SmokePointerCheck' + [guid]::NewGuid().ToString('N')
 $pointerType = Add-Type -TypeDefinition @"

@@ -640,8 +640,22 @@ fn validate_numbers(value: &Value) -> Result<()> {
 }
 
 pub const ACTIONS: &[&str] = &[
-    "check", "click", "focus", "goto", "hide", "hover", "input", "persist", "press", "remove",
-    "save", "select", "scroll", "uncheck", "wait",
+    "check",
+    "click",
+    "focus",
+    "goto",
+    "hide",
+    "hover",
+    "input",
+    "persist",
+    "press",
+    "remove",
+    "save",
+    "select",
+    "scroll",
+    "switchTab",
+    "uncheck",
+    "wait",
 ];
 
 pub fn action_template(action: &str) -> Result<Value> {
@@ -654,6 +668,7 @@ pub fn action_template(action: &str) -> Result<Value> {
         "select" => json!({"select": "#element", "value": "option"}),
         "save" => json!({"save": "checkpoint"}),
         "persist" => json!({"persist": "session"}),
+        "switchTab" => json!({"switchTab": "new"}),
         selector => json!({selector: "#element"}),
     })
 }

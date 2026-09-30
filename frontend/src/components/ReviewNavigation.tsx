@@ -94,7 +94,7 @@ export function ReviewNavigation({ close }: { close: () => void }) {
   );
   return (
     <>
-      <details className="navigation-section" open>
+      <details className="navigation-section">
         <summary className="nav-heading">
           <span>Test suites</span>
           <span className="mono muted">{manifest.suites.length}</span>

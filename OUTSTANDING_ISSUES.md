@@ -2,6 +2,34 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Popup Captures (2026-09-30)
+
+- Resolved: actions and captures previously stayed on the original scenario page.
+  The CLI and desktop now support explicit `switchTab: new | previous | original`
+  with an optional new-tab URL filter. A URL wait alone still does not switch tabs.
+- Local Chromium regressions cover `_blank`/`noopener`, JavaScript and iframe
+  popups, redirects, URL replacements, ambiguous/missing/closed tabs, first-load
+  viewport/auth/storage, and checkpoint/final screenshot pixels. Native desktop
+  coverage verifies adding the action from the navigation menu and undoing it.
+- Default CLI, desktop-model, and GUI/worker gates pass, as do production GUI
+  Clippy and the desktop build. Interactive schema smoke now passes after fixing
+  its selected-line endpoint setup; see the source-line smoke note below.
+- See [action syntax](docs/create-action.md) and [tab ownership](src/test/tabs.rs).
+
+## Source-Line Smoke Selection (2026-09-30)
+
+- The `Ln 3, Col 1` timeout was caused by assuming two `Shift+Down` presses after
+  `Ctrl+Home` ended at column one. A keyboard-driven GUI regression reproduced
+  selection `0..28` instead of `0..27`: the first character of the third line was
+  selected. The earlier regression set the selection directly and missed this.
+- Fixed the smoke setup by finishing with `Shift+Home` before checking the caret.
+  Exact selected-range, status-label, and resulting-text assertions remain. This
+  makes the line-command fixture deterministic; production caret code is unchanged.
+- `./ci/test-desktop-smoke.ps1`, the focused keyboard GUI regression, and
+  `./ci/desktop-smoke.ps1 -SchemaFlows` pass. Native coverage includes all line
+  commands, undo/redo, menu editing, corrected saves, completion after Alt+Tab,
+  and compact/large light/dark layouts. Cleanup restored desktop preferences.
+
 ## Windows Cloudflare Access Denied (2026-09-30)
 
 - QA's final log identifies error 5 when removing a confirmed-empty generated
@@ -92,6 +120,8 @@ it was risk-focused, not an exhaustive security certification.
   Root cause is not established; this is not a full schema-smoke pass. Cleanup
   discarded the fixture draft and restored original desktop preferences.
   The isolated native `pixel_match_threshold_controls` test passes.
+- The source-line smoke blocker was subsequently reproduced and resolved on
+  2026-09-30; see Source-Line Smoke Selection above for the passing native rerun.
 
 ## Validation Notes (2026-09-27)
 

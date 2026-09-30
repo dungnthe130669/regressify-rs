@@ -9,6 +9,7 @@ description: 'Use when changing Chromium launch, CDP commands, browser handler p
 
 - [Browser lifecycle](../../../src/test/browsers.rs): launch options and managed cache.
 - [Scenario ownership](../../../src/test/test_scenario.rs): browser/page cleanup.
+- [Tab ownership](../../../src/test/tabs.rs): popup initialization and selection.
 - [Actionability helpers](../../../src/test/actionability.rs): CDP input helpers.
 - [Selector/frame runtime](../../../src/test/runtime.rs): isolated contexts and targets.
 - [Browser fixtures](../../../src/test/browser_tests.rs): isolated loopback tests.
@@ -23,6 +24,12 @@ description: 'Use when changing Chromium launch, CDP commands, browser handler p
 1. Keep profile isolation and bounded launch/navigation shutdown. Distinguish a browser fetch/launch infrastructure failure from a failing website scenario.
 1. Initial scenario navigation defaults to 60000 ms, independently of `elementTimeout`. Preserve positive `engineOptions.gotoParameters.timeout` overrides; omitted or zero values use the bounded default. Pass the navigation budget through CDP `Page.navigate` so the ordinary 30-second command timeout cannot shorten it. The overall scenario timeout still applies.
 1. Read wait URLs from CDP frame metadata, not `location.href` evaluation: redirects can destroy cached execution contexts before invalidation arrives. Preserve query/fragment matching, target frame identity, and out-of-process frame session routing.
+1. Track popup targets before triggering actions. Use CDP opener identity even
+   when `window.opener` is null. Queue paused-target setup before
+   `Runtime.runIfWaitingForDebugger`, then await replies; awaiting `Page.enable`
+   first can deadlock. Install storage/auth listeners before releasing the target.
+1. Keep launch-time emulation aligned with the capture viewport: chromiumoxide
+   applies it to every new page and can overwrite a separately configured popup.
 
 The runtime uses a vendored selector engine for CSS/text/XPath/shadow DOM and CDP contexts for cross-origin frames. Preserve that contract rather than substituting raw querySelector. The optional Node hook layer attaches Playwright to an existing Chromium session; it does not replace the Rust CDP action engine.
 

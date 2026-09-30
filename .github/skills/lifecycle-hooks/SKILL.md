@@ -20,6 +20,8 @@ description: 'Use when changing CSS overrides, jsOnReady, document navigation ho
    incomplete hook successful. Review selector CSS and JS serialization separately.
 1. Optional Node hooks require Node and workspace Playwright/playwright-core.
    They attach to the existing Chromium target; they must not close its browser.
+   After `switchTab`, `onReadyScript` receives the selected target. Document hooks
+   remain once-per-document when moving between previously visited tabs.
 1. Pass the structured payload through stdin, never a shell command string. Bound
    execution and retained stderr while continuing to drain the pipe.
 1. Scripts are executable project code: use trusted fixtures and synthetic data.

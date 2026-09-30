@@ -784,7 +784,11 @@ mod tests {
                     .any(|field| field.key == *action && field.required),
                 "{action}"
             );
-            assert!(fields.iter().any(|field| field.key == "frame"), "{action}");
+            assert_eq!(
+                fields.iter().any(|field| field.key == "frame"),
+                *action != "switchTab",
+                "{action}"
+            );
             let value = action_template(action).unwrap();
             for (key, value) in value.as_object().unwrap() {
                 let field = fields.iter().find(|field| field.key == *key).unwrap();
@@ -796,6 +800,24 @@ mod tests {
             }
         }
         assert!(fields(&Scope::Action("unknown".into())).is_err());
+    }
+
+    #[test]
+    fn switch_tab_fields_use_typed_choices_and_url_help() {
+        let fields = fields(&Scope::Action("switchTab".into())).unwrap();
+        let selection = fields
+            .iter()
+            .find(|field| field.key == "switchTab")
+            .unwrap();
+        assert_eq!(
+            selection.kind,
+            FieldKind::Choice(vec!["new".into(), "previous".into(), "original".into()])
+        );
+        assert!(selection.required);
+        let url = fields.iter().find(|field| field.key == "url").unwrap();
+        assert_eq!(url.kind, FieldKind::Text);
+        assert!(url.description.contains("switchTab: new"));
+        assert!(!url.required);
     }
 
     #[test]

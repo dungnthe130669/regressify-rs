@@ -92,6 +92,10 @@ Screenshots are saved under `.fixtures/screenshots`.
 Footer checks cover short, filtered, and not-found pages, plus long content in
 both document and review-pane scrolling on desktop and mobile.
 
+Overview checks cover all five sort columns in both directions, filter preservation,
+aggregate totals, conditional count highlights, and rendered pass-rate colors in
+both themes. Empty suites and rates that round to 100% retain their actual status.
+
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
 Rust-generated synthetic report instead of starting the Vite fixture server.
 The tests expect the supplied synthetic workspace, not arbitrary user reports.
@@ -229,6 +233,19 @@ and React keys continue to use `id`; never derive identity from presentation tex
 Suite and image pages use `suite name | report title` as the browser tab title.
 Returning to the overview restores the configured report title.
 
+The overview summarizes Total tests, Passed, Failed, and Pass rate across all
+suites. Test totals count captures, and filters do not change the summary. The
+table shows Test suite, Total tests, Passed, Failed, and Pass rate. Every column
+sorts ascending or descending; selecting a new column starts ascending. Sorting
+preserves filters and survives refresh. Pass rates sort by their unrounded ratios.
+
+Passed counts highlight green only for nonempty, fully passing suites; nonzero
+failed counts highlight red, including engine errors. Pass-rate bars are green
+for fully passing suites and neutral for failing suites. Bar lengths and displayed
+percentages still represent passing captures: 0% remains empty, and a rate that
+rounds to 100% does not change the suite's status. On phones, the table scrolls
+horizontally so all five columns and sort controls remain available.
+
 Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
 non-HTTP(S) protocols. No analytics run.
@@ -242,8 +259,9 @@ not rewrite the preference. When storage is blocked, theme switching still works
 for the current page.
 
 Suite and image pages show a left navigation pane with Test suites and Test
-scenarios. Scenarios belong only to the currently selected suite; scenarios with
-several captures expand into individual image links. Both lists are searchable.
+scenarios. The Test suites list starts collapsed; select its heading to expand it.
+The selected suite's scenarios remain visible, with several captures grouped into
+individual image links. Both lists are searchable.
 The left pane and review area scroll independently. Drag the divider to resize it,
 or focus it and use arrow keys, Home, and End. The preferred width is remembered;
 phones use a drawer with the same two lists.
