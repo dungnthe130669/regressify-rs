@@ -38,8 +38,7 @@ cargo test --lib test::page_stability::tests::lazy_loading_waits_for_stable_offs
 cargo test --lib test::test_action::tests::save_actions_wait_for_the_resolved_screenshot_delay -- --ignored --exact
 ```
 
-Cover absent/empty actions with capture settling disabled, smooth scrolling, delayed or interrupted returns, non-scrolling pages, and blocked-scroll timeouts.
-Checkpoint coverage must verify saved pixels, inherited/overridden delay, repeated saves, invalid-name rejection before waiting, animation opt-outs, and animations started during settling.
+Cover absent/empty actions with capture settling disabled, smooth scrolling, delayed or interrupted returns, non-scrolling pages, and blocked-scroll timeouts. Checkpoint coverage must verify saved pixels, inherited/overridden delay, repeated saves, invalid-name rejection before waiting, animation opt-outs, and animations started during settling.
 
 Inspect ignored Chromium fixtures for live behavior; unit tests alone do not prove rendering stability. Cover delayed resources, motion, clipped targets, multiple saves, invalid names, timeouts, and write failures.
 
