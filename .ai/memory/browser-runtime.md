@@ -2,6 +2,17 @@
 
 Verified: 2026-09-30
 
+- [Initial navigation](../../src/test/runtime.rs) uses a bounded 60000 ms default,
+  matching the legacy Node/VS Code runner. Omitted or zero
+  `engineOptions.gotoParameters.timeout` uses that default; positive values
+  override it independently of `elementTimeout` (still 30000 ms by default).
+  The `navigation_timeout` unit regressions verified the original 30-second
+  mismatch before the fix and cover default, zero, and positive overrides.
+- The [CDP client](../../src/test/cdp.rs) must receive the navigation budget for
+  `Page.navigate`; other commands retain their 30-second deadline. The ignored
+  `navigation_default_allows_slow_document_responses` browser fixture failed at
+  that internal cutoff before the fix, then passed with a 31-second response
+  and confirmed that an explicit short navigation timeout still fails.
 - [Target URL reads](../../src/test/runtime.rs) use `Page.getFrameTree`, not
   JavaScript evaluation. Navigation can invalidate a cached execution context
   before its destruction event is consumed. The isolated browser regression

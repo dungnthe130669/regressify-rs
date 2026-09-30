@@ -113,8 +113,19 @@ impl Client {
         method: &'static str,
         params: Value,
     ) -> Result<Value> {
+        self.call_with_timeout(session, method, params, Duration::from_secs(30))
+            .await
+    }
+
+    pub async fn call_with_timeout(
+        &self,
+        session: Option<&str>,
+        method: &'static str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value> {
         let (reply, response) = oneshot::channel();
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(timeout, async {
             self.requests
                 .send(Request {
                     session: session.map(str::to_string),

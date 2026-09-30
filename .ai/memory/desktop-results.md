@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-09-29
+Verified: 2026-09-30
 
 - Suite `displayName` is independent of file/output identity. The
   [workspace model](../../src/desktop/workspace.rs) stages reference/history/site
@@ -27,6 +27,12 @@ Verified: 2026-09-29
 - [Results navigation](../../src/desktop/ui/navigation.rs) uses loaded report
   scenario/viewport counts while idle; saved Activity counts can predate approval.
   Live run counts still take precedence during execution.
+- [Compare completion](../../src/desktop/ui/mod.rs) replaces stale Results run and
+  saved-report pins with the completed request's output root/run and compared
+  suite IDs, without changing tabs. `cargo test --features gui-tests --lib
+  comparison_completion_ -- --test-threads=1` covers both pin types, custom
+  outputs, shared run names, intermediate mismatches, errors, and cancellation
+  in [Results tests](../../src/desktop/ui/reports.rs).
 - [Results approval](../../src/desktop/ui/reports.rs) confirms inline, clears pending
   confirmation on capture changes/refresh, and refreshes its existing output root
   without resetting the current capture or view. It still uses the

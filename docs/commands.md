@@ -317,11 +317,13 @@ An unreadable PNG or failed file replacement makes `optimize` fail rather than s
 
 ## Scenario timeouts
 
+Initial page navigation defaults to `60000` ms (60 seconds), matching the legacy Node/VS Code runner. Override it per scenario with `engineOptions.gotoParameters.timeout`; an omitted or zero value uses the bounded 60-second default. This is independent of `elementTimeout`, whose default remains `30000` ms for element waits.
+
 Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify preserves completed intermediate captures, records failed-capture placeholders for remaining expected targets, and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
 
 ## Capture stability
 
-Regressify waits for an interactive DOM after navigation. After readiness hooks, it stabilizes active animations before lazy-load scrolling and actions. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret.
+Regressify waits for the configured navigation checkpoint (full `load` by default). After readiness hooks, it stabilizes active animations before lazy-load scrolling and actions. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret.
 
 Every `save` checkpoint and the final capture sequence share the resolved `delay` and one `settleTimeout` budget for font/image readiness plus DOM/layout quiet. Animation freezing runs before and after settling to catch newly started animations. Capture preparation does not repeat lazy-load scrolling or move the pointer. Settling remains best-effort: a timeout or settling error is logged and capture continues.
 

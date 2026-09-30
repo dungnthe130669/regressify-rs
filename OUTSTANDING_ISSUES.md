@@ -139,6 +139,18 @@ it was risk-focused, not an exhaustive security certification.
 
 ## Resolved In September 2026 Hardening Pass
 
+- Initial page navigation now defaults to 60000 ms, matching the legacy
+  Node/VS Code runner. Omitted or zero navigation timeouts use this bounded
+  default; positive overrides and the 30000 ms element-wait default are preserved.
+  The regression failed with the previous 30-second fallback and passes with 60.
+  CDP `Page.navigate` now receives the same budget. A loopback browser regression
+  failed at its old internal 30-second cutoff, then passed with a 31-second
+  document response while preserving explicit short navigation timeouts.
+- Compare Results now reloads the completed request's run and output folder in
+  Results instead of retaining an older pinned all-pass report. Native-event
+  regressions cover run and saved-report selections, custom output folders,
+  shared run names across suites, intermediate capture failures, command errors,
+  and cancellation.
 - Pixel-color tolerance is now configurable through `pixelMatchThreshold` at
   workspace, suite, and scenario levels, including desktop Fields. The range is
   0-100, the default is 5, and desktop steps are 0.1. Comparisons normalize by 100

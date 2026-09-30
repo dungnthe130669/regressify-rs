@@ -18,6 +18,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 1. Inventory successful baselines and actual captures, not directories or generated diffs. Select latest captures by the existing metadata/time rules, not lexical UUID.
 1. Results exposes Approve This Scenario for the current viewport, never whole-run approval. Pin the output root, suite, run, scenario, and capture key. Confirm inline in the comparison and retain draft/preflight guards without switching to Runs. Dismiss pending approval on capture changes or refresh; keep whole-run approval in Runs.
 1. Refresh the currently viewed report in place after scoped approval, preserving capture/filter/view state and its output root. Recompute its complete original scope, including unapproved failures, without recapturing or changing thresholds; show approval errors in Results.
+1. Successful Compare completion replaces older run/saved-report pins with the completed request's output root and run ID, scoped to suites recorded in comparison progress. Unrelated suites sharing a run name must not appear. Do not use mutable Run settings or switch tabs automatically. Failed/cancelled commands retain the reviewed run; scoped approval keeps its in-place refresh path.
 1. Idle Results suite badges use the loaded report's scenario/viewport totals, not stale Activity history or raw screenshot counts. Keep live execution counts while a worker is running.
 1. Keep expensive image/file loading off the UI thread and reject stale completion after selection changes. Own popup menus/subscriptions without retained cycles.
 1. Capture-list keyboard navigation uses filtered positions and the retained uniform-list scroll handle. Keep capture selection single-item, clear pending approval through the existing selection path, and leave capture-search shortcuts scoped to its text input.
@@ -28,6 +29,7 @@ description: 'Use when changing desktop comparison reports, image previews, nami
 ```sh
 cargo test --features desktop --lib desktop::results::tests
 cargo test --features desktop --lib snapshot::capture_report::tests
+cargo test --features gui-tests --lib comparison_completion_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tests -- --test-threads=1
 ```
 

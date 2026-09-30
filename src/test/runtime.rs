@@ -603,15 +603,9 @@ impl Target {
         &self,
         url: &str,
         options: &crate::types::GotoParameters,
-        default_timeout: u64,
     ) -> Result<()> {
         use crate::types::NavigationWait;
-        let timeout = Duration::from_millis(
-            options
-                .timeout
-                .filter(|value| *value > 0)
-                .unwrap_or(default_timeout),
-        );
+        let timeout = navigation_timeout(options);
         tokio::time::timeout(timeout, async {
             let (session, _) = self.runtime.context(&self.realm).await?;
             let wait = options.wait_until.unwrap_or_default();
@@ -629,7 +623,7 @@ impl Target {
             let response = self
                 .runtime
                 .client
-                .call(Some(&session), "Page.navigate", parameters)
+                .call_with_timeout(Some(&session), "Page.navigate", parameters, timeout)
                 .await?;
             if let Some(error) = response["errorText"].as_str() {
                 bail!("Navigation failed: {}", error);
@@ -785,8 +779,41 @@ impl Target {
     }
 }
 
+fn navigation_timeout(options: &crate::types::GotoParameters) -> Duration {
+    Duration::from_millis(options.timeout.filter(|value| *value > 0).unwrap_or(60_000))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn navigation_timeout_defaults_to_sixty_seconds_without_changing_element_waits() {
+        for timeout in [None, Some(0)] {
+            let options = crate::types::GotoParameters {
+                timeout,
+                ..Default::default()
+            };
+            assert_eq!(super::navigation_timeout(&options), Duration::from_secs(60));
+        }
+        assert_eq!(
+            crate::config::ResolvedConfig::default().element_timeout_ms,
+            30_000
+        );
+    }
+
+    #[test]
+    fn navigation_timeout_preserves_positive_overrides() {
+        for timeout in [1, 30_000, 60_000, 90_000] {
+            let options = crate::types::GotoParameters {
+                timeout: Some(timeout),
+                ..Default::default()
+            };
+            assert_eq!(
+                super::navigation_timeout(&options),
+                Duration::from_millis(timeout)
+            );
+        }
+    }
+
     #[test]
     fn frame_urls_follow_target_identity_and_preserve_fragments() {
         let tree = serde_json::json!({

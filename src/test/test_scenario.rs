@@ -519,9 +519,7 @@ async fn run_scenario_capture_inner(
         .and_then(|value| value.goto_parameters.as_ref())
         .cloned()
         .unwrap_or_default();
-    target
-        .navigate(url, &options, resolved.element_timeout_ms)
-        .await?;
+    target.navigate(url, &options).await?;
     if let Some(selector) = &scenario.ready_selector {
         let timeout = scenario
             .ready_timeout

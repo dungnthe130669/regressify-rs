@@ -252,19 +252,55 @@ impl Workbench {
                         this.status = format!("{error:#}");
                     }
                     this.sync_suites(cx);
-                    let approval = {
+                    let (approval, comparison) = {
                         let manager = &this.runs.read(cx).manager;
-                        manager
+                        let approval = manager
                             .request
                             .as_ref()
                             .filter(|request| request.options.report_capture.is_some())
-                            .map(|_| manager.outcome.clone())
+                            .map(|_| manager.outcome.clone());
+                        let comparison = manager
+                            .request
+                            .as_ref()
+                            .filter(|request| {
+                                request.command == crate::desktop::runner::RunCommand::Compare
+                                    && matches!(
+                                        manager.outcome,
+                                        Some(crate::desktop::runner::RunOutcome::Completed)
+                                    )
+                            })
+                            .map(|request| {
+                                let targets = manager
+                                    .progress
+                                    .suites
+                                    .keys()
+                                    .map(|suite_id| {
+                                        (suite_id.clone(), request.options.run_id.clone())
+                                    })
+                                    .collect::<Vec<_>>();
+                                (
+                                    request.options.output_directory(&request.root),
+                                    request.options.run_id.clone(),
+                                    targets,
+                                )
+                            });
+                        (approval, comparison)
                     };
                     if let Some(outcome) = approval {
                         let suites = this.session.suites.clone();
                         this.results.update(cx, |panel, cx| {
                             panel.set_suites(suites);
                             panel.approval_finished(outcome.as_ref(), window, cx);
+                        });
+                    } else if let Some((root, run_id, targets)) = comparison {
+                        let suites = this.session.suites.clone();
+                        this.results.update(cx, |panel, cx| {
+                            panel.set_suites(suites);
+                            if !run_id.is_empty() && !targets.is_empty() {
+                                panel.show_saved_reports(root, targets, window, cx);
+                            } else {
+                                panel.show_run(root, run_id, window, cx);
+                            }
                         });
                     } else {
                         this.refresh_results(window, cx);

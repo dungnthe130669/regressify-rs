@@ -1425,6 +1425,13 @@ executed run when its output folder and suite scope match the current selection.
 An explicit Run name takes precedence. Subsequent Run Test and Run Reference
 actions still create fresh captures rather than reusing that previous run ID.
 
+After Compare Results completes successfully, Results reloads the completed
+request's output folder, run, and compared suites, replacing any older report
+selection. This updates capture outcomes and suite counts without switching
+away from Runs or including unrelated suites that share the same run name.
+Failed or cancelled comparisons do not switch the reviewed run; scoped approval
+continues to refresh the reviewed report in place.
+
 Stop terminates the process group, including children. Closing during a run
 requests cancellation; close again after it stops to handle unsaved work.
 The live log is searchable, read-only, and capped at 2 MiB. Its bounded queue may

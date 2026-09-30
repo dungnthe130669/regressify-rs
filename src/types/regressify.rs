@@ -290,8 +290,8 @@ pub struct EngineOptions {
 pub struct GotoParameters {
     /// Navigation checkpoint: commit, domcontentloaded, load, or networkidle. Default: load.
     pub wait_until: Option<NavigationWait>,
-    /// Navigation timeout in whole milliseconds. Zero disables this navigation timeout, not the overall scenario timeout.
-    #[schemars(example = 30000)]
+    /// Initial navigation timeout in whole milliseconds. Omit or use zero for the 60000 ms default, independent of elementTimeout. The overall scenario timeout still applies.
+    #[schemars(example = 60000)]
     pub timeout: Option<u64>,
     /// Optional Referer HTTP header for navigation.
     #[schemars(example = "https://example.com")]

@@ -221,6 +221,60 @@ fn interaction_page(request: Request) {
 
 #[tokio::test]
 #[ignore = "requires managed Chromium; run regressify install"]
+async fn navigation_default_allows_slow_document_responses() -> Result<()> {
+    let site = Site::new(|request| {
+        match request.url() {
+            "/slow" => std::thread::sleep(Duration::from_secs(31)),
+            "/timeout" => std::thread::sleep(Duration::from_millis(250)),
+            _ => {}
+        }
+        let _ = request.respond(
+            Response::from_string("<body>ready</body>")
+                .with_header(Header::from_bytes("Content-Type", "text/html").unwrap()),
+        );
+    })?;
+    let (mut browser, handler, directory) =
+        launch_browser("navigation-timeout", LaunchOptions::default()).await?;
+    let result: Result<()> = async {
+        let page = browser.new_page("about:blank").await?;
+        let runtime = super::runtime::Runtime::new(&browser, &page).await?;
+        let target = runtime.target(&None, Duration::from_secs(5)).await?;
+        target
+            .navigate(&format!("{}/slow", site.origin), &Default::default())
+            .await?;
+        let loaded: bool = target
+            .evaluate("document.readyState === 'complete'")
+            .await?
+            .into_value()?;
+        anyhow::ensure!(loaded, "navigation returned before the document loaded");
+
+        let error = target
+            .navigate(
+                &format!("{}/timeout", site.origin),
+                &crate::types::GotoParameters {
+                    timeout: Some(25),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect_err("explicit navigation timeout must remain bounded");
+        let message = error.to_string();
+        anyhow::ensure!(
+            message == "Navigation exceeded 25ms"
+                || message == "Timed out waiting for CDP Page.navigate",
+            "unexpected navigation timeout error: {message}"
+        );
+        Ok(())
+    }
+    .await;
+    browser.close().await?;
+    handler.await?;
+    let _ = std::fs::remove_dir_all(directory);
+    result
+}
+
+#[tokio::test]
+#[ignore = "requires managed Chromium; run regressify install"]
 async fn navigation_options_wait_for_load_and_network_idle() -> Result<()> {
     let site = Site::new(interaction_page)?;
     let (mut browser, handler, directory) =
@@ -241,7 +295,6 @@ async fn navigation_options_wait_for_load_and_network_idle() -> Result<()> {
                         timeout: Some(5000),
                         referer: Some(format!("{}/source", site.origin)),
                     },
-                    5000,
                 )
                 .await?;
             let loaded: bool = target

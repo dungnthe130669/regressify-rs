@@ -2544,6 +2544,230 @@ mod pointer_tests {
 
     #[cfg(feature = "gui-tests")]
     #[gpui_kit::test]
+    async fn comparison_completion_replaces_previously_opened_run(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        check_comparison_completion(cx, false, crate::desktop::runner::RunOutcome::Completed).await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn comparison_completion_replaces_saved_selection_in_requested_output(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        check_comparison_completion(cx, true, crate::desktop::runner::RunOutcome::Completed).await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn comparison_completion_failed_command_keeps_reviewed_run(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        check_comparison_completion(
+            cx,
+            false,
+            crate::desktop::runner::RunOutcome::Failed("Report could not be written".into()),
+        )
+        .await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn comparison_completion_cancelled_command_keeps_reviewed_run(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        check_comparison_completion(cx, false, crate::desktop::runner::RunOutcome::Cancelled).await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    async fn check_comparison_completion(
+        cx: &mut gpui_kit::TestAppContext,
+        saved_selection: bool,
+        outcome: crate::desktop::runner::RunOutcome,
+    ) {
+        use crate::desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest};
+        use crate::progress::{Event, LiveProgress, Record};
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+
+        let completed = matches!(outcome, RunOutcome::Completed);
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let (results, runs, suites) = cx.update(|cx| {
+            let editor = view.read(cx);
+            (
+                editor.results.clone(),
+                editor.runs.clone(),
+                editor.session.suites.clone(),
+            )
+        });
+        let scenario_id = suites[0].scenarios[0].id.clone();
+        let root = directory.path().canonicalize().unwrap();
+        let output = root.join(".regressify");
+        let compared_output = if saved_selection {
+            root.join("comparison-output")
+        } else {
+            output.clone()
+        };
+        for run_id in ["previous", "compared"] {
+            let selected_output = if run_id == "compared" {
+                &compared_output
+            } else {
+                &output
+            };
+            let run = selected_output.join("ui-test/bitmaps_test").join(run_id);
+            std::fs::create_dir_all(&run).unwrap();
+            let tests = [
+                "$load-page",
+                "$input-username",
+                "$input-email",
+                "$input-password",
+                "FINAL",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(index, capture)| {
+                serde_json::json!({
+                    "status": if run_id == "compared" && index == 1 { "fail" } else { "pass" },
+                    "pair": {
+                        "scenarioId": scenario_id,
+                        "scenarioLabel": "Checkout",
+                        "fileName": format!("{scenario_id}_desktop__{capture}.png"),
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+            std::fs::write(
+                run.join("report.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "ui-test", "testSuite": "ui-test", "tests": tests,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+        let unrelated = compared_output.join("unrelated/bitmaps_test/compared");
+        std::fs::create_dir_all(&unrelated).unwrap();
+        std::fs::write(
+            unrelated.join("report.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "id": "unrelated", "tests": [{
+                    "status": "pass", "pair": { "fileName": "other_desktop__FINAL.png" },
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            results.update(cx, |panel, cx| {
+                panel.set_suites(suites);
+                if saved_selection {
+                    panel.show_saved_reports(
+                        output.clone(),
+                        vec![("ui-test".into(), "previous".into())],
+                        window,
+                        cx,
+                    );
+                } else {
+                    panel.show_run(output.clone(), "previous".into(), window, cx);
+                }
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            !panel.loading && panel.selected_report().is_some()
+        })
+        .await;
+        let generation = cx.update(|cx| {
+            let panel = results.read(cx);
+            assert_eq!(panel.selected_report().unwrap().counts(), (5, 0, 0));
+            panel.generation
+        });
+        cx.update(|cx| {
+            view.update(cx, |editor, _| editor.main_tab = 1);
+            runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(RunRequest {
+                    root,
+                    command: RunCommand::Compare,
+                    options: RunOptions {
+                        suites: vec!["ui-test".into()],
+                        run_id: "compared".into(),
+                        regressify_dir: if saved_selection {
+                            "comparison-output".into()
+                        } else {
+                            ".regressify".into()
+                        },
+                        ..Default::default()
+                    },
+                });
+                panel.manager.outcome = Some(outcome);
+                panel.manager.progress = LiveProgress::default();
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 1,
+                    event: Event::Compared {
+                        suite_id: "ui-test".into(),
+                        capture: format!("{scenario_id}_desktop__$input-username"),
+                        label: "Checkout".into(),
+                        scenario_id: Some(scenario_id),
+                        passed: false,
+                        error: Some("Visual mismatch".into()),
+                    },
+                });
+                panel.manager.progress.end(false, None);
+                cx.emit(crate::desktop::ui::runs::RunEvent::Finished);
+            });
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.generation > generation && !panel.loading
+        })
+        .await;
+        cx.update(|cx| {
+            let panel = results.read(cx);
+            assert_eq!(panel.catalog.reports.len(), 1);
+            let report = panel.selected_report().unwrap();
+            assert_eq!(
+                report.run_id,
+                if completed { "compared" } else { "previous" }
+            );
+            assert_eq!(
+                report.counts(),
+                if completed { (4, 1, 0) } else { (5, 0, 0) }
+            );
+            assert_eq!(
+                report.report.scenario_counts().failed,
+                usize::from(completed)
+            );
+            assert_eq!(
+                panel.root.as_ref(),
+                Some(if completed { &compared_output } else { &output })
+            );
+            assert_eq!(view.read(cx).main_tab, 1);
+            view.update(cx, |editor, cx| {
+                editor.main_tab = 2;
+                cx.notify();
+            });
+        });
+        cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+            window
+                .try_find(("capture", 1_usize))
+                .is_some_and(|capture| {
+                    capture.label()
+                        == Some(if completed {
+                            "Mismatch Checkout"
+                        } else {
+                            "Passed Checkout"
+                        })
+                })
+        })
+        .await;
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
     async fn approval_completion_preserves_comparison_and_updates_suite_counts(
         cx: &mut gpui_kit::TestAppContext,
     ) {

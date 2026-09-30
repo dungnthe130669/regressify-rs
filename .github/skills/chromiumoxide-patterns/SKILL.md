@@ -21,6 +21,7 @@ description: 'Use when changing Chromium launch, CDP commands, browser handler p
 1. `Page::find_element` is not an existence wait or an actionability guarantee. Use project helpers before interacting; inspect the pinned implementation instead of assuming what high-level click/hover methods dispatch.
 1. Construct typed CDP parameters with their builders. Decode evaluation results to the expected type and propagate protocol, timeout, and JS execution errors.
 1. Keep profile isolation and bounded launch/navigation shutdown. Distinguish a browser fetch/launch infrastructure failure from a failing website scenario.
+1. Initial scenario navigation defaults to 60000 ms, independently of `elementTimeout`. Preserve positive `engineOptions.gotoParameters.timeout` overrides; omitted or zero values use the bounded default. Pass the navigation budget through CDP `Page.navigate` so the ordinary 30-second command timeout cannot shorten it. The overall scenario timeout still applies.
 1. Read wait URLs from CDP frame metadata, not `location.href` evaluation: redirects can destroy cached execution contexts before invalidation arrives. Preserve query/fragment matching, target frame identity, and out-of-process frame session routing.
 
 The runtime uses a vendored selector engine for CSS/text/XPath/shadow DOM and CDP contexts for cross-origin frames. Preserve that contract rather than substituting raw querySelector. The optional Node hook layer attaches Playwright to an existing Chromium session; it does not replace the Rust CDP action engine.
@@ -32,6 +33,8 @@ cargo test --lib test::browsers::tests
 cargo test --lib test::actionability::tests
 cargo test --lib test::runtime::tests
 ```
+
+Run `cargo test --lib test::browser_tests::navigation_ -- --ignored` with managed Chromium to cover a 31-second document response, explicit timeout expiry, full load, and network idle. The slow-document fixture must cross the ordinary CDP command deadline; do not shorten its delay below 30 seconds.
 
 For live browser changes inspect the relevant ignored fixture and its managed Chromium prerequisite. Verify headed local behavior, headless CI, launch failure, and cleanup after action error/cancellation; never use a personal browser profile.
 
