@@ -67,7 +67,9 @@ pub fn run_stdio() -> Result<()> {
                         job,
                         super::deployment::DeploymentClient::new(
                             &job.target,
-                            &job.target.token(&request.run.root)?,
+                            &job.target
+                                .token(&request.run.root)
+                                .context("Cannot load the deployment token")?,
                         )?,
                     ))
                 } else {
@@ -78,7 +80,8 @@ pub fn run_stdio() -> Result<()> {
                         "Generating selected report snapshots",
                         crate::application::execute(cli),
                     )
-                    .await?;
+                    .await
+                    .context("Cannot generate report snapshots for deployment")?;
                 } else {
                     crate::application::execute(cli).await?;
                 }
@@ -97,7 +100,9 @@ pub fn run_stdio() -> Result<()> {
                             super::deployment::stage_reports(&output, &suites, &destination)
                         }),
                     )
-                    .await??;
+                    .await
+                    .context("Deployment staging task failed")?
+                    .context("Cannot stage selected reports for deployment")?;
                     let url = client.deploy(&staging, &job.target).await?;
                     crate::progress::emit(crate::progress::Event::Deployed {
                         target: job.target.name.clone(),

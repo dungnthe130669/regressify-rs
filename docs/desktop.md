@@ -653,6 +653,19 @@ and `errorDetails` and Netlify's `error_message`. Details are bounded and
 credential/signed-URL redacted; unparseable responses fall back to status-specific
 guidance. The full error is shown in deployment Activity and View Log.
 
+On Windows, `Access is denied (os error 5)` is an operating-system access failure,
+not a Cloudflare API permission code. Local target-settings errors include the
+operation and settings path; report-worker errors identify snapshot generation or
+staging, and Cloudflare file-preparation errors identify the staging location.
+Cloudflare asset reads and staging copies include the affected paths. Check the full error
+and last activity step before changing permissions or replacing a token. Confirm
+that the Windows account can read the report output and write the application
+settings and temporary directories. Check Windows Security Protection history for
+a matching Controlled folder access block, or ask your administrator to check
+endpoint protection. Do not disable protection or run as administrator just to
+bypass an unidentified failure. Include the complete error when reporting it,
+without sharing credentials.
+
 All providers send `X-Robots-Tag: noindex,nofollow` for report URLs. Snapshots
 include matching Azure/Netlify security and cache policies, plus clean-URL SPA
 fallback rules. Cloudflare passes the header and redirect rules as asset metadata,

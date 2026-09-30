@@ -23,6 +23,7 @@ description: 'Use when changing Cloudflare Workers report deployment, static ass
 1. Bound the operation to 55 minutes, below one-hour temporary-token expiry. Retry safe GETs and identical upload bytes up to six times with bounded backoff. Session creation and explicit route updates are repeatable; publication is not. Distinguish confirmed rejection from uncertain publication outcomes. Cancellation is local and cannot undo an already accepted deployment.
 1. Verify returned Worker identity and public HTTPS HTML/asset bytes and MIME types before emitting success. Never send authorization to the public URL. Private deployments have no URL. Preserve-mode informational read failures after confirmed publication warn without requesting redeployment. Do not bypass Access.
 1. Redact every known request/body token before truncating diagnostics; retain bounded provider messages, numeric codes, and safe cf-ray IDs. Do not attach raw reqwest errors or response bodies to error chains.
+1. Local preparation and asset I/O failures must identify the operation and path while retaining the OS cause. Preserve the initial Azure access-policy rejection text. Windows `os error 5` is not a provider permission code; require the complete error before attributing it to settings, staging, or endpoint protection. Use temporary-file/loopback tests, not permission changes to user files.
 
 ## Checks
 
@@ -34,6 +35,8 @@ cargo test --features gui-tests --lib desktop::ui::deployment::tests -- --test-t
 ```
 
 Use synthetic tokens and loopback servers. Cover manifest limits, mutation, symlinks, bucket validation, cached deployments, MIME/policy metadata, retry exhaustion, deadlines, redaction, rejected redirects, failed publication, routing defaults/preservation, raw uploads, and completion-token ordering. Cover oversized reports, unchanged fitting reports, source preservation, temporary cleanup, excluded files, and cascading snapshot cache versions after compression.
+
+The `local_preparation_errors_` filter covers unavailable staging directories and Windows file locks, with no API requests and preserved sources. Deployment target settings tests separately cover Windows access-denied errors and path diagnostics.
 
 `live_create_update_and_delete_temporary_worker` requires explicit authorization, `REGRESSIFY_ALLOW_CLOUDFLARE_TEMP=1`, `CLOUDFLARE_API_TOKEN`, and `CLOUDFLARE_ACCOUNT_ID`. It checks initial absence, creation, changed/cached updates, production routing, public bytes/MIME, and deletion. Cleanup also runs after a verification error. It never uses the configured Worker name; keep it ignored.
 

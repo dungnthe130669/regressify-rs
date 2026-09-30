@@ -1,6 +1,6 @@
 # Cloudflare Deployment
 
-Verified: 2026-09-29
+Verified: 2026-09-30
 
 - [CloudflareClient](../../src/desktop/deployment/cloudflare.rs) uses Workers Static
   Assets directly: MIME-aware manifest, missing-content raw/Base64 uploads,
@@ -34,6 +34,13 @@ Verified: 2026-09-29
   exclusion globs. Local preparation rejects unsupported Pages code/ignore files
   and prunes private files. It precedes API calls. Session and route updates retry;
   publication never retries and distinguishes rejection from uncertain outcomes.
+- Local filesystem failures retain their OS cause and identify the preparation
+  step and staging path; asset reads identify the file. The initial configuration
+  check wraps only I/O errors so Azure access-policy rejection text is preserved.
+  The `local_preparation_errors_` tests cover missing directories and Windows file
+  locks, asserting zero HTTP requests and unchanged source files. Settings access
+  tests in [deployment models](../../src/desktop/deployment.rs) reproduce Windows
+  error 5; that code is not a Cloudflare API permission result.
 - Verification: `cargo test --features desktop --lib desktop::deployment::cloudflare::tests`
   covers content limits, identity, routing, cached uploads, retries, deadlines,
   and secret redaction. Native deployment-dialog tests cover saved fields and

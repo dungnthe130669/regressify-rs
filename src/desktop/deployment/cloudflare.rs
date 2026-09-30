@@ -321,7 +321,17 @@ impl CloudflareClient {
     }
 
     async fn deploy_inner(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
-        super::validate_static_configuration(root, super::DeploymentProvider::CloudflareWorkers)?;
+        super::validate_static_configuration(root, super::DeploymentProvider::CloudflareWorkers)
+            .map_err(|error| {
+                if error.downcast_ref::<std::io::Error>().is_some() {
+                    error.context(format!(
+                        "Cannot prepare local Cloudflare deployment files in '{}'",
+                        root.display()
+                    ))
+                } else {
+                    error
+                }
+            })?;
         let deadline = Instant::now() + self.deadline;
         let account = format!("accounts/{}", target.account_id);
         let worker = format!("{account}/workers/scripts/{}", target.worker_name);
@@ -352,7 +362,14 @@ impl CloudflareClient {
             let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
             Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
         })
-        .await??;
+        .await
+        .context("Cloudflare file preparation task failed")?
+        .with_context(|| {
+            format!(
+                "Cannot prepare local Cloudflare deployment files in '{}'",
+                root.display()
+            )
+        })?;
         let body = serde_json::to_vec(&serde_json::json!({"manifest": &manifest.files}))?;
         ensure!(
             body.len() <= MAX_MANIFEST_BYTES,
@@ -1324,13 +1341,30 @@ impl Manifest {
 }
 
 fn read_file(path: &Path, expected: u64) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
+    let file = std::fs::File::open(path).with_context(|| {
+        format!(
+            "Cannot open Cloudflare deployment file '{}'",
+            path.display()
+        )
+    })?;
     ensure!(
-        file.metadata()?.is_file(),
+        file.metadata()
+            .with_context(|| format!(
+                "Cannot inspect Cloudflare deployment file '{}'",
+                path.display()
+            ))?
+            .is_file(),
         "Cloudflare deployment requires regular files"
     );
     let mut bytes = Vec::new();
-    file.take(expected + 1).read_to_end(&mut bytes)?;
+    file.take(expected + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| {
+            format!(
+                "Cannot read Cloudflare deployment file '{}'",
+                path.display()
+            )
+        })?;
     ensure!(
         bytes.len() as u64 == expected,
         "Cloudflare deployment file changed after hashing"
@@ -1375,6 +1409,65 @@ mod tests {
         client.verify_attempts = 2;
         client.verification_url = Some(Url::parse(&format!("{origin}/")).unwrap());
         client
+    }
+
+    #[tokio::test]
+    async fn local_preparation_errors_identify_the_directory_before_network_access() -> Result<()> {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            let _ = request.respond(tiny_http::Response::empty(500));
+        })?;
+        let directory = tempfile::tempdir()?;
+        let root = directory.path().join("missing-report");
+        let error = client(&site.origin)
+            .deploy(&root, &target())
+            .await
+            .unwrap_err();
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Cannot prepare local Cloudflare deployment files"),
+            "{message}"
+        );
+        assert!(message.contains(&root.display().to_string()), "{message}");
+        assert!(!message.contains(TOKEN), "{message}");
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert!(!root.exists());
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn local_preparation_errors_identify_locked_files_before_network_access() -> Result<()> {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let captured = requests.clone();
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            captured.fetch_add(1, Ordering::SeqCst);
+            let _ = request.respond(tiny_http::Response::empty(500));
+        })?;
+        let root = tempfile::tempdir()?;
+        let path = root.path().join("index.html");
+        std::fs::write(&path, "report")?;
+        let locked = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)?;
+        let result = client(&site.origin).deploy(root.path(), &target()).await;
+        drop(locked);
+
+        let message = format!("{:#}", result.unwrap_err());
+        assert!(
+            message.contains("Cannot prepare local Cloudflare deployment files"),
+            "{message}"
+        );
+        assert!(message.contains("index.html"), "{message}");
+        assert!(!message.contains(TOKEN), "{message}");
+        assert_eq!(requests.load(Ordering::SeqCst), 0);
+        assert_eq!(std::fs::read(&path)?, b"report");
+        Ok(())
     }
 
     #[tokio::test]

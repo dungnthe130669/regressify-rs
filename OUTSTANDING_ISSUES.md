@@ -2,6 +2,22 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Windows Cloudflare Access Denied (2026-09-30)
+
+- QA reported only `Access is denied (os error 5)` on Windows 11. The failing
+  operation and machine-specific cause remain unconfirmed; this is not evidence
+  of a Cloudflare API permission failure.
+- Local deployment-settings and Cloudflare preparation errors now include their
+  operation and path. The report worker labels token loading, snapshot generation,
+  and staging failures. Filesystem causes and existing access-policy rejections
+  are preserved; permissions and security settings are not changed automatically.
+- Isolated Windows tests cover error 5 for settings access/replacement, blocked
+  settings directories, and locked report files. Loopback tests confirm local
+  preparation failures make no API requests and preserve source files.
+- QA must retry a build containing these diagnostics and provide the complete
+  error before the original access failure can be resolved. No live deployment
+  or change to user credentials was performed for this investigation.
+
 ## Open Review Findings (2026-09-23)
 
 These are unresolved findings, not implemented fixes. The review followed CLI,

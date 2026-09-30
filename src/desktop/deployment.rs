@@ -336,24 +336,47 @@ impl DeployTargets {
     pub fn load(path: &Path) -> Result<Self> {
         match fs::File::open(path) {
             Ok(file) => {
-                let bytes = bounded_read(file, 1024 * 1024, "Deployment target settings")?;
+                let bytes = bounded_read(file, 1024 * 1024, "Deployment target settings")
+                    .with_context(|| {
+                        format!(
+                            "Cannot read deployment target settings '{}'",
+                            path.display()
+                        )
+                    })?;
                 let value: Self =
                     serde_json::from_slice(&bytes).context("Invalid deployment target settings")?;
                 value.validate()?;
                 Ok(value)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "Cannot read deployment target settings '{}'",
+                    path.display()
+                )
+            }),
         }
     }
 
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        fs::create_dir_all(
-            path.parent()
-                .context("Deployment settings directory unavailable")?,
-        )?;
-        crate::helpers::write_file_atomically(path, &serde_json::to_vec_pretty(self)?)
+        let directory = path
+            .parent()
+            .context("Deployment settings directory unavailable")?;
+        fs::create_dir_all(directory).with_context(|| {
+            format!(
+                "Cannot create deployment settings directory '{}'",
+                directory.display()
+            )
+        })?;
+        crate::helpers::write_file_atomically(path, &serde_json::to_vec_pretty(self)?).with_context(
+            || {
+                format!(
+                    "Cannot save deployment target settings '{}'",
+                    path.display()
+                )
+            },
+        )
     }
 
     pub fn record_published_url(path: &Path, target: &DeployTarget, url: &str) -> Result<Self> {
@@ -837,7 +860,12 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "Deployment staging directory must be new"
     );
     let dependencies = crate::snapshot::artifact_paths(&output, suite_ids)?;
-    fs::create_dir_all(destination)?;
+    fs::create_dir_all(destination).with_context(|| {
+        format!(
+            "Cannot create deployment staging directory '{}'",
+            destination.display()
+        )
+    })?;
     phase("Staging selected report dependencies");
     let mut copied = BTreeSet::new();
     let mut copied_bytes = 0_u64;
@@ -850,9 +878,22 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
             return Ok(());
         }
         let target = destination.join(relative);
-        fs::create_dir_all(target.parent().context("Staging path has no parent")?)?;
+        let directory = target.parent().context("Staging path has no parent")?;
+        fs::create_dir_all(directory).with_context(|| {
+            format!(
+                "Cannot create deployment staging directory '{}'",
+                directory.display()
+            )
+        })?;
         let expected_bytes = fs::metadata(&source)?.len();
-        let bytes = fs::copy(source, target)?;
+        let bytes = fs::copy(&source, &target).with_context(|| {
+            format!(
+                "Cannot stage deployment artifact '{}' from '{}' to '{}'",
+                relative.display(),
+                source.display(),
+                target.display()
+            )
+        })?;
         ensure!(
             bytes == expected_bytes,
             "Report changed during deployment staging"
@@ -975,6 +1016,80 @@ mod tests {
             DeployTargets::path(directory.path()).unwrap(),
             DeployTargets::path(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap()
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn target_settings_permission_errors_identify_the_file() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        fs::create_dir(&path)?;
+        let error = DeployTargets::load(&path)
+            .err()
+            .expect("A directory is not settings");
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(5)
+        );
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Cannot read deployment target settings"),
+            "{message}"
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        fs::remove_dir(&path)?;
+
+        let settings = DeployTargets::default();
+        settings.save(&path)?;
+        let before = fs::read(&path)?;
+        let permissions = fs::metadata(&path)?.permissions();
+        let mut read_only = permissions.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(&path, read_only)?;
+        let result = settings.save(&path);
+        fs::set_permissions(&path, permissions)?;
+
+        let error = result.expect_err("Read-only settings must not be replaced");
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(5)
+        );
+        assert_eq!(fs::read(&path)?, before);
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Cannot save deployment target settings"),
+            "{message}"
+        );
+        assert!(message.contains(&path.display().to_string()), "{message}");
+        Ok(())
+    }
+
+    #[test]
+    fn target_settings_directory_errors_identify_the_path() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let blocked = directory.path().join("deployments");
+        fs::write(&blocked, "existing file")?;
+        let error = DeployTargets::default()
+            .save(&blocked.join("targets.json"))
+            .expect_err("A file cannot contain the settings directory");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Cannot create deployment settings directory"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&blocked.display().to_string()),
+            "{message}"
+        );
+        assert!(error.downcast_ref::<std::io::Error>().is_some());
+        assert_eq!(fs::read(&blocked)?, b"existing file");
+        Ok(())
     }
 
     #[test]
