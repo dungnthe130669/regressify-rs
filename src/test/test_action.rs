@@ -589,6 +589,7 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Save(SaveAction { save, .. }) => {
             validate_screenshot_step_name(save)?;
+            super::page_stability::prepare_screenshot(main_page, config, log_prefix).await?;
             crate::progress::scenario_log!("{} Saving screenshot: {}", log_prefix, save);
 
             save_screenshot(
@@ -823,6 +824,167 @@ impl UrlMatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn save_actions_wait_for_the_resolved_screenshot_delay() -> Result<()> {
+        use crate::test::{browser_tests, runtime::Runtime, storage_state::StorageState};
+
+        let root = match std::env::var_os("REGRESSIFY_SAVE_DELAY_FIXTURE") {
+            Some(path) => std::path::PathBuf::from(path),
+            None => {
+                let workspace = tempfile::tempdir()?;
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "test::test_action::tests::save_actions_wait_for_the_resolved_screenshot_delay",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("REGRESSIFY_SAVE_DELAY_FIXTURE", workspace.path())
+                    .output()?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Ok(());
+            }
+        };
+        ROOT_DIR.set(root.clone()).unwrap();
+        let output_dir = root.join(".regressify");
+        crate::common::REGRESSIFY_DIR
+            .set(output_dir.clone())
+            .unwrap();
+        let site = browser_tests::Site::new(|request| {
+            let _ = request.respond(
+                tiny_http::Response::from_string("<!doctype html><body></body>").with_header(
+                    tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap(),
+                ),
+            );
+        })?;
+        let (mut browser, handler, directory) =
+            browser_tests::launch_browser("save-delay", Default::default()).await?;
+        let result: Result<()> = async {
+            let suite = TestSuite {
+                id: Some("delay".into()),
+                test_date: Some("run".into()),
+                ..Default::default()
+            };
+            for (level, workspace_delay, scenario_delay, freeze_animations) in [
+                ("workspace", 2400.0, None, false),
+                ("scenario", 6000.0, Some(2400.0), true),
+            ] {
+                let workspace = config::WorkspaceConfig {
+                    delay: Some(workspace_delay),
+                    freeze_animations: Some(freeze_animations),
+                    ..Default::default()
+                };
+                let scenario = TestScenario {
+                    id: Some(level.into()),
+                    url: site.origin.clone(),
+                    delay: scenario_delay,
+                    ..Default::default()
+                };
+                let resolved = config::resolve_config(&workspace, &suite, &scenario);
+                anyhow::ensure!(resolved.delay == Some(2400.0));
+                let page = browser.new_page(site.origin.as_str()).await?;
+                let runtime = Runtime::new(&browser, &page).await?;
+                let storage = StorageState::install(&browser, &page, None, &site.origin).await?;
+                let context = || ActionExecutionContext {
+                    page: &page,
+                    runtime: &runtime,
+                    storage: &storage,
+                    test_suite: &suite,
+                    scenario: &scenario,
+                    config: &resolved,
+                    url_replacements: &[],
+                    viewport_label: None,
+                    log_prefix: level,
+                };
+                for name in ["first", "second"] {
+                    page.evaluate(
+                        r#"(() => {
+                            document.body.style.cssText = 'margin: 0; min-height: 100vh; background: rgb(255, 0, 0)';
+                            const animated = document.createElement('div');
+                            animated.style.cssText = 'position: absolute; left: 20px; top: 20px; width: 40px; height: 40px; background: blue';
+                            document.body.replaceChildren(animated);
+                            window.fixtureAnimations = [
+                                animated.animate([{ opacity: 0.25 }, { opacity: 1 }], { duration: 60000, fill: 'forwards' }),
+                                animated.animate([{ transform: 'translateX(0)' }, { transform: 'translateX(10px)' }], { duration: 1000, iterations: Infinity }),
+                            ];
+                            window.fixtureAnimations[0].onfinish = () => {
+                                window.fixtureAnimations.push(animated.animate(
+                                    [{ opacity: 1 }, { opacity: 0.5 }], { duration: 1000, iterations: Infinity }
+                                ));
+                            };
+                            setTimeout(() => document.body.style.backgroundColor = 'rgb(0, 255, 0)', 1200);
+                        })()"#,
+                    )
+                    .await?;
+                    let action = TestAction::Save(SaveAction {
+                        save: name.into(),
+                        frame: None,
+                    });
+                    let start = std::time::Instant::now();
+                    exec_test_action(context(), &action).await?;
+                    let key = crate::test::capture::final_screenshot_order_key(
+                        level,
+                        None,
+                        &ScreenshotType::Step(name.into()),
+                    );
+                    let path = output_dir
+                        .join("delay/bitmaps_test/run")
+                        .join(format!("{key}.png"));
+                    let image = lodepng::decode32(std::fs::read(path)?)?;
+                    let pixel = image
+                        .buffer
+                        .first()
+                        .ok_or_else(|| anyhow!("Saved screenshot was empty"))?;
+                    anyhow::ensure!(
+                        (pixel.r, pixel.g, pixel.b) == (0, 255, 0),
+                        "{level} {name} captured before the configured delay: {pixel:?}"
+                    );
+                    anyhow::ensure!(start.elapsed() >= Duration::from_millis(2400));
+                    let animations: serde_json::Value = page
+                        .evaluate("window.fixtureAnimations.map(animation => [animation.playState, animation.currentTime])")
+                        .await?
+                        .into_value()?;
+                    if freeze_animations {
+                        anyhow::ensure!(
+                            animations[0][0] == "finished"
+                                && animations[1] == serde_json::json!(["paused", 0])
+                                && animations[2] == serde_json::json!(["paused", 0]),
+                            "{level} {name} did not stabilize checkpoint animations: {animations}"
+                        );
+                    } else {
+                        anyhow::ensure!(
+                            animations[0][0] == "running" && animations[1][0] == "running",
+                            "{level} {name} ignored freezeAnimations=false: {animations}"
+                        );
+                    }
+                }
+                let invalid = TestAction::Save(SaveAction {
+                    save: "../invalid".into(),
+                    frame: None,
+                });
+                let invalid_result = tokio::time::timeout(
+                    Duration::from_millis(500),
+                    exec_test_action(context(), &invalid),
+                )
+                .await?;
+                anyhow::ensure!(invalid_result.is_err(), "Invalid save names must fail before waiting");
+                page.close().await?;
+            }
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
 
     #[test]
     fn url_waits_support_brace_alternatives_and_literal_queries() {

@@ -12,8 +12,9 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 ## Procedure and Invariants
 
 1. Preserve bounded DOM/resource/font/image/layout readiness and configurable settling. Avoid replacing observable conditions with arbitrary sleeps.
-1. Run lazy-load scrolling after initial navigation/readiness hooks and before prerequisite, scenario, or legacy actions so it cannot disturb their hover or scroll state. `noScrollTop` skips this pass; keep it distinct from selecting a viewport-only capture. Apply animation freezing only at its intended stage.
+1. Run lazy-load scrolling after initial navigation/readiness hooks and before prerequisite, scenario, or legacy actions so it cannot disturb their hover or scroll state. `noScrollTop` skips this pass; keep it distinct from selecting a viewport-only capture.
 1. Bypass CSS smooth scrolling for the lazy-load pass and verify both offsets stay at the top for a quiet window before returning. Bound the completion wait and propagate failure; a fixed delay or later capture settling is not proof that scrolling finished.
+1. Stabilize initial animations after readiness hooks and before lazy loading/actions when enabled. Share `prepare_screenshot` for `save` and final captures: resolved delay, animation freeze, bounded settling, then another freeze for late animations. Honor opt-outs and do not scroll or move the pointer during this preparation. `delay` resolves scenario -> workspace -> default; `postInteractionWait` remains final-only.
 1. Support full-page, viewport, CSS target, and intermediate save captures without collisions. Validate save names and keep stable target-specific ordering.
 1. Write complete PNGs/manifests atomically; preserve required color metadata and resource bounds. Failed capture placeholders need error markers, not promotion.
 1. Keep labels, scenario IDs, target names, thresholds, and raw/replaced URLs in sync across capture manifests and report consumers.
@@ -29,14 +30,16 @@ cargo test --lib test::test_scenario::tests
 cargo test --lib helpers::png::tests
 ```
 
-For pre-action lazy loading and hover preservation, with managed Chromium already installed:
+For scenario and checkpoint preparation, with managed Chromium already installed:
 
 ```sh
 cargo test --lib test::test_scenario::tests::lazy_loading_precedes_actions_and_preserves_hover -- --ignored --exact
 cargo test --lib test::page_stability::tests::lazy_loading_waits_for_stable_offsets_and_bounds_stalled_scroll -- --ignored --exact
+cargo test --lib test::test_action::tests::save_actions_wait_for_the_resolved_screenshot_delay -- --ignored --exact
 ```
 
 Cover absent/empty actions with capture settling disabled, smooth scrolling, delayed or interrupted returns, non-scrolling pages, and blocked-scroll timeouts.
+Checkpoint coverage must verify saved pixels, inherited/overridden delay, repeated saves, invalid-name rejection before waiting, animation opt-outs, and animations started during settling.
 
 Inspect ignored Chromium fixtures for live behavior; unit tests alone do not prove rendering stability. Cover delayed resources, motion, clipped targets, multiple saves, invalid names, timeouts, and write failures.
 

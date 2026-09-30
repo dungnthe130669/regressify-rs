@@ -316,6 +316,12 @@ capture. Names must be non-empty portable filename components no longer than
 `_diff` suffix are rejected. Reports list saved screenshots in action order
 before that scenario's final capture targets.
 
+Each checkpoint uses the same resolved `delay`, animation freezing, and bounded
+font/image/layout settling as the final capture. This does not repeat lazy-load
+scrolling or move the pointer. `freezeAnimations: false` and `settleTimeout: 0`
+disable their respective checks; `delay: 0` skips the explicit delay.
+`postInteractionWait` still runs only after actions, before the final captures.
+
 Example:
 
 ```yml

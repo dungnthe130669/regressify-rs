@@ -20,3 +20,10 @@ Verified: 2026-09-30
   [scenario regression](../../src/test/test_scenario.rs) reproduces this with
   capture settling disabled; page-stability fixtures cover delayed/interrupted
   returns and the blocked-scroll deadline. Both fixtures require managed Chromium.
+- [Screenshot preparation](../../src/test/page_stability.rs) is shared by `save`
+  and final captures: resolved delay, freeze, bounded settling, then freeze again
+  for late animations. Initial animation stabilization also runs before lazy
+  loading/actions; checkpoint preparation never repeats scrolling. `delay` resolves
+  scenario -> workspace -> default, not through the suite; `postInteractionWait`
+  remains final-only. The [save regression](../../src/test/test_action.rs) checks
+  pixels, repeated checkpoints, opt-outs, and animations started by finish callbacks.

@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 use chromiumoxide::Page;
 
+use crate::config::ResolvedConfig;
+
 const DOM_READY_POLL: Duration = Duration::from_millis(100);
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(5);
 const LAZY_LOAD_TIMEOUT: Duration = Duration::from_secs(20);
@@ -16,6 +18,76 @@ pub struct SettleResult {
 
 pub fn is_dom_ready(state: &str) -> bool {
     matches!(state, "interactive" | "complete")
+}
+
+pub async fn wait_for_screenshot_delay(delay: Option<f64>, log_prefix: &str) {
+    if let Some(delay) = delay
+        && delay > 0.0
+    {
+        crate::progress::scenario_log!(
+            "{} Delay: waiting {} ms before screenshot...",
+            log_prefix,
+            delay
+        );
+        tokio::time::sleep(Duration::from_millis(delay as u64)).await;
+    }
+}
+
+pub async fn prepare_screenshot(
+    page: &Page,
+    config: &ResolvedConfig,
+    log_prefix: &str,
+) -> Result<()> {
+    wait_for_screenshot_delay(config.delay, log_prefix).await;
+
+    if config.freeze_animations {
+        stabilize_capture_animations(page, log_prefix).await?;
+    }
+
+    if config.settle_timeout_ms > 0 {
+        match wait_for_page_settle(page, Duration::from_millis(config.settle_timeout_ms)).await {
+            Ok(result) if result.settled => {
+                crate::progress::scenario_log!(
+                    "{} Page settled in {} ms before capture.",
+                    log_prefix,
+                    result.elapsed_ms
+                );
+            }
+            Ok(result) => {
+                crate::progress::scenario_log!(
+                    "{} Page did not settle within {} ms; capturing anyway.",
+                    log_prefix,
+                    result.elapsed_ms
+                );
+            }
+            Err(error) => {
+                crate::progress::scenario_log!(
+                    "{} Settle wait failed ({error}); capturing without settle.",
+                    log_prefix
+                );
+            }
+        }
+    }
+
+    if config.freeze_animations {
+        // Resources that completed during settlement can start new animations.
+        stabilize_capture_animations(page, log_prefix).await?;
+    }
+
+    Ok(())
+}
+
+pub async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<()> {
+    let (completed, frozen) = freeze_animations(page).await?;
+    if completed > 0 || frozen > 0 {
+        crate::progress::scenario_log!(
+            "{} Stabilized {} finite and {} infinite animation(s).",
+            log_prefix,
+            completed,
+            frozen
+        );
+    }
+    Ok(())
 }
 
 /// Wait until the page has an interactive DOM after a navigation response.
@@ -281,6 +353,27 @@ mod tests {
     use std::{fs, process::Command};
 
     use super::*;
+
+    #[tokio::test]
+    async fn screenshot_delay_waits_for_configured_milliseconds() {
+        let start = Instant::now();
+
+        wait_for_screenshot_delay(Some(25.0), "delay-test").await;
+
+        assert!(start.elapsed() >= Duration::from_millis(25));
+    }
+
+    #[tokio::test]
+    async fn screenshot_delay_skips_missing_or_non_positive_values() {
+        for delay in [None, Some(0.0), Some(-1.0)] {
+            tokio::time::timeout(
+                Duration::from_millis(1),
+                wait_for_screenshot_delay(delay, "delay-test"),
+            )
+            .await
+            .expect("Missing or non-positive screenshot delays must not wait");
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires managed Chromium; run regressify install"]

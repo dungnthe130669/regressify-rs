@@ -27,6 +27,10 @@ description: 'Use when adding or fixing click, hover, check, uncheck, focus, inp
    Select must reject missing options and multiple values on a single-select.
 1. Propagate failures with selector/action context. A failing action stops its
    scenario, not peers; do not panic, exit, or discard meaningful errors.
+1. For `save`, validate the name before waiting, then reuse the shared screenshot
+   preparation in [page stability](../../../src/test/page_stability.rs). Keep delay,
+   animation freezing, and settling aligned with final captures; see the
+   [capture skill](../capture-stability/SKILL.md) for the checkpoint regression.
 
 Utilities (save, persist, hide/remove) and waits/navigation do not require the
 interactive actionability sequence. Scroll still validates its target. File input

@@ -321,7 +321,11 @@ Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one comp
 
 ## Capture stability
 
-Regressify waits for an interactive DOM after navigation, decodes fonts and images before capture, and uses one `settleTimeout` budget for resource readiness plus DOM/layout quiet. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret. Set `freezeAnimations: false` only when a scenario intentionally captures an animated intermediate state.
+Regressify waits for an interactive DOM after navigation. After readiness hooks, it stabilizes active animations before lazy-load scrolling and actions. `freezeAnimations` defaults to `true`; it completes finite CSS/Web Animations, freezes infinite ones at their initial frame, and hides the blinking text caret.
+
+Every `save` checkpoint and the final capture sequence share the resolved `delay` and one `settleTimeout` budget for font/image readiness plus DOM/layout quiet. Animation freezing runs before and after settling to catch newly started animations. Capture preparation does not repeat lazy-load scrolling or move the pointer. Settling remains best-effort: a timeout or settling error is logged and capture continues.
+
+Set `delay: 0` to skip the explicit delay, `settleTimeout: 0` to disable settling, or `freezeAnimations: false` when an animated intermediate state is intentional. `postInteractionWait` remains a separate wait after actions, before the final captures.
 
 Capture runs use sortable UTC directory IDs with nanosecond precision, so back-to-back invocations do not overwrite each other's screenshots or reports.
 Capture commands refuse to reuse an existing suite/run directory. Choose a new

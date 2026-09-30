@@ -189,7 +189,7 @@ Default value: `1000`.
 
 Resolution order: scenario, workspace, then the default. Set `delay: 0` to disable this wait.
 
-When the page is ready, wait for X milliseconds before taking the screenshot.  
+Wait for X milliseconds before each `save` checkpoint and before the scenario's final captures. This is separate from `postInteractionWait`, which applies only after the actions finish.  
 Use this for scenarios where the page under test needs extra time to load or render.
 
 {% end %}

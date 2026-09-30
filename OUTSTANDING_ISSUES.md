@@ -294,7 +294,7 @@ it was risk-focused, not an exhaustive security certification.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.
 - Report regeneration ignores generated diffs and clears stale diff artifacts when a pair becomes a pass.
 - Screenshot output writes atomically, preserves color-management PNG chunks, and uses collision-resistant run IDs.
-- Capture waits for an interactive DOM, lazy-loaded resources, decoded fonts/images, and stable layout; capture-only animation freezing is configurable.
+- Capture waits for an interactive DOM, lazy-loaded resources, decoded fonts/images, and stable layout. Configurable animation stabilization now runs before actions and at each checkpoint/final capture. `save` shares the final capture's resolved delay and bounded settling without replaying lazy-load scrolling. Local Chromium regressions cover saved pixels, delay inheritance/overrides, repeated checkpoints, invalid names, animation opt-outs, late-started animations, and preserved hover state.
 - Lazy-load scrolling now finishes before prerequisite, scenario, and legacy actions instead of disturbing their final hover state. It bypasses smooth scrolling and waits for stable offsets at the top before continuing, including scenarios without actions. Local Chromium regressions cover all action paths, `noScrollTop`, disabled capture settling, delayed/interrupted scrolling, and bounded failure when returning to the top is blocked.
 - Interactive actions use full actionability validation, URL replacements apply to `goto`, and iframe waits/coordinates are hardened.
 - URL waits support exact URLs, single-segment `*`, multi-segment `**`, and query-value wildcards.

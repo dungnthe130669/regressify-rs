@@ -1,7 +1,7 @@
 use std::{future::Future, path::PathBuf};
 
 use anyhow::{Result, anyhow};
-use chromiumoxide::{Browser, Page};
+use chromiumoxide::Browser;
 use colored::Colorize;
 
 use crate::{
@@ -14,7 +14,7 @@ use crate::{
             save_screenshot, saved_screenshot_types, screenshot_type_description,
             validate_cookie_value, validate_screenshot_types, write_error_screenshots,
         },
-        page_stability::{freeze_animations, trigger_lazy_loading, wait_for_page_settle},
+        page_stability::{prepare_screenshot, stabilize_capture_animations, trigger_lazy_loading},
         test_action::{ActionExecutionContext, exec_test_action},
     },
     types::{Needs, ScreenshotType, TestAction, TestScenario, TestSuite, UrlReplacement},
@@ -427,19 +427,6 @@ where
     }
 }
 
-async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<()> {
-    let (completed, frozen) = freeze_animations(page).await?;
-    if completed > 0 || frozen > 0 {
-        crate::progress::scenario_log!(
-            "{} Stabilized {} finite and {} infinite animation(s).",
-            log_prefix,
-            completed,
-            frozen
-        );
-    }
-    Ok(())
-}
-
 /// Inner capture routine: drives the full page lifecycle and saves the
 /// screenshot. Errors are handled by the `run_scenario_capture` wrapper.
 async fn run_scenario_capture_inner(
@@ -550,6 +537,10 @@ async fn run_scenario_capture_inner(
 
     hooks.apply(&page).await?;
 
+    if resolved.freeze_animations {
+        stabilize_capture_animations(&page, log_prefix).await?;
+    }
+
     if !resolved.no_scroll_top {
         crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
         let scroll_start = std::time::Instant::now();
@@ -649,56 +640,7 @@ async fn run_scenario_capture_inner(
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms as u64)).await;
     }
 
-    // Apply delay before screenshot
-    if let Some(delay) = resolved.delay
-        && delay > 0.0
-    {
-        crate::progress::scenario_log!(
-            "{} Delay: waiting {} ms before screenshot...",
-            log_prefix,
-            delay
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-    }
-
-    if resolved.freeze_animations {
-        stabilize_capture_animations(&page, log_prefix).await?;
-    }
-
-    if resolved.settle_timeout_ms > 0 {
-        match wait_for_page_settle(
-            &page,
-            std::time::Duration::from_millis(resolved.settle_timeout_ms),
-        )
-        .await
-        {
-            Ok(result) if result.settled => {
-                crate::progress::scenario_log!(
-                    "{} Page settled in {} ms before capture.",
-                    log_prefix,
-                    result.elapsed_ms
-                );
-            }
-            Ok(result) => {
-                crate::progress::scenario_log!(
-                    "{} Page did not settle within {} ms; capturing anyway.",
-                    log_prefix,
-                    result.elapsed_ms
-                );
-            }
-            Err(error) => {
-                crate::progress::scenario_log!(
-                    "{} Settle wait failed ({error}); capturing without settle.",
-                    log_prefix
-                );
-            }
-        }
-    }
-
-    if resolved.freeze_animations {
-        // Resources that completed during settlement can start new animations.
-        stabilize_capture_animations(&page, log_prefix).await?;
-    }
+    prepare_screenshot(&page, resolved, log_prefix).await?;
 
     for screenshot_type in screenshot_types {
         hooks.apply(&page).await?;
@@ -1006,14 +948,19 @@ mod tests {
                     #target:hover { background: green; }
                     </style><button id="target">Hover</button><script>
                     window.fixture = { scrolls: 0, scrollsAtHover: null, scrolledAfterHover: false };
+                    window.initialAnimation = document.body.animate(
+                        [{ opacity: 0.8 }, { opacity: 1 }], { duration: 60000, fill: 'forwards' }
+                    );
                     window.addEventListener('scroll', () => {
                         window.fixture.scrolls++;
                         if (window.fixture.scrollsAtHover !== null)
                             window.fixture.scrolledAfterHover = true;
                     });
                     document.querySelector('#target').addEventListener('pointermove', () => {
-                        if (window.fixture.scrollsAtHover === null)
+                        if (window.fixture.scrollsAtHover === null) {
                             window.fixture.scrollsAtHover = window.fixture.scrolls;
+                            window.fixture.animationStateAtHover = window.initialAnimation.playState;
+                        }
                     });
                     </script>"#,
                 )
@@ -1026,13 +973,15 @@ mod tests {
             let suite = TestSuite::default();
             let mut prerequisite = scenario("prerequisite", "actions:\n  - hover: '#target'\n");
             prerequisite.url = site.origin.clone();
-            for no_scroll_top in [false, true] {
+            for (no_scroll_top, freeze_animations) in
+                [(false, false), (false, true), (true, false), (true, true)]
+            {
                 let resolved = ResolvedConfig {
                     no_scroll_top,
                     post_interaction_wait: Some(0.0),
                     delay: Some(0.0),
                     settle_timeout_ms: 0,
-                    freeze_animations: false,
+                    freeze_animations,
                     ..Default::default()
                 };
                 for (kind, yaml) in [
@@ -1043,7 +992,7 @@ mod tests {
                     ("legacy", "hoverSelector: '#target'\n"),
                 ] {
                     let mut current = scenario(kind, yaml);
-                    current.url = format!("{}/{kind}-{no_scroll_top}", site.origin);
+                    current.url = format!("{}/{kind}-{no_scroll_top}-{freeze_animations}", site.origin);
                     let all_scenarios = [prerequisite.clone(), current.clone()];
                     run_with_scenario_timeout(
                         std::time::Duration::from_secs(20),
@@ -1086,6 +1035,11 @@ mod tests {
                             anyhow::ensure!(
                                 state["hovered"] == true,
                                 "{kind} did not preserve hover: {state}"
+                            );
+                            let expected_animation = if freeze_animations { "finished" } else { "running" };
+                            anyhow::ensure!(
+                                state["animationStateAtHover"] == expected_animation,
+                                "{kind} initial animations were not prepared before actions: {state}"
                             );
                             state["scrollsAtHover"].as_u64()
                         }
