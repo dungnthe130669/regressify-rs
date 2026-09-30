@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-09-28
+Verified: 2026-09-30
 
 - [Target URL reads](../../src/test/runtime.rs) use `Page.getFrameTree`, not
   JavaScript evaluation. Navigation can invalidate a cached execution context
@@ -14,3 +14,9 @@ Verified: 2026-09-28
   cross-origin redirects, subsequent visible-selector waits, SPA query/fragment
   changes, URL timeout expiry, and frame-scoped URL matching. Run their ignored
   tests with the managed Chromium cache; do not use real credentials or baselines.
+- The [lazy-load pass](../../src/test/page_stability.rs) bypasses CSS smooth
+  scrolling and checks both scroll offsets for a quiet window at the top. A fixed
+  500 ms delay previously returned mid-scroll in action-free scenarios. The live
+  [scenario regression](../../src/test/test_scenario.rs) reproduces this with
+  capture settling disabled; page-stability fixtures cover delayed/interrupted
+  returns and the blocked-scroll deadline. Both fixtures require managed Chromium.

@@ -1000,7 +1000,8 @@ mod tests {
             let _ = request.respond(
                 tiny_http::Response::from_string(
                     r#"<!doctype html><style>
-                    body { margin: 0; height: 2400px; }
+                    html { scroll-behavior: smooth; }
+                    body { margin: 0; height: 12000px; }
                     #target { margin: 40px; width: 120px; height: 50px; }
                     #target:hover { background: green; }
                     </style><button id="target">Hover</button><script>
@@ -1030,10 +1031,13 @@ mod tests {
                     no_scroll_top,
                     post_interaction_wait: Some(0.0),
                     delay: Some(0.0),
-                    settle_timeout_ms: 1_000,
+                    settle_timeout_ms: 0,
+                    freeze_animations: false,
                     ..Default::default()
                 };
                 for (kind, yaml) in [
+                    ("no-actions", ""),
+                    ("empty-actions", "actions: []\n"),
                     ("actions", "actions:\n  - hover: '#target'\n"),
                     ("needs", "needs: prerequisite\n"),
                     ("legacy", "hoverSelector: '#target'\n"),
@@ -1073,12 +1077,19 @@ mod tests {
                             .await?
                             .into_value()?;
                         anyhow::ensure!(
-                            state["scrolledAfterHover"] == false && state["hovered"] == true,
+                            state["scrolledAfterHover"] == false,
                             "{kind} hover was disturbed (noScrollTop={no_scroll_top}): {state}"
                         );
-                        let scrolls = state["scrollsAtHover"]
-                            .as_u64()
-                            .ok_or_else(|| anyhow!("{kind} did not dispatch a hover: {state}"))?;
+                        let scrolls = if matches!(kind, "no-actions" | "empty-actions") {
+                            state["scrolls"].as_u64()
+                        } else {
+                            anyhow::ensure!(
+                                state["hovered"] == true,
+                                "{kind} did not preserve hover: {state}"
+                            );
+                            state["scrollsAtHover"].as_u64()
+                        }
+                        .ok_or_else(|| anyhow!("{kind} scroll state was not recorded: {state}"))?;
                         anyhow::ensure!(
                             (scrolls == 0) == no_scroll_top && state["atTop"] == true,
                             "{kind} lazy-load ordering or noScrollTop was incorrect: {state}"

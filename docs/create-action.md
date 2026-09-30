@@ -150,7 +150,7 @@ hover
 
 Hover an element.
 
-Lazy-load scrolling runs before actions, so it does not reset the hover state before the final screenshot.
+Lazy-load scrolling finishes with stable scroll offsets at the top before actions begin. It is not repeated afterward, so it does not reset the hover state before the final screenshot.
 
 Example:
 

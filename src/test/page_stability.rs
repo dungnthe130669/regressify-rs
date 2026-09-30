@@ -62,17 +62,30 @@ pub async fn trigger_lazy_loading(page: &Page) -> Result<()> {
                         root.scrollHeight) - window.innerHeight;
                     if (window.scrollY >= bottom) break;
 
-                    window.scrollBy(0, STEP);
+                    window.scrollBy({ left: 0, top: STEP, behavior: 'instant' });
                     await sleep(100);
                     if (window.scrollY <= previousY) break;
                     previousY = window.scrollY;
                     steps++;
                 }
 
-                window.scrollTo(0, 0);
+                window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
                 // Lazy-load handlers are often debounced after scrolling stops.
-                await sleep(500);
-                return { steps };
+                const deadline = performance.now() + 3000;
+                let stableSince = null;
+                while (performance.now() < deadline) {
+                    const now = performance.now();
+                    const atTop = Math.abs(window.scrollX) < 1 && Math.abs(window.scrollY) < 1;
+                    if (atTop) {
+                        if (stableSince === null) stableSince = now;
+                        if (now - stableSince >= 500) return { steps };
+                    } else {
+                        stableSince = null;
+                        window.scrollTo({ left: 0, top: 0, behavior: 'instant' });
+                    }
+                    await sleep(100);
+                }
+                throw new Error('Timed out waiting for lazy-load scrolling to return to the top');
             })()"#,
         ),
     )
@@ -268,6 +281,92 @@ mod tests {
     use std::{fs, process::Command};
 
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_waits_for_stable_offsets_and_bounds_stalled_scroll() -> Result<()> {
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("scroll-completion", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            for mode in ["short", "delayed", "interrupted", "stalled"] {
+                let page = browser.new_page("about:blank").await?;
+                page.evaluate(format!(
+                    r#"(() => {{
+                        const mode = {};
+                        document.body.style.cssText = mode === 'short'
+                            ? 'margin: 0; height: 50px; width: 50px'
+                            : 'margin: 0; height: 2500px; width: 5000px';
+                        window.fixture = {{ lastMove: null }};
+                        const scrollTo = window.scrollTo.bind(window);
+                        let requested = false;
+                        if (mode === 'delayed') {{
+                            window.scrollTo = (...args) => {{
+                                if (requested) return;
+                                requested = true;
+                                setTimeout(() => {{
+                                    scrollTo(...args);
+                                    window.fixture.lastMove = performance.now();
+                                }}, 700);
+                            }};
+                        }} else if (mode === 'interrupted') {{
+                            window.scrollTo = (...args) => {{
+                                scrollTo(...args);
+                                if (requested) return;
+                                requested = true;
+                                setTimeout(() => {{
+                                    scrollTo({{ left: 200, top: 150, behavior: 'instant' }});
+                                    window.fixture.lastMove = performance.now();
+                                }}, 250);
+                            }};
+                        }} else if (mode === 'stalled') {{
+                            window.scrollTo = () => {{}};
+                        }}
+                    }})()"#,
+                    serde_json::to_string(mode)?
+                ))
+                .await?;
+                let start = Instant::now();
+                let scrolling = trigger_lazy_loading(&page).await;
+                if mode == "stalled" {
+                    let error = scrolling
+                        .err()
+                        .ok_or_else(|| anyhow!("Blocked scrolling must fail instead of capturing"))?;
+                    anyhow::ensure!(
+                        format!("{error:#}").contains("return to the top"),
+                        "Unexpected blocked-scroll error: {error:#}"
+                    );
+                    anyhow::ensure!(start.elapsed() < LAZY_LOAD_TIMEOUT);
+                } else {
+                    scrolling?;
+                    let state: serde_json::Value = page
+                        .evaluate(
+                            "({ x: window.scrollX, y: window.scrollY, quietMs: window.fixture.lastMove === null ? null : performance.now() - window.fixture.lastMove })",
+                        )
+                        .await?
+                        .into_value()?;
+                    anyhow::ensure!(
+                        state["x"] == 0 && state["y"] == 0,
+                        "{mode} returned before reaching the top: {state}"
+                    );
+                    anyhow::ensure!(start.elapsed() >= Duration::from_millis(500));
+                    if mode != "short" {
+                        anyhow::ensure!(
+                            state["quietMs"].as_f64().is_some_and(|quiet| quiet >= 500.0),
+                            "{mode} returned without a quiet window after movement: {state}"
+                        );
+                    }
+                }
+                page.close().await?;
+            }
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
 
     #[test]
     fn dom_ready_accepts_interactive_and_complete_states() {

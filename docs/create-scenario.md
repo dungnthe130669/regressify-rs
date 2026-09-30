@@ -397,6 +397,8 @@ Disable the initial lazy-load scroll.
 
 By default, after navigation and readiness hooks, Regressify scrolls the page down and back to the top to trigger lazy-loaded images before any prerequisite (`needs`), scenario, or legacy actions. This lazy-load pass is not repeated before the final screenshot, so it does not disturb hover or scroll states established by actions. Set this to `true` to skip the initial scroll.
 
+Automatic lazy-load scrolling bypasses smooth scrolling. Before actions or capture, both scroll offsets must remain at the top for 500 ms, even when there are no actions or capture settling is disabled. Returning to a stable top position has a 3-second deadline within the overall 20-second lazy-load budget; failure stops the scenario instead of capturing mid-scroll.
+
 {% end %}
 
 {% spoiler() %}
