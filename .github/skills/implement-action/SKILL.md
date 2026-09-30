@@ -16,9 +16,7 @@ description: 'Use when adding or fixing click, hover, check, uncheck, focus, inp
 ## Procedure and Invariants
 
 1. Add or update the type and dispatcher together. Preserve `camelCase`, unknown field rejection, and untagged variant precedence; test ambiguous action shapes.
-1. `switchTab` is dispatched by the scenario page owner before page-scoped actions.
-   Keep waits, frames, saves, persistence, final captures, and Node hooks on the
-   selected page. Update the desktop action template/menu and schema tests too.
+1. `switchTab` is dispatched by the scenario page owner before page-scoped actions. Keep waits, frames, saves, persistence, final captures, and Node hooks on the selected page. Update the desktop action template/menu and schema tests too.
 1. Reuse pre-action helpers for interactive actions: wait for existence, visibility, stable geometry across at least two observations, centered scrolling, unobscured targeting, and enabled controls. Preserve configured deadlines and poll bounds.
 1. Use CDP pointer movement/press/release for click and hover, and CDP key events with key/code/modifiers/virtual codes for press. JS event dispatch alone does not reproduce browser interaction or CSS hover.
 1. Check checkbox/radio type and current state before check/uncheck. Focus before input, clear unless `append`, and preserve framework input/change notification. Select must reject missing options and multiple values on a single-select.
@@ -35,9 +33,7 @@ cargo test --lib test::test_action::tests
 cargo test --lib test::actionability::tests
 ```
 
-With managed Chromium, run `cargo test --lib test::tabs::tests -- --include-ignored`
-and `cargo test --lib test::test_scenario::tests::popup_actions_and_captures_follow_the_selected_tab -- --ignored --exact`
-for `_blank`/`noopener`, JavaScript and iframe popups, selection errors, and capture pixels.
+With managed Chromium, run `cargo test --lib test::tabs::tests -- --include-ignored` and `cargo test --lib test::test_scenario::tests::popup_actions_and_captures_follow_the_selected_tab -- --ignored --exact` for `_blank`/`noopener`, JavaScript and iframe popups, selection errors, and capture pixels.
 
 Add a local-browser regression for changed event behavior: missing, delayed, hidden, moving, disabled, covered, nested-frame, quoted-selector, and success cases as relevant. Browser tests are ignored by default; inspect their `#[ignore]` prerequisites before explicitly running the selected test with `--ignored`.
 
