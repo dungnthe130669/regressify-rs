@@ -37,6 +37,36 @@ function Test-SchemaFlows {
             throw 'Switching Source and Fields changed the invalid draft.'
         }
     }
+    function Test-SchemaCompletionTyping {
+        $draft = "scenarios:`n  - url: /`n    de"
+        Write-SchemaSource $draft
+        $focusedBefore = [System.Windows.Automation.AutomationElement]::FocusedElement
+        if ($focusedBefore.Current.ProcessId -ne $process.Id) {
+            throw 'The Regressify fixture was not focused before typing.'
+        }
+        try {
+            foreach ($text in @('l', 'a', 'y', ': ', '250')) {
+                # Do not activate the window here: that could conceal lost input focus.
+                [RegressifySmokeText]::Type($text)
+                [RegressifySmokeNative]::DwmFlush() | Out-Null
+                $draft += $text
+                Wait-WindowState {
+                    (Read-ControlText 'Configuration source').Replace("`r`n", "`n") -ceq $draft
+                } 'Typing while suggestions were visible did not reach the source editor.'
+                if ($text -in @('l', 'a', 'y')) { Wait-Control '1 suggestion' | Out-Null }
+                $focusedAfter = [System.Windows.Automation.AutomationElement]::FocusedElement
+                if (-not [System.Windows.Automation.Automation]::Compare($focusedBefore, $focusedAfter)) {
+                    throw 'The source editor lost focus while opening or filtering suggestions.'
+                }
+            }
+        } catch {
+            $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+            Write-Output ("Focus during completion typing: name='{0}', type='{1}'" -f $focused.Current.Name, $focused.Current.ControlType.ProgrammaticName)
+            Capture-Window 'schema-completion-typing-failure'
+            throw
+        }
+        Capture-Window 'schema-completion-typing'
+    }
     function Test-SchemaCompletionKeys {
         $switchWindow = [System.Windows.Forms.Form]::new()
         $switchWindow.Text = 'Regressify focus fixture'
@@ -244,6 +274,7 @@ function Test-SchemaFlows {
     $original = (Get-FileHash -LiteralPath $path).Hash
     Invoke-Control 'schema.tests.yaml'
     Wait-Control 'Configuration source' | Out-Null
+    Test-SchemaCompletionTyping
     $incomplete = "scenarios:`n  - url: https://example.com`n    actions:`n      - click:`n      - hover:`n"
     Write-SchemaSource $incomplete
     Send-FixtureKeys Escape
@@ -309,7 +340,7 @@ function Test-SchemaFlows {
     if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
     Capture-Window 'schema-corrected'
-    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, and compact light/dark layouts passed.'
+    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }

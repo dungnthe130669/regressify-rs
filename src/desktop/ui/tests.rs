@@ -909,6 +909,68 @@ async fn source_completion_can_be_accepted_with_tab_and_saved_without_duplicate_
 }
 
 #[gpui_kit::test]
+async fn source_completion_can_be_accepted_with_pointer_and_saved_without_duplicate_text(
+    cx: &mut TestAppContext,
+) {
+    accept_and_save_source_completion(cx, "click", false).await;
+}
+
+#[gpui_kit::test]
+async fn source_completion_keeps_editor_focus_while_filtering(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let mut expected = "scenarios:\n  - url: /\n    ".to_string();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        view.read(cx).source.clone().update(cx, |state, cx| {
+            state.set_value(expected.clone(), window, cx);
+            state.set_selected_range(expected.len()..expected.len(), cx);
+            window.focus(&state.focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    for text in ["d", "e", "l", "a"] {
+        expected.push_str(text);
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.input(text, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            let menu = view.read(cx).source.read(cx).completion_menu_state();
+            menu.open && menu.items.iter().any(|item| item.label == "delay")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let source = view.read(cx).source.read(cx);
+            assert!(source.focus_handle(cx).is_focused(window));
+            assert_eq!(source.value().as_ref(), expected);
+        })
+        .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+        window.render_frame(cx);
+        assert!(!view.read(cx).source.read(cx).completion_menu_state().open);
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        window.input("y: 250", cx);
+        assert_eq!(
+            view.read(cx).source.read(cx).value().as_ref(),
+            "scenarios:\n  - url: /\n    delay: 250"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn source_completion_recovers_keyboard_focus_after_window_reactivation(
     cx: &mut TestAppContext,
 ) {
@@ -952,7 +1014,7 @@ async fn reactivate_without_editor_focus(cx: &mut TestAppContext, handle: Window
 
 async fn accept_and_save_source_completion(
     cx: &mut TestAppContext,
-    accept_key: &str,
+    accept_action: &str,
     reactivate: bool,
 ) {
     let directory = tempfile::tempdir().unwrap();
@@ -983,7 +1045,23 @@ async fn accept_and_save_source_completion(
             window.find("source-completion-status").label(),
             Some("1 suggestion")
         );
-        window.press(accept_key, cx);
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+        if accept_action == "click" {
+            let source = view.read(cx).source.read(cx);
+            let (caret, line_height) = source.cursor_layout().unwrap();
+            let position = source.scroll_offset()
+                + caret.origin
+                + gpui_kit::point(px(8.), line_height + px(16.));
+            click_at_with_modifiers(window, position, Default::default(), cx);
+        } else {
+            window.press(accept_action, cx);
+        }
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
@@ -3280,11 +3358,20 @@ fn click_with_modifiers(
     modifiers: gpui_kit::Modifiers,
     cx: &mut gpui_kit::App,
 ) {
-    use gpui_kit::{InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
     window.render_frame(cx);
     let target = window.find(target);
     assert!(target.visible());
     let position = target.bounds().center();
+    click_at_with_modifiers(window, position, modifiers, cx);
+}
+
+fn click_at_with_modifiers(
+    window: &mut gpui_kit::Window,
+    position: gpui_kit::Point<gpui_kit::Pixels>,
+    modifiers: gpui_kit::Modifiers,
+    cx: &mut gpui_kit::App,
+) {
+    use gpui_kit::{InputEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
     window.dispatch_event(
         MouseMoveEvent {
             position,
