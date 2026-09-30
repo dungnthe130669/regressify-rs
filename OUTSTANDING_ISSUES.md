@@ -315,8 +315,10 @@ it was risk-focused, not an exhaustive security certification.
   Frontend, Rust, worker, and local browser tests cover it.
 - Snapshot review now has independently scrolling panes, a resizable suite/scenario
   navigator scoped to the current suite, native page-only image scrolling, and a
-  selectable Info popover. Suite failure arrows jump between filtered failed cards;
-  desktop/mobile browser checks cover navigation, resize, scrolling, and copying.
+  selectable Info popover. A searchable suite dropdown keeps the current suite
+  visible and overlays scenarios instead of expanding the pane. Suite failure
+  arrows jump between filtered failed cards; desktop/mobile browser checks cover
+  navigation, keyboard selection, dismissal, resize, scrolling, and copying.
 - Snapshot branding now shares the desktop icon for the logo/favicon. Suite and
   image browser titles include the suite name. Suite list rows show uncropped,
   side-by-side Reference/Test/optional Diff previews, with mobile, missing-image,

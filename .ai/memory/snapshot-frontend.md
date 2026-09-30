@@ -56,9 +56,13 @@ Verified: 2026-09-30
 - Editor symbol rename may skip desktop-gated references when rust-analyzer uses
   default features. Always run the desktop-feature check after a shared rename.
 - [Review navigation](../../frontend/src/components/ReviewNavigation.tsx) loads only
-  the selected suite's scenarios. The suite disclosure starts collapsed on desktop
-  and mobile; selected-suite scenarios stay visible. Suite-switching, suite-search,
-  and sidebar-overflow tests must expand it first.
+  the selected suite's scenarios. The current suite is a searchable Floating UI
+  dropdown, not a disclosure; its overlay scrolls without moving the scenario pane.
+  `review navigation` tests cover keyboard/pointer selection, dismissal, search reset,
+  long labels, viewport bounds, and accessibility on desktop/mobile.
+  Portal into the enclosing native mobile dialog, using the default root on desktop.
+  Escape capture and default prevention keep dismissal out of the native drawer.
+  List-navigation orientation does not belong on the outer searchable dialog.
   [Shell](../../frontend/src/App.tsx) owns separate
   left/right scroll areas and pointer-captured divider resizing; preferred desktop
   width survives narrow/mobile viewports. Tailwind resets native `hr` height to zero,

@@ -258,13 +258,17 @@ System mode follows operating-system appearance changes. Loading a report does
 not rewrite the preference. When storage is blocked, theme switching still works
 for the current page.
 
-Suite and image pages show a left navigation pane with Test suites and Test
-scenarios. The Test suites list starts collapsed; select its heading to expand it.
+Suite and image pages show the current suite name in a dropdown selector above
+Test scenarios. The selector opens a searchable Floating UI menu over the pane
+without moving the scenarios. The current suite is highlighted and checked;
+arrow keys move between suites and Enter selects one. Escape or an outside click
+closes the menu, and reopening it clears its search. On phones, Escape dismisses
+the dropdown without closing the navigation drawer.
 The selected suite's scenarios remain visible, with several captures grouped into
-individual image links. Both lists are searchable.
+individual image links. Scenarios have their own search.
 The left pane and review area scroll independently. Drag the divider to resize it,
 or focus it and use arrow keys, Home, and End. The preferred width is remembered;
-phones use a drawer with the same two lists.
+phones use a drawer with the same selector and scenario list.
 
 Overview and suite footers stay at the bottom of short pages and follow longer
 content without covering it. Image review remains footer-free.

@@ -81,9 +81,11 @@ retains its explicit editor setup and non-destructive legacy-file migration.
 The generated site provides an overview at `/`, suite results at
 `/suites/<suite-id>`, and individual comparisons at
 `/suites/<suite-id>/images/<capture-id>`. Navigation stays in the same application;
-suite and image pages have a resizable quick-switch pane containing Test suites
-and only the selected suite's Test scenarios. The navigation and right review area
-scroll independently; phones use a drawer with the same lists.
+suite and image pages have a resizable quick-switch pane showing the current suite
+in a searchable dropdown, with only that suite's Test scenarios below it. Opening
+the dropdown overlays the pane without moving the scenarios; the current suite is
+highlighted and checked. The navigation and right review area scroll independently;
+phones use a drawer with the same selector and scenario list.
 Search, result filters, grid/list selection, and image mode are reflected in the URL.
 Suite list view shows Reference and Test previews side by side, plus Diff when
 available. Images fit without cropping, and missing images keep their labeled lanes.
