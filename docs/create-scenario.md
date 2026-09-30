@@ -393,9 +393,9 @@ noScrollTop
 Type: `boolean`.  
 Default value: `false`.
 
-Disable scrollTop prior to screen capture.
+Disable the initial lazy-load scroll.
 
-By default, Regressify scrolls the page down and back to the top before the final screenshot to trigger lazy-loaded images. Set this to `true` when that behavior is not wanted.
+By default, after navigation and readiness hooks, Regressify scrolls the page down and back to the top to trigger lazy-loaded images before any prerequisite (`needs`), scenario, or legacy actions. This lazy-load pass is not repeated before the final screenshot, so it does not disturb hover or scroll states established by actions. Set this to `true` to skip the initial scroll.
 
 {% end %}
 

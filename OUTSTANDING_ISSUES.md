@@ -295,6 +295,7 @@ it was risk-focused, not an exhaustive security certification.
 - Report regeneration ignores generated diffs and clears stale diff artifacts when a pair becomes a pass.
 - Screenshot output writes atomically, preserves color-management PNG chunks, and uses collision-resistant run IDs.
 - Capture waits for an interactive DOM, lazy-loaded resources, decoded fonts/images, and stable layout; capture-only animation freezing is configurable.
+- Lazy-load scrolling now finishes before prerequisite, scenario, and legacy actions instead of disturbing their final hover state. A local Chromium regression covers all three action paths with scrolling enabled and with `noScrollTop` set.
 - Interactive actions use full actionability validation, URL replacements apply to `goto`, and iframe waits/coordinates are hardened.
 - URL waits support exact URLs, single-segment `*`, multi-segment `**`, and query-value wildcards.
 

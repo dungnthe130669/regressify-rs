@@ -12,7 +12,7 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 ## Procedure and Invariants
 
 1. Preserve bounded DOM/resource/font/image/layout readiness and configurable settling. Avoid replacing observable conditions with arbitrary sleeps.
-1. Keep lazy-load scrolling and noScrollTop behavior distinct from selecting a viewport-only capture. Apply animation freezing only at its intended stage.
+1. Run lazy-load scrolling after initial navigation/readiness hooks and before prerequisite, scenario, or legacy actions so it cannot disturb their hover or scroll state. `noScrollTop` skips this pass; keep it distinct from selecting a viewport-only capture. Apply animation freezing only at its intended stage.
 1. Support full-page, viewport, CSS target, and intermediate save captures without collisions. Validate save names and keep stable target-specific ordering.
 1. Write complete PNGs/manifests atomically; preserve required color metadata and resource bounds. Failed capture placeholders need error markers, not promotion.
 1. Keep labels, scenario IDs, target names, thresholds, and raw/replaced URLs in sync across capture manifests and report consumers.
@@ -24,7 +24,14 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 ```sh
 cargo test --lib test::capture::tests
 cargo test --lib test::page_stability::tests
+cargo test --lib test::test_scenario::tests
 cargo test --lib helpers::png::tests
+```
+
+For pre-action lazy loading and hover preservation, with managed Chromium already installed:
+
+```sh
+cargo test --lib test::test_scenario::tests::lazy_loading_precedes_actions_and_preserves_hover -- --ignored --exact
 ```
 
 Inspect ignored Chromium fixtures for live behavior; unit tests alone do not prove rendering stability. Cover delayed resources, motion, clipped targets, multiple saves, invalid names, timeouts, and write failures.

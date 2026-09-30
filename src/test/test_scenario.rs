@@ -550,6 +550,17 @@ async fn run_scenario_capture_inner(
 
     hooks.apply(&page).await?;
 
+    if !resolved.no_scroll_top {
+        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
+        let scroll_start = std::time::Instant::now();
+        trigger_lazy_loading(&page).await?;
+        crate::progress::scenario_log!(
+            "{} Lazy-load scroll completed in {} ms.",
+            log_prefix,
+            scroll_start.elapsed().as_millis()
+        );
+    }
+
     // Execute prerequisite actions from `needs` dependencies
     let mut visited = Vec::new();
     let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
@@ -648,17 +659,6 @@ async fn run_scenario_capture_inner(
             delay
         );
         tokio::time::sleep(std::time::Duration::from_millis(delay as u64)).await;
-    }
-
-    if !resolved.no_scroll_top {
-        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
-        let scroll_start = std::time::Instant::now();
-        trigger_lazy_loading(&page).await?;
-        crate::progress::scenario_log!(
-            "{} Lazy-load scroll completed in {} ms.",
-            log_prefix,
-            scroll_start.elapsed().as_millis()
-        );
     }
 
     if resolved.freeze_animations {
@@ -968,6 +968,134 @@ mod tests {
 
     fn scenario(id: &str, yaml: &str) -> TestScenario {
         serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lazy_loading_precedes_actions_and_preserves_hover() -> Result<()> {
+        let root = match std::env::var_os("REGRESSIFY_LAZY_LOADING_FIXTURE") {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let workspace = tempfile::tempdir()?;
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "test::test_scenario::tests::lazy_loading_precedes_actions_and_preserves_hover",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("REGRESSIFY_LAZY_LOADING_FIXTURE", workspace.path())
+                    .output()?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Ok(());
+            }
+        };
+        common::ROOT_DIR.set(root).unwrap();
+        let site = crate::test::browser_tests::Site::new(|request| {
+            let _ = request.respond(
+                tiny_http::Response::from_string(
+                    r#"<!doctype html><style>
+                    body { margin: 0; height: 2400px; }
+                    #target { margin: 40px; width: 120px; height: 50px; }
+                    #target:hover { background: green; }
+                    </style><button id="target">Hover</button><script>
+                    window.fixture = { scrolls: 0, scrollsAtHover: null, scrolledAfterHover: false };
+                    window.addEventListener('scroll', () => {
+                        window.fixture.scrolls++;
+                        if (window.fixture.scrollsAtHover !== null)
+                            window.fixture.scrolledAfterHover = true;
+                    });
+                    document.querySelector('#target').addEventListener('pointermove', () => {
+                        if (window.fixture.scrollsAtHover === null)
+                            window.fixture.scrollsAtHover = window.fixture.scrolls;
+                    });
+                    </script>"#,
+                )
+                .with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap()),
+            );
+        })?;
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("lazy-loading", Default::default()).await?;
+        let result: Result<()> = async {
+            let suite = TestSuite::default();
+            let mut prerequisite = scenario("prerequisite", "actions:\n  - hover: '#target'\n");
+            prerequisite.url = site.origin.clone();
+            for no_scroll_top in [false, true] {
+                let resolved = ResolvedConfig {
+                    no_scroll_top,
+                    post_interaction_wait: Some(0.0),
+                    delay: Some(0.0),
+                    settle_timeout_ms: 1_000,
+                    ..Default::default()
+                };
+                for (kind, yaml) in [
+                    ("actions", "actions:\n  - hover: '#target'\n"),
+                    ("needs", "needs: prerequisite\n"),
+                    ("legacy", "hoverSelector: '#target'\n"),
+                ] {
+                    let mut current = scenario(kind, yaml);
+                    current.url = format!("{}/{kind}-{no_scroll_top}", site.origin);
+                    let all_scenarios = [prerequisite.clone(), current.clone()];
+                    run_with_scenario_timeout(
+                        std::time::Duration::from_secs(20),
+                        kind,
+                        run_scenario_capture_inner(
+                            &browser,
+                            CaptureContext {
+                                is_reference: true,
+                                test_suite: &suite,
+                                scenario: &current,
+                                all_scenarios: &all_scenarios,
+                                resolved: &resolved,
+                                url: &current.url,
+                                url_replacements: &[],
+                                viewport: None,
+                                log_prefix: kind,
+                            },
+                            &[],
+                        ),
+                    )
+                    .await?;
+                    let mut checked = false;
+                    for page in browser.pages().await? {
+                        if page.url().await?.as_deref() != Some(current.url.as_str()) {
+                            continue;
+                        }
+                        let state: serde_json::Value = page
+                            .evaluate(
+                                "({ ...window.fixture, hovered: document.querySelector('#target').matches(':hover'), atTop: window.scrollY === 0 })",
+                            )
+                            .await?
+                            .into_value()?;
+                        anyhow::ensure!(
+                            state["scrolledAfterHover"] == false && state["hovered"] == true,
+                            "{kind} hover was disturbed (noScrollTop={no_scroll_top}): {state}"
+                        );
+                        let scrolls = state["scrollsAtHover"]
+                            .as_u64()
+                            .ok_or_else(|| anyhow!("{kind} did not dispatch a hover: {state}"))?;
+                        anyhow::ensure!(
+                            (scrolls == 0) == no_scroll_top && state["atTop"] == true,
+                            "{kind} lazy-load ordering or noScrollTop was incorrect: {state}"
+                        );
+                        page.close().await?;
+                        checked = true;
+                    }
+                    anyhow::ensure!(checked, "{kind} capture page was not found");
+                }
+            }
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
     }
 
     #[tokio::test]
