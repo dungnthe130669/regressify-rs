@@ -88,6 +88,7 @@ pub fn install_subscriber() -> &'static Installation {
         let console = Arc::new(Console::new(io::stderr(), Severity::Info));
         let output = console.clone();
         let subscriber = tracing_subscriber::registry()
+            .with(super::runtime::JournalLayer)
             .with(DiagnosticLayer::new(adapter.clone(), move |record| {
                 output.receive(record)
             }));

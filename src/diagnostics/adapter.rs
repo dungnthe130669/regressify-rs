@@ -175,40 +175,59 @@ where
         id: &tracing::Id,
         context: Context<'_, Sub>,
     ) {
-        if attributes.metadata().target() != "regressify::diagnostics" {
-            return;
-        }
-        let mut visitor = SafeVisitor::default();
-        attributes.record(&mut visitor);
-        if let Some(safe) = visitor.context
-            && let Some(span) = context.span(id)
-        {
-            span.extensions_mut().insert(safe);
-        }
+        store_context(attributes, id, context);
     }
 
     fn on_event(&self, event: &tracing::Event<'_>, context: Context<'_, Sub>) {
-        if event.metadata().target() != "regressify::diagnostics" {
-            return;
-        }
-        let mut visitor = SafeVisitor::default();
-        event.record(&mut visitor);
-        let Some(mut record) = visitor.record else {
+        let Some(record) = event_record(event, context) else {
             return;
         };
-        if let Some(scope) = context.event_scope(event) {
-            for span in scope.from_root() {
-                if let Some(safe) = span.extensions().get::<DiagnosticContext>() {
-                    safe.apply(&mut record);
-                }
-            }
-        }
-        if record.validate().is_err() {
-            return;
-        }
         (self.receive)(&record);
         self.adapter.on_diagnostic(&record);
     }
+}
+
+pub(crate) fn store_context<Sub>(
+    attributes: &Attributes<'_>,
+    id: &tracing::Id,
+    context: Context<'_, Sub>,
+) where
+    Sub: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    if attributes.metadata().target() != "regressify::diagnostics" {
+        return;
+    }
+    let mut visitor = SafeVisitor::default();
+    attributes.record(&mut visitor);
+    if let Some(safe) = visitor.context
+        && let Some(span) = context.span(id)
+    {
+        span.extensions_mut().replace(safe);
+    }
+}
+
+pub(crate) fn event_record<Sub>(
+    event: &tracing::Event<'_>,
+    context: Context<'_, Sub>,
+) -> Option<DiagnosticRecordV1>
+where
+    Sub: Subscriber + for<'lookup> LookupSpan<'lookup>,
+{
+    if event.metadata().target() != "regressify::diagnostics" {
+        return None;
+    }
+    let mut visitor = SafeVisitor::default();
+    event.record(&mut visitor);
+    let mut record = visitor.record?;
+    if let Some(scope) = context.event_scope(event) {
+        for span in scope.from_root() {
+            if let Some(safe) = span.extensions().get::<DiagnosticContext>() {
+                safe.apply(&mut record);
+            }
+        }
+    }
+    record.validate().ok()?;
+    Some(record)
 }
 
 pub fn emit(record: &DiagnosticRecordV1) -> Result<()> {

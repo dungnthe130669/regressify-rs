@@ -35,7 +35,7 @@ use crate::{
 };
 
 /// Outcome of a spawned scenario task, used to decide the process exit code.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TaskStatus {
     /// Scenario captured successfully.
     Passed,
@@ -264,74 +264,138 @@ fn spawn_capture_jobs(
         let replacements = active_replacements.clone();
 
         let handle = tokio::spawn(progress::scope_scenario(index, async move {
-            let Ok((_suite_permit, _global_permit)) = acquire_capture_permits(suite_sem, sem).await
-            else {
-                eprintln!("  {} Capture semaphore closed", "ERROR:".red());
-                progress::emit(ProgressEvent::Captured {
-                    id: index,
-                    error: Some("Capture semaphore closed".into()),
-                    infrastructure: true,
-                });
-                return TaskStatus::InfraFailed;
-            };
-            progress::emit(ProgressEvent::Started { id: index });
-            let log_prefix = make_log_prefix(index, total);
-            let label = suite.scenarios[scenario_idx]
-                .label
-                .as_deref()
-                .or(suite.scenarios[scenario_idx].id.as_deref())
-                .unwrap_or("unknown");
-            let outcome = exec_single_scenario(
-                &exe_path,
-                ScenarioRequest {
-                    test_suite: &suite,
-                    scenario: &suite.scenarios[scenario_idx],
-                    all_scenarios: &suite.scenarios,
-                    workspace_config: &ws_config,
-                    replacement_profile: &replacements,
-                    apply_url_replacements,
-                    viewport: viewport.as_ref(),
-                    index,
-                    total,
-                },
-            )
-            .await;
-            let (error, infrastructure) = match &outcome {
-                ScenarioOutcome::Passed => (None, false),
-                ScenarioOutcome::PageFailed(error) => (Some(format!("{error:#}")), false),
-                ScenarioOutcome::InfraFailed(error) => (Some(format!("{error:#}")), true),
-            };
-            progress::emit(ProgressEvent::Captured {
-                id: index,
-                error,
-                infrastructure,
+            use crate::diagnostics::{record::*, runtime};
+            let operation = common::REGRESSIFY_DIR.get().map(|output| {
+                let scenario = &suite.scenarios[scenario_idx];
+                let identity = ExecutionIdentity {
+                    execution_id: ExecutionId::new(),
+                    suite_id: SafeIdentity::fingerprint(suite.id.as_deref().unwrap_or_default()),
+                    scenario_id: SafeIdentity::fingerprint(
+                        scenario.id.as_deref().unwrap_or_default(),
+                    ),
+                    viewport: ViewportIdentity {
+                        name: SafeIdentity::fingerprint(
+                            viewport
+                                .as_ref()
+                                .map(|viewport| viewport.label.as_str())
+                                .unwrap_or("Default"),
+                        ),
+                        width: viewport
+                            .as_ref()
+                            .map(|viewport| viewport.width)
+                            .unwrap_or(1920),
+                        height: viewport
+                            .as_ref()
+                            .map(|viewport| viewport.height)
+                            .unwrap_or(1080),
+                    },
+                    capture_role: if apply_url_replacements {
+                        CaptureRole::Test
+                    } else {
+                        CaptureRole::Reference
+                    },
+                    attempt: 1,
+                };
+                runtime::Operation::start(
+                    output,
+                    OperationKind::Capture,
+                    suite
+                        .test_date
+                        .clone()
+                        .and_then(|run| CaptureRunId::try_from(run).ok()),
+                    Some(identity),
+                    Some(index),
+                )
             });
-            match outcome {
-                ScenarioOutcome::Passed => TaskStatus::Passed,
-                ScenarioOutcome::PageFailed(e) => {
-                    // Page errors (timeout, not found, ...) are expected for a
-                    // visual regression tool — log and continue, the result is
-                    // reflected in the comparison report.
-                    eprintln!(
-                        "{} {} Capture '{}' failed: {:?}",
-                        log_prefix,
-                        "ERROR:".red(),
-                        label,
-                        e
+            let status =
+                runtime::scope(operation.as_ref().map(runtime::Operation::context), async {
+                    runtime::event(
+                        Stage::QueueSetup,
+                        DiagnosticEvent::Queued,
+                        Severity::Info,
+                        [],
                     );
-                    TaskStatus::PageFailed
-                }
-                ScenarioOutcome::InfraFailed(e) => {
-                    eprintln!(
-                        "{} {} Capture '{}' failed (infrastructure): {:?}",
-                        log_prefix,
-                        "ERROR:".red(),
-                        label,
-                        e
-                    );
-                    TaskStatus::InfraFailed
-                }
+                    let Ok((_suite_permit, _global_permit)) =
+                        acquire_capture_permits(suite_sem, sem).await
+                    else {
+                        eprintln!("  {} Capture semaphore closed", "ERROR:".red());
+                        progress::emit(ProgressEvent::Captured {
+                            id: index,
+                            error: Some("Capture semaphore closed".into()),
+                            infrastructure: true,
+                        });
+                        return TaskStatus::InfraFailed;
+                    };
+                    progress::emit(ProgressEvent::Started { id: index });
+                    let log_prefix = make_log_prefix(index, total);
+                    let label = suite.scenarios[scenario_idx]
+                        .label
+                        .as_deref()
+                        .or(suite.scenarios[scenario_idx].id.as_deref())
+                        .unwrap_or("unknown");
+                    let outcome = exec_single_scenario(
+                        &exe_path,
+                        ScenarioRequest {
+                            test_suite: &suite,
+                            scenario: &suite.scenarios[scenario_idx],
+                            all_scenarios: &suite.scenarios,
+                            workspace_config: &ws_config,
+                            replacement_profile: &replacements,
+                            apply_url_replacements,
+                            viewport: viewport.as_ref(),
+                            index,
+                            total,
+                        },
+                    )
+                    .await;
+                    let (error, infrastructure) = match &outcome {
+                        ScenarioOutcome::Passed => (None, false),
+                        ScenarioOutcome::PageFailed(error) => (Some(format!("{error:#}")), false),
+                        ScenarioOutcome::InfraFailed(error) => (Some(format!("{error:#}")), true),
+                    };
+                    progress::emit(ProgressEvent::Captured {
+                        id: index,
+                        error,
+                        infrastructure,
+                    });
+                    match outcome {
+                        ScenarioOutcome::Passed => TaskStatus::Passed,
+                        ScenarioOutcome::PageFailed(e) => {
+                            // Page errors (timeout, not found, ...) are expected for a
+                            // visual regression tool — log and continue, the result is
+                            // reflected in the comparison report.
+                            eprintln!(
+                                "{} {} Capture '{}' failed: {:?}",
+                                log_prefix,
+                                "ERROR:".red(),
+                                label,
+                                e
+                            );
+                            TaskStatus::PageFailed
+                        }
+                        ScenarioOutcome::InfraFailed(e) => {
+                            eprintln!(
+                                "{} {} Capture '{}' failed (infrastructure): {:?}",
+                                log_prefix,
+                                "ERROR:".red(),
+                                label,
+                                e
+                            );
+                            TaskStatus::InfraFailed
+                        }
+                    }
+                })
+                .await;
+            if let Some(operation) = operation {
+                operation
+                    .finish(if status == TaskStatus::Passed {
+                        Outcome::Success
+                    } else {
+                        Outcome::Failure
+                    })
+                    .await;
             }
+            status
         }));
 
         handles.push(handle);
@@ -1459,6 +1523,86 @@ fn generate_snapshot_reports() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_job_journal_opens_writes_and_finalizes_before_comparing() {
+        use crate::diagnostics::{
+            journal::{ArchiveState, JournalReader},
+            record::{DiagnosticEvent, OperationId},
+        };
+        let root = match std::env::var_os("REGRESSIFY_CAPTURE_JOURNAL_FIXTURE") {
+            Some(root) => PathBuf::from(root),
+            None => {
+                let root = tempfile::tempdir().unwrap();
+                let result = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test::test_suites::tests::capture_job_journal_opens_writes_and_finalizes_before_comparing", "--nocapture"])
+                    .env("REGRESSIFY_CAPTURE_JOURNAL_FIXTURE", root.path()).output().unwrap();
+                assert!(
+                    result.status.success(),
+                    "{}\n{}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+                return;
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        common::REGRESSIFY_DIR.set(root.clone()).unwrap();
+        crate::diagnostics::install::install_subscriber();
+        let mut suite = suite(vec![scenario("home", None)]);
+        suite.test_date = Some("run-journal".into());
+        let jobs = build_capture_jobs(
+            &[(input(), Arc::new(suite))],
+            &config::WorkspaceConfig::default(),
+            &[],
+        )
+        .unwrap();
+        let semaphore = Arc::new(Semaphore::new(0));
+        semaphore.close();
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let handles = spawn_capture_jobs(
+                jobs,
+                &semaphore,
+                &Arc::new(None),
+                &Arc::new(config::WorkspaceConfig::default()),
+                &Arc::new(Vec::new()),
+                true,
+            );
+            for handle in handles {
+                assert_eq!(handle.await.unwrap(), TaskStatus::InfraFailed);
+            }
+        });
+        let entries = fs::read_dir(root.join("_diagnostics"))
+            .unwrap()
+            .collect::<std::io::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        let operation =
+            OperationId::try_from(entries[0].file_name().into_string().unwrap()).unwrap();
+        let reader = JournalReader::open(&root, &operation).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+        let mut records = Vec::new();
+        reader.visit(|record| records.push(record)).unwrap();
+        assert!(records.iter().any(
+            |record| record.event_name == DiagnosticEvent::Queued && record.execution.is_some()
+        ));
+        assert!(
+            records
+                .iter()
+                .any(|record| record.event_name == DiagnosticEvent::Finished
+                    && record.execution.is_some())
+        );
+        let mut live = progress::LiveProgress::default();
+        live.apply(progress::Record {
+            version: 1,
+            elapsed_ms: 0,
+            event: ProgressEvent::Comparing {
+                suite_id: "alloy".into(),
+            },
+        });
+        assert_eq!(live.phase, "Comparing screenshots");
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+    }
 
     fn input() -> TestSuiteInput {
         TestSuiteInput {
