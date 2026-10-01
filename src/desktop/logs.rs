@@ -20,6 +20,76 @@ use super::runner::{RunCommand, RunRequest};
 
 pub const PAGE_RECORDS: usize = 500;
 
+pub fn export_complete(
+    output: &Path,
+    sources: &[CaptureLog],
+    query: &LogQuery,
+    destination: &Path,
+) -> anyhow::Result<()> {
+    use std::io::Write;
+    anyhow::ensure!(!sources.is_empty(), "No archive is available to export");
+    let mut seen = BTreeSet::new();
+    let mut readers = Vec::new();
+    for source in sources {
+        let reference = source
+            .archive
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Incomplete or unavailable logs cannot be exported"))?;
+        anyhow::ensure!(
+            inspect_archive(output, Some(&reference.operation_id), true) == ArchiveState::Complete,
+            "Incomplete or unavailable logs cannot be exported"
+        );
+        if seen.insert((
+            reference.operation_id.clone(),
+            reference.execution_id.clone(),
+        )) {
+            readers.push((
+                JournalReader::open(output, &reference.operation_id)?,
+                reference.execution_id.clone(),
+            ));
+        }
+    }
+    if let Ok(metadata) = std::fs::symlink_metadata(destination) {
+        anyhow::ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "Export destination must be a regular file"
+        );
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Export destination has no parent"))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    writeln!(temporary, "[Loaded from archive]")?;
+    for (reader, execution) in readers {
+        let mut written = Ok(());
+        reader.visit(|record| {
+            if written.is_err()
+                || !query.matches(&record)
+                || execution.as_ref().is_some_and(|expected| {
+                    record
+                        .execution
+                        .as_ref()
+                        .is_some_and(|actual| &actual.execution_id != expected)
+                })
+            {
+                return;
+            }
+            written = writeln!(
+                temporary,
+                "[{}ms #{}] {}",
+                record.elapsed_ms,
+                record.sequence,
+                format_record(&record)
+            );
+        })?;
+        written?;
+        reader.verified_index()?;
+    }
+    temporary.as_file().sync_all()?;
+    temporary.persist(destination)?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogQuery {
@@ -175,6 +245,25 @@ pub fn load_run_page(request: &RunRequest, jobs: &[Job], query: &LogQuery) -> Lo
 }
 
 pub fn load_page(output: &Path, sources: Vec<CaptureLog>, query: &LogQuery) -> LogPage {
+    load_page_inner(output, sources, query, false)
+}
+
+pub fn load_run_tail(request: &RunRequest, jobs: &[Job], query: &LogQuery) -> LogPage {
+    load_page_inner(
+        &request.options.output_directory(&request.root),
+        run_sources(request, jobs),
+        query,
+        true,
+    )
+}
+
+fn load_page_inner(
+    output: &Path,
+    sources: Vec<CaptureLog>,
+    query: &LogQuery,
+    tail: bool,
+) -> LogPage {
+    let mut latest = std::collections::VecDeque::new();
     let mut page = LogPage {
         state: ArchiveState::Complete,
         records: Vec::new(),
@@ -213,7 +302,12 @@ pub fn load_page(output: &Path, sources: Vec<CaptureLog>, query: &LogQuery) -> L
                     return;
                 }
                 if query.matches(&record) {
-                    if page.matched >= query.offset && page.records.len() < PAGE_RECORDS {
+                    if tail {
+                        if latest.len() == PAGE_RECORDS {
+                            latest.pop_front();
+                        }
+                        latest.push_back(record);
+                    } else if page.matched >= query.offset && page.records.len() < PAGE_RECORDS {
                         page.records.push(record);
                     }
                     page.matched += 1;
@@ -223,6 +317,10 @@ pub fn load_page(output: &Path, sources: Vec<CaptureLog>, query: &LogQuery) -> L
         if result.is_err() {
             page.state = worse(page.state, ArchiveState::LoadingError);
         }
+    }
+    if tail {
+        page.records = latest.into();
+        page.offset = page.matched.saturating_sub(page.records.len());
     }
     page
 }
@@ -300,6 +398,39 @@ pub(crate) mod tests {
             captures: vec!["page__FINAL".into()],
         }];
         (request, jobs, reference)
+    }
+
+    #[test]
+    fn run_log_filter_search_download() {
+        let root = tempfile::tempdir().unwrap();
+        let (request, jobs, reference) = fixture(root.path(), 10_001);
+        let output = request.options.output_directory(root.path());
+        let query = LogQuery {
+            severity: Some(Severity::Info),
+            stage: Some(Stage::Finish),
+            search: "success".into(),
+            offset: 0,
+        };
+        let page = load_run_page(&request, &jobs, &query);
+        assert_eq!(page.records.len(), 1);
+        let destination = root.path().join("filtered.txt");
+        export_complete(&output, &page.sources, &query, &destination).unwrap();
+        assert_eq!(std::fs::read_to_string(&destination).unwrap(), page.text());
+        export_complete(&output, &page.sources, &LogQuery::default(), &destination).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&destination)
+                .unwrap()
+                .lines()
+                .count(),
+            10_003
+        );
+        let index =
+            crate::diagnostics::journal::archive_directory(&output, &reference.operation_id)
+                .join("index.json");
+        std::fs::remove_file(index).unwrap();
+        let before = std::fs::read(&destination).unwrap();
+        assert!(export_complete(&output, &page.sources, &query, &destination).is_err());
+        assert_eq!(std::fs::read(destination).unwrap(), before);
     }
 
     #[test]

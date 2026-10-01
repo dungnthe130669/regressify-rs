@@ -1601,6 +1601,13 @@ the heading shows viewport dimensions and attempt when available. Multiple image
 from one execution share its history. Use Back to comparison to return to the
 same image and pass/fail result. Legacy and unavailable logs remain explicit.
 
+Activity and Results share severity and stage menus, text search, page copy, and
+Download. Filters affect the view only. Download streams all matching records,
+not just the visible page, and replaces the chosen file only after verifying a
+complete archive. A partial, missing, legacy, or unreadable log cannot be exported
+as complete. Active Activity logs offer Follow to keep the latest bounded page
+visible; turning it off holds the current page while the worker keeps recording.
+
 Results uses one left navigator with Test suites above Captures and one detail
 area on the right. Only the active suite's captures are shown. A suite without a
 report shows an empty capture list, never another suite's results. The report

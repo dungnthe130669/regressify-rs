@@ -2,6 +2,8 @@ use super::*;
 use crate::desktop::logs::{LogPage, LogQuery, PAGE_RECORDS};
 
 pub(super) struct CaptureLogView {
+    pub(super) controls: Entity<super::super::log_controls::LogControls>,
+    _subscription: Subscription,
     pub(super) active: bool,
     pub(super) reference: bool,
     pub(super) query: LogQuery,
@@ -14,7 +16,41 @@ pub(super) struct CaptureLogView {
 
 impl CaptureLogView {
     pub(super) fn new(window: &mut Window, cx: &mut Context<ResultsPanel>) -> Self {
+        let controls = cx.new(|cx| super::super::log_controls::LogControls::new(window, cx));
+        let subscription = cx.subscribe_in(
+            &controls,
+            window,
+            |this: &mut ResultsPanel, _, event, window, cx| {
+                use super::super::log_controls::LogControlEvent;
+                match event {
+                    LogControlEvent::Filter(query) => {
+                        this.capture_log.query = query.clone();
+                        this.load_capture_log(window, cx);
+                    }
+                    LogControlEvent::Follow(_) => {}
+                    LogControlEvent::Copy => cx.write_to_clipboard(ClipboardItem::new_string(
+                        this.capture_log.editor.read(cx).value().to_string(),
+                    )),
+                    LogControlEvent::Export(path) => {
+                        if let (Some(root), Some(page)) = (&this.root, &this.capture_log.page) {
+                            let (root, sources, query, path) = (
+                                root.clone(),
+                                page.sources.clone(),
+                                this.capture_log.query.clone(),
+                                path.clone(),
+                            );
+                            this.capture_log.controls.update(cx, |controls, cx| {
+                                controls.export(root, sources, query, path, cx)
+                            });
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
         Self {
+            controls,
+            _subscription: subscription,
             active: false,
             reference: false,
             query: Default::default(),
@@ -50,6 +86,9 @@ impl ResultsPanel {
         );
         self.capture_log.title = title;
         self.capture_log.loading = true;
+        self.capture_log
+            .controls
+            .update(cx, |controls, cx| controls.availability(None, false, cx));
         self.capture_log.page = None;
         self.capture_log.generation = self.capture_log.generation.wrapping_add(1);
         let generation = self.capture_log.generation;
@@ -81,6 +120,10 @@ impl ResultsPanel {
                     .update(cx, |state, cx| state.set_value(page.text(), window, cx));
                 this.capture_log.page = Some(page);
                 this.capture_log.loading = false;
+                let state = this.capture_log.page.as_ref().map(|page| page.state);
+                this.capture_log
+                    .controls
+                    .update(cx, |controls, cx| controls.availability(state, false, cx));
                 cx.notify();
             });
         })
@@ -192,6 +235,7 @@ impl ResultsPanel {
                             })),
                     ),
             )
+            .child(self.capture_log.controls.clone())
             .child(
                 div().flex_1().min_h_0().child(
                     CodeEditor::new(&self.capture_log.editor)
@@ -206,5 +250,12 @@ impl ResultsPanel {
     #[cfg(test)]
     pub(in crate::desktop::ui) fn capture_log_text(&self, cx: &App) -> String {
         self.capture_log.editor.read(cx).value().to_string()
+    }
+
+    #[cfg(test)]
+    pub(in crate::desktop::ui) fn log_controls_handle(
+        &self,
+    ) -> Entity<super::super::log_controls::LogControls> {
+        self.capture_log.controls.clone()
     }
 }

@@ -107,8 +107,7 @@ impl RunPanel {
     }
 
     pub(super) fn refresh_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.running()
-            && self.manager.request.is_some()
+        if self.manager.request.is_some()
             && (self.tab == 3
                 || self
                     .manager
@@ -122,6 +121,9 @@ impl RunPanel {
         self.archive_key = None;
         self.archive_page = None;
         self.archive_loading = false;
+        let running = self.running();
+        self.log_controls
+            .update(cx, |controls, cx| controls.availability(None, running, cx));
         let text = if let Some(scope) = &self.log_scope {
             let progress = &self.manager.progress;
             let mut text = String::new();
@@ -174,8 +176,12 @@ impl RunPanel {
             text
         };
         if text != self.log_text {
-            self.log
-                .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
+            self.log.update(cx, |state, cx| {
+                state.set_value(text.clone(), window, cx);
+                if self.log_follow && running {
+                    state.set_selected_range(text.len()..text.len(), cx);
+                }
+            });
             self.log_text = text;
         }
     }
@@ -185,7 +191,18 @@ impl RunPanel {
         &self.log_text
     }
 
+    #[cfg(test)]
+    pub(in crate::desktop::ui) fn log_controls_handle(
+        &self,
+    ) -> Entity<super::super::log_controls::LogControls> {
+        self.log_controls.clone()
+    }
+
     fn refresh_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let running = self.running();
+        if running && self.archive_loading {
+            return;
+        }
         let Some(request) = self.manager.request.clone() else {
             return;
         };
@@ -202,7 +219,10 @@ impl RunPanel {
             .map(|entry| entry.job.clone())
             .collect::<Vec<_>>();
         let query = self.log_query.clone();
-        let key = serde_json::to_string(&(&request, &jobs, &query)).unwrap_or_default();
+        let tail = running && self.log_follow;
+        let revision = if tail { self.manager.revision() } else { 0 };
+        let key = serde_json::to_string(&(&request, &jobs, &query, revision, running))
+            .unwrap_or_default();
         if self.archive_key.as_ref() == Some(&key) {
             return;
         }
@@ -211,14 +231,24 @@ impl RunPanel {
         let generation = self.archive_generation;
         self.archive_page = None;
         self.archive_loading = true;
-        self.log_text = "Loading archived log...".into();
-        self.log.update(cx, |state, cx| {
-            state.set_value(self.log_text.clone(), window, cx)
-        });
+        self.log_controls
+            .update(cx, |controls, cx| controls.availability(None, running, cx));
+        if !running || self.log_text.is_empty() {
+            self.log_text = "Loading archived log...".into();
+            self.log.update(cx, |state, cx| {
+                state.set_value(self.log_text.clone(), window, cx)
+            });
+        }
         cx.spawn_in(window, async move |view, cx| {
             let page = cx
                 .background_executor()
-                .spawn(async move { crate::desktop::logs::load_run_page(&request, &jobs, &query) })
+                .spawn(async move {
+                    if tail {
+                        crate::desktop::logs::load_run_tail(&request, &jobs, &query)
+                    } else {
+                        crate::desktop::logs::load_run_page(&request, &jobs, &query)
+                    }
+                })
                 .await;
             let _ = view.update_in(cx, |this, window, cx| {
                 if this.archive_key.as_ref() != Some(&key) || this.archive_generation != generation
@@ -227,8 +257,21 @@ impl RunPanel {
                 }
                 this.archive_loading = false;
                 this.log_text = page.text();
+                if running && page.state == crate::diagnostics::journal::ArchiveState::Partial {
+                    this.log_text = this.log_text.replace(
+                        "Partial / interrupted archive; some records may be missing",
+                        "Live archive; not yet finalized",
+                    );
+                }
                 this.log.update(cx, |state, cx| {
-                    state.set_value(this.log_text.clone(), window, cx)
+                    state.set_value(this.log_text.clone(), window, cx);
+                    if tail {
+                        state.set_selected_range(this.log_text.len()..this.log_text.len(), cx);
+                    }
+                });
+                this.log_query.offset = page.offset;
+                this.log_controls.update(cx, |controls, cx| {
+                    controls.availability(Some(page.state), running, cx)
                 });
                 this.archive_page = Some(page);
                 cx.notify();
@@ -353,6 +396,7 @@ impl RunPanel {
                         )
                     }),
             )
+            .child(self.log_controls.clone())
             .child(
                 div()
                     .id("run-log-editor")

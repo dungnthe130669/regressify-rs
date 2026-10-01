@@ -8,6 +8,144 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn run_log_filter_search_download(cx: &mut TestAppContext) {
+    use crate::progress::{Event, Record};
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let suite_id = cx.update(|cx| view.read(cx).session.suites[0].output_id.clone());
+    let (request, mut jobs, _) = crate::desktop::logs::tests::fixture(directory.path(), 10_001);
+    let output = request.options.output_directory(directory.path());
+    std::fs::rename(output.join("suite"), output.join(&suite_id)).unwrap();
+    jobs[0].suite_id = suite_id.clone();
+    let suite = output.join(&suite_id);
+    let image = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+    std::fs::write(suite.join("bitmaps_reference/page__FINAL.png"), &image).unwrap();
+    std::fs::write(suite.join("bitmaps_test/run/page__FINAL.png"), &image).unwrap();
+    crate::compare::report_gen::generate_comparison_report(&suite, &suite_id, "run", 0.0, 1)
+        .unwrap();
+    for results in [false, true] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                if results {
+                    this.main_tab = 2;
+                    let suites = this.session.suites.clone();
+                    this.results.update(cx, |panel, cx| {
+                        panel.set_suites(suites);
+                        panel.set_visible(true, cx);
+                        panel.show_run(output.clone(), "run".into(), window, cx);
+                    });
+                } else {
+                    this.main_tab = 1;
+                    this.runs.update(cx, |panel, cx| {
+                        panel.manager.request = Some(request.clone());
+                        for job in jobs.clone() {
+                            panel.manager.progress.apply(Record {
+                                version: 1,
+                                elapsed_ms: 0,
+                                event: Event::Queued { job },
+                            });
+                        }
+                        panel.manager.progress.clear_logs();
+                        panel.show_scenario_log("ui-test", "page", window, cx);
+                    });
+                }
+            });
+        })
+        .unwrap();
+        if results {
+            cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+                window.render_frame(cx);
+                window
+                    .try_find("results-show-capture-log")
+                    .is_some_and(|element| element.visible())
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("results-show-capture-log", cx)
+            })
+            .unwrap();
+        }
+        cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
+            let text = if results {
+                view.read(cx).results.read(cx).capture_log_text(cx)
+            } else {
+                view.read(cx).runs.read(cx).rendered_log().to_owned()
+            };
+            text.contains("Loaded from archive")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("log-stage-filter", cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("popup-menu").click(7_usize, cx)
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("log-level-filter", cx);
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("popup-menu").click(3_usize, cx)
+        })
+        .unwrap();
+        let destination = directory.path().join(if results {
+            "results-log.txt"
+        } else {
+            "activity-log.txt"
+        });
+        cx.update_window(handle.into(), |_, window, cx| {
+            let controls = if results {
+                view.read(cx).results.read(cx).log_controls_handle()
+            } else {
+                view.read(cx).runs.read(cx).log_controls_handle()
+            };
+            controls.update(cx, |controls, _| {
+                controls.export_destination(destination.clone())
+            });
+            let search = controls.read(cx).search.clone();
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+            window.input("success", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(15), |_, cx| {
+            let text = if results {
+                view.read(cx).results.read(cx).capture_log_text(cx)
+            } else {
+                view.read(cx).runs.read(cx).rendered_log().to_owned()
+            };
+            text.contains("#10001]") && !text.contains("#0]")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("log-download", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(15), |window, _| {
+            window
+                .try_find("log-export-status")
+                .is_some_and(|status| status.label() == Some("Log exported"))
+        })
+        .await;
+        cx.update(|cx| {
+            let text = if results {
+                view.read(cx).results.read(cx).capture_log_text(cx)
+            } else {
+                view.read(cx).runs.read(cx).rendered_log().to_owned()
+            };
+            assert_eq!(std::fs::read_to_string(&destination).unwrap(), text);
+        });
+    }
+}
+
+#[gpui_kit::test]
 async fn results_capture_log_view_selects_reference_and_test_without_changing_result(
     cx: &mut TestAppContext,
 ) {

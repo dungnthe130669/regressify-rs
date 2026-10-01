@@ -207,6 +207,9 @@ pub(super) struct RunPanel {
     archive_loading: bool,
     archive_generation: u64,
     log_query: crate::desktop::logs::LogQuery,
+    log_controls: Entity<super::log_controls::LogControls>,
+    _log_controls_subscription: Subscription,
+    log_follow: bool,
     suites: Vec<SuiteSummary>,
     selection: SuiteSelection,
     suite_selection_anchor: Option<String>,
@@ -229,6 +232,45 @@ impl RunPanel {
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a run setting"));
         let settings_subscription =
             cx.subscribe(&settings_search, |_, _, _: &InputEvent, cx| cx.notify());
+        let log_controls = cx.new(|cx| super::log_controls::LogControls::new(window, cx));
+        let log_subscription = cx.subscribe_in(
+            &log_controls,
+            window,
+            |this: &mut Self, _, event, window, cx| {
+                use super::log_controls::LogControlEvent;
+                match event {
+                    LogControlEvent::Filter(query) => {
+                        this.log_query = query.clone();
+                        this.archive_key = None;
+                        this.refresh_log(window, cx);
+                    }
+                    LogControlEvent::Follow(follow) => {
+                        this.log_follow = *follow;
+                        this.archive_key = None;
+                        this.refresh_log(window, cx);
+                    }
+                    LogControlEvent::Copy => {
+                        cx.write_to_clipboard(ClipboardItem::new_string(this.log_text.clone()))
+                    }
+                    LogControlEvent::Export(path) => {
+                        if let (Some(request), Some(page)) =
+                            (&this.manager.request, &this.archive_page)
+                        {
+                            let (output, sources, query, path) = (
+                                request.options.output_directory(&request.root),
+                                page.sources.clone(),
+                                this.log_query.clone(),
+                                path.clone(),
+                            );
+                            this.log_controls.update(cx, |controls, cx| {
+                                controls.export(output, sources, query, path, cx)
+                            });
+                        }
+                    }
+                }
+                cx.notify();
+            },
+        );
         let mut panel = Self {
             root: None,
             command: RunCommand::Test,
@@ -254,6 +296,9 @@ impl RunPanel {
             archive_loading: false,
             archive_generation: 0,
             log_query: Default::default(),
+            log_controls,
+            _log_controls_subscription: log_subscription,
+            log_follow: true,
             suites: Vec::new(),
             selection: SuiteSelection::default(),
             suite_selection_anchor: None,

@@ -38,6 +38,7 @@ mod files;
 mod git;
 mod landing;
 mod lists;
+mod log_controls;
 mod navigation;
 mod overview;
 mod reports;
