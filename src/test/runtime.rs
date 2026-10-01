@@ -606,66 +606,77 @@ impl Target {
     ) -> Result<()> {
         use crate::types::NavigationWait;
         let timeout = navigation_timeout(options);
-        tokio::time::timeout(timeout, async {
-            let (session, _) = self.runtime.context(&self.realm).await?;
-            let wait = options.wait_until.unwrap_or_default();
-            let mut events = self.runtime.client.subscribe();
-            if wait == NavigationWait::NetworkIdle {
-                self.runtime
+        crate::diagnostics::runtime::navigation(url, timeout.as_millis() as u64, async {
+            tokio::time::timeout(timeout, async {
+                let (session, _) = self.runtime.context(&self.realm).await?;
+                let wait = options.wait_until.unwrap_or_default();
+                let mut events = self.runtime.client.subscribe();
+                if wait == NavigationWait::NetworkIdle {
+                    self.runtime
+                        .client
+                        .call(Some(&session), "Network.enable", json!({}))
+                        .await?;
+                }
+                let mut parameters = json!({"url": url, "frameId": self.realm.frame});
+                if let Some(referer) = &options.referer {
+                    parameters["referrer"] = json!(referer);
+                }
+                let response = self
+                    .runtime
                     .client
-                    .call(Some(&session), "Network.enable", json!({}))
+                    .call_with_timeout(Some(&session), "Page.navigate", parameters, timeout)
                     .await?;
-            }
-            let mut parameters = json!({"url": url, "frameId": self.realm.frame});
-            if let Some(referer) = &options.referer {
-                parameters["referrer"] = json!(referer);
-            }
-            let response = self
-                .runtime
-                .client
-                .call_with_timeout(Some(&session), "Page.navigate", parameters, timeout)
-                .await?;
-            if let Some(error) = response["errorText"].as_str() {
-                bail!("Navigation failed: {}", error);
-            }
-            match wait {
-                NavigationWait::Commit => {}
-                NavigationWait::DomContentLoaded => self.wait_for_ready(timeout).await?,
-                NavigationWait::Load => self.wait_for_load(timeout).await?,
-                NavigationWait::NetworkIdle => {
-                    let mut pending = std::collections::HashSet::new();
-                    loop {
-                        let received =
-                            tokio::time::timeout(Duration::from_millis(500), events.recv()).await;
-                        match received {
-                            Err(_) if pending.is_empty() => break,
-                            Err(_) => continue,
-                            Ok(Err(_)) => bail!("Network event stream closed or overflowed"),
-                            Ok(Ok(event))
-                                if event.session_id.as_deref() == Some(session.as_str()) =>
-                            {
-                                if let Some(request) = event.params["requestId"].as_str() {
-                                    match event.method.as_str() {
-                                        "Network.requestWillBeSent" => {
-                                            pending.insert(request.to_string());
+                if let Some(error) = response["errorText"].as_str() {
+                    bail!("Navigation failed: {}", error);
+                }
+                match wait {
+                    NavigationWait::Commit => {}
+                    NavigationWait::DomContentLoaded => self.wait_for_ready(timeout).await?,
+                    NavigationWait::Load => self.wait_for_load(timeout).await?,
+                    NavigationWait::NetworkIdle => {
+                        let mut pending = std::collections::HashSet::new();
+                        let mut redirects = 0;
+                        loop {
+                            let received =
+                                tokio::time::timeout(Duration::from_millis(500), events.recv())
+                                    .await;
+                            match received {
+                                Err(_) if pending.is_empty() => break,
+                                Err(_) => continue,
+                                Ok(Err(_)) => bail!("Network event stream closed or overflowed"),
+                                Ok(Ok(event))
+                                    if event.session_id.as_deref() == Some(session.as_str()) =>
+                                {
+                                    record_navigation_response(
+                                        &event.method,
+                                        &event.params,
+                                        &self.realm.frame,
+                                        &mut redirects,
+                                    );
+                                    if let Some(request) = event.params["requestId"].as_str() {
+                                        match event.method.as_str() {
+                                            "Network.requestWillBeSent" => {
+                                                pending.insert(request.to_string());
+                                            }
+                                            "Network.loadingFinished" | "Network.loadingFailed" => {
+                                                pending.remove(request);
+                                            }
+                                            _ => {}
                                         }
-                                        "Network.loadingFinished" | "Network.loadingFailed" => {
-                                            pending.remove(request);
-                                        }
-                                        _ => {}
                                     }
                                 }
+                                _ => {}
                             }
-                            _ => {}
                         }
+                        self.wait_for_ready(timeout).await?;
                     }
-                    self.wait_for_ready(timeout).await?;
                 }
-            }
-            Ok::<_, anyhow::Error>(())
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+            .map_err(|_| anyhow!("Navigation exceeded {}ms", timeout.as_millis()))?
         })
         .await
-        .map_err(|_| anyhow!("Navigation exceeded {}ms", timeout.as_millis()))?
     }
 
     pub async fn url(&self) -> Result<Option<String>> {
@@ -783,8 +794,80 @@ fn navigation_timeout(options: &crate::types::GotoParameters) -> Duration {
     Duration::from_millis(options.timeout.filter(|value| *value > 0).unwrap_or(60_000))
 }
 
+fn record_navigation_response(
+    method: &str,
+    parameters: &serde_json::Value,
+    frame: &str,
+    redirects: &mut u64,
+) {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    if parameters["type"].as_str() != Some("Document")
+        || parameters["frameId"].as_str() != Some(frame)
+    {
+        return;
+    }
+    if method == "Network.requestWillBeSent" && parameters["redirectResponse"].is_object() {
+        *redirects += 1;
+        diagnostics::event(
+            Stage::Navigation,
+            DiagnosticEvent::Decision,
+            Severity::Debug,
+            [(Field::RedirectCount, FieldValue::Number(*redirects))],
+        );
+    }
+    if method == "Network.responseReceived"
+        && let Some(status) = parameters["response"]["status"].as_f64().filter(|status| {
+            status.is_finite() && (100.0..=599.0).contains(status) && status.fract() == 0.0
+        })
+    {
+        diagnostics::event(
+            Stage::Navigation,
+            DiagnosticEvent::Decision,
+            Severity::Debug,
+            [(Field::StatusCode, FieldValue::Number(status as u64))],
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn navigation_response_diagnostics_only_include_matching_document_numbers() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime as diagnostics};
+        let root = tempfile::tempdir().unwrap();
+        let operation =
+            diagnostics::Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        diagnostics::scope(Some(operation.context()), async {
+            let mut redirects = 0;
+            super::record_navigation_response("Network.requestWillBeSent", &serde_json::json!({"type":"Document", "frameId":"main", "redirectResponse":{"url":"https://user:private@example.test/?secret=value"}}), "main", &mut redirects);
+            for (kind, frame, status) in [("Document", "main", 200.0), ("Image", "main", 201.0), ("Document", "other", 202.0), ("Document", "main", 900.0)] {
+                super::record_navigation_response("Network.responseReceived", &serde_json::json!({"type":kind, "frameId":frame, "response":{"status":status, "url":"private-url", "headers":{"Authorization":"synthetic-secret"}}}), "main", &mut redirects);
+            }
+            assert_eq!(redirects, 1);
+        }).await;
+        let reference = operation.finish(Outcome::Success).await;
+        let mut navigation = Vec::new();
+        JournalReader::open(root.path(), &reference.operation_id)
+            .unwrap()
+            .visit(|record| {
+                assert!(!serde_json::to_string(&record).unwrap().contains("private"));
+                assert!(
+                    !serde_json::to_string(&record)
+                        .unwrap()
+                        .contains("synthetic-secret")
+                );
+                if record.stage == Stage::Navigation {
+                    navigation.push(record);
+                }
+            })
+            .unwrap();
+        assert_eq!(navigation.len(), 2);
+        assert_eq!(
+            navigation[1].fields.get(&Field::StatusCode),
+            Some(&FieldValue::Number(200))
+        );
+    }
+
     #[test]
     fn navigation_timeout_defaults_to_sixty_seconds_without_changing_element_waits() {
         for timeout in [None, Some(0)] {

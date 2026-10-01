@@ -368,7 +368,10 @@ pub enum ErrorCategory {
 impl ErrorCategory {
     fn classify(message: &str) -> Self {
         let message = message.to_ascii_lowercase();
-        if message.contains("timed out") || message.contains("timeout") {
+        if message.contains("timed out")
+            || message.contains("timeout")
+            || message.contains("navigation exceeded")
+        {
             Self::Timeout
         } else if message.contains("cancel") {
             Self::Cancelled

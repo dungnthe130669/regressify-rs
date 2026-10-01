@@ -331,15 +331,17 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Goto(GotoAction { goto, .. }) => {
             let target_url = apply_action_url_replacements(goto, url_replacements)?;
-            crate::progress::scenario_log!("{} Navigating to URL: {}", log_prefix, target_url);
-            actionability::cdp_with_timeout(
-                Duration::from_millis(ac.element_timeout_ms),
-                "navigating to action URL",
-                page.goto(target_url.as_str()),
-            )
-            .await?;
-            page.wait_for_ready(Duration::from_millis(config.element_timeout_ms))
+            crate::diagnostics::runtime::navigation(&target_url, ac.element_timeout_ms, async {
+                actionability::cdp_with_timeout(
+                    Duration::from_millis(ac.element_timeout_ms),
+                    "navigating to action URL",
+                    page.goto(target_url.as_str()),
+                )
                 .await?;
+                page.wait_for_ready(Duration::from_millis(config.element_timeout_ms))
+                    .await
+            })
+            .await?;
         }
 
         TestAction::Hide(HideAction { hide, .. }) => {
@@ -826,6 +828,52 @@ impl UrlMatcher {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn navigation_timeout_identifies_stage_and_cause_without_credentials() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
+        let root = tempfile::tempdir().unwrap();
+        let operation =
+            runtime::Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        let destination = "https://synthetic-user:synthetic-password@example.test/private-path?token=synthetic-query#private-fragment";
+        let result = runtime::scope(
+            Some(operation.context()),
+            runtime::navigation(
+                destination,
+                1,
+                crate::test::actionability::cdp_with_timeout(
+                    std::time::Duration::from_millis(1),
+                    "navigating to action URL",
+                    std::future::pending::<anyhow::Result<()>>(),
+                ),
+            ),
+        )
+        .await;
+        assert!(result.is_err());
+        let reference = operation.finish(Outcome::Failure).await;
+        let reader = JournalReader::open(root.path(), &reference.operation_id).unwrap();
+        let mut failure = false;
+        reader
+            .visit(|record| {
+                let encoded = serde_json::to_string(&record).unwrap();
+                for secret in [
+                    "synthetic-user",
+                    "synthetic-password",
+                    "synthetic-query",
+                    "private-path",
+                    "private-fragment",
+                ] {
+                    assert!(!encoded.contains(secret));
+                }
+                if record.stage == Stage::Navigation && record.outcome == Some(Outcome::Failure) {
+                    failure = true;
+                    assert_eq!(record.error_cause.unwrap().category, ErrorCategory::Timeout);
+                    assert!(record.fields.contains_key(&Field::Destination));
+                }
+            })
+            .unwrap();
+        assert!(failure);
+    }
+
     use super::*;
 
     #[tokio::test]

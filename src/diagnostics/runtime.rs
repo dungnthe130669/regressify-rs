@@ -298,6 +298,25 @@ pub fn result(stage: Stage, result: &anyhow::Result<()>, duration_ms: u64) {
     }
 }
 
+pub async fn navigation<Output>(
+    destination: &str,
+    timeout_ms: u64,
+    work: impl Future<Output = anyhow::Result<Output>>,
+) -> anyhow::Result<Output> {
+    stage(
+        Stage::Navigation,
+        [
+            (
+                Field::Destination,
+                FieldValue::Identity(SafeIdentity::fingerprint(destination)),
+            ),
+            (Field::TimeoutMs, FieldValue::Number(timeout_ms)),
+        ],
+        work,
+    )
+    .await
+}
+
 pub async fn stage<Output>(
     stage: Stage,
     fields: impl IntoIterator<Item = (Field, FieldValue)>,
