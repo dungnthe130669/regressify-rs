@@ -22,6 +22,7 @@ pub static DEBUG: OnceLock<bool> = OnceLock::new();
 pub static REQUIRED_LOGIN: OnceLock<bool> = OnceLock::new();
 pub static ASYNC_CAPTURE_LIMIT: OnceLock<usize> = OnceLock::new();
 pub static ASYNC_CAPTURE_RAMP_MS: OnceLock<u64> = OnceLock::new();
+pub static DISABLE_DIAGNOSTIC_ARCHIVE: OnceLock<bool> = OnceLock::new();
 pub static DIAGNOSTIC_OPTIONS: OnceLock<crate::diagnostics::journal::JournalOptions> =
     OnceLock::new();
 

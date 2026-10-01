@@ -614,6 +614,28 @@ impl JournalWriter {
         if let Some(output) = &self.output {
             output.get_ref().sync_all()?;
         }
+        self.persist_index(ArchiveState::Complete, outcome, Some(0))
+    }
+
+    pub fn finalize_partial(
+        &mut self,
+        outcome: Outcome,
+        missing_records: Option<u64>,
+    ) -> Result<ArchiveIndex> {
+        ensure!(!self.finalized, "Diagnostic archive already finalized");
+        self.flush()?;
+        if let Some(output) = &self.output {
+            output.get_ref().sync_all()?;
+        }
+        self.persist_index(ArchiveState::Partial, outcome, missing_records)
+    }
+
+    fn persist_index(
+        &mut self,
+        state: ArchiveState,
+        outcome: Outcome,
+        missing_records: Option<u64>,
+    ) -> Result<ArchiveIndex> {
         let root = self
             .directory
             .parent()
@@ -622,7 +644,8 @@ impl JournalWriter {
         let reader = JournalReader::open(root, &self.metadata.operation_id)?;
         let summary = reader.visit(|_| {})?;
         ensure!(
-            summary.records == self.records && !summary.interrupted_tail,
+            state != ArchiveState::Complete
+                || (summary.records == self.records && !summary.interrupted_tail),
             "Diagnostic journal is not fully written"
         );
         let segments = reader
@@ -634,12 +657,12 @@ impl JournalWriter {
         let index = ArchiveIndex {
             version: JOURNAL_VERSION,
             operation_id: self.metadata.operation_id.clone(),
-            state: ArchiveState::Complete,
-            records: self.records,
+            state,
+            records: summary.records,
             bytes: self.bytes,
             segments,
             outcome,
-            missing_records: Some(0),
+            missing_records,
         };
         let bytes = serde_json::to_vec(&index)?;
         ensure!(
@@ -766,7 +789,8 @@ impl JournalReader {
             terminal = Some((record.event_name, record.outcome));
         })?;
         ensure!(
-            summary.records == index.records && !summary.interrupted_tail,
+            summary.records == index.records
+                && (index.state == ArchiveState::Partial || !summary.interrupted_tail),
             "Diagnostic index record count mismatch"
         );
         if index.state == ArchiveState::Complete {

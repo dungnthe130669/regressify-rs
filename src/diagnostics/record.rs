@@ -545,6 +545,12 @@ impl DiagnosticRecordV1 {
             );
         }
         if let Some(error) = &self.error_cause {
+            ensure!(
+                error.local_detail.as_ref().is_none_or(
+                    |detail| detail.len() <= 8195 && !detail.chars().any(char::is_control)
+                ),
+                "Invalid provider diagnostic detail"
+            );
             ensure!(error.causes.len() <= 8, "Too many diagnostic error causes");
             ensure!(
                 self.operation_kind == OperationKind::Deployment || error.local_detail.is_none(),

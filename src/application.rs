@@ -57,6 +57,9 @@ pub async fn execute(cli: Cli) -> Result<()> {
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
+    common::DISABLE_DIAGNOSTIC_ARCHIVE.set_value(crate::diagnostics::health::archives_disabled(
+        |name| std::env::var(name).ok(),
+    )?)?;
     common::DIAGNOSTIC_OPTIONS.set_value(crate::diagnostics::journal::JournalOptions::resolve(
         cli.diagnostic_chunk_size_bytes,
         cli.diagnostic_disk_budget_bytes,

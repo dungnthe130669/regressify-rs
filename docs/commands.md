@@ -57,6 +57,21 @@ caller's record and filesystem buffers. This is an internal buffer measurement,
 not a whole-process resident-memory claim. Public reports must only include their
 explicitly referenced, sanitized capture assets, never a recursive journal copy.
 
+Set `REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE=true` (or `1`) before starting the
+process to disable durable archive creation as an operational fallback. `false`,
+`0`, or an unset variable keeps it enabled. Restart to change this setting.
+Disabling archives preserves bounded live activity and capture results, but
+reports must show the expected log as unavailable, not as an empty complete log.
+
+Each live journal has a 64-record nonblocking queue; serialized records must be
+smaller than 64 KiB. Queue exhaustion, write failures, and a five-second writer
+finalization deadline produce independent warnings and partial/unavailable logs,
+not capture failures or changed exit codes. Successfully written records remain
+readable. Known omitted-record counts are reported; interruption can leave that
+count unknown. Only verified complete logs are eligible for complete-log exports.
+The deadline stops waiting for a stalled writer; it cannot interrupt an OS file
+operation already in progress. Such writes remain owned by the worker process.
+
 ## Commands
 
 | Command    | Purpose                                                                                                                                                                                                                  |
