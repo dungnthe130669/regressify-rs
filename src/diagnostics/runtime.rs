@@ -128,7 +128,21 @@ impl Operation {
         execution: Option<ExecutionIdentity>,
         job: Option<usize>,
     ) -> Self {
-        let metadata = OperationMetadata::new(kind, run);
+        Self::start_identified(output, kind, run, execution, job, None)
+    }
+
+    pub fn start_identified(
+        output: &Path,
+        kind: OperationKind,
+        run: Option<CaptureRunId>,
+        execution: Option<ExecutionIdentity>,
+        job: Option<usize>,
+        operation_id: Option<OperationId>,
+    ) -> Self {
+        let mut metadata = OperationMetadata::new(kind, run);
+        if let Some(operation_id) = operation_id {
+            metadata.operation_id = operation_id;
+        }
         let warning_job = job;
         let owner = JournalOwner::start(
             output,
@@ -234,6 +248,25 @@ impl Operation {
 
 impl Drop for Operation {
     fn drop(&mut self) {
+        if self.owner.is_some() {
+            self.context.record(
+                Stage::CompletionCleanup,
+                DiagnosticEvent::Cancelled,
+                Severity::Warn,
+                [(Field::State, FieldValue::Kind(SafeValue::Unknown))],
+                Completion {
+                    outcome: Some(
+                        if self.context.identity.operation_kind == OperationKind::Deployment {
+                            Outcome::CancelledRemoteUnknown
+                        } else {
+                            Outcome::Cancelled
+                        },
+                    ),
+                    error: None,
+                    duration_ms: None,
+                },
+            );
+        }
         if let Some(routes) = ROUTES.get()
             && let Ok(mut routes) = routes.lock()
         {

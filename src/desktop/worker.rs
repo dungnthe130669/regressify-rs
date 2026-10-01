@@ -148,8 +148,9 @@ pub fn run_stdio() -> Result<()> {
                     Ok(())
                 };
                 if request.run.command == super::runner::RunCommand::Deploy {
-                    super::deployment::with_deployment_journal(
+                    super::deployment::with_deployment_journal_id(
                         &request.run.options.output_directory(&request.run.root),
+                        request.run.options.diagnostic_operation_id.clone(),
                         work,
                     )
                     .await

@@ -167,6 +167,7 @@ pub enum Outcome {
     Success,
     Failure,
     Cancelled,
+    CancelledRemoteUnknown,
     Mismatch,
     Unknown,
 }

@@ -79,6 +79,12 @@ log links and a comparison outcome; a later visual mismatch does not rewrite
 the successful capture's original execution outcome. Missing or corrupt log
 metadata is diagnostic availability information, not an image comparison error.
 
+Cancelling a deployment records local cancellation with remote state unknown
+unless publication was already confirmed. Stopping the local worker cannot undo
+an upload accepted by the provider. Check the provider's deployment history before
+retrying. The desktop uses the saved operation ID to mark an interrupted journal
+after reaping its worker, without attributing it to another concurrent run.
+
 ## Commands
 
 | Command    | Purpose                                                                                                                                                                                                                  |

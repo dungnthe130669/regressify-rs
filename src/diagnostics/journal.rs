@@ -372,12 +372,7 @@ impl JournalWriter {
             bytes.len() as u64 <= options.disk_budget_bytes,
             "Diagnostic metadata exceeds disk budget"
         );
-        let mut header = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(directory.join("operation.json"))?;
-        header.write_all(&bytes)?;
-        header.sync_all()?;
+        crate::helpers::write_file_atomically(&directory.join("operation.json"), &bytes)?;
         Ok(Self {
             directory,
             metadata,
@@ -749,6 +744,16 @@ impl JournalReader {
     }
 
     pub fn archive_state(&self) -> ArchiveState {
+        match fs::symlink_metadata(self.directory.join("cancellation.json")) {
+            Ok(_) => {
+                return self
+                    .visit(|_| {})
+                    .map(|_| ArchiveState::Partial)
+                    .unwrap_or(ArchiveState::LoadingError);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return ArchiveState::LoadingError,
+        }
         let path = self.directory.join("index.json");
         match fs::symlink_metadata(&path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => ArchiveState::Partial,
@@ -847,8 +852,83 @@ impl JournalReader {
                 receive(record);
             }
         }
+        let cancellation = self.directory.join("cancellation.json");
+        match fs::symlink_metadata(&cancellation) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {
+                let record: DiagnosticRecordV1 =
+                    read_json(&cancellation, &self.directory, MAX_RECORD_BYTES)?;
+                record.validate()?;
+                ensure!(
+                    record.operation_id == self.metadata.operation_id
+                        && record.operation_kind == OperationKind::Deployment
+                        && record.event_name == DiagnosticEvent::Cancelled
+                        && record.sequence == summary.records,
+                    "Invalid deployment cancellation record"
+                );
+                summary.records += 1;
+                receive(record);
+            }
+        }
         Ok(summary)
     }
+}
+
+#[cfg(feature = "desktop")]
+pub(crate) fn record_worker_cancellation(output: &Path, operation: &OperationId) -> Result<()> {
+    use super::record::{Field, FieldValue, SafeValue, Severity};
+    if super::health::archives_disabled(|name| std::env::var(name).ok()).unwrap_or(true) {
+        return Ok(());
+    }
+    let directory = archive_directory(output, operation);
+    if !directory.exists() {
+        let mut metadata = OperationMetadata::new(OperationKind::Deployment, None);
+        metadata.operation_id = operation.clone();
+        let writer = JournalWriter::create(output, metadata, JournalOptions::default())?;
+        drop(writer);
+    }
+    let reader = JournalReader::open(output, operation)?;
+    ensure!(
+        reader.metadata.operation_kind == OperationKind::Deployment,
+        "Only deployment workers have remote cancellation state"
+    );
+    let path = reader.directory.join("cancellation.json");
+    if fs::symlink_metadata(&path).is_ok() {
+        reader.visit(|_| {})?;
+        return Ok(());
+    }
+    let mut published = false;
+    let summary = reader.visit(|record| {
+        published |= record.event_name == DiagnosticEvent::Published;
+    })?;
+    let mut record = DiagnosticRecordV1::new(
+        operation.clone(),
+        OperationKind::Deployment,
+        Stage::CompletionCleanup,
+        DiagnosticEvent::Cancelled,
+    );
+    record.sequence = summary.records;
+    record.elapsed_ms = chrono::Utc::now()
+        .timestamp_millis()
+        .saturating_sub(reader.metadata.timestamp_utc_ms)
+        .max(0) as u64;
+    record.severity = Severity::Warn;
+    record.outcome = Some(if published {
+        Outcome::Cancelled
+    } else {
+        Outcome::CancelledRemoteUnknown
+    });
+    record.fields.insert(
+        Field::State,
+        FieldValue::Kind(if published {
+            SafeValue::Complete
+        } else {
+            SafeValue::Unknown
+        }),
+    );
+    record.validate()?;
+    crate::helpers::write_file_atomically(&path, &serde_json::to_vec(&record)?)
 }
 
 #[cfg(test)]

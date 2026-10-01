@@ -145,6 +145,9 @@ pub struct RunOptions {
     pub site_env: String,
     pub regressify_dir: String,
     pub run_id: String,
+    #[schemars(skip)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic_operation_id: Option<crate::diagnostics::record::OperationId>,
     pub proxy: String,
     pub async_capture_limit: u32,
     pub async_capture_ramp_ms: u64,
@@ -175,6 +178,7 @@ impl Default for RunOptions {
             site_env: String::new(),
             regressify_dir: String::new(),
             run_id: String::new(),
+            diagnostic_operation_id: None,
             proxy: String::new(),
             async_capture_limit: 5,
             async_capture_ramp_ms: 1000,
@@ -672,6 +676,17 @@ impl RunHandle {
         events_file: Option<tempfile::NamedTempFile>,
         scratch: Option<tempfile::TempDir>,
     ) -> Result<Self> {
+        let diagnostic_operation = payload
+            .as_deref()
+            .and_then(|bytes| serde_json::from_slice::<super::worker::WorkerRequest>(bytes).ok())
+            .and_then(|request| {
+                request
+                    .run
+                    .options
+                    .diagnostic_operation_id
+                    .clone()
+                    .map(|id| (request.run.options.output_directory(&request.run.root), id))
+            });
         let (sender, logs) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let (cancel, cancellation) = mpsc::sync_channel(1);
         let omitted = Arc::new(AtomicUsize::new(0));
@@ -749,6 +764,10 @@ impl RunHandle {
                                         .kill()
                                         .context("Cannot terminate the engine process group")?;
                                     child.wait()?;
+                                    if let Some((output, operation)) = &diagnostic_operation
+                                        && crate::diagnostics::journal::record_worker_cancellation(output, operation).is_err() {
+                                        crate::diagnostics::install::emergency_warning("Cancelled deployment log could not be finalized; remote state is unknown");
+                                    }
                                     break Ok(RunOutcome::Cancelled);
                                 }
                                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -1008,6 +1027,8 @@ impl RunManager {
         if request.command.captures() && request.options.run_id.is_empty() {
             request.options.run_id = format!("desktop-{}", uuid::Uuid::new_v4().simple());
         }
+        request.options.diagnostic_operation_id = (request.command == RunCommand::Deploy)
+            .then(crate::diagnostics::record::OperationId::new);
         let command = request.process()?;
         let events = tempfile::NamedTempFile::new()?;
         let scratch = (request.command == RunCommand::Deploy)

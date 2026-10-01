@@ -816,15 +816,31 @@ fn validate_static_configuration(root: &Path, provider: DeploymentProvider) -> R
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) async fn with_deployment_journal<Output>(
     output: &Path,
+    work: impl std::future::Future<Output = Result<Output>>,
+) -> Result<Output> {
+    with_deployment_journal_id(output, None, work).await
+}
+
+pub(super) async fn with_deployment_journal_id<Output>(
+    output: &Path,
+    id: Option<crate::diagnostics::record::OperationId>,
     work: impl std::future::Future<Output = Result<Output>>,
 ) -> Result<Output> {
     use crate::diagnostics::{
         record::{OperationKind, Outcome},
         runtime,
     };
-    let operation = runtime::Operation::start(output, OperationKind::Deployment, None, None, None);
+    let operation = runtime::Operation::start_identified(
+        output,
+        OperationKind::Deployment,
+        None,
+        None,
+        None,
+        id,
+    );
     let result = runtime::scope(Some(operation.context()), work).await;
     operation
         .finish(if result.is_ok() {
@@ -1139,6 +1155,78 @@ fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) 
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancellation_mid_upload_reports_unknown_remote_state() -> Result<()> {
+        use crate::diagnostics::{
+            journal::{
+                ArchiveState, JournalOptions, JournalReader, JournalWriter, OperationMetadata,
+                record_worker_cancellation,
+            },
+            record::*,
+        };
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let root = tempfile::tempdir()?;
+        let metadata = OperationMetadata::new(OperationKind::Deployment, None);
+        let mut writer =
+            JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())?;
+        writer.write(&DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Deployment,
+            Stage::ApiUploads,
+            DiagnosticEvent::Started,
+        ))?;
+        writer.flush()?;
+        drop(writer);
+        let (received, request_received) = tokio::sync::oneshot::channel();
+        let received = Mutex::new(Some(received));
+        let (release, gate) = std::sync::mpsc::channel();
+        let site = crate::test::browser_tests::Site::new(move |request| {
+            if let Some(received) = received.lock().unwrap().take() {
+                let _ = received.send(());
+            }
+            let _ = gate.recv();
+            let _ = request.respond(tiny_http::Response::empty(200));
+        })?;
+        let published = Arc::new(AtomicBool::new(false));
+        let confirmation = published.clone();
+        let url = site.origin.clone();
+        let task = tokio::spawn(async move {
+            reqwest::Client::new()
+                .put(url)
+                .body("synthetic upload")
+                .send()
+                .await?;
+            confirmation.store(true, Ordering::Release);
+            crate::progress::emit(crate::progress::Event::Deployed {
+                target: "fixture".into(),
+                url: Some("https://reports.example.test/".into()),
+            });
+            Ok::<_, anyhow::Error>(())
+        });
+        request_received.await?;
+        task.abort();
+        let cancelled = task.await;
+        release.send(())?;
+        drop(site);
+        assert!(cancelled.is_err_and(|error| error.is_cancelled()));
+        assert!(!published.load(Ordering::Acquire));
+        record_worker_cancellation(root.path(), &metadata.operation_id)?;
+        record_worker_cancellation(root.path(), &metadata.operation_id)?;
+        let reader = JournalReader::open(root.path(), &metadata.operation_id)?;
+        assert_eq!(reader.archive_state(), ArchiveState::Partial);
+        let mut outcomes = Vec::new();
+        reader.visit(|record| {
+            if record.event_name == DiagnosticEvent::Cancelled {
+                outcomes.push(record.outcome);
+            }
+        })?;
+        assert_eq!(outcomes, vec![Some(Outcome::CancelledRemoteUnknown)]);
+        Ok(())
+    }
+
     #[tokio::test]
     async fn staging_failure_identifies_stage_and_artifact() {
         use crate::diagnostics::{journal::JournalReader, record::*, runtime};
