@@ -1,5 +1,6 @@
-import { ArrowLeft, ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight, Image, List } from "lucide-react";
 import { Link, useLocation, useParams } from "react-router";
+import { CaptureLog } from "../components/CaptureLog";
 import { ComparisonViewer } from "../components/ComparisonViewer";
 import { IconButton, StatePanel, StatusBadge, useFilters } from "../components/ui";
 import { filterCaptures, imagePath, suiteLabel, suitePath } from "../data/report";
@@ -30,6 +31,8 @@ export default function ImagePage() {
   const next = sequence[sequenceIndex + 1];
   const backParams = new URLSearchParams(params);
   backParams.delete("mode");
+  for (const key of ["view", "logRole", "logLevel", "logStage", "logSearch", "logChunk"])
+    backParams.delete(key);
   const backSearch = backParams.size ? `?${backParams}` : "";
   return (
     <div className="page image-page">
@@ -76,15 +79,42 @@ export default function ImagePage() {
           )}
         </div>
       </header>
-      <ComparisonViewer
-        key={capture.id}
-        capture={capture}
-        suiteId={summary.id}
-        suiteName={suiteLabel(summary)}
-        runId={data.runId}
-        mode={params.get("mode")}
-        onMode={(mode) => set("mode", mode)}
-      />
+      <fieldset className="log-view-tabs segmented" aria-label="Capture review view">
+        <button
+          type="button"
+          aria-pressed={params.get("view") !== "log"}
+          onClick={() => set("view", "")}
+        >
+          <Image size={15} />
+          Comparison
+        </button>
+        <button
+          type="button"
+          aria-pressed={params.get("view") === "log"}
+          onClick={() => set("view", "log")}
+        >
+          <List size={15} />
+          Capture Log
+        </button>
+      </fieldset>
+      {params.get("view") === "log" ? (
+        <CaptureLog
+          key={`${capture.id}-${params.get("logRole")}`}
+          capture={capture}
+          params={params}
+          set={set}
+        />
+      ) : (
+        <ComparisonViewer
+          key={capture.id}
+          capture={capture}
+          suiteId={summary.id}
+          suiteName={suiteLabel(summary)}
+          runId={data.runId}
+          mode={params.get("mode")}
+          onMode={(mode) => set("mode", mode)}
+        />
+      )}
     </div>
   );
 }

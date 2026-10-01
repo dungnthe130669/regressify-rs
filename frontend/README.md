@@ -154,6 +154,14 @@ and versioned JSON chunk URLs. Missing fields identify pre-log reports. Log stat
 is independent of the capture's result and existing `error` field; the manifest
 version remains 2.
 
+Capture Log uses the existing image route with `?view=log&logRole=test` (or
+`reference`). `logLevel`, `logStage`, `logSearch`, and `logChunk` preserve view
+selection through refresh. Opening the log lazily fetches bounded, content-version
+verified JSON chunks; a four-chunk cache deduplicates requests and stays bounded.
+Messages render as text. Download verifies the full record sequence and exports
+all matching records, subject to an explicit 128 MiB browser export limit; it never
+offers a shortened file as complete. Non-complete logs disable export controls.
+
 Resource filenames are stable; cache versions appear only in `?v=...`.
 The public aggregate endpoint `/_snapshot/status.json` is deliberately
 unversioned, uses `Cache-Control: no-cache`, and permits anonymous cross-origin

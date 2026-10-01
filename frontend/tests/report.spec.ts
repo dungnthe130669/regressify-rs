@@ -1,21 +1,188 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import AxeBuilder from '@axe-core/playwright';
-import { expect, type Page, test } from '@playwright/test';
-import { PNG } from 'pngjs';
-import { getAssetVersion } from '../scripts/version-assets';
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import AxeBuilder from "@axe-core/playwright";
+import { expect, type Page, test } from "@playwright/test";
+import { PNG } from "pngjs";
+import { getAssetVersion } from "../scripts/version-assets";
+
+async function mockCaptureLogs(page: Page, state = "complete") {
+  const records = (operationId: string, message: string) => [
+    {
+      schemaVersion: 1,
+      operationId,
+      operationKind: "capture",
+      captureRunId: "run",
+      execution: null,
+      sequence: 0,
+      timestampUtcMs: 1790812800000,
+      elapsedMs: 12,
+      severity: "info",
+      stage: "navigation",
+      eventName: "decision",
+      message,
+      fields: {},
+      spanId: "22222222-2222-4222-8222-222222222222",
+      parentSpan: null,
+      durationMs: 12,
+      outcome: "success",
+      errorCause: null,
+    },
+  ];
+  const operation = [
+    "11111111-1111-4111-8111-111111111111",
+    "33333333-3333-4333-8333-333333333333",
+  ];
+  let requests = 0;
+  const logs = operation.map((operationId, index) => {
+    const bytes = JSON.stringify({
+      version: 1,
+      operationId,
+      records: records(
+        operationId,
+        `Capture ${index + 1} <script>private markup</script> ${"long-word-".repeat(50)}`,
+      ),
+    });
+    const path = `_snapshot/data/logs/${operationId}/chunk-000000.json?v=${getAssetVersion(bytes)}`;
+    return {
+      bytes,
+      path,
+      data: {
+        state,
+        operationId,
+        executionId: null,
+        chunks: ["complete", "partial"].includes(state) ? [path] : [],
+        records: 1,
+        missingRecords: state === "complete" ? 0 : null,
+        build: null,
+      },
+    };
+  });
+  await page.route("**/_snapshot/data/manifest.json?*", (route) =>
+    route.fulfill({
+      json: {
+        version: 2,
+        title: "Log fixture",
+        heading: "Log fixture",
+        subheading: "",
+        generatedAt: "2026-10-01T00:00:00Z",
+        suites: [
+          {
+            id: "log-suite",
+            total: 2,
+            passed: 1,
+            failed: 1,
+            errors: 0,
+            report: `_snapshot/data/suites/log-suite.json?v=${"a".repeat(20)}`,
+          },
+        ],
+      },
+    }),
+  );
+  await page.route("**/_snapshot/data/suites/log-suite.json?*", (route) =>
+    route.fulfill({
+      json: {
+        id: "log-suite",
+        runId: "run",
+        tests: logs.map((log, index) => ({
+          id: `capture-${index}.png`,
+          label: `Capture ${index + 1}`,
+          scenario: `Scenario ${index + 1}`,
+          selector: "document",
+          status: index === 0 ? "pass" : "fail",
+          threshold: 0.1,
+          mismatch: index,
+          error: null,
+          reference: null,
+          test: null,
+          diff: null,
+          referenceUrl: null,
+          testUrl: null,
+          dimensions: null,
+          logs: { reference: log.data, test: log.data },
+        })),
+      },
+    }),
+  );
+  await page.route("**/_snapshot/data/logs/**", (route) => {
+    requests += 1;
+    const log = logs.find((log) => route.request().url().endsWith(log.path));
+    return route.fulfill({
+      status: log ? 200 : 404,
+      contentType: "application/json",
+      body: log?.bytes || "{}",
+    });
+  });
+  return { requests: () => requests };
+}
+
+test("capture log is lazy, deep linked, refreshable and usable on desktop and mobile", async ({
+  page,
+}, info) => {
+  const fixture = await mockCaptureLogs(page);
+  await page.goto("/suites/log-suite/images/capture-0.png");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Capture 1");
+  expect(fixture.requests()).toBe(0);
+  await page.getByRole("button", { name: "Capture Log", exact: true }).click();
+  await expect(page.locator(".log-records")).toContainText(
+    "Capture 1 <script>private markup</script>",
+  );
+  expect(fixture.requests()).toBe(1);
+  await expect(page.locator("[data-log-state]")).toHaveAttribute("data-log-state", "complete");
+  expect(await page.locator(".log-records script").count()).toBe(0);
+  await page.getByRole("combobox", { name: "Log severity" }).selectOption("error");
+  await expect(page.locator(".log-records li")).toHaveCount(0);
+  await page.getByRole("combobox", { name: "Log severity" }).selectOption("info");
+  await page.getByRole("combobox", { name: "Log stage" }).selectOption("navigation");
+  await page.getByRole("searchbox", { name: "Search capture log" }).fill("Capture 1");
+  await expect(page.locator(".log-records li")).toHaveCount(1);
+  const downloading = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download filtered capture log" }).click();
+  const download = await downloading;
+  expect(download.suggestedFilename()).toContain("capture-0.png-test-log");
+  await page.goto("/suites/log-suite/images/capture-1.png?view=log&logRole=reference&status=fail");
+  await expect(page.locator(".log-records")).toContainText("Capture 2");
+  await expect(page.locator(".log-records")).not.toContainText("Capture 1");
+  await page.reload();
+  await expect(page.locator(".log-records")).toContainText("Capture 2");
+  await expect(page.getByRole("button", { name: "Reference", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.setViewportSize(
+    info.project.name === "mobile" ? { width: 375, height: 667 } : { width: 1280, height: 800 },
+  );
+  await expect(page.getByRole("searchbox", { name: "Search capture log" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await screenshot(page, info.project.name, "capture-log");
+});
+
+test("capture log archive states remain distinct and incomplete exports are disabled", async ({
+  page,
+}) => {
+  for (const state of ["partial", "missing", "legacyUnavailable", "loadingError"]) {
+    await page.unrouteAll({ behavior: "wait" });
+    await mockCaptureLogs(page, state);
+    await page.goto("/suites/log-suite/images/capture-0.png?view=log");
+    await expect(page.locator("[data-log-state]")).toHaveAttribute("data-log-state", state);
+    await expect(page.getByRole("button", { name: /Export unavailable:/ })).toBeDisabled();
+    await expect(page.getByText("Passed", { exact: true })).toBeVisible();
+  }
+});
 
 const overviewSuites = [
-  { displayName: 'All passing', passed: 12, failed: 0, errors: 0 },
-  { displayName: 'Mixed results', passed: 9, failed: 1, errors: 0 },
-  { displayName: 'Rounded pass rate', passed: 9999, failed: 1, errors: 0 },
-  { displayName: 'All failing', passed: 0, failed: 4, errors: 0 },
-  { displayName: 'Engine error', passed: 3, failed: 1, errors: 1 },
-  { displayName: 'Empty suite', passed: 0, failed: 0, errors: 0 },
+  { displayName: "All passing", passed: 12, failed: 0, errors: 0 },
+  { displayName: "Mixed results", passed: 9, failed: 1, errors: 0 },
+  { displayName: "Rounded pass rate", passed: 9999, failed: 1, errors: 0 },
+  { displayName: "All failing", passed: 0, failed: 4, errors: 0 },
+  { displayName: "Engine error", passed: 3, failed: 1, errors: 1 },
+  { displayName: "Empty suite", passed: 0, failed: 0, errors: 0 },
 ].map((suite) => ({ ...suite, total: suite.passed + suite.failed }));
 
 async function mockOverview(page: Page) {
-  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
     manifest.suites = overviewSuites.map((suite, index) => ({
@@ -25,12 +192,14 @@ async function mockOverview(page: Page) {
     }));
     await route.fulfill({ response, json: manifest });
   });
-  await page.goto('/');
+  await page.goto("/");
 }
 
 async function assertLayout(page: Page) {
-  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  expect(await page.evaluate(() => document.fonts.check('14px Roboto'))).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth))
+    .toBe(true);
+  expect(await page.evaluate(() => document.fonts.check("14px Roboto"))).toBe(true);
 }
 
 async function screenshot(page: Page, project: string, name: string) {
@@ -38,106 +207,145 @@ async function screenshot(page: Page, project: string, name: string) {
   await page.screenshot({
     path: resolve(import.meta.dirname, `../.fixtures/screenshots/${project}/${name}.png`),
     fullPage: true,
-    animations: 'disabled',
+    animations: "disabled",
   });
 }
 
-async function chooseTheme(page: Page, theme: 'Light' | 'Dark' | 'System') {
-  await page.getByRole('button', { name: 'Settings', exact: true }).click();
-  const popup = page.getByRole('dialog', { name: 'Settings', exact: true });
-  await popup.getByRole('button', { name: `${theme} theme`, exact: true }).click();
-  await popup.getByRole('button', { name: 'Close settings' }).click();
+async function chooseTheme(page: Page, theme: "Light" | "Dark" | "System") {
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const popup = page.getByRole("dialog", { name: "Settings", exact: true });
+  await popup.getByRole("button", { name: `${theme} theme`, exact: true }).click();
+  await popup.getByRole("button", { name: "Close settings" }).click();
 }
 
-test('report header keeps the configured heading and subheading above each page', async ({ page }) => {
-  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+test("report header keeps the configured heading and subheading above each page", async ({
+  page,
+}) => {
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
-    manifest.heading = 'Release <summary>';
-    manifest.subheading = '**Staging** / [Release notes](https://example.com/releases)';
+    manifest.heading = "Release <summary>";
+    manifest.subheading = "**Staging** / [Release notes](https://example.com/releases)";
     await route.fulfill({ response, json: manifest });
   });
-  await page.goto('/');
-  const header = page.locator('.app-header');
-  await expect(header.locator('.report-title')).toHaveText('Release <summary>');
-  await expect(header.locator('.report-subheading strong')).toHaveText('Staging');
-  await expect(header.getByRole('link', { name: 'Release notes' })).toHaveAttribute('href', 'https://example.com/releases');
-  await expect(header.getByRole('link', { name: 'Release notes' })).toHaveAttribute('rel', 'noopener noreferrer');
-  await expect(header.getByText('Snapshot', { exact: true })).toHaveCount(0);
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Snapshot Overview');
-  await expect(page.locator('#main .report-subheading')).toHaveCount(0);
+  await page.goto("/");
+  const header = page.locator(".app-header");
+  await expect(header.locator(".report-title")).toHaveText("Release <summary>");
+  await expect(header.locator(".report-subheading strong")).toHaveText("Staging");
+  await expect(header.getByRole("link", { name: "Release notes" })).toHaveAttribute(
+    "href",
+    "https://example.com/releases",
+  );
+  await expect(header.getByRole("link", { name: "Release notes" })).toHaveAttribute(
+    "rel",
+    "noopener noreferrer",
+  );
+  await expect(header.getByText("Snapshot", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Snapshot Overview");
+  await expect(page.locator("#main .report-subheading")).toHaveCount(0);
   await page.evaluate(() => document.fonts.ready);
-  expect(await header.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(64);
-  expect(await page.locator('.page-heading').evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(32);
-  expect(await page.locator('.overview-page').evaluate((element) => getComputedStyle(element).paddingTop)).toBe('16px');
-  const titleBottom = await header.locator('.report-title').evaluate((element) => element.getBoundingClientRect().bottom);
-  expect(await header.locator('.report-subheading').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(titleBottom);
-  await page.getByRole('link', { name: 'workspace-overview', exact: true }).click();
-  await expect(header.locator('.report-title')).toHaveText('Release <summary>');
-  await expect(header.locator('.report-subheading strong')).toHaveText('Staging');
-  await header.getByRole('link', { name: 'Regressify overview' }).click();
-  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Snapshot Overview');
+  expect(
+    await header.evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeLessThanOrEqual(64);
+  expect(
+    await page
+      .locator(".page-heading")
+      .evaluate((element) => element.getBoundingClientRect().height),
+  ).toBeLessThanOrEqual(32);
+  expect(
+    await page
+      .locator(".overview-page")
+      .evaluate((element) => getComputedStyle(element).paddingTop),
+  ).toBe("16px");
+  const titleBottom = await header
+    .locator(".report-title")
+    .evaluate((element) => element.getBoundingClientRect().bottom);
+  expect(
+    await header
+      .locator(".report-subheading")
+      .evaluate((element) => element.getBoundingClientRect().top),
+  ).toBeGreaterThanOrEqual(titleBottom);
+  await page.getByRole("link", { name: "workspace-overview", exact: true }).click();
+  await expect(header.locator(".report-title")).toHaveText("Release <summary>");
+  await expect(header.locator(".report-subheading strong")).toHaveText("Staging");
+  await header.getByRole("link", { name: "Regressify overview" }).click();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Snapshot Overview");
   await assertLayout(page);
 });
 
-test('settings popup contains theme choices and restores focus on dismissal', async ({ page }, info) => {
-  await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto('/');
-  const trigger = page.getByRole('button', { name: 'Settings', exact: true, includeHidden: true });
-  const popup = page.getByRole('dialog', { name: 'Settings', exact: true });
+test("settings popup contains theme choices and restores focus on dismissal", async ({
+  page,
+}, info) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
+  const trigger = page.getByRole("button", { name: "Settings", exact: true, includeHidden: true });
+  const popup = page.getByRole("dialog", { name: "Settings", exact: true });
   await expect(popup).toBeHidden();
-  await expect(page.getByRole('group', { name: 'Color theme' })).toBeHidden();
-  await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
-  await trigger.press('Enter');
-  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
-  await expect(popup.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
-  await expect(popup.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
-  await expect(popup.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
-  expect(await page.evaluate(() => localStorage.getItem('regressify-theme'))).toBeNull();
-  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(popup.getByRole('button', { name: 'Light theme' })).toBeFocused();
-  await page.keyboard.press('Shift+Tab');
-  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeFocused();
-  await popup.getByRole('button', { name: 'System theme' }).focus();
-  await page.keyboard.press('Tab');
-  expect(await popup.evaluate((element) => document.activeElement === document.body || element.contains(document.activeElement))).toBe(true);
+  await expect(page.getByRole("group", { name: "Color theme" })).toBeHidden();
+  await expect(trigger).toHaveAttribute("aria-haspopup", "dialog");
+  await trigger.press("Enter");
+  await expect(trigger).toHaveAttribute("aria-expanded", "true");
+  await expect(popup.getByRole("heading", { name: "Settings", exact: true })).toBeVisible();
+  await expect(popup.getByRole("heading", { name: "Appearance", exact: true })).toBeVisible();
+  await expect(popup.getByRole("button", { name: "System theme" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  expect(await page.evaluate(() => localStorage.getItem("regressify-theme"))).toBeNull();
+  await expect(popup.getByRole("button", { name: "Close settings" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(popup.getByRole("button", { name: "Light theme" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(popup.getByRole("button", { name: "Close settings" })).toBeFocused();
+  await popup.getByRole("button", { name: "System theme" }).focus();
+  await page.keyboard.press("Tab");
+  expect(
+    await popup.evaluate(
+      (element) =>
+        document.activeElement === document.body || element.contains(document.activeElement),
+    ),
+  ).toBe(true);
   await popup.click({ position: { x: 8, y: 8 } });
   await expect(popup).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await screenshot(page, info.project.name, 'settings-light');
-  await popup.getByRole('button', { name: 'Dark theme' }).click();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await screenshot(page, info.project.name, 'settings-dark');
-  await popup.getByRole('button', { name: 'Close settings' }).click();
+  await screenshot(page, info.project.name, "settings-light");
+  await popup.getByRole("button", { name: "Dark theme" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await screenshot(page, info.project.name, "settings-dark");
+  await popup.getByRole("button", { name: "Close settings" }).click();
   await expect(popup).toBeHidden();
   await expect(trigger).toBeFocused();
-  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(trigger).toHaveAttribute("aria-expanded", "false");
   await trigger.click();
-  await expect(popup.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
-  await popup.getByRole('button', { name: 'System theme' }).click();
-  await page.keyboard.press('Escape');
+  await expect(popup.getByRole("button", { name: "Dark theme" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await popup.getByRole("button", { name: "System theme" }).click();
+  await page.keyboard.press("Escape");
   await expect(popup).toBeHidden();
   await expect(trigger).toBeFocused();
-  await page.emulateMedia({ colorScheme: 'dark' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await page.emulateMedia({ colorScheme: 'light' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await trigger.click();
   await page.setViewportSize({ width: 320, height: 360 });
-  const content = popup.locator('.settings-content');
+  const content = popup.locator(".settings-content");
   await content.evaluate((element) => {
-    const section = document.createElement('section');
-    section.className = 'settings-section';
-    section.style.minHeight = '600px';
-    section.textContent = 'Additional settings';
+    const section = document.createElement("section");
+    section.className = "settings-section";
+    section.style.minHeight = "600px";
+    section.textContent = "Additional settings";
     element.append(section);
   });
-  expect(await content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  expect(await content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(
+    true,
+  );
   await content.evaluate((element) => element.scrollTo(0, element.scrollHeight));
-  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeVisible();
+  await expect(popup.getByRole("button", { name: "Close settings" })).toBeVisible();
   const bounds = await popup.boundingBox();
-  if (!bounds) throw new Error('Settings is not visible');
+  if (!bounds) throw new Error("Settings is not visible");
   expect(bounds.x).toBeGreaterThanOrEqual(0);
   expect(bounds.y).toBeGreaterThanOrEqual(0);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
@@ -147,360 +355,472 @@ test('settings popup contains theme choices and restores focus on dismissal', as
   await expect(trigger).toBeFocused();
 });
 
-for (const system of ['light', 'dark'] as const) {
-  for (const preference of ['light', 'dark', 'system', 'invalid', null, 'blocked'] as const) {
-    test(`theme is applied before the app bundle loads (${preference ?? 'unset'}, system ${system})`, async ({ page }) => {
+for (const system of ["light", "dark"] as const) {
+  for (const preference of ["light", "dark", "system", "invalid", null, "blocked"] as const) {
+    test(`theme is applied before the app bundle loads (${preference ?? "unset"}, system ${system})`, async ({
+      page,
+    }) => {
       const errors: string[] = [];
-      page.on('pageerror', (error) => errors.push(error.message));
+      page.on("pageerror", (error) => errors.push(error.message));
       await page.emulateMedia({ colorScheme: system });
       await page.addInitScript((saved) => {
-        if (saved === 'blocked') {
-          Object.defineProperty(window, 'localStorage', {
+        if (saved === "blocked") {
+          Object.defineProperty(window, "localStorage", {
             get() {
-              throw new DOMException('Storage is blocked', 'SecurityError');
+              throw new DOMException("Storage is blocked", "SecurityError");
             },
           });
         } else if (saved === null) {
-          localStorage.removeItem('regressify-theme');
+          localStorage.removeItem("regressify-theme");
         } else {
-          localStorage.setItem('regressify-theme', saved);
+          localStorage.setItem("regressify-theme", saved);
         }
       }, preference);
-      const selected = preference === 'light' || preference === 'dark' ? preference : 'system';
-      const resolved = selected === 'system' ? system : selected;
+      const selected = preference === "light" || preference === "dark" ? preference : "system";
+      const resolved = selected === "system" ? system : selected;
       const appBundle = /\/(?:src\/main\.tsx|_snapshot\/assets\/app\.js)(?:\?|$)/;
       await page.route(appBundle, (route) => route.abort());
-      await page.goto('/');
-      await expect(page.locator('#root')).toBeEmpty();
-      await expect(page.locator('html')).toHaveAttribute('data-theme', resolved);
-      await expect(page.locator('html')).toHaveCSS('color-scheme', resolved);
-      await expect(page.locator('html')).toHaveCSS('background-color', resolved === 'dark' ? 'rgb(21, 25, 25)' : 'rgb(247, 248, 248)');
+      await page.goto("/");
+      await expect(page.locator("#root")).toBeEmpty();
+      await expect(page.locator("html")).toHaveAttribute("data-theme", resolved);
+      await expect(page.locator("html")).toHaveCSS("color-scheme", resolved);
+      await expect(page.locator("html")).toHaveCSS(
+        "background-color",
+        resolved === "dark" ? "rgb(21, 25, 25)" : "rgb(247, 248, 248)",
+      );
       await page.unroute(appBundle);
       await page.reload();
-      await page.getByRole('button', { name: 'Settings', exact: true }).click();
-      await expect(page.getByRole('button', { name: `${selected} theme`, exact: false })).toHaveAttribute('aria-pressed', 'true');
-      await expect(page.locator('html')).toHaveAttribute('data-theme', resolved);
-      if (preference === 'blocked') {
-        const next = resolved === 'dark' ? 'light' : 'dark';
-        await page.getByRole('button', { name: `${next} theme`, exact: false }).click();
-        await expect(page.locator('html')).toHaveAttribute('data-theme', next);
+      await page.getByRole("button", { name: "Settings", exact: true }).click();
+      await expect(
+        page.getByRole("button", { name: `${selected} theme`, exact: false }),
+      ).toHaveAttribute("aria-pressed", "true");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", resolved);
+      if (preference === "blocked") {
+        const next = resolved === "dark" ? "light" : "dark";
+        await page.getByRole("button", { name: `${next} theme`, exact: false }).click();
+        await expect(page.locator("html")).toHaveAttribute("data-theme", next);
       } else {
-        expect(await page.evaluate(() => localStorage.getItem('regressify-theme'))).toBe(preference);
+        expect(await page.evaluate(() => localStorage.getItem("regressify-theme"))).toBe(
+          preference,
+        );
       }
       expect(errors).toEqual([]);
     });
   }
 }
 
-test('theme choices sync across tabs and only system mode follows OS changes', async ({ page, context }) => {
+test("theme choices sync across tabs and only system mode follows OS changes", async ({
+  page,
+  context,
+}) => {
   const other = await context.newPage();
-  await page.emulateMedia({ colorScheme: 'light' });
-  await other.emulateMedia({ colorScheme: 'dark' });
-  await page.goto('/');
-  await other.goto('/');
-  await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(other.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-  await chooseTheme(page, 'Dark');
-  await expect(other.getByRole('button', { name: 'Dark theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-  await other.emulateMedia({ colorScheme: 'light' });
-  await expect(other.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await chooseTheme(other, 'Light');
-  await expect(page.getByRole('button', { name: 'Light theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-  await page.emulateMedia({ colorScheme: 'dark' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await chooseTheme(other, 'System');
-  await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(other.locator('html')).toHaveAttribute('data-theme', 'light');
-  await page.emulateMedia({ colorScheme: 'light' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.emulateMedia({ colorScheme: "light" });
+  await other.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/");
+  await other.goto("/");
+  await expect(
+    page.getByRole("button", { name: "System theme", includeHidden: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    other.getByRole("button", { name: "System theme", includeHidden: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await chooseTheme(page, "Dark");
+  await expect(
+    other.getByRole("button", { name: "Dark theme", includeHidden: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await other.emulateMedia({ colorScheme: "light" });
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "dark");
+  await chooseTheme(other, "Light");
+  await expect(
+    page.getByRole("button", { name: "Light theme", includeHidden: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await chooseTheme(other, "System");
+  await expect(
+    page.getByRole("button", { name: "System theme", includeHidden: true }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
 });
 
-test('theme storage resets restore system mode without being overwritten', async ({ page, context }) => {
-  await page.emulateMedia({ colorScheme: 'light' });
-  await page.goto('/');
+test("theme storage resets restore system mode without being overwritten", async ({
+  page,
+  context,
+}) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/");
   const other = await context.newPage();
-  await other.goto('/');
-  for (const reset of ['invalid', 'remove', 'clear'] as const) {
-    await chooseTheme(page, 'Dark');
-    await expect(other.getByRole('button', { name: 'Dark theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
+  await other.goto("/");
+  for (const reset of ["invalid", "remove", "clear"] as const) {
+    await chooseTheme(page, "Dark");
+    await expect(
+      other.getByRole("button", { name: "Dark theme", includeHidden: true }),
+    ).toHaveAttribute("aria-pressed", "true");
     await other.evaluate((mode) => {
-      if (mode === 'clear') localStorage.clear();
-      else if (mode === 'remove') localStorage.removeItem('regressify-theme');
-      else localStorage.setItem('regressify-theme', 'invalid');
+      if (mode === "clear") localStorage.clear();
+      else if (mode === "remove") localStorage.removeItem("regressify-theme");
+      else localStorage.setItem("regressify-theme", "invalid");
     }, reset);
-    await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
-    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-    expect(await page.evaluate(() => localStorage.getItem('regressify-theme'))).toBe(reset === 'invalid' ? 'invalid' : null);
+    await expect(
+      page.getByRole("button", { name: "System theme", includeHidden: true }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    expect(await page.evaluate(() => localStorage.getItem("regressify-theme"))).toBe(
+      reset === "invalid" ? "invalid" : null,
+    );
   }
 });
 
-test('overview is responsive, accessible, sortable, and theme-aware', async ({ page }, info) => {
+test("overview is responsive, accessible, sortable, and theme-aware", async ({ page }, info) => {
   const errors: string[] = [];
-  page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto('/index.html');
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/index.html");
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
-  await expect(page.locator('.app-header .report-title')).toHaveText('A clear view of every change.');
-  await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
-  await expect(page.locator('.metrics > div > span')).toHaveText(['TOTAL TESTS', 'PASSED', 'FAILED', 'PASS RATE']);
-  await expect(page.locator('.metrics svg')).toHaveCount(0);
-  await expect(page.getByRole('columnheader')).toHaveText(['Test suite', 'Total tests', 'Passed', 'Failed', 'Pass rate']);
-  await page.getByRole('columnheader', { name: 'Test suite', exact: true }).getByRole('button').click();
-  await expect(page.locator('.results-table th').first()).toHaveAttribute('aria-sort', 'descending');
-  await screenshot(page, info.project.name, 'overview-light');
+  await expect(page.getByRole("heading", { name: "Snapshot Overview", exact: true })).toBeVisible();
+  await expect(page.locator(".app-header .report-title")).toHaveText(
+    "A clear view of every change.",
+  );
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
+  await expect(page.locator(".metrics > div > span")).toHaveText([
+    "TOTAL TESTS",
+    "PASSED",
+    "FAILED",
+    "PASS RATE",
+  ]);
+  await expect(page.locator(".metrics svg")).toHaveCount(0);
+  await expect(page.getByRole("columnheader")).toHaveText([
+    "Test suite",
+    "Total tests",
+    "Passed",
+    "Failed",
+    "Pass rate",
+  ]);
+  await page
+    .getByRole("columnheader", { name: "Test suite", exact: true })
+    .getByRole("button")
+    .click();
+  await expect(page.locator(".results-table th").first()).toHaveAttribute(
+    "aria-sort",
+    "descending",
+  );
+  await screenshot(page, info.project.name, "overview-light");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await chooseTheme(page, 'Dark');
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await screenshot(page, info.project.name, 'overview-dark');
+  await chooseTheme(page, "Dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await screenshot(page, info.project.name, "overview-dark");
   await page.reload();
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await chooseTheme(page, 'System');
-  await page.emulateMedia({ colorScheme: 'light' });
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await chooseTheme(page, "System");
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   expect(errors).toEqual([]);
 });
 
-test('pass-rate bars distinguish failing suites in light and dark themes', async ({ page }, info) => {
+test("pass-rate bars distinguish failing suites in light and dark themes", async ({
+  page,
+}, info) => {
   await mockOverview(page);
-  await expect(page.locator('.metrics strong')).toHaveText(['10030', '10023', '7', '99.9%']);
-  for (const theme of ['Light', 'Dark'] as const) {
+  await expect(page.locator(".metrics strong")).toHaveText(["10030", "10023", "7", "99.9%"]);
+  for (const theme of ["Light", "Dark"] as const) {
     await chooseTheme(page, theme);
-    const neutralColor = await page.locator('.section-title .muted').evaluate((element) => getComputedStyle(element).color);
+    const neutralColor = await page
+      .locator(".section-title .muted")
+      .evaluate((element) => getComputedStyle(element).color);
     for (const suite of overviewSuites) {
-      const row = page.locator('.results-table tbody tr').filter({
-        has: page.getByRole('link', { name: suite.displayName, exact: true }),
+      const row = page.locator(".results-table tbody tr").filter({
+        has: page.getByRole("link", { name: suite.displayName, exact: true }),
       });
-      await expect(row.locator('td').nth(1)).toHaveText(String(suite.total));
-      await expect(row.locator('td').nth(2)).toHaveText(String(suite.passed));
-      await expect(row.locator('td').nth(3)).toHaveText(String(suite.failed));
+      await expect(row.locator("td").nth(1)).toHaveText(String(suite.total));
+      await expect(row.locator("td").nth(2)).toHaveText(String(suite.passed));
+      await expect(row.locator("td").nth(3)).toHaveText(String(suite.failed));
       const fullPass = suite.total > 0 && suite.failed === 0;
-      await expect(row.locator('.result-count.pass')).toHaveCount(fullPass ? 1 : 0);
-      await expect(row.locator('.result-count.fail')).toHaveCount(suite.failed ? 1 : 0);
-      const progress = row.locator('progress');
-      const statusColor = await row.locator('.status-dot').evaluate((element) => getComputedStyle(element).backgroundColor);
-      await expect(row.locator('.result-count').first()).toHaveCSS('color', fullPass ? statusColor : neutralColor);
-      await expect(row.locator('.result-count').last()).toHaveCSS('color', suite.failed ? statusColor : neutralColor);
-      await expect(progress).toHaveAttribute('value', String(suite.passed));
-      await expect(progress).toHaveAttribute('max', String(suite.total || 1));
+      await expect(row.locator(".result-count.pass")).toHaveCount(fullPass ? 1 : 0);
+      await expect(row.locator(".result-count.fail")).toHaveCount(suite.failed ? 1 : 0);
+      const progress = row.locator("progress");
+      const statusColor = await row
+        .locator(".status-dot")
+        .evaluate((element) => getComputedStyle(element).backgroundColor);
+      await expect(row.locator(".result-count").first()).toHaveCSS(
+        "color",
+        fullPass ? statusColor : neutralColor,
+      );
+      await expect(row.locator(".result-count").last()).toHaveCSS(
+        "color",
+        suite.failed ? statusColor : neutralColor,
+      );
+      await expect(progress).toHaveAttribute("value", String(suite.passed));
+      await expect(progress).toHaveAttribute("max", String(suite.total || 1));
       const image = PNG.sync.read(await progress.screenshot());
       const sampleWidth = suite.passed ? (image.width * suite.passed) / suite.total : image.width;
       const offset = (Math.floor(image.height / 2) * image.width + Math.floor(sampleWidth / 2)) * 4;
-      const color = [...image.data.subarray(offset, offset + 3)].join(', ');
+      const color = [...image.data.subarray(offset, offset + 3)].join(", ");
       const expectedColor = suite.passed
         ? suite.failed
           ? neutralColor
           : statusColor
         : await row
-            .locator('td')
+            .locator("td")
             .first()
             .evaluate((element) => getComputedStyle(element).borderBottomColor);
       expect(`rgb(${color})`, `${suite.displayName} bar in ${theme} theme`).toBe(expectedColor);
     }
-    await page.locator('.results-table-wrap').evaluate((element) => element.scrollTo(0, 0));
+    await page.locator(".results-table-wrap").evaluate((element) => element.scrollTo(0, 0));
     await screenshot(page, info.project.name, `pass-rates-${theme.toLowerCase()}`);
   }
 });
 
-test('overview sorts every column in both directions and preserves filters', async ({ page }) => {
+test("overview sorts every column in both directions and preserves filters", async ({ page }) => {
   await mockOverview(page);
-  const links = page.locator('.results-table .suite-name');
+  const links = page.locator(".results-table .suite-name");
   for (const { key, label } of [
-    { key: 'name', label: 'Test suite' },
-    { key: 'total', label: 'Total tests' },
-    { key: 'passed', label: 'Passed' },
-    { key: 'failed', label: 'Failed' },
-    { key: 'rate', label: 'Pass rate' },
+    { key: "name", label: "Test suite" },
+    { key: "total", label: "Total tests" },
+    { key: "passed", label: "Passed" },
+    { key: "failed", label: "Failed" },
+    { key: "rate", label: "Pass rate" },
   ] as const) {
-    const header = page.getByRole('columnheader', { name: label, exact: true });
-    for (const direction of ['ascending', 'descending'] as const) {
-      if (key !== 'name' || direction !== 'ascending') await header.getByRole('button').click();
-      await expect(header).toHaveAttribute('aria-sort', direction);
+    const header = page.getByRole("columnheader", { name: label, exact: true });
+    for (const direction of ["ascending", "descending"] as const) {
+      if (key !== "name" || direction !== "ascending") await header.getByRole("button").click();
+      await expect(header).toHaveAttribute("aria-sort", direction);
       await expect(page.locator('.results-table th:not([aria-sort="none"])')).toHaveCount(1);
       const expected = [...overviewSuites].sort((first, second) => {
-        const order = key === 'name' ? first.displayName.localeCompare(second.displayName) : key === 'rate' ? first.passed / (first.total || 1) - second.passed / (second.total || 1) : first[key] - second[key];
-        return direction === 'ascending' ? order : -order;
+        const order =
+          key === "name"
+            ? first.displayName.localeCompare(second.displayName)
+            : key === "rate"
+              ? first.passed / (first.total || 1) - second.passed / (second.total || 1)
+              : first[key] - second[key];
+        return direction === "ascending" ? order : -order;
       });
       await expect(links).toHaveText(expected.map((suite) => suite.displayName));
     }
   }
-  await page.getByRole('searchbox', { name: 'Search suites' }).fill('e');
+  await page.getByRole("searchbox", { name: "Search suites" }).fill("e");
   await page
-    .getByRole('group', { name: 'Filter results' })
-    .getByRole('button', { name: /^Failed/ })
+    .getByRole("group", { name: "Filter results" })
+    .getByRole("button", { name: /^Failed/ })
     .click();
-  const passedHeader = page.getByRole('columnheader', { name: 'Passed', exact: true });
-  await passedHeader.getByRole('button').click();
-  await expect(passedHeader).toHaveAttribute('aria-sort', 'ascending');
-  await expect(links).toHaveText(['Engine error', 'Mixed results', 'Rounded pass rate']);
-  await passedHeader.getByRole('button').press('Enter');
-  await expect(passedHeader).toHaveAttribute('aria-sort', 'descending');
+  const passedHeader = page.getByRole("columnheader", { name: "Passed", exact: true });
+  await passedHeader.getByRole("button").click();
+  await expect(passedHeader).toHaveAttribute("aria-sort", "ascending");
+  await expect(links).toHaveText(["Engine error", "Mixed results", "Rounded pass rate"]);
+  await passedHeader.getByRole("button").press("Enter");
+  await expect(passedHeader).toHaveAttribute("aria-sort", "descending");
   await page.reload();
-  await expect(links).toHaveText(['Rounded pass rate', 'Mixed results', 'Engine error']);
+  await expect(links).toHaveText(["Rounded pass rate", "Mixed results", "Engine error"]);
   const params = new URL(page.url()).searchParams;
-  expect(params.get('q')).toBe('e');
-  expect(params.get('status')).toBe('fail');
-  expect(params.get('sort')).toBe('passed');
-  expect(params.get('direction')).toBe('desc');
-  await expect(page.locator('.metrics strong')).toHaveText(['10030', '10023', '7', '99.9%']);
-  await passedHeader.getByRole('button').press('Enter');
-  await expect(passedHeader).toHaveAttribute('aria-sort', 'ascending');
-  await expect(links).toHaveText(['Engine error', 'Mixed results', 'Rounded pass rate']);
+  expect(params.get("q")).toBe("e");
+  expect(params.get("status")).toBe("fail");
+  expect(params.get("sort")).toBe("passed");
+  expect(params.get("direction")).toBe("desc");
+  await expect(page.locator(".metrics strong")).toHaveText(["10030", "10023", "7", "99.9%"]);
+  await passedHeader.getByRole("button").press("Enter");
+  await expect(passedHeader).toHaveAttribute("aria-sort", "ascending");
+  await expect(links).toHaveText(["Engine error", "Mixed results", "Rounded pass rate"]);
   await assertLayout(page);
 });
 
-test('footer stays at the bottom on short and empty pages', async ({ page }, info) => {
+test("footer stays at the bottom on short and empty pages", async ({ page }, info) => {
   const viewport = page.viewportSize();
-  if (!viewport) throw new Error('The viewport is not configured');
+  if (!viewport) throw new Error("The viewport is not configured");
   await page.setViewportSize({ ...viewport, height: 1200 });
   for (const { path, name, content } of [
-    { path: '/', name: 'overview', content: '.results-table tbody tr' },
-    { path: '/suites/workspace-overview', name: 'suite', content: '.capture-card' },
-    { path: '/suites/workspace-overview/not-found', name: 'not-found', content: null },
-    { path: '/suites/not-a-suite', name: 'suite-not-found', content: null },
+    { path: "/", name: "overview", content: ".results-table tbody tr" },
+    { path: "/suites/workspace-overview", name: "suite", content: ".capture-card" },
+    { path: "/suites/workspace-overview/not-found", name: "not-found", content: null },
+    { path: "/suites/not-a-suite", name: "suite-not-found", content: null },
   ]) {
     await page.goto(path);
     if (content) {
       await expect(page.locator(content).first()).toBeVisible();
-      await page.locator('#main').getByRole('searchbox').fill('footer-empty-results');
+      await page.locator("#main").getByRole("searchbox").fill("footer-empty-results");
       await expect(page.locator(content)).toHaveCount(0);
     } else {
-      await expect(page.locator('#main .state-panel')).toBeVisible();
+      await expect(page.locator("#main .state-panel")).toBeVisible();
     }
     await page.evaluate(() => document.fonts.ready);
-    const footer = page.getByRole('contentinfo');
+    const footer = page.getByRole("contentinfo");
     await expect(footer).toBeVisible();
-    await expect.poll(() => footer.evaluate((element) => Math.abs(element.getBoundingClientRect().bottom - window.innerHeight))).toBeLessThanOrEqual(1);
-    const contentBottom = await page.locator('#main').evaluate((element) => element.getBoundingClientRect().bottom);
-    expect(await footer.evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(contentBottom - 1);
+    await expect
+      .poll(() =>
+        footer.evaluate((element) =>
+          Math.abs(element.getBoundingClientRect().bottom - window.innerHeight),
+        ),
+      )
+      .toBeLessThanOrEqual(1);
+    const contentBottom = await page
+      .locator("#main")
+      .evaluate((element) => element.getBoundingClientRect().bottom);
+    expect(
+      await footer.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(contentBottom - 1);
     await screenshot(page, info.project.name, `footer-${name}`);
   }
 });
 
-test('footer follows long content in document and review scrolling', async ({ page }) => {
+test("footer follows long content in document and review scrolling", async ({ page }) => {
   const viewport = page.viewportSize();
-  if (!viewport) throw new Error('The viewport is not configured');
+  if (!viewport) throw new Error("The viewport is not configured");
   await page.setViewportSize({ ...viewport, height: 480 });
   for (const { path, content } of [
-    { path: '/', content: '.results-table tbody tr' },
-    { path: '/suites/workspace-overview', content: '.capture-card' },
+    { path: "/", content: ".results-table tbody tr" },
+    { path: "/suites/workspace-overview", content: ".capture-card" },
   ]) {
     await page.goto(path);
     await expect(page.locator(content).first()).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
-    const footer = page.getByRole('contentinfo');
-    await expect.poll(() => footer.evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(480);
+    const footer = page.getByRole("contentinfo");
+    await expect
+      .poll(() => footer.evaluate((element) => element.getBoundingClientRect().top))
+      .toBeGreaterThanOrEqual(480);
     await footer.scrollIntoViewIfNeeded();
-    await expect.poll(() => footer.evaluate((element) => element.getBoundingClientRect().bottom)).toBeLessThanOrEqual(481);
-    const contentBottom = await page.locator('#main').evaluate((element) => element.getBoundingClientRect().bottom);
-    expect(await footer.evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(contentBottom - 1);
-    if (path !== '/') expect(await page.evaluate(() => window.scrollY)).toBe(0);
+    await expect
+      .poll(() => footer.evaluate((element) => element.getBoundingClientRect().bottom))
+      .toBeLessThanOrEqual(481);
+    const contentBottom = await page
+      .locator("#main")
+      .evaluate((element) => element.getBoundingClientRect().bottom);
+    expect(
+      await footer.evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(contentBottom - 1);
+    if (path !== "/") expect(await page.evaluate(() => window.scrollY)).toBe(0);
   }
 });
 
-test('logo and favicon use the shared desktop artwork', async ({ page }) => {
-  await page.goto('/');
-  const logo = page.locator('.brand img');
+test("logo and favicon use the shared desktop artwork", async ({ page }) => {
+  await page.goto("/");
+  const logo = page.locator(".brand img");
   await expect(logo).toBeVisible();
-  const source = await logo.getAttribute('src');
-  if (!source) throw new Error('The application logo is missing');
-  const artwork = readFileSync(resolve(import.meta.dirname, '../../assets/icon.svg'), 'utf8');
-  expect(new URL(source, page.url()).searchParams.get('v')).toBe(getAssetVersion(artwork));
-  await expect(page.locator('head link[rel="icon"]')).toHaveAttribute('href', source);
+  const source = await logo.getAttribute("src");
+  if (!source) throw new Error("The application logo is missing");
+  const artwork = readFileSync(resolve(import.meta.dirname, "../../assets/icon.svg"), "utf8");
+  expect(new URL(source, page.url()).searchParams.get("v")).toBe(getAssetVersion(artwork));
+  await expect(page.locator('head link[rel="icon"]')).toHaveAttribute("href", source);
   const response = await page.request.get(source);
   expect(response.ok()).toBe(true);
   expect(await response.text()).toBe(artwork);
-  await expect.poll(() => logo.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
+  await expect
+    .poll(() => logo.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBeGreaterThan(0);
 });
 
-test('page titles follow suite navigation, deep links, and the overview', async ({ page, isMobile }) => {
-  await page.goto('/');
-  await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
+test("page titles follow suite navigation, deep links, and the overview", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
   const reportTitle = await page.title();
-  await page.locator('.suite-name').filter({ hasText: 'workspace-overview' }).click();
+  await page.locator(".suite-name").filter({ hasText: "workspace-overview" }).click();
   await expect(page).toHaveTitle(`workspace-overview | ${reportTitle}`);
-  await page.locator('.capture-card').first().click();
+  await page.locator(".capture-card").first().click();
   await expect(page).toHaveTitle(`workspace-overview | ${reportTitle}`);
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  await page.getByRole('button', { name: /^Test suite:/ }).click();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page.getByRole("button", { name: /^Test suite:/ }).click();
   await page
-    .getByRole('navigation', { name: 'Test suites', exact: true })
-    .getByRole('link', { name: /orders-and-checkout/ })
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /orders-and-checkout/ })
     .click();
   await expect(page).toHaveTitle(`orders-and-checkout | ${reportTitle}`);
   await page.reload();
   await expect(page).toHaveTitle(`orders-and-checkout | ${reportTitle}`);
-  await page.getByRole('link', { name: 'Regressify overview' }).click();
+  await page.getByRole("link", { name: "Regressify overview" }).click();
   await expect(page).toHaveTitle(reportTitle);
 });
 
-test('suite display names label navigation without changing routes', async ({ page, isMobile }, info) => {
-  const displayName = 'Customer checkout / desktop <review>';
-  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+test("suite display names label navigation without changing routes", async ({
+  page,
+  isMobile,
+}, info) => {
+  const displayName = "Customer checkout / desktop <review>";
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
     for (const suite of manifest.suites) {
-      if (suite.id === 'orders-and-checkout') suite.displayName = displayName;
+      if (suite.id === "orders-and-checkout") suite.displayName = displayName;
     }
     await route.fulfill({ response, json: manifest });
   });
-  await page.goto('/');
-  await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
   const reportTitle = await page.title();
-  await page.getByRole('searchbox', { name: 'Search suites' }).fill('Customer checkout');
-  await expect(page.locator('.suite-name')).toHaveCount(1);
-  await expect(page.locator('.suite-name')).toHaveText(displayName);
-  await page.locator('.suite-name').click();
+  await page.getByRole("searchbox", { name: "Search suites" }).fill("Customer checkout");
+  await expect(page.locator(".suite-name")).toHaveCount(1);
+  await expect(page.locator(".suite-name")).toHaveText(displayName);
+  await page.locator(".suite-name").click();
   await expect(page).toHaveURL(/\/suites\/orders-and-checkout$/);
-  await expect(page.getByRole('heading', { name: displayName, exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: displayName, exact: true })).toBeVisible();
   await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
-  await screenshot(page, info.project.name, 'suite-display-name');
-  await page.locator('.capture-card').first().click();
+  await screenshot(page, info.project.name, "suite-display-name");
+  await page.locator(".capture-card").first().click();
   await expect(page).toHaveURL(/\/suites\/orders-and-checkout\/images\//);
-  await page.getByRole('button', { name: 'Capture information', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Capture information' }).locator("dd[title='orders-and-checkout']")).toHaveText(displayName);
-  await page.getByRole('button', { name: 'Close capture information' }).click();
-  await expect(page.getByRole('navigation', { name: 'Breadcrumb' }).getByRole('link', { name: displayName })).toBeVisible();
+  await page.getByRole("button", { name: "Capture information", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Capture information" })
+      .locator("dd[title='orders-and-checkout']"),
+  ).toHaveText(displayName);
+  await page.getByRole("button", { name: "Close capture information" }).click();
+  await expect(
+    page.getByRole("navigation", { name: "Breadcrumb" }).getByRole("link", { name: displayName }),
+  ).toBeVisible();
   await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
   await page.reload();
   await expect(page).toHaveTitle(`${displayName} | ${reportTitle}`);
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const selector = page.getByRole('button', { name: `Test suite: ${displayName}` });
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const selector = page.getByRole("button", { name: `Test suite: ${displayName}` });
   await expect(selector).toContainText(displayName);
   await selector.click();
-  await page.getByRole('searchbox', { name: 'Find a suite' }).fill('Customer checkout');
-  const navigation = page.getByRole('navigation', { name: 'Test suites', exact: true });
-  await expect(navigation.getByRole('link')).toHaveCount(1);
-  await expect(navigation.getByRole('link')).toContainText(displayName);
-  await expect(navigation.getByRole('link')).toHaveAttribute('href', '/suites/orders-and-checkout');
-  await expect(page.locator('review')).toHaveCount(0);
+  await page.getByRole("searchbox", { name: "Find a suite" }).fill("Customer checkout");
+  const navigation = page.getByRole("navigation", { name: "Test suites", exact: true });
+  await expect(navigation.getByRole("link")).toHaveCount(1);
+  await expect(navigation.getByRole("link")).toContainText(displayName);
+  await expect(navigation.getByRole("link")).toHaveAttribute("href", "/suites/orders-and-checkout");
+  await expect(page.locator("review")).toHaveCount(0);
 });
 
-test('overview centers metrics and result columns with aligned suite labels', async ({ page }, info) => {
-  await page.goto('/');
-  await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
+test("overview centers metrics and result columns with aligned suite labels", async ({
+  page,
+}, info) => {
+  await page.goto("/");
+  await expect(page.locator(".results-table tbody tr")).toHaveCount(7);
   await page.evaluate(() => document.fonts.ready);
   const offsets = await page.evaluate(() => {
     const center = (bounds: DOMRect) => bounds.left + bounds.width / 2;
-    const metrics = Array.from(document.querySelectorAll('.metrics > div')).flatMap((column) => Array.from(column.children).map((content) => Math.abs(center(content.getBoundingClientRect()) - center(column.getBoundingClientRect()))));
-    const cells = Array.from(document.querySelectorAll('.results-table tr')).flatMap((row) =>
+    const metrics = Array.from(document.querySelectorAll(".metrics > div")).flatMap((column) =>
+      Array.from(column.children).map((content) =>
+        Math.abs(center(content.getBoundingClientRect()) - center(column.getBoundingClientRect())),
+      ),
+    );
+    const cells = Array.from(document.querySelectorAll(".results-table tr")).flatMap((row) =>
       Array.from(row.children)
         .slice(1, 4)
         .filter((cell) => cell.getBoundingClientRect().width > 0)
         .map((cell) => {
-          const content = cell.querySelector('button, .status-badge');
+          const content = cell.querySelector("button, .status-badge");
           const range = document.createRange();
           range.selectNodeContents(cell);
-          return Math.abs(center(content?.getBoundingClientRect() || range.getBoundingClientRect()) - center(cell.getBoundingClientRect()));
+          return Math.abs(
+            center(content?.getBoundingClientRect() || range.getBoundingClientRect()) -
+              center(cell.getBoundingClientRect()),
+          );
         }),
     );
-    const heading = document.querySelector('.results-table th:first-child button');
-    const names = Array.from(document.querySelectorAll('.suite-name')).map((name) => {
-      const text = Array.from(name.childNodes).find((node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim());
-      if (!text || !heading) throw new Error('Suite label is missing');
+    const heading = document.querySelector(".results-table th:first-child button");
+    const names = Array.from(document.querySelectorAll(".suite-name")).map((name) => {
+      const text = Array.from(name.childNodes).find(
+        (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
+      );
+      if (!text || !heading) throw new Error("Suite label is missing");
       const range = document.createRange();
       range.selectNodeContents(text);
-      return Math.abs((range.getClientRects()[0]?.left || 0) - heading.getBoundingClientRect().left);
+      return Math.abs(
+        (range.getClientRects()[0]?.left || 0) - heading.getBoundingClientRect().left,
+      );
     });
     return { metrics, cells, names };
   });
@@ -508,55 +828,64 @@ test('overview centers metrics and result columns with aligned suite labels', as
     expect(values.length).toBeGreaterThan(0);
     for (const offset of values) expect(offset, `${group} alignment offset`).toBeLessThan(1);
   }
-  await screenshot(page, info.project.name, 'overview-alignment');
+  await screenshot(page, info.project.name, "overview-alignment");
 });
 
-test('navigation stays in the SPA, preserves filters, and refreshes deep links', async ({ page, isMobile }, info) => {
-  await page.goto('/');
+test("navigation stays in the SPA, preserves filters, and refreshes deep links", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/");
   let navigations = 0;
-  page.on('request', (request) => {
-    if (request.resourceType() === 'document') navigations++;
+  page.on("request", (request) => {
+    if (request.resourceType() === "document") navigations++;
   });
-  await page.locator('.suite-name').filter({ hasText: 'workspace-overview' }).click();
+  await page.locator(".suite-name").filter({ hasText: "workspace-overview" }).click();
   await expect(page).toHaveURL(/\/suites\/workspace-overview$/);
-  await expect(page.locator('.capture-card')).toHaveCount(4);
-  await page.getByRole('searchbox', { name: 'Search captures' }).fill('Workspace');
-  await expect(page.locator('.capture-card')).toHaveCount(1);
-  await page.locator('.capture-card').click();
+  await expect(page.locator(".capture-card")).toHaveCount(4);
+  await page.getByRole("searchbox", { name: "Search captures" }).fill("Workspace");
+  await expect(page.locator(".capture-card")).toHaveCount(1);
+  await page.locator(".capture-card").click();
   await expect(page).toHaveURL(/\/images\/overview__desktop.png\?q=Workspace$/);
-  await expect(page.getByRole('region', { name: 'Zoomable comparison images' })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Zoomable comparison images" })).toBeVisible();
   expect(navigations).toBe(0);
-  await page.locator('.back-link').click();
-  await expect(page.getByRole('searchbox', { name: 'Search captures' })).toHaveValue('Workspace');
-  await page.getByRole('searchbox', { name: 'Search captures' }).fill('');
-  await screenshot(page, info.project.name, 'suite-grid');
-  await page.getByRole('button', { name: 'List view' }).click();
-  await expect(page.locator('.capture-list')).toBeVisible();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  await page.getByRole('button', { name: /^Test suite:/ }).click();
+  await page.locator(".back-link").click();
+  await expect(page.getByRole("searchbox", { name: "Search captures" })).toHaveValue("Workspace");
+  await page.getByRole("searchbox", { name: "Search captures" }).fill("");
+  await screenshot(page, info.project.name, "suite-grid");
+  await page.getByRole("button", { name: "List view" }).click();
+  await expect(page.locator(".capture-list")).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page.getByRole("button", { name: /^Test suite:/ }).click();
   await page
-    .getByRole('navigation', { name: 'Test suites', exact: true })
-    .getByRole('link', { name: /orders-and-checkout/ })
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /orders-and-checkout/ })
     .click();
-  await expect(page.getByRole('heading', { name: 'orders-and-checkout', exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "orders-and-checkout", exact: true }),
+  ).toBeVisible();
   await page.reload();
-  await expect(page.locator('.capture-card')).toHaveCount(4);
+  await expect(page.locator(".capture-card")).toHaveCount(4);
   if (!isMobile) {
-    await page.getByRole('button', { name: 'Toggle suite index' }).click();
-    await expect(page.locator('.suite-panel')).toHaveCount(0);
+    await page.getByRole("button", { name: "Toggle suite index" }).click();
+    await expect(page.locator(".suite-panel")).toHaveCount(0);
   }
 });
 
-test('large suites keep preview images bounded while scrolling and jumping to failures', async ({ page }) => {
-  await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+test("large suites keep preview images bounded while scrolling and jumping to failures", async ({
+  page,
+}) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
-    const summary = manifest.suites.find((suite: { id: string }) => suite.id === 'workspace-overview');
+    const summary = manifest.suites.find(
+      (suite: { id: string }) => suite.id === "workspace-overview",
+    );
     Object.assign(summary, { total: 300, passed: 299, failed: 1, errors: 0 });
     await route.fulfill({ response, json: manifest });
   });
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const suite = await response.json();
     suite.tests = Array.from({ length: 300 }, (_, index) => ({
@@ -564,105 +893,162 @@ test('large suites keep preview images bounded while scrolling and jumping to fa
       id: `capture-${index}.png`,
       label: `Capture ${index}`,
       scenario: `Scenario ${index}`,
-      status: index === 250 ? 'fail' : 'pass',
+      status: index === 250 ? "fail" : "pass",
       mismatch: index === 250 ? 1 : 0,
     }));
     await route.fulfill({ response, json: suite });
   });
-  await page.goto('/suites/workspace-overview?view=list');
-  const cards = page.locator('.capture-card');
-  const images = cards.locator('img[src]');
+  await page.goto("/suites/workspace-overview?view=list");
+  const cards = page.locator(".capture-card");
+  const images = cards.locator("img[src]");
   await expect(cards).toHaveCount(300);
   await expect.poll(() => images.count()).toBeGreaterThan(0);
   await expect.poll(() => images.count()).toBeLessThan(45);
   const first = cards.first();
   const last = cards.last();
-  const review = page.locator('.review-scroll');
+  const review = page.locator(".review-scroll");
   await last.scrollIntoViewIfNeeded();
-  await expect.poll(() => last.locator('img[src]').count()).toBe(3);
-  await expect.poll(() => first.locator('img[src]').count()).toBe(0);
+  await expect.poll(() => last.locator("img[src]").count()).toBe(3);
+  await expect.poll(() => first.locator("img[src]").count()).toBe(0);
   await expect.poll(() => images.count()).toBeLessThan(45);
   await review.evaluate((element) => element.scrollTo(0, 0));
-  await expect.poll(() => first.locator('img[src]').count()).toBe(3);
-  await expect.poll(() => last.locator('img[src]').count()).toBe(0);
-  await page.getByRole('button', { name: 'Next failed comparison', exact: true }).click();
+  await expect.poll(() => first.locator("img[src]").count()).toBe(3);
+  await expect.poll(() => last.locator("img[src]").count()).toBe(0);
+  await page.getByRole("button", { name: "Next failed comparison", exact: true }).click();
   const selected = page.locator('.capture-card[data-active-failure="true"]');
-  await expect(selected).toContainText('Capture 250');
+  await expect(selected).toContainText("Capture 250");
   await expect(selected).toBeFocused();
-  await expect.poll(() => selected.locator('img[src]').count()).toBe(3);
+  await expect.poll(() => selected.locator("img[src]").count()).toBe(3);
   await expect.poll(() => images.count()).toBeLessThan(45);
-  await page.getByRole('button', { name: 'Grid view' }).click();
-  await expect(page.getByRole('button', { name: 'Grid view' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(page.locator('.capture-grid')).toBeVisible();
+  await page.getByRole("button", { name: "Grid view" }).click();
+  await expect(page.getByRole("button", { name: "Grid view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator(".capture-grid")).toBeVisible();
   await expect.poll(() => images.count()).toBeGreaterThan(0);
   await expect.poll(() => images.count()).toBeLessThan(45);
-  await page.getByRole('searchbox', { name: 'Search captures' }).fill('Capture 299');
+  await page.getByRole("searchbox", { name: "Search captures" }).fill("Capture 299");
   await expect(cards).toHaveCount(1);
-  await expect(cards).toContainText('Capture 299');
+  await expect(cards).toContainText("Capture 299");
   await cards.click();
   await expect(page).toHaveURL(/\/images\/capture-299\.png\?q=Capture\+299$/);
-  await expect.poll(() => page.locator('.image-world img').evaluateAll((elements) => elements.length > 0 && elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  await expect
+    .poll(() =>
+      page
+        .locator(".image-world img")
+        .evaluateAll(
+          (elements) =>
+            elements.length > 0 &&
+            elements.every((element) => (element as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
 });
 
-test('suite previews avoid full-resolution downloads until opening image review', async ({ page, isMobile }) => {
+test("suite previews avoid full-resolution downloads until opening image review", async ({
+  page,
+  isMobile,
+}) => {
   let originals: string[] = [];
   const requested = new Set<string>();
-  page.on('request', (request) => requested.add(request.url()));
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+  page.on("request", (request) => requested.add(request.url()));
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const suite = await response.json();
-    originals = [suite.tests[0].reference, suite.tests[0].test, suite.tests[0].diff].filter(Boolean).map((path) => new URL(`/${path}`, route.request().url()).href);
+    originals = [suite.tests[0].reference, suite.tests[0].test, suite.tests[0].diff]
+      .filter(Boolean)
+      .map((path) => new URL(`/${path}`, route.request().url()).href);
     await route.fulfill({ response, json: suite });
   });
-  await page.goto('/suites/workspace-overview?view=list');
-  const capture = page.locator('.capture-card').first();
-  const images = capture.locator('img');
+  await page.goto("/suites/workspace-overview?view=list");
+  const capture = page.locator(".capture-card").first();
+  const images = capture.locator("img");
   await expect(images).toHaveCount(3);
-  await expect.poll(() => images.evaluateAll((elements) => elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
-  expect(await images.evaluateAll((elements) => elements.every((element) => (element as HTMLImageElement).naturalWidth <= 640 && (element as HTMLImageElement).naturalHeight <= 480))).toBe(true);
+  await expect
+    .poll(() =>
+      images.evaluateAll((elements) =>
+        elements.every((element) => (element as HTMLImageElement).naturalWidth > 0),
+      ),
+    )
+    .toBe(true);
+  expect(
+    await images.evaluateAll((elements) =>
+      elements.every(
+        (element) =>
+          (element as HTMLImageElement).naturalWidth <= 640 &&
+          (element as HTMLImageElement).naturalHeight <= 480,
+      ),
+    ),
+  ).toBe(true);
   expect(originals.length).toBe(3);
   expect(originals.some((url) => requested.has(url))).toBe(false);
-  await page.getByRole('button', { name: 'Grid view' }).click();
+  await page.getByRole("button", { name: "Grid view" }).click();
   await expect(images).toHaveCount(1);
-  await expect.poll(() => images.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
-  expect(await images.evaluate((element: HTMLImageElement) => element.naturalWidth <= 640 && element.naturalHeight <= 400)).toBe(true);
+  await expect
+    .poll(() => images.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBeGreaterThan(0);
+  expect(
+    await images.evaluate(
+      (element: HTMLImageElement) => element.naturalWidth <= 640 && element.naturalHeight <= 400,
+    ),
+  ).toBe(true);
   expect(originals.some((url) => requested.has(url))).toBe(false);
   await capture.click();
-  if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption('side');
-  await expect.poll(() => page.locator('.image-world img').evaluateAll((elements) => elements.length === 3 && elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  if (isMobile) await page.getByRole("combobox", { name: "Comparison mode" }).selectOption("side");
+  await expect
+    .poll(() =>
+      page
+        .locator(".image-world img")
+        .evaluateAll(
+          (elements) =>
+            elements.length === 3 &&
+            elements.every((element) => (element as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
   expect(originals.every((url) => requested.has(url))).toBe(true);
-  for (const [index, role] of ['reference', 'test', 'diff'].entries()) {
+  for (const [index, role] of ["reference", "test", "diff"].entries()) {
     const original = new URL(originals[index]);
-    await expect(page.getByRole('link', { name: `Download ${role}`, exact: true })).toHaveAttribute('href', original.pathname + original.search);
+    await expect(page.getByRole("link", { name: `Download ${role}`, exact: true })).toHaveAttribute(
+      "href",
+      original.pathname + original.search,
+    );
   }
 });
 
-test('legacy suite reports without previews remain readable', async ({ page }) => {
-  let original = '';
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+test("legacy suite reports without previews remain readable", async ({ page }) => {
+  let original = "";
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const suite = await response.json();
     for (const capture of suite.tests) delete capture.previews;
     original = `/${suite.tests[0].test}`;
     await route.fulfill({ response, json: suite });
   });
-  await page.goto('/suites/workspace-overview');
-  const image = page.locator('.capture-card').first().locator('img');
+  await page.goto("/suites/workspace-overview");
+  const image = page.locator(".capture-card").first().locator("img");
   await expect(image).toBeVisible();
-  await expect(image).toHaveAttribute('src', original);
-  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
+  await expect(image).toHaveAttribute("src", original);
+  await expect
+    .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+    .toBeGreaterThan(0);
 });
 
-test('suite list compares reference, test, and available diff captures side by side', async ({ page }, info) => {
-  await page.goto('/suites/workspace-overview?view=list');
-  const capture = page.locator('.capture-list .capture-card').first();
-  const lanes = capture.locator('.capture-lane');
+test("suite list compares reference, test, and available diff captures side by side", async ({
+  page,
+}, info) => {
+  await page.goto("/suites/workspace-overview?view=list");
+  const capture = page.locator(".capture-list .capture-card").first();
+  const lanes = capture.locator(".capture-lane");
   await expect(lanes).toHaveCount(3);
-  await expect(lanes.locator('figcaption')).toHaveText(['Reference', 'Test', 'Diff']);
-  for (const image of await lanes.getByRole('img').all()) {
+  await expect(lanes.locator("figcaption")).toHaveText(["Reference", "Test", "Diff"]);
+  for (const image of await lanes.getByRole("img").all()) {
     await expect(image).toBeVisible();
-    await expect(image).toHaveCSS('object-fit', 'contain');
-    await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
+    await expect(image).toHaveCSS("object-fit", "contain");
+    await expect
+      .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
+      .toBeGreaterThan(0);
   }
   const bounds = await lanes.evaluateAll((elements) =>
     elements.map((element) => {
@@ -676,144 +1062,180 @@ test('suite list compares reference, test, and available diff captures side by s
     expect(Math.abs(lane.width - bounds[0].width)).toBeLessThan(1);
     if (index > 0) expect(lane.left).toBeGreaterThanOrEqual(bounds[index - 1].right);
   }
-  await screenshot(page, info.project.name, 'suite-list');
+  await screenshot(page, info.project.name, "suite-list");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
   await capture.click();
   await expect(page).toHaveURL(/\/images\/overview__desktop.png\?view=list$/);
-  await page.locator('.back-link').click();
-  await expect(page.getByRole('button', { name: 'List view' })).toHaveAttribute('aria-pressed', 'true');
-  await page.goto('/suites/customer-accounts?view=list');
+  await page.locator(".back-link").click();
+  await expect(page.getByRole("button", { name: "List view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await page.goto("/suites/customer-accounts?view=list");
   await expect(lanes).toHaveCount(2);
-  await expect(lanes.locator('figcaption')).toHaveText(['Reference', 'Test']);
-  await page.getByRole('button', { name: 'Grid view' }).click();
-  await expect(page.locator('.capture-grid .capture-card').first().getByRole('img')).toHaveCount(1);
+  await expect(lanes.locator("figcaption")).toHaveText(["Reference", "Test"]);
+  await page.getByRole("button", { name: "Grid view" }).click();
+  await expect(page.locator(".capture-grid .capture-card").first().getByRole("img")).toHaveCount(1);
 });
 
-test('suite list preserves missing-image lanes and wraps long capture labels', async ({ page }) => {
-  const label = 'LongCaptureLabel'.repeat(20);
-  let unavailableImage = '';
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+test("suite list preserves missing-image lanes and wraps long capture labels", async ({ page }) => {
+  const label = "LongCaptureLabel".repeat(20);
+  let unavailableImage = "";
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
-    unavailableImage = new URL(`/${data.tests[0].previews?.test || data.tests[0].test}`, route.request().url()).href;
+    unavailableImage = new URL(
+      `/${data.tests[0].previews?.test || data.tests[0].test}`,
+      route.request().url(),
+    ).href;
     data.tests[0].reference = null;
     data.tests[0].label = label;
     await route.fulfill({ response, json: data });
   });
-  await page.route('**/_snapshot/images/**', (route) => (route.request().url() === unavailableImage ? route.fulfill({ status: 404 }) : route.continue()));
-  await page.goto('/suites/workspace-overview?view=list');
-  const capture = page.locator('.capture-list .capture-card').first();
-  await expect(capture.locator('.capture-lane')).toHaveCount(3);
-  await capture.locator('.capture-comparison').scrollIntoViewIfNeeded();
-  await expect(capture.getByText('No image', { exact: true })).toBeVisible();
-  await expect(capture.getByText('Image unavailable', { exact: true })).toBeVisible();
-  await expect(capture.getByRole('img', { name: `${label} diff`, exact: true })).toBeVisible();
+  await page.route("**/_snapshot/images/**", (route) =>
+    route.request().url() === unavailableImage ? route.fulfill({ status: 404 }) : route.continue(),
+  );
+  await page.goto("/suites/workspace-overview?view=list");
+  const capture = page.locator(".capture-list .capture-card").first();
+  await expect(capture.locator(".capture-lane")).toHaveCount(3);
+  await capture.locator(".capture-comparison").scrollIntoViewIfNeeded();
+  await expect(capture.getByText("No image", { exact: true })).toBeVisible();
+  await expect(capture.getByText("Image unavailable", { exact: true })).toBeVisible();
+  await expect(capture.getByRole("img", { name: `${label} diff`, exact: true })).toBeVisible();
   for (const width of [320, 768, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     await assertLayout(page);
-    const overflows = await capture.evaluate((element) => [element, ...element.querySelectorAll('h2, .capture-lane-preview')].some((node) => node.scrollWidth > node.clientWidth));
+    const overflows = await capture.evaluate((element) =>
+      [element, ...element.querySelectorAll("h2, .capture-lane-preview")].some(
+        (node) => node.scrollWidth > node.clientWidth,
+      ),
+    );
     expect(overflows).toBe(false);
   }
 });
 
-test('review navigation shows the current suite in a dropdown without shifting scenarios', async ({ page, isMobile }, info) => {
-  await page.goto('/suites/workspace-overview');
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const suites = page.getByRole('navigation', { name: 'Test suites', exact: true });
-  const suiteSelector = page.getByRole('button', { name: 'Test suite: workspace-overview' });
+test("review navigation shows the current suite in a dropdown without shifting scenarios", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/workspace-overview");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const suites = page.getByRole("navigation", { name: "Test suites", exact: true });
+  const suiteSelector = page.getByRole("button", { name: "Test suite: workspace-overview" });
   await expect(suiteSelector).toBeVisible();
-  await expect(suiteSelector).toContainText('workspace-overview');
-  await expect(suiteSelector).toHaveAttribute('aria-expanded', 'false');
+  await expect(suiteSelector).toContainText("workspace-overview");
+  await expect(suiteSelector).toHaveAttribute("aria-expanded", "false");
   await expect(suites).toBeHidden();
-  const scenarios = page.getByRole('navigation', { name: 'Test scenarios', exact: true });
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
   await expect(scenarios).toBeVisible();
-  await expect(scenarios.getByRole('link')).toHaveCount(4);
+  await expect(scenarios.getByRole("link")).toHaveCount(4);
   const scenarioTop = await scenarios.evaluate((element) => element.getBoundingClientRect().top);
-  await screenshot(page, info.project.name, 'navigation-selector');
+  await screenshot(page, info.project.name, "navigation-selector");
   await suiteSelector.click();
-  await expect(suiteSelector).toHaveAttribute('aria-expanded', 'true');
-  await expect(page.getByRole('dialog', { name: 'Test suites', exact: true })).toBeVisible();
+  await expect(suiteSelector).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("dialog", { name: "Test suites", exact: true })).toBeVisible();
   await expect(suites).toBeVisible();
-  await expect(suites.getByRole('link', { name: /workspace-overview/ })).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByRole('searchbox', { name: 'Find a suite' })).toBeFocused();
-  expect(await scenarios.evaluate((element) => element.getBoundingClientRect().top)).toBe(scenarioTop);
-  await screenshot(page, info.project.name, 'navigation-dropdown');
-  await page.keyboard.press('Escape');
+  await expect(suites.getByRole("link", { name: /workspace-overview/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(page.getByRole("searchbox", { name: "Find a suite" })).toBeFocused();
+  expect(await scenarios.evaluate((element) => element.getBoundingClientRect().top)).toBe(
+    scenarioTop,
+  );
+  await screenshot(page, info.project.name, "navigation-dropdown");
+  await page.keyboard.press("Escape");
   await expect(suites).toBeHidden();
   await expect(suiteSelector).toBeFocused();
   await expect(scenarios).toBeVisible();
-  await scenarios.getByRole('link', { name: /Scenario 2/ }).click();
+  await scenarios.getByRole("link", { name: /Scenario 2/ }).click();
   await expect(page).toHaveURL(/\/images\/recent-orders__mobile.png$/);
-  await expect(page.getByRole('heading', { name: 'Recent orders / Mobile', exact: true })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Zoomable comparison images' })).toBeVisible();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
+  await expect(
+    page.getByRole("heading", { name: "Recent orders / Mobile", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("region", { name: "Zoomable comparison images" })).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
   await expect(suites).toBeHidden();
-  await expect(scenarios.getByRole('link', { name: /Scenario 2/ })).toHaveAttribute('aria-current', 'page');
-  await page.getByRole('searchbox', { name: 'Find a scenario' }).fill('Scenario 3');
-  await expect(scenarios.getByRole('link')).toHaveCount(1);
-  const scenario = scenarios.getByRole('link');
-  await expect(scenario).toHaveAttribute('href', /^\/suites\/workspace-overview\/images\//);
-  const comparisonUrl = new URL((await scenario.getAttribute('href')) || '', page.url()).href;
+  await expect(scenarios.getByRole("link", { name: /Scenario 2/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("searchbox", { name: "Find a scenario" }).fill("Scenario 3");
+  await expect(scenarios.getByRole("link")).toHaveCount(1);
+  const scenario = scenarios.getByRole("link");
+  await expect(scenario).toHaveAttribute("href", /^\/suites\/workspace-overview\/images\//);
+  const comparisonUrl = new URL((await scenario.getAttribute("href")) || "", page.url()).href;
   await scenario.click();
   await expect(page).toHaveURL(comparisonUrl);
-  await expect(page.getByRole('region', { name: 'Zoomable comparison images' })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Zoomable comparison images" })).toBeVisible();
   await page.reload();
   await expect(page).toHaveURL(comparisonUrl);
-  await expect(page.getByRole('region', { name: 'Zoomable comparison images' })).toBeVisible();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
+  await expect(page.getByRole("region", { name: "Zoomable comparison images" })).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
   await expect(suiteSelector).toBeVisible();
   await expect(suites).toBeHidden();
   await expect(scenarios).toBeVisible();
 });
 
-test('review navigation dropdown searches, dismisses, and switches suites with the keyboard', async ({ page, isMobile }) => {
-  await page.goto('/suites/workspace-overview');
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const selector = page.getByRole('button', { name: /^Test suite:/ });
-  const suites = page.getByRole('navigation', { name: 'Test suites', exact: true });
-  const search = page.getByRole('searchbox', { name: 'Find a suite' });
+test("review navigation dropdown searches, dismisses, and switches suites with the keyboard", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/suites/workspace-overview");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const selector = page.getByRole("button", { name: /^Test suite:/ });
+  const suites = page.getByRole("navigation", { name: "Test suites", exact: true });
+  const search = page.getByRole("searchbox", { name: "Find a suite" });
   await selector.focus();
-  await selector.press('Enter');
+  await selector.press("Enter");
   await expect(search).toBeFocused();
-  await search.fill('no-such-suite');
-  await expect(suites.getByRole('link')).toHaveCount(0);
-  await expect(suites.getByRole('status')).toHaveText('No matching suites');
-  await search.press('ArrowDown');
+  await search.fill("no-such-suite");
+  await expect(suites.getByRole("link")).toHaveCount(0);
+  await expect(suites.getByRole("status")).toHaveText("No matching suites");
+  await search.press("ArrowDown");
   await expect(search).toBeFocused();
-  await search.fill('orders-and-checkout');
-  await expect(suites.getByRole('link')).toHaveCount(1);
-  await search.press('ArrowDown');
-  const destination = suites.getByRole('link', { name: /orders-and-checkout/ });
+  await search.fill("orders-and-checkout");
+  await expect(suites.getByRole("link")).toHaveCount(1);
+  await search.press("ArrowDown");
+  const destination = suites.getByRole("link", { name: /orders-and-checkout/ });
   await expect(destination).toBeFocused();
-  await destination.press('Enter');
+  await destination.press("Enter");
   await expect(page).toHaveURL(/\/suites\/orders-and-checkout$/);
   await expect(suites).toBeHidden();
   if (isMobile) {
-    await expect(page.getByRole('dialog', { name: 'Suite index', exact: true })).toBeHidden();
-    await page.getByRole('button', { name: 'Toggle suite index' }).click();
+    await expect(page.getByRole("dialog", { name: "Suite index", exact: true })).toBeHidden();
+    await page.getByRole("button", { name: "Toggle suite index" }).click();
   }
-  await expect(selector).toHaveAccessibleName('Test suite: orders-and-checkout');
+  await expect(selector).toHaveAccessibleName("Test suite: orders-and-checkout");
   await selector.click();
-  await expect(search).toHaveValue('');
-  await expect(suites.getByRole('link')).toHaveCount(7);
-  await expect(suites.getByRole('link', { name: /orders-and-checkout/ })).toHaveAttribute('aria-current', 'page');
+  await expect(search).toHaveValue("");
+  await expect(suites.getByRole("link")).toHaveCount(7);
+  await expect(suites.getByRole("link", { name: /orders-and-checkout/ })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await search.fill('workspace');
-  await page.getByRole('heading', { name: 'Test suite', exact: true }).click();
+  await search.fill("workspace");
+  await page.getByRole("heading", { name: "Test suite", exact: true }).click();
   await expect(suites).toBeHidden();
   await selector.click();
-  await expect(search).toHaveValue('');
-  await expect(suites.getByRole('link')).toHaveCount(7);
+  await expect(search).toHaveValue("");
+  await expect(suites.getByRole("link")).toHaveCount(7);
   await selector.click();
   await expect(suites).toBeHidden();
 });
 
-test('review navigation dropdown contains long suite names and scrolls independently', async ({ page, isMobile }, info) => {
-  const displayName = 'LongSuiteName'.repeat(8);
-  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+test("review navigation dropdown contains long suite names and scrolls independently", async ({
+  page,
+  isMobile,
+}, info) => {
+  const displayName = "LongSuiteName".repeat(8);
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
     const response = await route.fetch();
     const manifest = await response.json();
-    const current = manifest.suites.find((suite: { id: string }) => suite.id === 'workspace-overview');
+    const current = manifest.suites.find(
+      (suite: { id: string }) => suite.id === "workspace-overview",
+    );
     manifest.suites = Array.from({ length: 30 }, (_, index) => ({
       ...current,
       id: index === 0 ? current.id : `suite-${index}`,
@@ -822,116 +1244,138 @@ test('review navigation dropdown contains long suite names and scrolls independe
     await route.fulfill({ response, json: manifest });
   });
   await page.setViewportSize({ width: isMobile ? 320 : 1280, height: 720 });
-  await page.goto('/suites/workspace-overview');
-  await chooseTheme(page, 'Dark');
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const selector = page.getByRole('button', { name: `Test suite: ${displayName}` });
+  await page.goto("/suites/workspace-overview");
+  await chooseTheme(page, "Dark");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const selector = page.getByRole("button", { name: `Test suite: ${displayName}` });
   await expect(selector).toContainText(displayName);
-  expect(await selector.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await selector.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(
+    true,
+  );
   await selector.click();
-  const dropdown = page.getByRole('dialog', { name: 'Test suites', exact: true });
-  const suites = dropdown.getByRole('navigation', { name: 'Test suites', exact: true });
-  await expect(suites.getByRole('link')).toHaveCount(30);
+  const dropdown = page.getByRole("dialog", { name: "Test suites", exact: true });
+  const suites = dropdown.getByRole("navigation", { name: "Test suites", exact: true });
+  await expect(suites.getByRole("link")).toHaveCount(30);
   await expect(suites.locator('[aria-current="page"] .suite-dropdown-check')).toBeVisible();
   const bounds = await dropdown.boundingBox();
-  if (!bounds) throw new Error('The suite dropdown is unavailable');
+  if (!bounds) throw new Error("The suite dropdown is unavailable");
   expect(bounds.x).toBeGreaterThanOrEqual(0);
   expect(bounds.y).toBeGreaterThanOrEqual(0);
   expect(bounds.x + bounds.width).toBeLessThanOrEqual(isMobile ? 320 : 1280);
   expect(bounds.y + bounds.height).toBeLessThanOrEqual(720);
   expect(await suites.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  const sidebar = page.locator('.suite-panel-scroll:visible');
+  const sidebar = page.locator(".suite-panel-scroll:visible");
   const sidebarTop = await sidebar.evaluate((element) => element.scrollTop);
-  await suites.getByRole('link').last().scrollIntoViewIfNeeded();
+  await suites.getByRole("link").last().scrollIntoViewIfNeeded();
   expect(await suites.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
   expect(await sidebar.evaluate((element) => element.scrollTop)).toBe(sidebarTop);
-  expect(await page.locator('.review-scroll').evaluate((element) => element.scrollTop)).toBe(0);
-  await expect(page.getByRole('searchbox', { name: 'Find a suite' })).toBeVisible();
-  await screenshot(page, info.project.name, 'navigation-dropdown-long-names-dark');
+  expect(await page.locator(".review-scroll").evaluate((element) => element.scrollTop)).toBe(0);
+  await expect(page.getByRole("searchbox", { name: "Find a suite" })).toBeVisible();
+  await screenshot(page, info.project.name, "navigation-dropdown-long-names-dark");
 });
 
-test('URL-only scenario names stay friendly while capture routes keep their IDs', async ({ page, isMobile }, info) => {
-  await page.goto('/suites/search-and-navigation');
-  await expect(page.locator('.capture-card h2')).toHaveText(['Men / Running shoes / Desktop / Full page', 'Women / Running shoes / Mobile / Full page', 'Help center / Desktop / Full page', 'Men / Running shoes / Mobile / Full page']);
-  await screenshot(page, info.project.name, 'url-only-scenarios');
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const scenarios = page.getByRole('navigation', { name: 'Test scenarios', exact: true });
-  await expect(scenarios.locator('.scenario-group')).toHaveCount(1);
-  await expect(scenarios.locator('summary')).toContainText('Men / Running shoes');
-  await expect(scenarios.getByRole('link')).toHaveCount(4);
-  const scenarioId = getAssetVersion('https://example.com/men/running-shoes');
+test("URL-only scenario names stay friendly while capture routes keep their IDs", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/search-and-navigation");
+  await expect(page.locator(".capture-card h2")).toHaveText([
+    "Men / Running shoes / Desktop / Full page",
+    "Women / Running shoes / Mobile / Full page",
+    "Help center / Desktop / Full page",
+    "Men / Running shoes / Mobile / Full page",
+  ]);
+  await screenshot(page, info.project.name, "url-only-scenarios");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
+  await expect(scenarios.locator(".scenario-group")).toHaveCount(1);
+  await expect(scenarios.locator("summary")).toContainText("Men / Running shoes");
+  await expect(scenarios.getByRole("link")).toHaveCount(4);
+  const scenarioId = getAssetVersion("https://example.com/men/running-shoes");
   await expect(scenarios).not.toContainText(scenarioId);
-  await expect(scenarios).not.toContainText('https://');
-  await scenarios.getByRole('link', { name: 'Men / Running shoes / Desktop / Full page' }).click();
+  await expect(scenarios).not.toContainText("https://");
+  await scenarios.getByRole("link", { name: "Men / Running shoes / Desktop / Full page" }).click();
   await expect(page).toHaveURL(new RegExp(`/images/${scenarioId}_desktop__FINAL\\.png$`));
-  await expect(page.getByRole('heading', { name: 'Men / Running shoes / Desktop / Full page', exact: true })).toBeVisible();
-  await screenshot(page, info.project.name, 'url-only-image');
+  await expect(
+    page.getByRole("heading", { name: "Men / Running shoes / Desktop / Full page", exact: true }),
+  ).toBeVisible();
+  await screenshot(page, info.project.name, "url-only-image");
   await page.reload();
-  await expect(page.getByRole('heading', { name: 'Men / Running shoes / Desktop / Full page', exact: true })).toBeVisible();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  await page.getByRole('searchbox', { name: 'Find a scenario' }).fill('Women / Running shoes');
-  await expect(scenarios.getByRole('link')).toHaveCount(1);
-  await expect(scenarios.getByRole('link')).toHaveText('Women / Running shoes');
+  await expect(
+    page.getByRole("heading", { name: "Men / Running shoes / Desktop / Full page", exact: true }),
+  ).toBeVisible();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await page.getByRole("searchbox", { name: "Find a scenario" }).fill("Women / Running shoes");
+  await expect(scenarios.getByRole("link")).toHaveCount(1);
+  await expect(scenarios.getByRole("link")).toHaveText("Women / Running shoes");
 });
 
-test('scenario navigation is restricted to the selected suite and groups its captures', async ({ page, isMobile }) => {
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+test("scenario navigation is restricted to the selected suite and groups its captures", async ({
+  page,
+  isMobile,
+}) => {
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
     data.tests.forEach((capture: { scenario: string }, index: number) => {
-      capture.scenario = `${data.id} / ${index < 2 ? 'First scenario' : 'Second scenario'}`;
+      capture.scenario = `${data.id} / ${index < 2 ? "First scenario" : "Second scenario"}`;
     });
     await route.fulfill({ response, json: data });
   });
-  await page.goto('/suites/workspace-overview');
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  const scenarios = page.getByRole('navigation', { name: 'Test scenarios', exact: true });
-  await expect(scenarios.locator('.scenario-group')).toHaveCount(2);
-  await expect(scenarios).toContainText('workspace-overview / First scenario');
-  await page.getByRole('button', { name: /^Test suite:/ }).click();
+  await page.goto("/suites/workspace-overview");
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  const scenarios = page.getByRole("navigation", { name: "Test scenarios", exact: true });
+  await expect(scenarios.locator(".scenario-group")).toHaveCount(2);
+  await expect(scenarios).toContainText("workspace-overview / First scenario");
+  await page.getByRole("button", { name: /^Test suite:/ }).click();
   await page
-    .getByRole('navigation', { name: 'Test suites', exact: true })
-    .getByRole('link', { name: /orders-and-checkout/ })
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /orders-and-checkout/ })
     .click();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  await expect(scenarios).toContainText('orders-and-checkout / First scenario');
-  await expect(scenarios).not.toContainText('workspace-overview');
-  for (const link of await scenarios.getByRole('link').all()) await expect(link).toHaveAttribute('href', /^\/suites\/orders-and-checkout\/images\//);
-  await page.getByRole('button', { name: /^Test suite:/ }).click();
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(scenarios).toContainText("orders-and-checkout / First scenario");
+  await expect(scenarios).not.toContainText("workspace-overview");
+  for (const link of await scenarios.getByRole("link").all())
+    await expect(link).toHaveAttribute("href", /^\/suites\/orders-and-checkout\/images\//);
+  await page.getByRole("button", { name: /^Test suite:/ }).click();
   await page
-    .getByRole('navigation', { name: 'Test suites', exact: true })
-    .getByRole('link', { name: /empty-suite/ })
+    .getByRole("navigation", { name: "Test suites", exact: true })
+    .getByRole("link", { name: /empty-suite/ })
     .click();
-  if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
-  await expect(scenarios).toContainText('No scenarios');
-  await expect(scenarios.getByRole('link')).toHaveCount(0);
+  if (isMobile) await page.getByRole("button", { name: "Toggle suite index" }).click();
+  await expect(scenarios).toContainText("No scenarios");
+  await expect(scenarios.getByRole("link")).toHaveCount(0);
 });
 
-test('review panes resize and scroll independently', async ({ page, isMobile }) => {
-  test.skip(isMobile, 'Mobile uses the review navigation drawer.');
+test("review panes resize and scroll independently", async ({ page, isMobile }) => {
+  test.skip(isMobile, "Mobile uses the review navigation drawer.");
   await page.setViewportSize({ width: 1200, height: 420 });
-  await page.goto('/suites/workspace-overview');
-  await expect(page.locator('.capture-card')).toHaveCount(4);
-  const divider = page.getByRole('separator', { name: 'Resize review navigation' });
-  const panel = page.locator('.suite-panel');
+  await page.goto("/suites/workspace-overview");
+  await expect(page.locator(".capture-card")).toHaveCount(4);
+  const divider = page.getByRole("separator", { name: "Resize review navigation" });
+  const panel = page.locator(".suite-panel");
   const start = await divider.boundingBox();
   const original = await panel.boundingBox();
-  if (!start || !original) throw new Error('Review divider is unavailable');
+  if (!start || !original) throw new Error("Review divider is unavailable");
   await page.mouse.move(start.x + start.width / 2, start.y + 100);
   await page.mouse.down();
   await page.mouse.move(start.x + 104, start.y + 100, { steps: 5 });
   await page.mouse.up();
-  await expect.poll(async () => (await panel.boundingBox())?.width || 0).toBeGreaterThan(original.width + 70);
+  await expect
+    .poll(async () => (await panel.boundingBox())?.width || 0)
+    .toBeGreaterThan(original.width + 70);
   await divider.focus();
-  await divider.press('Home');
-  await expect(divider).toHaveAttribute('aria-valuenow', '220');
-  await divider.press('ArrowRight');
-  await expect(divider).toHaveAttribute('aria-valuenow', '236');
-  const sidebarScroll = page.locator('.suite-panel-scroll');
-  const reviewScroll = page.locator('.review-scroll');
+  await divider.press("Home");
+  await expect(divider).toHaveAttribute("aria-valuenow", "220");
+  await divider.press("ArrowRight");
+  await expect(divider).toHaveAttribute("aria-valuenow", "236");
+  const sidebarScroll = page.locator(".suite-panel-scroll");
+  const reviewScroll = page.locator(".review-scroll");
   await sidebarScroll.hover({ position: { x: 60, y: 160 } });
   await page.mouse.wheel(0, 300);
-  await expect.poll(() => sidebarScroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect
+    .poll(() => sidebarScroll.evaluate((element) => element.scrollTop))
+    .toBeGreaterThan(0);
   expect(await reviewScroll.evaluate((element) => element.scrollTop)).toBe(0);
   const sidebarTop = await sidebarScroll.evaluate((element) => element.scrollTop);
   await reviewScroll.hover({ position: { x: 250, y: 200 } });
@@ -941,165 +1385,203 @@ test('review panes resize and scroll independently', async ({ page, isMobile }) 
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
   await assertLayout(page);
   await page.reload();
-  await expect(divider).toHaveAttribute('aria-valuenow', '236');
+  await expect(divider).toHaveAttribute("aria-valuenow", "236");
   await divider.focus();
-  await divider.press('End');
-  await expect(divider).toHaveAttribute('aria-valuenow', '480');
+  await divider.press("End");
+  await expect(divider).toHaveAttribute("aria-valuenow", "480");
   await page.setViewportSize({ width: 980, height: 520 });
-  await expect(divider).toHaveAttribute('aria-valuenow', '441');
+  await expect(divider).toHaveAttribute("aria-valuenow", "441");
   await page.setViewportSize({ width: 390, height: 740 });
   await expect(divider).toHaveCount(0);
   await page.setViewportSize({ width: 1200, height: 520 });
-  await expect(divider).toHaveAttribute('aria-valuenow', '480');
+  await expect(divider).toHaveAttribute("aria-valuenow", "480");
 });
 
-test('suite failure arrows scroll to failed captures without leaving the suite', async ({ page }) => {
-  await page.goto('/suites/workspace-overview?view=list');
-  const previous = page.getByRole('button', { name: 'Previous failed comparison', exact: true });
-  const next = page.getByRole('button', { name: 'Next failed comparison', exact: true });
+test("suite failure arrows scroll to failed captures without leaving the suite", async ({
+  page,
+}) => {
+  await page.goto("/suites/workspace-overview?view=list");
+  const previous = page.getByRole("button", { name: "Previous failed comparison", exact: true });
+  const next = page.getByRole("button", { name: "Next failed comparison", exact: true });
   await expect(previous).toBeDisabled();
   for (let index = 0; index < 4; index++) {
     await next.click();
-    await expect(page.getByLabel('Failed comparison position')).toHaveText(`${index + 1} / 4 failed`);
+    await expect(page.getByLabel("Failed comparison position")).toHaveText(
+      `${index + 1} / 4 failed`,
+    );
     const selected = page.locator('.capture-card[data-active-failure="true"]');
     await expect(selected).toBeFocused();
-    await expect(selected).toContainText('Failed');
+    await expect(selected).toContainText("Failed");
     await expect(page).toHaveURL(/\/suites\/workspace-overview\?view=list$/);
   }
   await expect(next).toBeDisabled();
   await previous.click();
-  await expect(page.getByLabel('Failed comparison position')).toHaveText('3 / 4 failed');
-  await page.getByRole('searchbox', { name: 'Search captures' }).fill('Recent orders');
+  await expect(page.getByLabel("Failed comparison position")).toHaveText("3 / 4 failed");
+  await page.getByRole("searchbox", { name: "Search captures" }).fill("Recent orders");
   await expect(previous).toBeDisabled();
   await next.click();
-  await expect(page.locator('.capture-card[data-active-failure="true"]')).toContainText('Recent orders');
+  await expect(page.locator('.capture-card[data-active-failure="true"]')).toContainText(
+    "Recent orders",
+  );
   await expect(next).toBeDisabled();
-  await page.goto('/suites/customer-accounts');
+  await page.goto("/suites/customer-accounts");
   await expect(previous).toBeDisabled();
   await expect(next).toBeDisabled();
 });
 
-test('capture information opens on hover or tap and remains selectable', async ({ page, isMobile }, info) => {
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png');
-  const trigger = page.getByRole('button', { name: 'Capture information', exact: true });
-  const bubble = page.getByRole('dialog', { name: 'Capture information', exact: true });
+test("capture information opens on hover or tap and remains selectable", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png");
+  const trigger = page.getByRole("button", { name: "Capture information", exact: true });
+  const bubble = page.getByRole("dialog", { name: "Capture information", exact: true });
   await expect(bubble).toHaveCount(0);
   if (isMobile) await trigger.tap();
   else await trigger.hover();
   await expect(bubble).toBeVisible();
-  await expect(bubble).toContainText('Difference');
-  await expect(bubble).toContainText('Threshold');
-  await expect(bubble).toContainText('overview__desktop.png');
+  await expect(bubble).toContainText("Difference");
+  await expect(bubble).toContainText("Threshold");
+  await expect(bubble).toContainText("overview__desktop.png");
   if (!isMobile) {
     await bubble.hover();
     await expect(bubble).toBeVisible();
-    const text = bubble.getByText('overview__desktop.png', { exact: true });
+    const text = bubble.getByText("overview__desktop.png", { exact: true });
     const bounds = await text.boundingBox();
-    if (!bounds) throw new Error('Copyable capture label is unavailable');
+    if (!bounds) throw new Error("Copyable capture label is unavailable");
     await page.mouse.move(bounds.x + 2, bounds.y + bounds.height / 2);
     await page.mouse.down();
-    await page.mouse.move(bounds.x + Math.min(bounds.width - 2, 175), bounds.y + bounds.height / 2, { steps: 8 });
+    await page.mouse.move(
+      bounds.x + Math.min(bounds.width - 2, 175),
+      bounds.y + bounds.height / 2,
+      { steps: 8 },
+    );
     await page.mouse.up();
-    await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() || '')).not.toBe('');
-    const selectedText = await page.evaluate(() => window.getSelection()?.toString() || '');
-    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
-    await page.keyboard.press('ControlOrMeta+C');
+    await expect
+      .poll(() => page.evaluate(() => window.getSelection()?.toString() || ""))
+      .not.toBe("");
+    const selectedText = await page.evaluate(() => window.getSelection()?.toString() || "");
+    await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.keyboard.press("ControlOrMeta+C");
     await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe(selectedText);
     await expect(bubble).toBeVisible();
   }
-  await screenshot(page, info.project.name, 'capture-information');
+  await screenshot(page, info.project.name, "capture-information");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await page.getByRole('button', { name: 'Close capture information' }).click();
+  await page.getByRole("button", { name: "Close capture information" }).click();
   await expect(bubble).toHaveCount(0);
   await trigger.focus();
   await expect(bubble).toBeVisible();
-  await page.keyboard.press('Escape');
+  await page.keyboard.press("Escape");
   await expect(bubble).toHaveCount(0);
   await trigger.click();
-  await page.getByRole('heading', { name: 'Workspace overview / Desktop', exact: true }).hover();
+  await page.getByRole("heading", { name: "Workspace overview / Desktop", exact: true }).hover();
   await expect(bubble).toBeVisible();
-  await page.keyboard.press('Escape');
+  await page.keyboard.press("Escape");
   await expect(bubble).toHaveCount(0);
 });
 
-test('image modes, zoom, downloads, and previous/next work', async ({ page, isMobile }, info) => {
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png');
-  await expect(page.getByRole('heading', { name: 'Workspace overview / Desktop', exact: true })).toBeVisible();
-  await expect.poll(() => page.locator('.image-world img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
-  await screenshot(page, info.project.name, 'comparison-side');
-  await page.getByRole('button', { name: 'Actual size', exact: true }).click();
-  await expect(page.getByLabel('Zoom level')).toHaveText('100%');
-  await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
-  await expect(page.getByLabel('Zoom level')).not.toHaveText('100%');
-  await page.getByRole('button', { name: 'Fit images', exact: true }).click();
+test("image modes, zoom, downloads, and previous/next work", async ({ page, isMobile }, info) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png");
+  await expect(
+    page.getByRole("heading", { name: "Workspace overview / Desktop", exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .locator(".image-world img")
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
+  await screenshot(page, info.project.name, "comparison-side");
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  await page.getByRole("button", { name: "Zoom in", exact: true }).click();
+  await expect(page.getByLabel("Zoom level")).not.toHaveText("100%");
+  await page.getByRole("button", { name: "Fit images", exact: true }).click();
   const mode = async (value: string, label: string) => {
-    if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption(value);
-    else await page.getByRole('button', { name: label, exact: true }).click();
+    if (isMobile) await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(value);
+    else await page.getByRole("button", { name: label, exact: true }).click();
     await expect(page.locator(`.image-world.mode-${value}`)).toBeVisible();
   };
-  await mode('wipe', 'Wipe');
+  await mode("wipe", "Wipe");
   if (!isMobile) {
-    const bounds = await page.locator('.image-world').boundingBox();
-    if (!bounds) throw new Error('Wipe image is not visible');
+    const bounds = await page.locator(".image-world").boundingBox();
+    if (!bounds) throw new Error("Wipe image is not visible");
     await page.mouse.move(bounds.x + bounds.width * 0.25, bounds.y + bounds.height * 0.5);
-    await expect(page.getByRole('slider', { name: 'Wipe position' })).toHaveValue('25');
+    await expect(page.getByRole("slider", { name: "Wipe position" })).toHaveValue("25");
     await page.mouse.move(bounds.x + bounds.width * 0.75, bounds.y + bounds.height * 0.5);
-    await expect(page.getByRole('slider', { name: 'Wipe position' })).toHaveValue('75');
+    await expect(page.getByRole("slider", { name: "Wipe position" })).toHaveValue("75");
   }
-  await page.getByRole('slider', { name: 'Wipe position' }).focus();
-  await page.getByRole('slider', { name: 'Wipe position' }).press('Home');
-  await expect(page.getByRole('slider', { name: 'Wipe position' })).toHaveValue('0');
-  await mode('overlay', 'Overlay');
-  await page.getByRole('slider', { name: 'Test image opacity' }).press('End');
-  await expect(page.getByRole('slider', { name: 'Test image opacity' })).toHaveValue('100');
-  await mode('diff', 'Diff');
-  await screenshot(page, info.project.name, 'comparison-diff');
-  await mode('reference', 'Reference');
-  await mode('test', 'Test');
-  const download = page.waitForEvent('download');
-  await page.getByRole('link', { name: 'Download test', exact: true }).click();
-  expect((await download).suggestedFilename()).toContain('test.png');
-  await page.getByRole('link', { name: 'Next image', exact: true }).click();
+  await page.getByRole("slider", { name: "Wipe position" }).focus();
+  await page.getByRole("slider", { name: "Wipe position" }).press("Home");
+  await expect(page.getByRole("slider", { name: "Wipe position" })).toHaveValue("0");
+  await mode("overlay", "Overlay");
+  await page.getByRole("slider", { name: "Test image opacity" }).press("End");
+  await expect(page.getByRole("slider", { name: "Test image opacity" })).toHaveValue("100");
+  await mode("diff", "Diff");
+  await screenshot(page, info.project.name, "comparison-diff");
+  await mode("reference", "Reference");
+  await mode("test", "Test");
+  const download = page.waitForEvent("download");
+  await page.getByRole("link", { name: "Download test", exact: true }).click();
+  expect((await download).suggestedFilename()).toContain("test.png");
+  await page.getByRole("link", { name: "Next image", exact: true }).click();
   await expect(page).toHaveURL(/recent-orders__mobile.png/);
-  await page.getByRole('link', { name: 'Previous image', exact: true }).click();
+  await page.getByRole("link", { name: "Previous image", exact: true }).click();
   await expect(page).toHaveURL(/overview__desktop.png/);
   await page.reload();
-  await expect(page.locator('.mode-test')).toBeVisible();
+  await expect(page.locator(".mode-test")).toBeVisible();
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 
-test('scrolling over images moves only the review page without changing zoom', async ({ page }) => {
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-  await expect(page.locator('.comparison-lane img')).toHaveCount(3);
-  await expect.poll(() => page.locator('.comparison-lane img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
-  await page.getByRole('button', { name: 'Actual size', exact: true }).click();
-  await expect(page.getByLabel('Zoom level')).toHaveText('100%');
-  const content = page.locator('.review-scroll');
+test("scrolling over images moves only the review page without changing zoom", async ({ page }) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane img")).toHaveCount(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".comparison-lane img")
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  const content = page.locator(".review-scroll");
   await content.evaluate((element) => {
     element.scrollTop = 0;
   });
-  await page.locator('.zoom-canvas').hover({ position: { x: 80, y: 80 } });
-  await expect(page.locator('.comparison-crosshair')).toHaveCount(3);
+  await page.locator(".zoom-canvas").hover({ position: { x: 80, y: 80 } });
+  await expect(page.locator(".comparison-crosshair")).toHaveCount(3);
   await page.mouse.wheel(0, 300);
   await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
-  await expect(page.locator('.comparison-crosshair')).toHaveCount(0);
-  await expect(page.getByLabel('Zoom level')).toHaveText('100%');
+  await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
   const bottom = await content.evaluate((element) => element.scrollTop);
   await page.mouse.wheel(0, -120);
   await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeLessThan(bottom);
-  await expect(page.getByLabel('Zoom level')).toHaveText('100%');
-  expect(await page.locator('.zoom-canvas').evaluate((element) => element.scrollTop)).toBe(0);
+  await expect(page.getByLabel("Zoom level")).toHaveText("100%");
+  expect(await page.locator(".zoom-canvas").evaluate((element) => element.scrollTop)).toBe(0);
   expect(await page.evaluate(() => window.scrollY)).toBe(0);
 });
 
-test('side by side includes a third lane only when a diff is available', async ({ page, isMobile }, info) => {
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-  await expect(page.locator('.comparison-lane')).toHaveCount(3);
-  await expect(page.locator('.suite-panel')).toHaveCount(isMobile ? 0 : 1);
-  await expect(page.locator('.review-details')).toHaveCount(0);
-  await expect(page.locator('.canvas-labels')).toHaveCount(0);
-  await expect(page.getByRole('img', { name: 'Diff: Workspace overview / Desktop', exact: true })).toBeVisible();
-  const lanes = await page.locator('.comparison-lane').evaluateAll((elements) =>
+test("side by side includes a third lane only when a diff is available", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane")).toHaveCount(3);
+  await expect(page.locator(".suite-panel")).toHaveCount(isMobile ? 0 : 1);
+  await expect(page.locator(".review-details")).toHaveCount(0);
+  await expect(page.locator(".canvas-labels")).toHaveCount(0);
+  await expect(
+    page.getByRole("img", { name: "Diff: Workspace overview / Desktop", exact: true }),
+  ).toBeVisible();
+  const lanes = await page.locator(".comparison-lane").evaluateAll((elements) =>
     elements.map((element) => {
       const bounds = element.getBoundingClientRect();
       return { x: bounds.x, y: bounds.y, width: bounds.width };
@@ -1112,44 +1594,52 @@ test('side by side includes a third lane only when a diff is available', async (
   await expect
     .poll(() =>
       page.evaluate(() => {
-        const canvas = document.querySelector('.zoom-canvas')?.getBoundingClientRect();
-        const lane = document.querySelector('.comparison-lane')?.getBoundingClientRect();
+        const canvas = document.querySelector(".zoom-canvas")?.getBoundingClientRect();
+        const lane = document.querySelector(".comparison-lane")?.getBoundingClientRect();
         return canvas && lane ? Math.abs(lane.y - canvas.y) : Number.POSITIVE_INFINITY;
       }),
     )
     .toBeLessThan(1);
-  await screenshot(page, info.project.name, 'comparison-three-lanes');
-  await page.goto('/suites/customer-accounts/images/overview__desktop.png?mode=side');
-  await expect(page.locator('.comparison-lane')).toHaveCount(2);
-  await expect(page.locator('.canvas-labels')).toHaveCount(0);
+  await screenshot(page, info.project.name, "comparison-three-lanes");
+  await page.goto("/suites/customer-accounts/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane")).toHaveCount(2);
+  await expect(page.locator(".canvas-labels")).toHaveCount(0);
 });
 
 for (const differentSizes of [false, true]) {
-  test(`side by side crosshairs track image pixels (${differentSizes ? 'different' : 'equal'} sizes)`, async ({ page }, info) => {
+  test(`side by side crosshairs track image pixels (${differentSizes ? "different" : "equal"} sizes)`, async ({
+    page,
+  }, info) => {
     if (differentSizes) {
-      await page.route('**/_snapshot/data/suites/**', async (route) => {
+      await page.route("**/_snapshot/data/suites/**", async (route) => {
         const response = await route.fetch();
         const data = await response.json();
-        if (data.id === 'workspace-overview') data.tests[0].reference = data.tests[1].reference;
+        if (data.id === "workspace-overview") data.tests[0].reference = data.tests[1].reference;
         await route.fulfill({ response, json: data });
       });
     }
-    await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-    const images = page.locator('.comparison-lane img');
-    const crosshairs = page.locator('.comparison-crosshair');
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    const images = page.locator(".comparison-lane img");
+    const crosshairs = page.locator(".comparison-crosshair");
     await expect(images).toHaveCount(3);
-    await expect.poll(() => images.evaluateAll((elements) => elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+    await expect
+      .poll(() =>
+        images.evaluateAll((elements) =>
+          elements.every((element) => (element as HTMLImageElement).naturalWidth > 0),
+        ),
+      )
+      .toBe(true);
     const commonSize = await images.evaluateAll((elements) => ({
       width: Math.min(...elements.map((element) => (element as HTMLImageElement).naturalWidth)),
       height: Math.min(...elements.map((element) => (element as HTMLImageElement).naturalHeight)),
     }));
     await expect(crosshairs).toHaveCount(0);
     for (const zoomIn of [false, true]) {
-      if (zoomIn) await page.getByRole('button', { name: 'Zoom in', exact: true }).click();
+      if (zoomIn) await page.getByRole("button", { name: "Zoom in", exact: true }).click();
       for (const [index, image] of (await images.all()).entries()) {
-        await image.locator('..').hover();
+        await image.locator("..").hover();
         const bounds = await image.boundingBox();
-        if (!bounds) throw new Error('Comparison image is not visible');
+        if (!bounds) throw new Error("Comparison image is not visible");
         const { horizontal, vertical } = await image.evaluate(
           (element, position) => ({
             horizontal: position.x / (element as HTMLImageElement).naturalWidth,
@@ -1157,22 +1647,45 @@ for (const differentSizes of [false, true]) {
           }),
           { x: commonSize.width * (0.3 + index * 0.1), y: commonSize.height * (0.2 + index * 0.1) },
         );
-        await page.mouse.move(bounds.x + bounds.width * horizontal, bounds.y + bounds.height * vertical);
+        await page.mouse.move(
+          bounds.x + bounds.width * horizontal,
+          bounds.y + bounds.height * vertical,
+        );
         await expect(crosshairs).toHaveCount(3);
         await expect
           .poll(() =>
-            page.locator('.comparison-lane').evaluateAll(
+            page.locator(".comparison-lane").evaluateAll(
               (lanes, position) => {
-                const source = lanes[position.index]?.querySelector('img');
+                const source = lanes[position.index]?.querySelector("img");
                 if (!source) return Number.POSITIVE_INFINITY;
                 return Math.max(
                   ...lanes.map((lane) => {
-                    const target = lane.querySelector('img');
-                    const horizontalGuide = lane.querySelector('.crosshair-horizontal')?.getBoundingClientRect();
-                    const verticalGuide = lane.querySelector('.crosshair-vertical')?.getBoundingClientRect();
-                    if (!target || !horizontalGuide || !verticalGuide) return Number.POSITIVE_INFINITY;
+                    const target = lane.querySelector("img");
+                    const horizontalGuide = lane
+                      .querySelector(".crosshair-horizontal")
+                      ?.getBoundingClientRect();
+                    const verticalGuide = lane
+                      .querySelector(".crosshair-vertical")
+                      ?.getBoundingClientRect();
+                    if (!target || !horizontalGuide || !verticalGuide)
+                      return Number.POSITIVE_INFINITY;
                     const bounds = target.getBoundingClientRect();
-                    return Math.max(Math.abs(verticalGuide.x + verticalGuide.width / 2 - bounds.x - (source.naturalWidth * position.horizontal * bounds.width) / target.naturalWidth), Math.abs(horizontalGuide.y + horizontalGuide.height / 2 - bounds.y - (source.naturalHeight * position.vertical * bounds.height) / target.naturalHeight));
+                    return Math.max(
+                      Math.abs(
+                        verticalGuide.x +
+                          verticalGuide.width / 2 -
+                          bounds.x -
+                          (source.naturalWidth * position.horizontal * bounds.width) /
+                            target.naturalWidth,
+                      ),
+                      Math.abs(
+                        horizontalGuide.y +
+                          horizontalGuide.height / 2 -
+                          bounds.y -
+                          (source.naturalHeight * position.vertical * bounds.height) /
+                            target.naturalHeight,
+                      ),
+                    );
                   }),
                 );
               },
@@ -1181,197 +1694,236 @@ for (const differentSizes of [false, true]) {
           )
           .toBeLessThan(1);
         for (const guide of await crosshairs.all()) {
-          await expect(guide).toHaveAttribute('aria-hidden', 'true');
-          await expect(guide).toHaveCSS('pointer-events', 'none');
-          expect((await guide.locator('.crosshair-horizontal').boundingBox())?.height).toBeCloseTo(1);
-          expect((await guide.locator('.crosshair-vertical').boundingBox())?.width).toBeCloseTo(1);
+          await expect(guide).toHaveAttribute("aria-hidden", "true");
+          await expect(guide).toHaveCSS("pointer-events", "none");
+          expect((await guide.locator(".crosshair-horizontal").boundingBox())?.height).toBeCloseTo(
+            1,
+          );
+          expect((await guide.locator(".crosshair-vertical").boundingBox())?.width).toBeCloseTo(1);
         }
       }
     }
-    await screenshot(page, info.project.name, `comparison-crosshairs${differentSizes ? '-different-sizes' : ''}`);
+    await screenshot(
+      page,
+      info.project.name,
+      `comparison-crosshairs${differentSizes ? "-different-sizes" : ""}`,
+    );
     if (differentSizes) {
       const testImage = images.nth(1);
-      await testImage.locator('..').hover();
+      await testImage.locator("..").hover();
       const bounds = await testImage.boundingBox();
-      if (!bounds) throw new Error('Test image is not visible');
+      if (!bounds) throw new Error("Test image is not visible");
       await page.mouse.move(bounds.x + bounds.width * 0.9, bounds.y + bounds.height * 0.2);
       await expect(crosshairs).toHaveCount(2);
-      await expect(page.locator('.comparison-lane').first().locator('.comparison-crosshair')).toHaveCount(0);
+      await expect(
+        page.locator(".comparison-lane").first().locator(".comparison-crosshair"),
+      ).toHaveCount(0);
     }
-    await page.getByRole('button', { name: 'Fit images', exact: true }).click();
-    const firstLane = await page.locator('.comparison-lane').first().boundingBox();
-    const secondLane = await page.locator('.comparison-lane').nth(1).boundingBox();
-    if (!firstLane || !secondLane) throw new Error('Comparison lanes are not visible');
-    await images.first().locator('..').hover();
+    await page.getByRole("button", { name: "Fit images", exact: true }).click();
+    const firstLane = await page.locator(".comparison-lane").first().boundingBox();
+    const secondLane = await page.locator(".comparison-lane").nth(1).boundingBox();
+    if (!firstLane || !secondLane) throw new Error("Comparison lanes are not visible");
+    await images.first().locator("..").hover();
     await expect(crosshairs).toHaveCount(3);
     await page.mouse.move((firstLane.x + firstLane.width + secondLane.x) / 2, firstLane.y + 10);
     await expect(crosshairs).toHaveCount(0);
-    await page.getByRole('button', { name: 'Fit images', exact: true }).hover();
+    await page.getByRole("button", { name: "Fit images", exact: true }).hover();
     await expect(crosshairs).toHaveCount(0);
-    await page.goto('/suites/customer-accounts/images/overview__desktop.png?mode=side');
+    await page.goto("/suites/customer-accounts/images/overview__desktop.png?mode=side");
     await expect(images).toHaveCount(2);
-    await images.first().locator('..').hover();
+    await images.first().locator("..").hover();
     await expect(crosshairs).toHaveCount(0);
   });
 }
 
-test('side by side crosshairs clear for view changes, touch, and canceled pointers', async ({ page, isMobile }) => {
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-  const image = page.locator('.comparison-image').first();
-  const crosshairs = page.locator('.comparison-crosshair');
-  for (const event of ['pointerdown', 'pointercancel', 'pointermove'] as const) {
+test("side by side crosshairs clear for view changes, touch, and canceled pointers", async ({
+  page,
+  isMobile,
+}) => {
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  const image = page.locator(".comparison-image").first();
+  const crosshairs = page.locator(".comparison-crosshair");
+  for (const event of ["pointerdown", "pointercancel", "pointermove"] as const) {
     await image.hover();
     await expect(crosshairs).toHaveCount(3);
-    await image.dispatchEvent(event, { pointerType: 'touch' });
+    await image.dispatchEvent(event, { pointerType: "touch" });
     await expect(crosshairs).toHaveCount(0);
   }
   await image.hover();
   await expect(crosshairs).toHaveCount(3);
-  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await expect(crosshairs).toHaveCount(0);
   for (const [mode, label] of [
-    ['wipe', 'Wipe'],
-    ['side', 'Side by side'],
+    ["wipe", "Wipe"],
+    ["side", "Side by side"],
   ]) {
-    if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption(mode || 'side');
-    else await page.getByRole('button', { name: label, exact: true }).click();
+    if (isMobile)
+      await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(mode || "side");
+    else await page.getByRole("button", { name: label, exact: true }).click();
     await expect(crosshairs).toHaveCount(0);
   }
   await image.hover();
   await expect(crosshairs).toHaveCount(3);
-  await page.getByRole('link', { name: 'Next image', exact: true }).click();
+  await page.getByRole("link", { name: "Next image", exact: true }).click();
   await expect(page).toHaveURL(/recent-orders__mobile.png/);
   await expect(crosshairs).toHaveCount(0);
 });
 
 for (const missing of [true, false]) {
-  test(`side by side crosshairs exclude ${missing ? 'missing' : 'unavailable'} images`, async ({ page }) => {
-    await page.route('**/_snapshot/data/suites/**', async (route) => {
+  test(`side by side crosshairs exclude ${missing ? "missing" : "unavailable"} images`, async ({
+    page,
+  }) => {
+    await page.route("**/_snapshot/data/suites/**", async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      if (data.id === 'workspace-overview') {
+      if (data.id === "workspace-overview") {
         if (missing) data.tests[0].reference = null;
         else await page.route(`**/${data.tests[0].reference}`, (image) => image.abort());
       }
       await route.fulfill({ response, json: data });
     });
-    await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-    await expect(page.getByText(missing ? 'No image' : 'Image unavailable', { exact: true })).toBeVisible();
-    const lanes = page.locator('.comparison-image');
+    await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+    await expect(
+      page.getByText(missing ? "No image" : "Image unavailable", { exact: true }),
+    ).toBeVisible();
+    const lanes = page.locator(".comparison-image");
     await lanes.nth(1).hover();
-    await expect(page.locator('.comparison-crosshair')).toHaveCount(2);
-    await expect(lanes.first().locator('.comparison-crosshair')).toHaveCount(0);
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(2);
+    await expect(lanes.first().locator(".comparison-crosshair")).toHaveCount(0);
     await lanes.first().hover();
-    await expect(page.locator('.comparison-crosshair')).toHaveCount(0);
+    await expect(page.locator(".comparison-crosshair")).toHaveCount(0);
   });
 }
 
-test('comparison images are centered without labels and oversized images stay reachable', async ({ page, isMobile }, info) => {
-  await page.route('**/_snapshot/data/suites/**', async (route) => {
+test("comparison images are centered without labels and oversized images stay reachable", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const data = await response.json();
-    if (data.id === 'workspace-overview') data.tests[0].reference = data.tests[1].reference;
+    if (data.id === "workspace-overview") data.tests[0].reference = data.tests[1].reference;
     await route.fulfill({ response, json: data });
   });
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-  await expect(page.locator('.comparison-lane img')).toHaveCount(3);
-  await expect.poll(() => page.locator('.comparison-lane img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane img")).toHaveCount(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".comparison-lane img")
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
   for (const [mode, label] of [
-    ['side', 'Side by side'],
-    ['reference', 'Reference'],
-    ['test', 'Test'],
-    ['diff', 'Diff'],
-    ['wipe', 'Wipe'],
-    ['overlay', 'Overlay'],
+    ["side", "Side by side"],
+    ["reference", "Reference"],
+    ["test", "Test"],
+    ["diff", "Diff"],
+    ["wipe", "Wipe"],
+    ["overlay", "Overlay"],
   ]) {
-    if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption(mode || 'side');
-    else await page.getByRole('button', { name: label, exact: true }).click();
-    await page.getByRole('button', { name: 'Zoom out', exact: true }).click();
-    await expect(page.locator('.canvas-labels')).toHaveCount(0);
+    if (isMobile)
+      await page.getByRole("combobox", { name: "Comparison mode" }).selectOption(mode || "side");
+    else await page.getByRole("button", { name: label, exact: true }).click();
+    await page.getByRole("button", { name: "Zoom out", exact: true }).click();
+    await expect(page.locator(".canvas-labels")).toHaveCount(0);
     await expect
       .poll(() =>
-        page.locator('.zoom-canvas').evaluate((canvas) => {
+        page.locator(".zoom-canvas").evaluate((canvas) => {
           const bounds = canvas.getBoundingClientRect();
-          const parent = canvas.closest('.comparison-viewer')?.getBoundingClientRect();
-          return parent ? Math.abs(bounds.left + bounds.width / 2 - parent.left - parent.width / 2) : Number.POSITIVE_INFINITY;
+          const parent = canvas.closest(".comparison-viewer")?.getBoundingClientRect();
+          return parent
+            ? Math.abs(bounds.left + bounds.width / 2 - parent.left - parent.width / 2)
+            : Number.POSITIVE_INFINITY;
         }),
       )
       .toBeLessThan(1);
-    if (mode === 'side') {
-      for (const lane of await page.locator('.comparison-lane').all()) {
+    if (mode === "side") {
+      for (const lane of await page.locator(".comparison-lane").all()) {
         const difference = await lane.evaluate((element) => {
           const bounds = element.getBoundingClientRect();
-          const image = element.querySelector('img')?.getBoundingClientRect();
-          return image ? Math.abs(image.left + image.width / 2 - bounds.left - bounds.width / 2) : Number.POSITIVE_INFINITY;
+          const image = element.querySelector("img")?.getBoundingClientRect();
+          return image
+            ? Math.abs(image.left + image.width / 2 - bounds.left - bounds.width / 2)
+            : Number.POSITIVE_INFINITY;
         });
         expect(difference).toBeLessThan(1);
       }
-      await screenshot(page, info.project.name, 'comparison-centered');
+      await screenshot(page, info.project.name, "comparison-centered");
     }
   }
-  if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption('side');
-  else await page.getByRole('button', { name: 'Side by side', exact: true }).click();
-  await page.getByRole('button', { name: 'Actual size', exact: true }).click();
-  const edges = await page.locator('.zoom-canvas').evaluate((canvas) => ({
+  if (isMobile) await page.getByRole("combobox", { name: "Comparison mode" }).selectOption("side");
+  else await page.getByRole("button", { name: "Side by side", exact: true }).click();
+  await page.getByRole("button", { name: "Actual size", exact: true }).click();
+  const edges = await page.locator(".zoom-canvas").evaluate((canvas) => ({
     image: canvas.getBoundingClientRect().left,
-    viewer: canvas.closest('.comparison-viewer')?.getBoundingClientRect().left,
+    viewer: canvas.closest(".comparison-viewer")?.getBoundingClientRect().left,
   }));
   expect(edges.image).toBe(edges.viewer);
 });
 
-test('empty results, missing images, errors, and unknown routes are explicit', async ({ page, isMobile }, info) => {
-  await page.goto('/');
-  await page.getByRole('searchbox', { name: 'Search suites' }).fill('no-such-suite');
-  await expect(page.getByRole('heading', { name: 'No matching suites' })).toBeVisible();
-  await page.goto('/suites/empty-suite');
-  await expect(page.getByRole('heading', { name: 'No matching captures' })).toBeVisible();
-  await page.goto('/suites/product-catalog/images/full-page__mobile.png');
-  await page.getByRole('button', { name: 'Capture information', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('Navigation timed out');
-  await page.keyboard.press('Escape');
-  await expect(page.getByText('No image', { exact: true })).toBeVisible();
-  if (!isMobile) await expect(page.getByRole('button', { name: 'Wipe', exact: true })).toBeDisabled();
-  await screenshot(page, info.project.name, 'comparison-error');
-  await page.goto('/suites/missing');
-  await expect(page.getByRole('heading', { name: 'Suite not found' })).toBeVisible();
-  await page.goto('/suites/workspace-overview/images/missing');
-  await expect(page.getByRole('heading', { name: 'Image not found' })).toBeVisible();
+test("empty results, missing images, errors, and unknown routes are explicit", async ({
+  page,
+  isMobile,
+}, info) => {
+  await page.goto("/");
+  await page.getByRole("searchbox", { name: "Search suites" }).fill("no-such-suite");
+  await expect(page.getByRole("heading", { name: "No matching suites" })).toBeVisible();
+  await page.goto("/suites/empty-suite");
+  await expect(page.getByRole("heading", { name: "No matching captures" })).toBeVisible();
+  await page.goto("/suites/product-catalog/images/full-page__mobile.png");
+  await page.getByRole("button", { name: "Capture information", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("Navigation timed out");
+  await page.keyboard.press("Escape");
+  await expect(page.getByText("No image", { exact: true })).toBeVisible();
+  if (!isMobile)
+    await expect(page.getByRole("button", { name: "Wipe", exact: true })).toBeDisabled();
+  await screenshot(page, info.project.name, "comparison-error");
+  await page.goto("/suites/missing");
+  await expect(page.getByRole("heading", { name: "Suite not found" })).toBeVisible();
+  await page.goto("/suites/workspace-overview/images/missing");
+  await expect(page.getByRole("heading", { name: "Image not found" })).toBeVisible();
 });
 
-test('invalid report data fails visibly and can be retried', async ({ page }) => {
-  await page.route('**/_snapshot/**', async (route) => {
-    if (new URL(route.request().url()).pathname.endsWith('.json')) await route.fulfill({ contentType: 'application/json', body: '{"version":99}' });
+test("invalid report data fails visibly and can be retried", async ({ page }) => {
+  await page.route("**/_snapshot/**", async (route) => {
+    if (new URL(route.request().url()).pathname.endsWith(".json"))
+      await route.fulfill({ contentType: "application/json", body: '{"version":99}' });
     else await route.continue();
   });
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Snapshot unavailable' })).toBeVisible();
-  await page.unroute('**/_snapshot/**');
-  await page.getByRole('button', { name: 'Retry', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "Snapshot unavailable" })).toBeVisible();
+  await page.unroute("**/_snapshot/**");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Snapshot Overview", exact: true })).toBeVisible();
 });
 
-test('untrusted Markdown is not executable markup or a remote image request', async ({ page }) => {
-  await page.route('**/_snapshot/**', async (route) => {
-    if (!new URL(route.request().url()).pathname.endsWith('.json')) return route.continue();
+test("untrusted Markdown is not executable markup or a remote image request", async ({ page }) => {
+  await page.route("**/_snapshot/**", async (route) => {
+    if (!new URL(route.request().url()).pathname.endsWith(".json")) return route.continue();
     const response = await route.fetch();
     const data = await response.json();
-    if (data.version === 2) data.subheading = '<img src="https://untrusted.invalid/leak" onerror="window.compromised=true"> [Unsafe](javascript:alert(1)) **Safe text**';
+    if (data.version === 2)
+      data.subheading =
+        '<img src="https://untrusted.invalid/leak" onerror="window.compromised=true"> [Unsafe](javascript:alert(1)) **Safe text**';
     await route.fulfill({ response, json: data });
   });
-  await page.goto('/');
-  await expect(page.locator('.report-subheading')).toContainText('Safe text');
-  await expect(page.locator('.report-subheading img')).toHaveCount(0);
+  await page.goto("/");
+  await expect(page.locator(".report-subheading")).toContainText("Safe text");
+  await expect(page.locator(".report-subheading img")).toHaveCount(0);
   await expect(page.locator('a[href^="javascript:"]')).toHaveCount(0);
-  expect(await page.evaluate(() => 'compromised' in window)).toBe(false);
+  expect(await page.evaluate(() => "compromised" in window)).toBe(false);
 });
 
-test('empty snapshots and very long report text fit narrow and wide screens', async ({ page }) => {
+test("empty snapshots and very long report text fit narrow and wide screens", async ({ page }) => {
   let reportText = {
-    heading: 'LongUnbrokenReportHeading'.repeat(8),
-    subheading: `**Release** / ${'VeryLongBuildIdentifier'.repeat(8)}`,
+    heading: "LongUnbrokenReportHeading".repeat(8),
+    subheading: `**Release** / ${"VeryLongBuildIdentifier".repeat(8)}`,
   };
-  await page.route('**/_snapshot/**', async (route) => {
-    if (!new URL(route.request().url()).pathname.endsWith('.json')) return route.continue();
+  await page.route("**/_snapshot/**", async (route) => {
+    if (!new URL(route.request().url()).pathname.endsWith(".json")) return route.continue();
     const response = await route.fetch();
     const data = await response.json();
     if (data.version === 2) {
@@ -1381,45 +1933,67 @@ test('empty snapshots and very long report text fit narrow and wide screens', as
     }
     await route.fulfill({ response, json: data });
   });
-  await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'No comparisons yet' })).toBeVisible();
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "No comparisons yet" })).toBeVisible();
   for (const width of [320, 768, 1920]) {
     await page.setViewportSize({ width, height: 900 });
     await assertLayout(page);
-    const header = page.locator('.app-header');
+    const header = page.locator(".app-header");
     const headerBottom = await header.evaluate((element) => element.getBoundingClientRect().bottom);
-    expect(await page.locator('.breadcrumb-bar').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(headerBottom);
-    expect(await header.locator('.report-identity').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(
+      await page
+        .locator(".breadcrumb-bar")
+        .evaluate((element) => element.getBoundingClientRect().top),
+    ).toBeGreaterThanOrEqual(headerBottom);
+    expect(
+      await header
+        .locator(".report-identity")
+        .evaluate((element) => element.scrollWidth <= element.clientWidth),
+    ).toBe(true);
   }
   for (reportText of [
-    { heading: '', subheading: '' },
-    { heading: 'Release', subheading: '' },
-    { heading: '', subheading: '**Staging**' },
+    { heading: "", subheading: "" },
+    { heading: "Release", subheading: "" },
+    { heading: "", subheading: "**Staging**" },
   ]) {
     await page.reload();
-    await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
-    await expect(page.locator('.app-header .report-title')).toHaveCount(reportText.heading ? 1 : 0);
-    await expect(page.locator('.app-header .report-subheading')).toHaveCount(reportText.subheading ? 1 : 0);
+    await expect(
+      page.getByRole("heading", { name: "Snapshot Overview", exact: true }),
+    ).toBeVisible();
+    await expect(page.locator(".app-header .report-title")).toHaveCount(reportText.heading ? 1 : 0);
+    await expect(page.locator(".app-header .report-subheading")).toHaveCount(
+      reportText.subheading ? 1 : 0,
+    );
     await assertLayout(page);
   }
 });
 
-test('every snapshot payload has a content version on a stable path', async ({ page }) => {
+test("every snapshot payload has a content version on a stable path", async ({ page }) => {
   const requests = new Set<string>();
-  page.on('request', (request) => {
-    if (new URL(request.url()).pathname.startsWith('/_snapshot/')) requests.add(request.url());
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/_snapshot/")) requests.add(request.url());
   });
-  await page.goto('/suites/workspace-overview/images/overview__desktop.png?mode=side');
-  await expect(page.locator('.comparison-lane img')).toHaveCount(3);
-  await expect.poll(() => page.locator('.comparison-lane img').evaluateAll((images) => images.every((image) => (image as HTMLImageElement).naturalWidth > 0))).toBe(true);
-  expect([...requests].some((url) => new URL(url).pathname.endsWith('/manifest.json'))).toBe(true);
-  expect([...requests].filter((url) => new URL(url).pathname.endsWith('.png')).length).toBeGreaterThanOrEqual(3);
+  await page.goto("/suites/workspace-overview/images/overview__desktop.png?mode=side");
+  await expect(page.locator(".comparison-lane img")).toHaveCount(3);
+  await expect
+    .poll(() =>
+      page
+        .locator(".comparison-lane img")
+        .evaluateAll((images) =>
+          images.every((image) => (image as HTMLImageElement).naturalWidth > 0),
+        ),
+    )
+    .toBe(true);
+  expect([...requests].some((url) => new URL(url).pathname.endsWith("/manifest.json"))).toBe(true);
+  expect(
+    [...requests].filter((url) => new URL(url).pathname.endsWith(".png")).length,
+  ).toBeGreaterThanOrEqual(3);
   for (const resource of requests) {
     const url = new URL(resource);
-    expect(url.searchParams.get('v')).toMatch(/^[A-Za-z0-9_-]{20}$/);
+    expect(url.searchParams.get("v")).toMatch(/^[A-Za-z0-9_-]{20}$/);
     expect(url.pathname).not.toMatch(/[a-f0-9]{64}\.(json|png)$/);
     const response = await page.request.get(resource);
     expect(response.ok()).toBe(true);
-    expect(url.searchParams.get('v')).toBe(getAssetVersion(await response.body()));
+    expect(url.searchParams.get("v")).toBe(getAssetVersion(await response.body()));
   }
 });

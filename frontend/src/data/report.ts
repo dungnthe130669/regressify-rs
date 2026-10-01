@@ -200,6 +200,7 @@ export async function fetchReport<T>(
   schema: z.ZodType<T>,
   signal?: AbortSignal,
   reload = false,
+  maxBytes?: number,
 ): Promise<T> {
   const response = await fetch(url, {
     signal,
@@ -207,7 +208,43 @@ export async function fetchReport<T>(
     cache: reload ? "reload" : "default",
   });
   if (!response.ok) throw new Error(`Report request failed (${response.status}).`);
-  const parsed = schema.safeParse(await response.json());
+  let value: unknown;
+  if (maxBytes !== undefined) {
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("Report response has no content.");
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    try {
+      while (true) {
+        const item = await reader.read();
+        if (item.done) break;
+        length += item.value.byteLength;
+        if (length > maxBytes) throw new Error("Log chunk exceeds its size limit.");
+        chunks.push(item.value);
+      }
+    } finally {
+      await reader.cancel();
+      reader.releaseLock();
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const expected = new URL(url, window.location.origin).searchParams.get("v");
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-384", bytes));
+    const actual = btoa(String.fromCharCode(...digest))
+      .replaceAll("+", "-")
+      .replaceAll("/", "_")
+      .replace(/=+$/, "")
+      .slice(0, 20);
+    if (expected !== actual) throw new Error("Log chunk version does not match its content.");
+    value = JSON.parse(new TextDecoder().decode(bytes));
+  } else {
+    value = await response.json();
+  }
+  const parsed = schema.safeParse(value);
   if (!parsed.success) throw new Error("This report is invalid or uses an unsupported format.");
   return parsed.data;
 }

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { formatLogRecord, logRecordSchema, matchesLog } from "./logs";
 import {
   artifactPath,
   captureSchema,
@@ -31,6 +32,47 @@ export const capture = captureSchema.parse({
 });
 
 describe("snapshot contract", () => {
+  test("capture diagnostic schema is typed and excludes provider detail", () => {
+    const record = {
+      schemaVersion: 1,
+      operationId: "11111111-1111-4111-8111-111111111111",
+      operationKind: "capture",
+      captureRunId: null,
+      execution: null,
+      sequence: 0,
+      timestampUtcMs: 1790812800000,
+      elapsedMs: 10,
+      severity: "debug",
+      stage: "navigation",
+      eventName: "decision",
+      message: "<img src=x onerror=alert(1)>",
+      fields: { statusCode: { type: "number", value: 200 } },
+      spanId: "22222222-2222-4222-8222-222222222222",
+      parentSpan: null,
+      durationMs: 10,
+      outcome: "success",
+      errorCause: null,
+    };
+    const parsed = logRecordSchema.parse(record);
+    expect(formatLogRecord(parsed)).toContain("statusCode=200");
+    expect(matchesLog(parsed, "error", "all", "")).toBe(false);
+    expect(matchesLog(parsed, "debug", "navigation", "STATUSCODE")).toBe(true);
+    expect(
+      logRecordSchema.safeParse({
+        ...record,
+        fields: { password: { type: "kind", value: "secret" } },
+      }).success,
+    ).toBe(false);
+    expect(logRecordSchema.safeParse({ ...record, operationKind: "deployment" }).success).toBe(
+      false,
+    );
+    expect(
+      logRecordSchema.safeParse({
+        ...record,
+        errorCause: { category: "provider", causes: [], localDetail: "private" },
+      }).success,
+    ).toBe(false);
+  });
   test("manifest_round_trips_optional_execution_log_fields", () => {
     expect(capture.logs).toBeUndefined();
     const states = ["complete", "partial", "missing", "legacyUnavailable", "loadingError"] as const;
