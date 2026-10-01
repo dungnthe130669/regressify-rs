@@ -3,5 +3,6 @@
 
 pub mod adapter;
 pub mod install;
+pub mod journal;
 pub mod record;
 pub(crate) mod redaction;

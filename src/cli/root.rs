@@ -40,6 +40,14 @@ pub struct Cli {
     #[clap(long, default_value = "false")]
     pub verbose: bool,
 
+    /// Diagnostic journal segment size in bytes (env: REGRESSIFY_DIAGNOSTIC_CHUNK_SIZE_BYTES; default: 524288)
+    #[clap(long)]
+    pub diagnostic_chunk_size_bytes: Option<usize>,
+
+    /// Per-operation diagnostic disk budget in bytes (env: REGRESSIFY_DIAGNOSTIC_DISK_BUDGET_BYTES; default: 134217728)
+    #[clap(long)]
+    pub diagnostic_disk_budget_bytes: Option<u64>,
+
     /// Site environment
     #[clap(long, allow_hyphen_values = true, value_parser = site_env_parser)]
     pub site_env: Option<String>,

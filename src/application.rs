@@ -57,6 +57,11 @@ pub async fn execute(cli: Cli) -> Result<()> {
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
+    common::DIAGNOSTIC_OPTIONS.set_value(crate::diagnostics::journal::JournalOptions::resolve(
+        cli.diagnostic_chunk_size_bytes,
+        cli.diagnostic_disk_budget_bytes,
+        |name| std::env::var(name).ok(),
+    )?)?;
     let work_dir = common::ROOT_DIR.get_required()?;
     let regressify_dir = if let Some(regressify_dir) = &cli.regressify_dir {
         work_dir.join(regressify_dir)

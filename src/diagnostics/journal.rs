@@ -1,0 +1,630 @@
+use std::{
+    fs::{self, File, OpenOptions},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
+    path::{Path, PathBuf},
+    time::{Duration, Instant},
+};
+
+use anyhow::{Context, Result, anyhow, ensure};
+use serde::{Deserialize, Serialize};
+
+use super::record::{CaptureRunId, DiagnosticRecordV1, OperationId, OperationKind};
+
+pub const DEFAULT_CHUNK_BYTES: usize = 512 * 1024;
+pub const DEFAULT_DISK_BUDGET_BYTES: u64 = 128 * 1024 * 1024;
+pub const MAX_RECORD_BYTES: usize = 64 * 1024;
+pub const BUFFER_BYTES: usize = 64 * 1024;
+pub const MAX_SEGMENTS: usize = 16_384;
+pub const CHUNK_ENV: &str = "REGRESSIFY_DIAGNOSTIC_CHUNK_SIZE_BYTES";
+pub const BUDGET_ENV: &str = "REGRESSIFY_DIAGNOSTIC_DISK_BUDGET_BYTES";
+const JOURNAL_VERSION: u16 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct JournalOptions {
+    pub chunk_bytes: usize,
+    pub disk_budget_bytes: u64,
+}
+
+impl Default for JournalOptions {
+    fn default() -> Self {
+        Self {
+            chunk_bytes: DEFAULT_CHUNK_BYTES,
+            disk_budget_bytes: DEFAULT_DISK_BUDGET_BYTES,
+        }
+    }
+}
+
+impl JournalOptions {
+    pub fn resolve(
+        chunk: Option<usize>,
+        budget: Option<u64>,
+        environment: impl Fn(&str) -> Option<String>,
+    ) -> Result<Self> {
+        let chunk_bytes = match chunk {
+            Some(chunk) => chunk,
+            None => environment(CHUNK_ENV)
+                .map(|value| {
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| anyhow!("Invalid {CHUNK_ENV}"))
+                })
+                .transpose()?
+                .unwrap_or(DEFAULT_CHUNK_BYTES),
+        };
+        let disk_budget_bytes = match budget {
+            Some(budget) => budget,
+            None => environment(BUDGET_ENV)
+                .map(|value| {
+                    value
+                        .parse::<u64>()
+                        .map_err(|_| anyhow!("Invalid {BUDGET_ENV}"))
+                })
+                .transpose()?
+                .unwrap_or(DEFAULT_DISK_BUDGET_BYTES),
+        };
+        let options = Self {
+            chunk_bytes,
+            disk_budget_bytes,
+        };
+        options.validate()?;
+        Ok(options)
+    }
+
+    pub fn validate(self) -> Result<()> {
+        ensure!(
+            (4096..=8 * 1024 * 1024).contains(&self.chunk_bytes),
+            "Diagnostic chunk size must be between 4096 and 8388608 bytes"
+        );
+        ensure!(
+            (4096..=16 * 1024 * 1024 * 1024).contains(&self.disk_budget_bytes),
+            "Diagnostic disk budget must be between 4096 bytes and 16 GiB"
+        );
+        ensure!(
+            self.disk_budget_bytes >= self.chunk_bytes as u64,
+            "Diagnostic disk budget must cover at least one chunk"
+        );
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildIdentity {
+    pub version: String,
+    pub source_commit: String,
+    pub dirty: Option<bool>,
+}
+
+impl Default for BuildIdentity {
+    fn default() -> Self {
+        Self {
+            version: env!("CARGO_PKG_VERSION").into(),
+            source_commit: env!("BINARY_GIT_HASH").into(),
+            dirty: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationMetadata {
+    pub version: u16,
+    pub operation_id: OperationId,
+    pub operation_kind: OperationKind,
+    pub capture_run_id: Option<CaptureRunId>,
+    pub timestamp_utc_ms: i64,
+    pub build: BuildIdentity,
+}
+
+impl OperationMetadata {
+    pub fn new(kind: OperationKind, run_id: Option<CaptureRunId>) -> Self {
+        Self {
+            version: JOURNAL_VERSION,
+            operation_id: OperationId::new(),
+            operation_kind: kind,
+            capture_run_id: run_id,
+            timestamp_utc_ms: chrono::Utc::now().timestamp_millis(),
+            build: BuildIdentity::default(),
+        }
+    }
+}
+
+pub fn archive_directory(output: &Path, operation: &OperationId) -> PathBuf {
+    output.join("_diagnostics").join(operation.as_str())
+}
+
+fn checked_directory(path: &Path, root: &Path) -> Result<PathBuf> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_dir() && !metadata.file_type().is_symlink(),
+        "Diagnostic directory must not be a symlink"
+    );
+    let canonical = path.canonicalize()?;
+    ensure!(
+        canonical.starts_with(root),
+        "Diagnostic directory escapes output root"
+    );
+    Ok(canonical)
+}
+
+pub(crate) fn checked_file(path: &Path, root: &Path) -> Result<File> {
+    let metadata = fs::symlink_metadata(path)?;
+    ensure!(
+        metadata.is_file() && !metadata.file_type().is_symlink(),
+        "Diagnostic asset must be a regular file"
+    );
+    ensure!(
+        path.canonicalize()?.starts_with(root),
+        "Diagnostic asset escapes output root"
+    );
+    Ok(File::open(path)?)
+}
+
+pub(crate) fn read_json<Output: serde::de::DeserializeOwned>(
+    path: &Path,
+    root: &Path,
+    limit: usize,
+) -> Result<Output> {
+    let mut bytes = Vec::new();
+    checked_file(path, root)?
+        .take(limit as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= limit,
+        "Diagnostic metadata exceeds size limit"
+    );
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
+struct BoundedBytes {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for BoundedBytes {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if self.bytes.len() + bytes.len() > self.limit {
+            return Err(std::io::Error::other(
+                "Diagnostic record exceeds byte limit",
+            ));
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub struct JournalWriter {
+    directory: PathBuf,
+    metadata: OperationMetadata,
+    options: JournalOptions,
+    output: Option<BufWriter<File>>,
+    segment_count: usize,
+    segment_bytes: usize,
+    bytes: u64,
+    records: u64,
+    peak_buffer_bytes: usize,
+    last_flush: Instant,
+    failed: bool,
+}
+
+impl JournalWriter {
+    pub fn create(
+        output: &Path,
+        metadata: OperationMetadata,
+        options: JournalOptions,
+    ) -> Result<Self> {
+        options.validate()?;
+        ensure!(
+            metadata.version == JOURNAL_VERSION,
+            "Unsupported diagnostic journal version"
+        );
+        fs::create_dir_all(output)?;
+        let root = output.canonicalize()?;
+        checked_directory(output, &root)?;
+        let diagnostics = root.join("_diagnostics");
+        match fs::create_dir(&diagnostics) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        checked_directory(&diagnostics, &root)?;
+        let directory = diagnostics.join(metadata.operation_id.as_str());
+        fs::create_dir(&directory)
+            .context("Diagnostic operation already exists or cannot be created")?;
+        let directory = checked_directory(&directory, &root)?;
+        let bytes = serde_json::to_vec(&metadata)?;
+        ensure!(
+            bytes.len() as u64 <= options.disk_budget_bytes,
+            "Diagnostic metadata exceeds disk budget"
+        );
+        let mut header = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(directory.join("operation.json"))?;
+        header.write_all(&bytes)?;
+        header.sync_all()?;
+        Ok(Self {
+            directory,
+            metadata,
+            options,
+            output: None,
+            segment_count: 0,
+            segment_bytes: 0,
+            bytes: bytes.len() as u64,
+            records: 0,
+            peak_buffer_bytes: 0,
+            last_flush: Instant::now(),
+            failed: false,
+        })
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+    pub fn metadata(&self) -> &OperationMetadata {
+        &self.metadata
+    }
+    pub fn record_count(&self) -> u64 {
+        self.records
+    }
+    pub fn segment_count(&self) -> usize {
+        self.segment_count
+    }
+    pub fn byte_count(&self) -> u64 {
+        self.bytes
+    }
+    pub fn peak_buffer_bytes(&self) -> usize {
+        self.peak_buffer_bytes
+    }
+
+    pub fn write(&mut self, record: &DiagnosticRecordV1) -> Result<()> {
+        ensure!(!self.failed, "Diagnostic writer is degraded");
+        let result = self.append(record);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn append(&mut self, record: &DiagnosticRecordV1) -> Result<()> {
+        record.validate()?;
+        ensure!(
+            record.operation_id == self.metadata.operation_id
+                && record.operation_kind == self.metadata.operation_kind,
+            "Record belongs to another diagnostic operation"
+        );
+        let mut record = record.clone();
+        record.sequence = self.records;
+        record.capture_run_id = self.metadata.capture_run_id.clone();
+        let mut encoded = BoundedBytes {
+            bytes: Vec::new(),
+            limit: MAX_RECORD_BYTES.min(self.options.chunk_bytes) - 1,
+        };
+        serde_json::to_writer(&mut encoded, &record)?;
+        encoded.bytes.push(b'\n');
+        ensure!(
+            self.bytes + encoded.bytes.len() as u64 <= self.options.disk_budget_bytes,
+            "Diagnostic disk budget exhausted"
+        );
+        self.peak_buffer_bytes = self
+            .peak_buffer_bytes
+            .max(BUFFER_BYTES + encoded.bytes.capacity());
+        if self.output.is_none()
+            || self.segment_bytes + encoded.bytes.len() > self.options.chunk_bytes
+        {
+            self.rollover()?;
+        }
+        self.output
+            .as_mut()
+            .context("Diagnostic segment is unavailable")?
+            .write_all(&encoded.bytes)?;
+        self.segment_bytes += encoded.bytes.len();
+        self.bytes += encoded.bytes.len() as u64;
+        self.records += 1;
+        if self.records.is_multiple_of(64)
+            || self.last_flush.elapsed() >= Duration::from_millis(250)
+        {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn rollover(&mut self) -> Result<()> {
+        self.flush()?;
+        self.output = None;
+        ensure!(
+            self.segment_count < MAX_SEGMENTS,
+            "Diagnostic segment limit reached"
+        );
+        let path = self
+            .directory
+            .join(format!("segment-{:06}.jsonl", self.segment_count));
+        let output = OpenOptions::new().create_new(true).write(true).open(path)?;
+        self.output = Some(BufWriter::with_capacity(BUFFER_BYTES, output));
+        self.segment_count += 1;
+        self.segment_bytes = 0;
+        Ok(())
+    }
+
+    pub fn flush(&mut self) -> Result<()> {
+        let result = self
+            .output
+            .as_mut()
+            .map(|output| output.flush())
+            .transpose();
+        self.last_flush = Instant::now();
+        if result.is_err() {
+            self.failed = true;
+        }
+        result?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReadSummary {
+    pub records: u64,
+    pub bytes: u64,
+    pub interrupted_tail: bool,
+}
+
+pub struct JournalReader {
+    pub(crate) directory: PathBuf,
+    pub metadata: OperationMetadata,
+    pub(crate) segments: Vec<PathBuf>,
+}
+
+impl JournalReader {
+    pub fn open(output: &Path, operation: &OperationId) -> Result<Self> {
+        let root = output.canonicalize()?;
+        checked_directory(&root.join("_diagnostics"), &root)?;
+        let directory = checked_directory(&archive_directory(&root, operation), &root)?;
+        let metadata: OperationMetadata = read_json(
+            &directory.join("operation.json"),
+            &directory,
+            MAX_RECORD_BYTES,
+        )?;
+        ensure!(
+            metadata.version == JOURNAL_VERSION && metadata.operation_id == *operation,
+            "Invalid diagnostic operation metadata"
+        );
+        let mut segments = Vec::new();
+        for entry in fs::read_dir(&directory)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let name = name.to_str().context("Invalid diagnostic filename")?;
+            if name.starts_with("segment-") {
+                let number = name
+                    .strip_prefix("segment-")
+                    .and_then(|name| name.strip_suffix(".jsonl"))
+                    .filter(|number| {
+                        number.len() == 6 && number.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                    .context("Invalid diagnostic segment name")?;
+                ensure!(
+                    segments.len() < MAX_SEGMENTS,
+                    "Diagnostic segment limit exceeded"
+                );
+                segments.push((number.parse::<usize>()?, entry.path()));
+            }
+        }
+        segments.sort_by_key(|(number, _)| *number);
+        for (expected, (actual, _)) in segments.iter().enumerate() {
+            ensure!(expected == *actual, "Missing diagnostic segment");
+        }
+        Ok(Self {
+            directory,
+            metadata,
+            segments: segments.into_iter().map(|(_, path)| path).collect(),
+        })
+    }
+
+    pub fn segment_count(&self) -> usize {
+        self.segments.len()
+    }
+
+    pub fn visit(&self, mut receive: impl FnMut(DiagnosticRecordV1)) -> Result<ReadSummary> {
+        let mut summary = ReadSummary::default();
+        let mut pending = Vec::new();
+        for (index, path) in self.segments.iter().enumerate() {
+            let mut input =
+                BufReader::with_capacity(BUFFER_BYTES, checked_file(path, &self.directory)?);
+            loop {
+                pending.clear();
+                let count = (&mut input)
+                    .take(MAX_RECORD_BYTES as u64 + 1)
+                    .read_until(b'\n', &mut pending)?;
+                if count == 0 {
+                    break;
+                }
+                ensure!(
+                    count <= MAX_RECORD_BYTES,
+                    "Diagnostic record exceeds size limit"
+                );
+                if pending.last() != Some(&b'\n') {
+                    ensure!(
+                        index + 1 == self.segments.len(),
+                        "Interrupted non-terminal diagnostic segment"
+                    );
+                    summary.interrupted_tail = true;
+                    break;
+                }
+                let record: DiagnosticRecordV1 = serde_json::from_slice(&pending)?;
+                record.validate()?;
+                ensure!(
+                    record.operation_id == self.metadata.operation_id
+                        && record.operation_kind == self.metadata.operation_kind
+                        && record.capture_run_id == self.metadata.capture_run_id
+                        && record.sequence == summary.records,
+                    "Diagnostic identity or sequence mismatch"
+                );
+                summary.records += 1;
+                summary.bytes += count as u64;
+                receive(record);
+            }
+        }
+        Ok(summary)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::record::{DiagnosticEvent, Stage};
+    use super::*;
+
+    fn write_records(
+        root: &Path,
+        options: JournalOptions,
+        count: usize,
+    ) -> (JournalWriter, OperationMetadata) {
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let mut writer = JournalWriter::create(root, metadata.clone(), options).unwrap();
+        let record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::QueueSetup,
+            DiagnosticEvent::Decision,
+        );
+        for _ in 0..count {
+            writer.write(&record).unwrap();
+        }
+        writer.flush().unwrap();
+        (writer, metadata)
+    }
+
+    #[test]
+    fn journal_writer_reconstructs_ten_thousand_records_across_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let (writer, metadata) = write_records(root.path(), JournalOptions::default(), 10_001);
+        assert!(writer.segment_count() > 1);
+        assert!(writer.peak_buffer_bytes() <= BUFFER_BYTES + 2 * MAX_RECORD_BYTES);
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        let mut expected = 0;
+        let summary = reader
+            .visit(|record| {
+                assert_eq!(record.sequence, expected);
+                expected += 1;
+            })
+            .unwrap();
+        assert_eq!(summary.records, 10_001);
+        assert!(!summary.interrupted_tail);
+    }
+
+    #[test]
+    fn chunk_size_flag_and_env_var_override_default() {
+        use clap::Parser;
+        let root = tempfile::tempdir().unwrap();
+        let defaults = JournalOptions::resolve(None, None, |_| None).unwrap();
+        let (default_writer, _) = write_records(root.path(), defaults, 10_001);
+        let cli = crate::cli::Cli::try_parse_from([
+            "regressify",
+            "--diagnostic-chunk-size-bytes",
+            "65536",
+            "test",
+        ])
+        .unwrap();
+        let overridden = JournalOptions::resolve(
+            cli.diagnostic_chunk_size_bytes,
+            cli.diagnostic_disk_budget_bytes,
+            |name| (name == CHUNK_ENV).then(|| "131072".into()),
+        )
+        .unwrap();
+        let (overridden_writer, _) = write_records(root.path(), overridden, 10_001);
+        assert!(overridden_writer.segment_count() > default_writer.segment_count());
+        assert_eq!(overridden.chunk_bytes, 65536);
+        assert_eq!(
+            JournalOptions::resolve(None, None, |name| (name == CHUNK_ENV)
+                .then(|| "131072".into()))
+            .unwrap()
+            .chunk_bytes,
+            131072
+        );
+        assert!(JournalOptions::resolve(None, None, |_| Some("invalid".into())).is_err());
+    }
+
+    #[test]
+    fn budgets_fail_without_overwriting_existing_history_or_escaping_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let options = JournalOptions {
+            chunk_bytes: 4096,
+            disk_budget_bytes: 4096,
+        };
+        let mut writer = JournalWriter::create(root.path(), metadata.clone(), options).unwrap();
+        assert!(JournalWriter::create(root.path(), metadata.clone(), options).is_err());
+        let record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::Finish,
+            DiagnosticEvent::Decision,
+        );
+        let mut written = 0;
+        while writer.write(&record).is_ok() {
+            written += 1;
+        }
+        writer.flush().unwrap();
+        assert!(written > 0);
+        assert!(writer.byte_count() <= 4096);
+        assert!(writer.write(&record).is_err());
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.visit(|_| {}).unwrap().records, written);
+        let other = DiagnosticRecordV1::new(
+            OperationId::new(),
+            OperationKind::Capture,
+            Stage::Finish,
+            DiagnosticEvent::Decision,
+        );
+        let (mut writer, _) = write_records(root.path(), JournalOptions::default(), 0);
+        assert!(writer.write(&other).is_err());
+    }
+
+    #[test]
+    fn journal_rejects_invalid_numeric_limits_and_segment_substitution() {
+        for options in [
+            JournalOptions {
+                chunk_bytes: 0,
+                disk_budget_bytes: 4096,
+            },
+            JournalOptions {
+                chunk_bytes: 8192,
+                disk_budget_bytes: 4096,
+            },
+            JournalOptions {
+                chunk_bytes: usize::MAX,
+                disk_budget_bytes: u64::MAX,
+            },
+        ] {
+            assert!(options.validate().is_err());
+        }
+        let root = tempfile::tempdir().unwrap();
+        let (writer, metadata) = write_records(root.path(), JournalOptions::default(), 1);
+        let directory = writer.directory().to_owned();
+        drop(writer);
+        fs::rename(
+            directory.join("segment-000000.jsonl"),
+            directory.join("segment-000001.jsonl"),
+        )
+        .unwrap();
+        assert!(JournalReader::open(root.path(), &metadata.operation_id).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_rejects_symlinked_storage_and_segments() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("_diagnostics")).unwrap();
+        assert!(
+            JournalWriter::create(
+                root.path(),
+                OperationMetadata::new(OperationKind::Capture, None),
+                JournalOptions::default()
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    }
+}

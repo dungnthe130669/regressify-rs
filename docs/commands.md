@@ -37,6 +37,26 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                                                                                                                                                                   |
 | `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                                                                                                                                                                   |
 
+### Diagnostic Storage Limits
+
+`--diagnostic-chunk-size-bytes` controls journal segment size (default `524288`,
+512 KiB; range 4096 bytes to 8 MiB). `--diagnostic-disk-budget-bytes` limits
+one operation's journal (default `134217728`, 128 MiB; maximum 16 GiB). The budget
+must cover at least one segment. Invalid settings fail configuration validation.
+
+Each flag overrides its matching environment variable:
+`REGRESSIFY_DIAGNOSTIC_CHUNK_SIZE_BYTES` or
+`REGRESSIFY_DIAGNOSTIC_DISK_BUDGET_BYTES`. Settings are resolved once at process
+start, independently of scenario/suite/workspace display verbosity. A storage
+budget limits new writes; it never deletes old captures or operational history.
+
+Journals use operation-owned `_diagnostics/<operation-id>` directories under the
+active output root, with bounded JSON-line records and sequential segment files.
+The writer's tested serialization/output-buffer bound is 192 KiB, excluding the
+caller's record and filesystem buffers. This is an internal buffer measurement,
+not a whole-process resident-memory claim. Public reports must only include their
+explicitly referenced, sanitized capture assets, never a recursive journal copy.
+
 ## Commands
 
 | Command    | Purpose                                                                                                                                                                                                                  |
