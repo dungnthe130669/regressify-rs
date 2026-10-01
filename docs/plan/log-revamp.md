@@ -91,12 +91,37 @@ for this initiative:
   points for durable identity and capture-to-log linkage.
 - [Deployment orchestration](../../src/desktop/deployment.rs) emits typed phase
   events but also writes phases and heartbeat messages directly to stderr.
+- Its private submodule `src/desktop/deployment/diagnostics.rs` already
+  implements provider-aware error sanitization used by all three providers
+  today: `sanitize()` (`src/desktop/deployment/diagnostics.rs:173`) strips
+  authorization-header tokens and secret/password/signature/token/api-key-shaped
+  text and rewrites URLs down to `scheme://host/[redacted]`; `failure()`
+  (`src/desktop/deployment/diagnostics.rs:65`) builds hint-bearing error
+  messages from Azure/Netlify/Cloudflare HTTP responses, called from
+  `swa.rs`, `netlify.rs`, and `cloudflare.rs`. A dedicated existing test,
+  `details_preserve_provider_reason_without_credentials_or_signed_urls`
+  (`src/desktop/deployment/diagnostics.rs:216`), already proves credentials and
+  signed URLs are stripped from provider error messages. The new sanitized
+  error-chain design must reuse this helper, not re-implement redaction (see
+  Shared Architecture: Producers and Consumers).
 - The [frontend capture schema](../../frontend/src/data/report.ts) exposes capture
   results and an error string, but has no execution-log reference or log schema.
 - [Snapshot publication](../../src/snapshot/site.rs) and
   [deployment staging](../../src/desktop/deployment.rs) use explicit, versioned
   report dependencies. New public log assets must join that contract, not be
   collected by recursively copying a diagnostics directory.
+- The per-suite capture report `Manifest` is already at schema version 2 on
+  both sides today: `version: 2` in the Rust constructor
+  (`src/snapshot/site.rs:424`) and `version: z.literal(2)` in the TypeScript
+  `manifestSchema` (`frontend/src/data/report.ts:55`), enforced by a strict
+  `manifest.version == 2` equality check at load time
+  (`src/snapshot/site.rs:688`) that rejects any other value. Neither struct
+  uses `deny_unknown_fields`/`.strict()`, so both already tolerate
+  added-but-unrecognized fields. There is no live "version 1" of this report
+  `Manifest`; the codebase's only existing "version 1" is the distinct,
+  smaller `SiteStatus`/`siteStatusSchema` landing-page status summary
+  (`src/snapshot/site.rs:37`, `frontend/src/data/landing.ts:7`), not this
+  per-suite capture report contract.
 
 Working hypothesis: extending the existing structured event pipeline with
 durable, capture-linked diagnostics will solve the main visibility gap. Replacing
@@ -493,7 +518,13 @@ Field names/types above are a starting proposal for Task 1.3, not a frozen
 contract; `OperationKind`, `Stage`, `Severity`, and `FieldValue` are proposed
 enums to be defined alongside it. `fields` is intentionally a typed, allowlisted
 map rather than `Debug`-formatted free text, per Logging Mechanism: Options
-Considered and Privacy and Safety.
+Considered and Privacy and Safety. `SanitizedError` construction for
+deployment-sourced errors must reuse the existing, already-tested
+`src/desktop/deployment/diagnostics.rs` `sanitize()`/`failure()` helpers (see
+Current Evidence) rather than re-implementing secret/signed-URL redaction;
+Task 1.3 extends or wraps that logic for capture-sourced errors instead of
+building a second, divergent implementation (Shared Architecture: Producers
+and Consumers).
 
 ### Adapter boundary (proposed)
 
@@ -598,6 +629,15 @@ not add a second implementation" in Shared Architecture: Producers and
 Consumers — deployment instrumentation (phase 4) depends on phase 2, not only
 phase 1 (see Delivery Phases).
 
+The same "no second implementation" principle applies to error-chain
+sanitization: `src/desktop/deployment/diagnostics.rs` already implements
+provider-aware sanitization (`sanitize()`, `failure()`) used today by all
+three providers, with a dedicated existing test proving credentials and
+signed URLs are stripped (see Current Evidence). Tasks 4.2/4.3's sanitized
+error chains must reuse and extend that helper for the new
+`SanitizedError`/diagnostic-record pipeline (Interfaces), not re-implement
+secret/signed-URL redaction from scratch.
+
 | Stage                      | Required diagnostic context                                                                                                                  |
 | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Preflight                  | Provider, safe target identity, selected suites/run, validation outcome, and credential presence only.                                       |
@@ -648,10 +688,14 @@ tokens/JWTs, raw response bodies, or whole request/config objects.
 ## Snapshot Frontend and Publication
 
 - Extend synchronized Rust/TypeScript report contracts with optional execution-log
-  references and explicit availability/completeness metadata. Keep old reports
-  readable; verify whether an additive version-2 extension is sufficient before
-  choosing a schema bump (flagged as an explicit assumption to validate — see
-  Assumptions). Do not overload the existing `error` string.
+  references and explicit availability/completeness metadata, landing as
+  additive, fully optional fields under the manifest's existing, already-
+  hardcoded `version: 2` (see Current Evidence; `src/snapshot/site.rs:424`,
+  `frontend/src/data/report.ts:55`). Keep pre-log-fields reports readable
+  without a schema bump and without changing the strict
+  `manifest.version == 2` equality check (`src/snapshot/site.rs:688`)
+  (flagged as an explicit assumption to validate — see Assumptions). Do not
+  overload the existing `error` string.
 - Publish only sanitized standard capture timelines as explicit report assets,
   including passed captures. Prefer separately fetched, bounded JSON chunks under
   the existing versioned data namespace rather than inflating every suite JSON.
@@ -735,8 +779,15 @@ IDs within this section, not just phase numbers.
   direct `eprintln!`/`println!` call site in engine code (e.g. `src/test/`,
   `src/desktop/deployment.rs`) and every existing `progress.rs` event variant;
   classify each as "keep as presentation", "replace with tracing", or "needs a
-  new event". *Acceptance:* a written inventory covering every call site found
-  by a repository-wide search, reviewed against Capture Diagnostics' and
+  new event". Also inventory existing sanitization/error-construction helpers
+  that are neither a print call site nor a `progress.rs` event variant,
+  starting from `src/desktop/deployment/diagnostics.rs`'s `sanitize()`/
+  `failure()` (already used by all three deployment providers; see Current
+  Evidence), and classify each as "reuse as-is", "reuse with extension", or
+  "superseded by the new pipeline" so Tasks 1.3/4.2/4.3 build on them instead
+  of duplicating secret/signed-URL redaction. *Acceptance:* a written inventory
+  covering every call site found by a repository-wide search and every such
+  existing sanitization helper, reviewed against Capture Diagnostics' and
   Deployment Diagnostics' required-context tables. *Depends on:* none.
 - **Task 1.2 — Add `tracing`/`tracing-subscriber` as direct engine
   dependencies.** Add them to the shared engine's `Cargo.toml`, available
@@ -869,6 +920,18 @@ timelines and never leak injected test secrets. Phase 4 depends on phases 1 and
   manual script exercises filter-by-severity/stage, search, and
   download-sanitized-log without blocking the UI on a large synthetic log.
   *Depends on:* Task 5.3.
+- **Task 5.5 — Log-health warnings and disabled exports for partial logs.**
+  Owns the "Desktop and CLI Experience" requirement that a passed capture with
+  an incomplete log stays passed while its log view and run summary visibly
+  flag the missing diagnostics, and that unavailable exports are disabled
+  rather than offered as a shortened download. *Acceptance:* a fixture run
+  whose capture passes but whose archive is marked partial (e.g. via the Task
+  2.6 writer-health signal) shows (a) the pass badge unchanged, (b) an
+  explicit log-health warning surfaced in both the Capture Log view and the
+  run summary for that capture, and (c) its download/export control disabled
+  with a stated reason rather than producing a shortened file; a second
+  fixture whose log is fully available shows the same export control enabled.
+  *Depends on:* Task 5.3, Task 2.6.
 
 Phase 5 exit criterion (unchanged): both entry points work independently;
 desktop remains responsive and cancellation drains/flushing complete.
@@ -877,10 +940,15 @@ desktop remains responsive and cancellation drains/flushing complete.
 
 - **Task 6.1 — Extend report schema (Rust and `frontend/src/data/report.ts`).**
   Optional execution-log reference plus availability/completeness metadata.
-  *Acceptance:* a fixture report round-trips the additive version-2 fields
-  through both the Rust generator and the existing TypeScript types without
-  breaking a version-1 fixture report (validates the Snapshot Frontend
-  assumption that an additive extension is sufficient; see Assumptions).
+  *Acceptance:* a fixture report round-trips the new optional execution-log
+  fields through both the Rust generator and the existing TypeScript types
+  under the manifest's unchanged `version: 2` literal
+  (`src/snapshot/site.rs:424`, `frontend/src/data/report.ts:55`), without
+  breaking a pre-log-fields fixture report captured before this change and
+  without requiring any change to the strict `manifest.version == 2` equality
+  check at `src/snapshot/site.rs:688` (validates the Snapshot Frontend
+  assumption that an additive extension under the current literal is
+  sufficient; see Assumptions).
   *Depends on:* Task 1.3.
 - **Task 6.2 — Lazy-loaded log viewer component.** Including partial/legacy
   states, deep-linkable capture selection, and a responsive desktop/mobile
@@ -921,7 +989,7 @@ expose complete passed/failed capture logs on desktop and mobile.
   scenarios that depend on desktop/CLI views or the frontend — "reload desktop
   history without rerunning", lazy loading, filtering/search, downloads,
   refresh/deep links, and desktop/mobile layouts — which are proven instead by
-  Task 5.2's, Task 5.4's, and Task 6.2's own acceptance criteria. *Depends on:*
+  Task 5.2's, Task 5.4's, Task 5.5's, and Task 6.2's own acceptance criteria. *Depends on:*
   Tasks 2.5, 2.6, 3.1–3.4, 4.1–4.4.
 - **Task 7.2 — Performance/overhead benchmark and budget.** Resolves Risks and
   Rollback risk R2. *Acceptance:* a documented benchmark compares capture
@@ -956,6 +1024,11 @@ extend.
 - Inject diagnostic-only create/write/flush failures and assert warning delivery,
   partial/unavailable metadata, preserved capture results, and unchanged exit
   status. Separately prove that image/report write failures remain process errors.
+  In the desktop UI, additionally assert that a passed capture with a
+  partial/unavailable log keeps its pass badge while its Capture Log view and
+  run summary surface an explicit log-health warning, and that the log's
+  export/download control is disabled rather than offering a shortened file
+  (Task 5.5).
 - Inject bootstrap-copy/open failures: preserve the original records and identity,
   never announce successful handoff, and ensure retries cannot duplicate events.
   Test slow/full writer queues and cancellation without UI or task deadlocks.
@@ -1007,8 +1080,8 @@ Build embedded assets from frontend source, never by editing generated files.
 | R1 | Unbounded disk growth: every passed capture now writes a full, unpruned durable journal ("No automatic operational-log pruning" plus full logs for passing captures too). | High | Medium–High: disk exhaustion over time on CI agents and desktop users with large suites. | Bounded per-operation chunk size and disk budget (Task 2.1); cleanup still respects reference provenance (Full-Log Persistence). Monitor disk usage during Phase 7 hardening. | If disk-usage incidents recur after shipping, add an opt-in time- or size-based retention cap per workspace as a follow-up (explicitly out of scope for v1 — see Non-Goals); until then, use the Task 2.6 kill-switch (R3) as an interim mitigation. |
 | R2 | Per-capture instrumentation performance/IO overhead is unbudgeted: every stage in Capture Diagnostics now writes always-archived events, even for passing captures. | Medium | Medium: slower captures, especially at high concurrency or constrained CI. | Task 7.2 benchmarks wall-time/IO overhead with instrumentation on vs. off against an explicit budget (see Definition of Done) before Phase 7 exit. | If the benchmark exceeds the agreed budget, reduce default-archived field verbosity or batch-flush more aggressively; if still exceeded, gate newly added stage-level instrumentation behind the Task 2.6 kill-switch per-environment rather than reverting the whole feature. |
 | R3 | No described fallback/kill-switch if the pipeline misbehaves in production (e.g. a disk-full desktop user), beyond the generic warning-only failure policy. | Low–Medium | High if archive writing itself destabilizes a run (would violate the warning-only decision in practice even if not in intent). | The warning-only policy (Confirmed Product Decisions) is a partial mitigation by design. Task 2.6 adds an explicit environment-variable/config switch to disable durable-archive writing entirely, keeping only the existing bounded live buffer, as a last resort. | Repeated user reports of disk-full/hangs correlated with archive writing flips the kill-switch default to off until root-caused; document the switch in Task 7.3. |
-| R4 | Schema/version drift between the new diagnostic record, `progress.rs`, and report schemas could silently desynchronize older desktop builds or cached frontend assets. | Medium | Medium: a consumer misreads or silently drops newer records. | Explicit `schema_version` field (Interfaces); additive-only evolution proven by Task 6.1's round-trip fixture test. | A version mismatch detected at load time falls back to an explicit "legacy/unavailable" state by construction, never a best-effort parse; if that is insufficient, revisit the additive-extension assumption (see Assumptions) before a schema bump. |
-| R5 | Sanitization/redaction gaps leak secrets into durable or publicly exported archives — the Istari review explicitly found redaction is "a backstop, not a public-export policy." | Medium | High: credential/secret leakage in a published report. | Allowlisted structured fields only, never arbitrary `Debug` dumps (Logging Mechanism: Options Considered; Privacy and Safety); dedicated secret-injection tests in Verification Strategy must pass before Phase 6/7 exit. | Any confirmed leak found in review or testing blocks promotion of the public-export path (Phase 6) until fixed — this is a hard Definition of Done gate, not a warning-only diagnostic failure. |
+| R4 | Schema/version drift between the new diagnostic record, `progress.rs`, and report schemas could silently desynchronize older desktop builds or cached frontend assets. | Medium | Medium: a consumer misreads or silently drops newer records. | Explicit `schema_version` field (Interfaces); additive-only evolution under the manifest's unchanged `version: 2` literal, proven by Task 6.1's round-trip fixture test. | A version mismatch detected at load time falls back to an explicit "legacy/unavailable" state by construction, never a best-effort parse; if that is insufficient, revisit the additive-extension assumption (see Assumptions) before a schema bump. |
+| R5 | Sanitization/redaction gaps leak secrets into durable or publicly exported archives — the Istari review explicitly found redaction is "a backstop, not a public-export policy." | Medium | High: credential/secret leakage in a published report. | Allowlisted structured fields only, never arbitrary `Debug` dumps (Logging Mechanism: Options Considered; Privacy and Safety); reuse the existing, already-tested `src/desktop/deployment/diagnostics.rs` sanitizer for deployment-sourced errors instead of a second redaction implementation (Current Evidence); dedicated secret-injection tests in Verification Strategy must pass before Phase 6/7 exit. | Any confirmed leak found in review or testing blocks promotion of the public-export path (Phase 6) until fixed — this is a hard Definition of Done gate, not a warning-only diagnostic failure. |
 
 Risks are owned by the task(s) noted in Mitigation and re-assessed at the
 corresponding phase's exit criterion (Delivery Phases) and at the overall
@@ -1049,6 +1122,12 @@ addition to each phase's own Exit Criterion in Delivery Phases:
    failing runs: a diagnostic-only failure never flips a passed capture to
    failed or changes the CLI exit code, verified by a dedicated regression
    test (Confirmed Product Decisions).
+10. A passed capture with a partial or unavailable log keeps its pass badge
+    while its Capture Log view and run summary visibly surface a log-health
+    warning, and any export/download control for that log is disabled rather
+    than offering a shortened file as complete — for a normal new run, not
+    only the legacy pre-revamp case in item 5 — verified by Task 5.5's
+    acceptance criterion.
 
 ## Open Questions and Remaining Decisions
 
@@ -1101,11 +1180,25 @@ the rest of this plan depends on.
   Phase 1–2 prototype, against real previously-hard-to-diagnose failure cases
   — the two-interleaved-scenario check described at the end of Current
   Evidence.
-- **An additive version-2 report-schema extension is sufficient**; no breaking
-  version bump is needed (Snapshot Frontend and Publication). *Re-check:* Task
-  6.1's round-trip fixture test. If the additive approach cannot express
-  completeness/availability metadata cleanly, a version bump may be required
-  (Risks and Rollback, R4).
+- **Execution-log fields can land as additive, fully optional fields under the
+  report manifest's existing, already-hardcoded `version: 2`**; no version
+  bump (e.g. to a literal `3`) is needed (Snapshot Frontend and Publication).
+  The per-suite capture `Manifest`/`manifestSchema` is already at schema
+  version 2 today on both sides (`src/snapshot/site.rs:424`,
+  `frontend/src/data/report.ts:55`), gated by a strict
+  `manifest.version == 2` equality check at load time
+  (`src/snapshot/site.rs:688`) that rejects any other value; there is no live
+  "version 1" of this report `Manifest` to extend from (the codebase's only
+  existing "version 1" is the distinct, smaller `SiteStatus`/`siteStatusSchema`
+  landing-page status summary — see Current Evidence). *Re-check:* Task 6.1's
+  round-trip fixture test, which must prove the new fields round-trip under
+  the unchanged literal `2` without touching the `==2` gate. If the additive
+  approach cannot express completeness/availability metadata cleanly under
+  that constraint, a genuine version bump is required, which would also need
+  an explicit plan for relaxing the hard equality check at
+  `src/snapshot/site.rs:688` without breaking already-deployed reports and
+  older desktop builds that assume today's exact-2 contract, before a schema
+  bump could ship (Risks and Rollback, R4).
 - **Desktop/CI disk space and filesystem latency are not meaningfully
   constrained** for per-capture durable journals (Full-Log Persistence; Risks
   and Rollback R1). *Re-check:* the Task 7.2 performance benchmark and real
