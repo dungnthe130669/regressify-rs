@@ -93,6 +93,12 @@ log links and a comparison outcome; a later visual mismatch does not rewrite
 the successful capture's original execution outcome. Missing or corrupt log
 metadata is diagnostic availability information, not an image comparison error.
 
+`ref` and `approve` carry the selected image's original log link into the baseline;
+they never create a replacement execution history. Log sidecars bind to the image's
+SHA-256 digest, so an old link cannot silently describe different image bytes.
+Suite rename keeps immutable operation IDs, and suite deletion prunes only
+unreferenced generated log copies, preserving source journals and active writes.
+
 Cancelling a deployment records local cancellation with remote state unknown
 unless publication was already confirmed. Stopping the local worker cannot undo
 an upload accepted by the provider. Check the provider's deployment history before

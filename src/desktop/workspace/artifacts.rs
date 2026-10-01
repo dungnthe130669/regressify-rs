@@ -325,6 +325,111 @@ impl ArtifactUpdate {
 mod tests {
     use super::*;
 
+    fn published_log_suites(
+        root: &Path,
+    ) -> (PathBuf, Vec<crate::diagnostics::record::OperationId>) {
+        let mut operations = Vec::new();
+        let output = root.join(".regressify");
+        let image = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+        for id in ["one", "two"] {
+            let (_, _, reference) = crate::desktop::logs::tests::fixture(root, 3);
+            let suite = output.join(id);
+            fs::rename(output.join("suite"), &suite).unwrap();
+            fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+            fs::write(suite.join("bitmaps_reference/page__FINAL.png"), &image).unwrap();
+            fs::write(suite.join("bitmaps_test/run/page__FINAL.png"), &image).unwrap();
+            crate::compare::report_gen::generate_comparison_report(&suite, id, "run", 0.0, 1)
+                .unwrap();
+            operations.push(reference.operation_id);
+        }
+        crate::snapshot::generate_site(
+            &output,
+            &["one".into(), "two".into()],
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        (output.canonicalize().unwrap(), operations)
+    }
+
+    #[test]
+    fn suite_rename_preserves_log_assets() {
+        let root = tempfile::tempdir().unwrap();
+        let (output, operations) = published_log_suites(root.path());
+        let before = crate::snapshot::artifact_paths(&output, &["one".into(), "two".into()])
+            .unwrap()
+            .into_iter()
+            .filter(|path| path.starts_with("_snapshot/data/logs"))
+            .collect::<Vec<_>>();
+        ArtifactUpdate::prepare(
+            std::slice::from_ref(&output),
+            "one",
+            Some("renamed"),
+            Some("Renamed suite"),
+        )
+        .unwrap()
+        .commit(|| Ok(()))
+        .unwrap();
+        let after = crate::snapshot::artifact_paths(&output, &["renamed".into(), "two".into()])
+            .unwrap()
+            .into_iter()
+            .filter(|path| path.starts_with("_snapshot/data/logs"))
+            .collect::<Vec<_>>();
+        assert_eq!(before, after);
+        assert_eq!(after.len(), 2);
+        let log = crate::test::capture::read_capture_log(
+            &output,
+            &output.join("renamed/bitmaps_test/run/page__FINAL.png"),
+        )
+        .unwrap();
+        assert_eq!(log.archive.unwrap().operation_id, operations[0]);
+        assert!(!output.join("one").exists());
+    }
+
+    #[test]
+    fn suite_delete_removes_only_unreferenced_logs_and_preserves_active_history() {
+        use crate::diagnostics::{journal::*, record::*};
+        let root = tempfile::tempdir().unwrap();
+        let (output, operations) = published_log_suites(root.path());
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let mut active =
+            JournalWriter::create(&output, metadata.clone(), JournalOptions::default()).unwrap();
+        let record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::QueueSetup,
+            DiagnosticEvent::Started,
+        );
+        active.write(&record).unwrap();
+        ArtifactUpdate::prepare(std::slice::from_ref(&output), "one", None, None)
+            .unwrap()
+            .commit(|| Ok(()))
+            .unwrap();
+        let paths = crate::snapshot::artifact_paths(&output, &["two".into()]).unwrap();
+        let logs = paths
+            .iter()
+            .filter(|path| path.starts_with("_snapshot/data/logs"))
+            .collect::<Vec<_>>();
+        assert_eq!(logs.len(), 1);
+        assert!(logs[0].to_string_lossy().contains(operations[1].as_str()));
+        assert!(
+            !output
+                .join(format!("_snapshot/data/logs/{}", operations[0]))
+                .exists()
+        );
+        for operation in operations {
+            assert!(archive_directory(&output, &operation).is_dir());
+        }
+        active.write(&record).unwrap();
+        active.finalize(Outcome::Success).unwrap();
+        assert_eq!(
+            JournalReader::open(&output, &metadata.operation_id)
+                .unwrap()
+                .archive_state(),
+            ArchiveState::Complete
+        );
+    }
+
     #[test]
     fn suite_artifact_rollback_restores_all_roots_after_document_failure() {
         let first = tempfile::tempdir().unwrap();

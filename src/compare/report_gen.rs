@@ -1056,6 +1056,9 @@ fn promote_screenshots(
         }
         let dst = reference_dir.join(file_name);
         copy_file_atomically(&src, &dst)?;
+        if let Some(output) = reference_dir.parent().and_then(Path::parent) {
+            crate::test::capture::promote_capture_log(output, &src, &dst);
+        }
 
         // Promote the error-marker sidecar so the reference retains its
         // failure flag; clear any stale marker when the new capture is good.

@@ -18,3 +18,8 @@ Verified: 2026-10-01
   archive; finalization and checksum verification determine completeness.
 - Browser validation for the action/hook instrumentation used existing loopback
   fixtures with `prepare_browser(Some(false))`: no downloads or personal profiles.
+- [Capture log links](../../src/test/capture.rs) bind to image SHA-256 digests.
+  `ref` and `approve` preserve the original archive reference after replacing an
+  image; failed link writes cannot silently attribute changed bytes to old logs.
+  The staged suite-mutation regressions retain immutable operation paths and
+  source journals while pruning only unreferenced public chunks.

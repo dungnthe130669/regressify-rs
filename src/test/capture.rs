@@ -363,11 +363,42 @@ pub struct CaptureLog {
     pub archive: Option<crate::diagnostics::runtime::ArchiveReference>,
 }
 
-pub fn write_capture_log(
-    output: &Path,
-    image: &Path,
-    archive: &crate::diagnostics::runtime::ArchiveReference,
-) -> Result<()> {
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CaptureLogLink {
+    #[serde(flatten)]
+    log: CaptureLog,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image_digest: Option<String>,
+}
+
+fn image_digest(path: &Path) -> Result<Option<String>> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    let mut bytes = 0_u64;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        anyhow::ensure!(
+            bytes <= 512 * 1024 * 1024,
+            "Capture log image exceeds byte limit"
+        );
+        digest.update(&buffer[..count]);
+    }
+    Ok(Some(format!("{:x}", digest.finalize())))
+}
+
+fn store_capture_log(output: &Path, image: &Path, log: CaptureLog) -> Result<()> {
     let root = output.canonicalize()?;
     let parent = image
         .parent()
@@ -377,6 +408,14 @@ pub fn write_capture_log(
             && parent.canonicalize()?.starts_with(&root),
         "Capture log escapes output root"
     );
+    if let Ok(metadata) = fs::symlink_metadata(image) {
+        anyhow::ensure!(
+            metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && image.canonicalize()?.starts_with(&root),
+            "Capture log image must be a contained regular file"
+        );
+    }
     let path = image.with_extension("log.json");
     if let Ok(metadata) = fs::symlink_metadata(&path) {
         anyhow::ensure!(
@@ -384,11 +423,37 @@ pub fn write_capture_log(
             "Capture log must be a regular file"
         );
     }
+    write_file_atomically(
+        &path,
+        &serde_json::to_vec(&CaptureLogLink {
+            log,
+            image_digest: image_digest(image)?,
+        })?,
+    )
+}
+
+pub(crate) fn promote_capture_log(output: &Path, source: &Path, destination: &Path) {
+    let log = read_capture_log(output, source).unwrap_or(CaptureLog {
+        state: crate::diagnostics::journal::ArchiveState::LegacyUnavailable,
+        archive: None,
+    });
+    if store_capture_log(output, destination, log).is_err() {
+        crate::diagnostics::install::emergency_warning(
+            "Reference image was promoted but its log link could not be updated",
+        );
+    }
+}
+
+pub fn write_capture_log(
+    output: &Path,
+    image: &Path,
+    archive: &crate::diagnostics::runtime::ArchiveReference,
+) -> Result<()> {
     let log = CaptureLog {
         state: archive.state,
         archive: Some(archive.clone()),
     };
-    write_file_atomically(&path, &serde_json::to_vec(&log)?)
+    store_capture_log(output, image, log)
 }
 
 pub fn read_capture_log(output: &Path, image: &Path) -> Option<CaptureLog> {
@@ -420,7 +485,15 @@ pub fn read_capture_log(output: &Path, image: &Path) -> Option<CaptureLog> {
     }
     let loaded = (|| -> Result<CaptureLog> {
         let root = output.canonicalize()?;
-        let mut log: CaptureLog = crate::diagnostics::journal::read_json(&path, &root, 64 * 1024)?;
+        let link: CaptureLogLink = crate::diagnostics::journal::read_json(&path, &root, 64 * 1024)?;
+        if let Some(expected) = link.image_digest {
+            crate::diagnostics::journal::checked_file(image, &root)?;
+            anyhow::ensure!(
+                image_digest(image)?.as_ref() == Some(&expected),
+                "Capture log no longer matches its image"
+            );
+        }
+        let mut log = link.log;
         if let Some(reference) = &log.archive {
             log.state = inspect_archive(&root, Some(&reference.operation_id), true);
         }
@@ -1184,6 +1257,58 @@ pub fn read_error_marker(png_path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn reference_promotion_does_not_fabricate_log_and_rejects_stale_image_links() {
+        use crate::diagnostics::{journal::*, record::*, runtime::ArchiveReference};
+        let root = tempfile::tempdir().unwrap();
+        let suite = root.path().join("suite");
+        let captures = suite.join("bitmaps_test/run");
+        std::fs::create_dir_all(&captures).unwrap();
+        let source = captures.join("page__FINAL.png");
+        std::fs::write(
+            &source,
+            lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let mut writer =
+            JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                .unwrap();
+        writer.finalize(Outcome::Success).unwrap();
+        let reference = ArchiveReference {
+            operation_id: metadata.operation_id.clone(),
+            execution_id: None,
+            state: ArchiveState::Complete,
+            missing_records: Some(0),
+        };
+        super::write_capture_log(root.path(), &source, &reference).unwrap();
+        crate::compare::report_gen::approve_screenshots(&suite, Some("run")).unwrap();
+        let destination = suite.join("bitmaps_reference/page__FINAL.png");
+        assert_eq!(
+            super::read_capture_log(root.path(), &destination)
+                .unwrap()
+                .archive,
+            Some(reference)
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path().join("_diagnostics"))
+                .unwrap()
+                .count(),
+            1
+        );
+        std::fs::write(
+            &destination,
+            lodepng::encode32(&[250_u8, 250, 250, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            super::read_capture_log(root.path(), &destination)
+                .unwrap()
+                .state,
+            ArchiveState::LoadingError
+        );
+    }
+
     #[tokio::test]
     async fn passed_capture_with_mismatch_shows_distinct_capture_and_comparison_outcomes() {
         use crate::diagnostics::{journal::JournalReader, record::*, runtime as diagnostics};

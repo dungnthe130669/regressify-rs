@@ -1538,6 +1538,7 @@ pub async fn exec_ref(args: RefArgs) -> Result<()> {
 
             let dst = ref_dest.join(&file_name);
             copy_file_atomically(&src, &dst)?;
+            capture::promote_capture_log(regressify_dir, &src, &dst);
 
             let marker_dst = crate::test::capture::error_marker_path(&dst);
             if marker_dst.exists() {
