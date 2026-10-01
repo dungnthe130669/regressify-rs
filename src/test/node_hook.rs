@@ -22,6 +22,22 @@ pub(crate) fn validate(root: &Path, script: &str) -> Result<()> {
 }
 
 pub(crate) async fn run(root: &Path, payload: serde_json::Value, timeout: Duration) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::stage(
+        Stage::StateHooks,
+        [
+            (Field::ActionType, FieldValue::Kind(SafeValue::Hook)),
+            (
+                Field::TimeoutMs,
+                FieldValue::Number(timeout.as_millis() as u64),
+            ),
+        ],
+        run_inner(root, payload, timeout),
+    )
+    .await
+}
+
+async fn run_inner(root: &Path, payload: serde_json::Value, timeout: Duration) -> Result<()> {
     tokio::time::timeout(timeout, async {
         let mut process = tokio::process::Command::new("node")
             .current_dir(root)

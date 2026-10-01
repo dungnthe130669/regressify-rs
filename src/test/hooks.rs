@@ -5,6 +5,10 @@ use chromiumoxide::Page;
 
 use crate::{
     config::{self, ResolvedConfig},
+    diagnostics::{
+        record::{Field, FieldValue, SafeValue, Stage},
+        runtime as diagnostics,
+    },
     types::TestScenario,
 };
 
@@ -17,6 +21,14 @@ pub(crate) struct DocumentHooks {
 
 impl DocumentHooks {
     pub fn load(root: &Path, scenario: &TestScenario, config: &ResolvedConfig) -> Result<Self> {
+        diagnostics::stage_sync(
+            Stage::StateHooks,
+            [(Field::ActionType, FieldValue::Kind(SafeValue::Hook))],
+            || Self::load_inner(root, scenario, config),
+        )
+    }
+
+    fn load_inner(root: &Path, scenario: &TestScenario, config: &ResolvedConfig) -> Result<Self> {
         let read = |path: &str| -> Result<Option<String>> {
             config::resolve_optional_workspace_file(root, path, "document hook")?
                 .map(std::fs::read_to_string)
@@ -68,6 +80,18 @@ impl DocumentHooks {
     }
 
     pub async fn apply(&self, page: &Page) -> Result<()> {
+        diagnostics::stage(
+            Stage::StateHooks,
+            [
+                (Field::ActionType, FieldValue::Kind(SafeValue::Hook)),
+                (Field::State, FieldValue::Kind(SafeValue::Ready)),
+            ],
+            self.apply_inner(page),
+        )
+        .await
+    }
+
+    async fn apply_inner(&self, page: &Page) -> Result<()> {
         tokio::time::timeout(self.timeout, async {
             super::page_stability::wait_for_dom_ready(page, self.timeout).await?;
             let marker = serde_json::to_string(&self.marker)?;

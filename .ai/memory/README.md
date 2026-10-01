@@ -32,6 +32,8 @@ assistant's private memory store. Keep this directory out of ignore rules.
 
 ## Topic Notes
 
+- [Logging diagnostics](logging-diagnostics.md): safe records, journal health,
+  per-job ownership, and bounded async wrapper size on Windows.
 - [Browser runtime](browser-runtime.md): context-independent URL reads and
   out-of-process iframe session routing.
 - [Workspace initialization](workspace-initialization.md): shared CLI/desktop

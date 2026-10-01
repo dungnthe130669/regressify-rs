@@ -25,6 +25,7 @@ static ROUTES: OnceLock<Mutex<HashMap<OperationId, Weak<JournalSink>>>> = OnceLo
 
 tokio::task_local! {
     static CURRENT: Arc<OperationContext>;
+    static ACTION: Vec<(Field, FieldValue)>;
 }
 
 pub struct JournalLayer;
@@ -67,6 +68,7 @@ pub struct OperationContext {
     sink: Arc<JournalSink>,
     started: Instant,
     sequence: AtomicU64,
+    action_index: AtomicU64,
 }
 
 impl OperationContext {
@@ -89,6 +91,9 @@ impl OperationContext {
         record.sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         record.elapsed_ms = self.started.elapsed().as_millis() as u64;
         record.severity = severity;
+        if stage == Stage::ActionsFrames {
+            let _ = ACTION.try_with(|fields| record.fields.extend(fields.iter().cloned()));
+        }
         record.fields.extend(fields);
         record.outcome = completion.outcome;
         record.error_cause = completion.error;
@@ -159,6 +164,7 @@ impl Operation {
             sink: sink.clone(),
             started: Instant::now(),
             sequence: AtomicU64::new(0),
+            action_index: AtomicU64::new(0),
         });
         if let Ok(mut routes) = ROUTES.get_or_init(Default::default).lock() {
             routes.insert(metadata.operation_id, Arc::downgrade(&sink));
@@ -237,6 +243,19 @@ pub fn current() -> Option<Arc<OperationContext>> {
     CURRENT.try_with(Arc::clone).ok()
 }
 
+pub fn next_action_index() -> u64 {
+    current()
+        .map(|context| context.action_index.fetch_add(1, Ordering::Relaxed) + 1)
+        .unwrap_or(1)
+}
+
+pub async fn action_scope<Work: Future>(
+    fields: Vec<(Field, FieldValue)>,
+    work: Work,
+) -> Work::Output {
+    ACTION.scope(fields, work).await
+}
+
 pub fn in_scope<Output>(
     context: Option<Arc<OperationContext>>,
     work: impl FnOnce() -> Output,
@@ -298,29 +317,10 @@ pub fn result(stage: Stage, result: &anyhow::Result<()>, duration_ms: u64) {
     }
 }
 
-pub async fn navigation<Output>(
-    destination: &str,
-    timeout_ms: u64,
-    work: impl Future<Output = anyhow::Result<Output>>,
-) -> anyhow::Result<Output> {
-    stage(
-        Stage::Navigation,
-        [
-            (
-                Field::Destination,
-                FieldValue::Identity(SafeIdentity::fingerprint(destination)),
-            ),
-            (Field::TimeoutMs, FieldValue::Number(timeout_ms)),
-        ],
-        work,
-    )
-    .await
-}
-
-pub async fn stage<Output>(
+pub fn stage_sync<Output>(
     stage: Stage,
     fields: impl IntoIterator<Item = (Field, FieldValue)>,
-    work: impl Future<Output = anyhow::Result<Output>>,
+    work: impl FnOnce() -> anyhow::Result<Output>,
 ) -> anyhow::Result<Output> {
     let fields: Vec<_> = fields.into_iter().collect();
     event(
@@ -330,7 +330,7 @@ pub async fn stage<Output>(
         fields.iter().cloned(),
     );
     let started = Instant::now();
-    let result = work.await;
+    let result = work();
     if let Some(context) = current() {
         context.record(
             stage,
@@ -353,4 +353,64 @@ pub async fn stage<Output>(
         );
     }
     result
+}
+
+pub async fn navigation<Output>(
+    destination: &str,
+    timeout_ms: u64,
+    work: impl Future<Output = anyhow::Result<Output>>,
+) -> anyhow::Result<Output> {
+    stage(
+        Stage::Navigation,
+        [
+            (
+                Field::Destination,
+                FieldValue::Identity(SafeIdentity::fingerprint(destination)),
+            ),
+            (Field::TimeoutMs, FieldValue::Number(timeout_ms)),
+        ],
+        work,
+    )
+    .await
+}
+
+pub fn stage<Output>(
+    stage: Stage,
+    fields: impl IntoIterator<Item = (Field, FieldValue)>,
+    work: impl Future<Output = anyhow::Result<Output>>,
+) -> impl Future<Output = anyhow::Result<Output>> {
+    let fields: Vec<_> = fields.into_iter().collect();
+    let work = Box::pin(work);
+    async move {
+        event(
+            stage,
+            DiagnosticEvent::StageStarted,
+            Severity::Info,
+            fields.iter().cloned(),
+        );
+        let started = Instant::now();
+        let result = work.await;
+        if let Some(context) = current() {
+            context.record(
+                stage,
+                DiagnosticEvent::StageFinished,
+                if result.is_ok() {
+                    Severity::Info
+                } else {
+                    Severity::Error
+                },
+                fields,
+                Completion {
+                    outcome: Some(if result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Failure
+                    }),
+                    error: result.as_ref().err().map(SanitizedError::capture),
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                },
+            );
+        }
+        result
+    }
 }

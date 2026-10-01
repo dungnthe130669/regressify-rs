@@ -4,6 +4,10 @@ use anyhow::{Result, anyhow};
 use chromiumoxide::Page;
 
 use crate::config::ResolvedConfig;
+use crate::diagnostics::{
+    record::{DiagnosticEvent, Field, FieldValue, SafeValue, Severity, Stage},
+    runtime as diagnostics,
+};
 
 const DOM_READY_POLL: Duration = Duration::from_millis(100);
 const EVALUATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -20,20 +24,37 @@ pub fn is_dom_ready(state: &str) -> bool {
     matches!(state, "interactive" | "complete")
 }
 
-pub async fn wait_for_screenshot_delay(delay: Option<f64>, log_prefix: &str) {
+pub async fn wait_for_screenshot_delay(delay: Option<f64>, _log_prefix: &str) {
     if let Some(delay) = delay
         && delay > 0.0
     {
-        crate::progress::scenario_log!(
-            "{} Delay: waiting {} ms before screenshot...",
-            log_prefix,
-            delay
+        diagnostics::event(
+            Stage::ScreenshotSettling,
+            DiagnosticEvent::Waiting,
+            Severity::Debug,
+            [(Field::TimeoutMs, FieldValue::Number(delay as u64))],
         );
         tokio::time::sleep(Duration::from_millis(delay as u64)).await;
     }
 }
 
 pub async fn prepare_screenshot(
+    page: &Page,
+    config: &ResolvedConfig,
+    log_prefix: &str,
+) -> Result<()> {
+    diagnostics::stage(
+        Stage::ScreenshotSettling,
+        [(
+            Field::TimeoutMs,
+            FieldValue::Number(config.settle_timeout_ms),
+        )],
+        prepare_screenshot_inner(page, config, log_prefix),
+    )
+    .await
+}
+
+async fn prepare_screenshot_inner(
     page: &Page,
     config: &ResolvedConfig,
     log_prefix: &str,
@@ -47,23 +68,33 @@ pub async fn prepare_screenshot(
     if config.settle_timeout_ms > 0 {
         match wait_for_page_settle(page, Duration::from_millis(config.settle_timeout_ms)).await {
             Ok(result) if result.settled => {
-                crate::progress::scenario_log!(
-                    "{} Page settled in {} ms before capture.",
-                    log_prefix,
-                    result.elapsed_ms
+                diagnostics::event(
+                    Stage::ScreenshotSettling,
+                    DiagnosticEvent::Decision,
+                    Severity::Debug,
+                    [
+                        (Field::State, FieldValue::Kind(SafeValue::Complete)),
+                        (Field::ElapsedMs, FieldValue::Number(result.elapsed_ms)),
+                    ],
                 );
             }
             Ok(result) => {
-                crate::progress::scenario_log!(
-                    "{} Page did not settle within {} ms; capturing anyway.",
-                    log_prefix,
-                    result.elapsed_ms
+                diagnostics::event(
+                    Stage::ScreenshotSettling,
+                    DiagnosticEvent::Decision,
+                    Severity::Warn,
+                    [
+                        (Field::Reason, FieldValue::Kind(SafeValue::Timeout)),
+                        (Field::ElapsedMs, FieldValue::Number(result.elapsed_ms)),
+                    ],
                 );
             }
-            Err(error) => {
-                crate::progress::scenario_log!(
-                    "{} Settle wait failed ({error}); capturing without settle.",
-                    log_prefix
+            Err(_) => {
+                diagnostics::event(
+                    Stage::ScreenshotSettling,
+                    DiagnosticEvent::Decision,
+                    Severity::Warn,
+                    [(Field::State, FieldValue::Kind(SafeValue::Failed))],
                 );
             }
         }
@@ -74,7 +105,12 @@ pub async fn prepare_screenshot(
         stabilize_capture_animations(page, log_prefix).await?;
     }
 
-    hide_text_carets(page).await?;
+    diagnostics::stage(
+        Stage::ScreenshotSettling,
+        [(Field::Condition, FieldValue::Kind(SafeValue::Caret))],
+        hide_text_carets(page),
+    )
+    .await?;
 
     Ok(())
 }
@@ -99,14 +135,18 @@ async fn hide_text_carets(page: &Page) -> Result<()> {
     Ok(())
 }
 
-pub async fn stabilize_capture_animations(page: &Page, log_prefix: &str) -> Result<()> {
+pub async fn stabilize_capture_animations(page: &Page, _log_prefix: &str) -> Result<()> {
     let (completed, frozen) = freeze_animations(page).await?;
     if completed > 0 || frozen > 0 {
-        crate::progress::scenario_log!(
-            "{} Stabilized {} finite and {} infinite animation(s).",
-            log_prefix,
-            completed,
-            frozen
+        diagnostics::event(
+            Stage::ScreenshotSettling,
+            DiagnosticEvent::Decision,
+            Severity::Debug,
+            [
+                (Field::Condition, FieldValue::Kind(SafeValue::Animation)),
+                (Field::CompletedAnimations, FieldValue::Number(completed)),
+                (Field::FrozenAnimations, FieldValue::Number(frozen)),
+            ],
         );
     }
     Ok(())
@@ -139,6 +179,15 @@ pub async fn wait_for_dom_ready(page: &Page, timeout: Duration) -> Result<()> {
 
 /// Scroll through the document to trigger viewport-based lazy loading.
 pub async fn trigger_lazy_loading(page: &Page) -> Result<()> {
+    diagnostics::stage(
+        Stage::ScreenshotSettling,
+        [(Field::Condition, FieldValue::Kind(SafeValue::LazyLoading))],
+        trigger_lazy_loading_inner(page),
+    )
+    .await
+}
+
+async fn trigger_lazy_loading_inner(page: &Page) -> Result<()> {
     tokio::time::timeout(
         LAZY_LOAD_TIMEOUT,
         page.evaluate(

@@ -892,34 +892,92 @@ pub async fn ensure_actionable(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<ElementInfo> {
+    use crate::diagnostics::record::SafeValue;
     // 1. Wait for element to exist
-    wait_for_attached_selector(page, selector, frame, config).await?;
+    diagnostic_condition(
+        SafeValue::Exists,
+        selector,
+        wait_for_attached_selector(page, selector, frame, config),
+    )
+    .await?;
 
     // 2. Wait for element to be visible
-    wait_for_visible(page, selector, frame, config).await?;
+    diagnostic_condition(
+        SafeValue::Visible,
+        selector,
+        wait_for_visible(page, selector, frame, config),
+    )
+    .await?;
 
     // 3. Wait for element to be stable
-    wait_for_stable(page, selector, frame, config).await?;
+    diagnostic_condition(
+        SafeValue::Stable,
+        selector,
+        wait_for_stable(page, selector, frame, config),
+    )
+    .await?;
 
     // 4. Scroll element into viewport
-    scroll_into_view(page, selector, frame, config).await?;
+    diagnostic_condition(
+        SafeValue::Scroll,
+        selector,
+        scroll_into_view(page, selector, frame, config),
+    )
+    .await?;
 
     // 5. Check element is not obscured (also returns position info)
     let started = std::time::Instant::now();
+    let mut condition = SafeValue::Unobscured;
+    let mut attempts = 0;
     loop {
+        attempts += 1;
         let result = async {
+            condition = SafeValue::Unobscured;
             let info = check_not_obscured(page, selector, frame, config).await?;
             check_frame_not_obscured(page, frame, info.center_x, info.center_y, config).await?;
+            condition = SafeValue::Enabled;
             check_enabled(page, selector, frame, config).await?;
             Ok(info)
         }
         .await;
         match result {
             Ok(info) => return Ok(info),
-            Err(error) if started.elapsed() >= actionability_timeout(config) => return Err(error),
+            Err(error) if started.elapsed() >= actionability_timeout(config) => {
+                use crate::diagnostics::{record::*, runtime as diagnostics};
+                diagnostics::event(
+                    Stage::ActionsFrames,
+                    DiagnosticEvent::Waiting,
+                    Severity::Error,
+                    [
+                        (Field::Condition, FieldValue::Kind(condition)),
+                        (Field::RetryAttempt, FieldValue::Number(attempts)),
+                    ],
+                );
+                return Err(error);
+            }
             Err(_) => tokio::time::sleep(Duration::from_millis(config.poll_interval_ms)).await,
         }
     }
+}
+
+pub(crate) async fn diagnostic_condition<Output>(
+    condition: crate::diagnostics::record::SafeValue,
+    selector: &str,
+    work: impl Future<Output = Result<Output>>,
+) -> Result<Output> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::stage(
+        Stage::ActionsFrames,
+        [
+            (Field::Condition, FieldValue::Kind(condition)),
+            (
+                Field::Target,
+                FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+            ),
+        ],
+        work,
+    )
+    .await
 }
 
 /// Full actionability check for focus, typing, key presses, and selection.

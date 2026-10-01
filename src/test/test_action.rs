@@ -247,6 +247,75 @@ pub(crate) struct ActionExecutionContext<'a> {
 }
 
 pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestAction) -> Result<()> {
+    use crate::diagnostics::{record::Stage, runtime as diagnostics};
+    let fields = action_diagnostic_fields(action, diagnostics::next_action_index());
+    let stage = if matches!(action, TestAction::Persist(_)) {
+        Stage::StateHooks
+    } else {
+        Stage::ActionsFrames
+    };
+    diagnostics::action_scope(
+        fields.clone(),
+        diagnostics::stage(stage, fields, exec_test_action_inner(ctx, action)),
+    )
+    .await
+}
+
+pub(crate) fn action_diagnostic_fields(
+    action: &TestAction,
+    index: u64,
+) -> Vec<(
+    crate::diagnostics::record::Field,
+    crate::diagnostics::record::FieldValue,
+)> {
+    use crate::diagnostics::record::*;
+    let (kind, target): (SafeValue, Option<&str>) = match action {
+        TestAction::Check(action) => (SafeValue::Check, Some(&action.check)),
+        TestAction::Click(action) => (SafeValue::Click, Some(&action.click)),
+        TestAction::Focus(action) => (SafeValue::Focus, Some(&action.focus)),
+        TestAction::Goto(action) => (SafeValue::Navigate, Some(&action.goto)),
+        TestAction::Hide(action) => (SafeValue::Hide, Some(&action.hide)),
+        TestAction::Hover(action) => (SafeValue::Hover, Some(&action.hover)),
+        TestAction::Input(action) => (SafeValue::Input, Some(&action.input)),
+        TestAction::Persist(action) => (SafeValue::Persist, Some(&action.persist)),
+        TestAction::Press(action) => (SafeValue::Press, Some(&action.press)),
+        TestAction::Remove(action) => (SafeValue::Remove, Some(&action.remove)),
+        TestAction::Save(action) => (SafeValue::Save, Some(&action.save)),
+        TestAction::Select(action) => (SafeValue::Select, Some(&action.select)),
+        TestAction::Scroll(action) => (SafeValue::Scroll, Some(&action.scroll)),
+        TestAction::SwitchTab(_) => (SafeValue::SwitchTab, None),
+        TestAction::Uncheck(action) => (SafeValue::Uncheck, Some(&action.uncheck)),
+        TestAction::Wait(action) => (
+            SafeValue::Wait,
+            match &action.wait {
+                Wait::String(selector) => Some(selector),
+                Wait::Number(_) => None,
+            },
+        ),
+    };
+    let depth = match action.frame() {
+        Some(crate::types::Frame::Single(_)) => 1,
+        Some(crate::types::Frame::Multiple(frames)) => frames.len(),
+        None => 0,
+    };
+    let mut fields = vec![
+        (Field::ActionIndex, FieldValue::Number(index)),
+        (Field::ActionType, FieldValue::Kind(kind)),
+        (Field::FrameDepth, FieldValue::Number(depth as u64)),
+    ];
+    if let Some(target) = target {
+        fields.push((
+            Field::Target,
+            FieldValue::Identity(SafeIdentity::fingerprint(target)),
+        ));
+    }
+    fields
+}
+
+async fn exec_test_action_inner(
+    ctx: ActionExecutionContext<'_>,
+    action: &TestAction,
+) -> Result<()> {
     let ActionExecutionContext {
         page: main_page,
         runtime,
@@ -271,7 +340,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             anyhow::bail!("Tab selection must run through the scenario page manager");
         }
         TestAction::Check(CheckAction { check, .. }) => {
-            crate::progress::scenario_log!("{} Check element: {}", log_prefix, check);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, check, frame, &ac).await?;
 
@@ -311,7 +379,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Click(ClickAction { click, .. }) => {
-            crate::progress::scenario_log!("{} Clicking element: {}", log_prefix, click);
             let info = ensure_actionable(page, click, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_click(
@@ -324,7 +391,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Focus(FocusAction { focus, .. }) => {
-            crate::progress::scenario_log!("{} Focusing element: {}", log_prefix, focus);
             ensure_focusable(page, focus, frame, &ac).await?;
             focus_element(page, focus, frame, &ac).await?;
         }
@@ -345,7 +411,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Hide(HideAction { hide, .. }) => {
-            crate::progress::scenario_log!("{} Hiding element: {}", log_prefix, hide);
             // Wait for the element to exist so it is actually present (and hidden)
             // in the captured screenshot; a typo'd selector fails clearly instead
             // of silently leaving the element visible.
@@ -384,7 +449,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Hover(HoverAction { hover, .. }) => {
-            crate::progress::scenario_log!("{} Hovering over element: {}", log_prefix, hover);
             let info = ensure_actionable(page, hover, frame, &ac).await?;
             let frame_offset = actionability::get_frame_offset(page, frame, &ac).await?;
             cdp_hover(
@@ -411,7 +475,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
             let frame_selectors = get_frame_selectors(frame);
 
             if let Some(value) = value {
-                crate::progress::scenario_log!("{} Typing into element: {}", log_prefix, input);
                 ensure_focusable(page, input, frame, &ac).await?;
 
                 let sel_escaped = escape_js_string(input);
@@ -459,11 +522,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                             .await?;
                 }
             } else if let Some(file) = file {
-                crate::progress::scenario_log!(
-                    "{} Uploading file to element: {}",
-                    log_prefix,
-                    input
-                );
                 let root_dir = ROOT_DIR
                     .get()
                     .ok_or_else(|| anyhow!("ROOT_DIR not initialized"))?;
@@ -518,7 +576,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
         TestAction::Persist(PersistAction { persist, .. }) => {
             validate_state_name(persist)?;
-            crate::progress::scenario_log!("{} Persisting state: {}", log_prefix, persist);
             let state = actionability::cdp_with_timeout(
                 action_timeout(&ac),
                 "capturing browser storage state",
@@ -533,20 +590,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
                 })?;
             }
             write_persisted_state(&state_path, &state)?;
-            crate::progress::scenario_log!(
-                "{} State saved to: {}",
-                log_prefix,
-                state_path.display()
-            );
         }
 
         TestAction::Press(PressAction { press, key, .. }) => {
-            crate::progress::scenario_log!(
-                "{} Pressing key '{}' on element: {}",
-                log_prefix,
-                key,
-                press
-            );
             ensure_focusable(page, press, frame, &ac).await?;
             focus_element(page, press, frame, &ac).await?;
 
@@ -555,7 +601,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Remove(RemoveAction { remove, .. }) => {
-            crate::progress::scenario_log!("{} Removing element: {}", log_prefix, remove);
             // Wait for the element to exist before removing it so a typo'd selector
             // fails clearly instead of silently leaving the element in the capture.
             ensure_exists(page, remove, frame, &ac).await?;
@@ -595,7 +640,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Save(SaveAction { save, .. }) => {
             validate_screenshot_step_name(save)?;
             super::page_stability::prepare_screenshot(main_page, config, log_prefix).await?;
-            crate::progress::scenario_log!("{} Saving screenshot: {}", log_prefix, save);
 
             save_screenshot(
                 test_suite,
@@ -608,7 +652,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Scroll(ScrollAction { scroll, .. }) => {
-            crate::progress::scenario_log!("{} Scrolling to element: {}", log_prefix, scroll);
             // Only wait for existence, no interactability needed for scroll
             ensure_exists(page, scroll, frame, &ac).await?;
             scroll_into_view(page, scroll, frame, &ac).await?;
@@ -679,7 +722,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         }
 
         TestAction::Uncheck(UncheckAction { uncheck, .. }) => {
-            crate::progress::scenario_log!("{} Unchecking element: {}", log_prefix, uncheck);
             let frame_selectors = get_frame_selectors(frame);
             let info = ensure_actionable(page, uncheck, frame, &ac).await?;
 
@@ -721,7 +763,6 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
         TestAction::Wait(WaitAction { wait, url, .. }) => {
             if let Some(url) = url {
                 let target_url = apply_action_url_replacements(url, url_replacements)?;
-                crate::progress::scenario_log!("{} Waiting for URL: {}", log_prefix, target_url);
                 let matcher = UrlMatcher::compile(&target_url)?;
 
                 // Poll-based URL check to avoid race condition with wait_for_navigation
@@ -761,19 +802,9 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
 
             match wait {
                 Wait::Number(milliseconds) => {
-                    crate::progress::scenario_log!(
-                        "{} Waiting for {} milliseconds",
-                        log_prefix,
-                        milliseconds
-                    );
                     tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
-                    crate::progress::scenario_log!(
-                        "{} Waiting for element: {}",
-                        log_prefix,
-                        selector
-                    );
                     wait_for_selector(page, selector, frame, &ac).await?;
                 }
             }
@@ -828,6 +859,82 @@ impl UrlMatcher {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn failing_action_records_index_type_and_last_unmet_condition_without_script_contents() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime as diagnostics};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("common")).unwrap();
+        std::fs::write(
+            root.path().join("common/_on-ready.js"),
+            "document.querySelector('#private-hook').value = 'synthetic-hook-secret';",
+        )
+        .unwrap();
+        let action: crate::types::TestAction = serde_json::from_value(
+            serde_json::json!({"click":"[data-private='synthetic-selector-secret']"}),
+        )
+        .unwrap();
+        let operation =
+            diagnostics::Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        let result = diagnostics::scope(Some(operation.context()), async {
+            crate::test::hooks::DocumentHooks::load(
+                root.path(),
+                &crate::types::TestScenario::default(),
+                &crate::config::ResolvedConfig::default(),
+            )?;
+            let fields = super::action_diagnostic_fields(&action, 7);
+            diagnostics::action_scope(
+                fields.clone(),
+                diagnostics::stage(
+                    Stage::ActionsFrames,
+                    fields,
+                    crate::test::actionability::diagnostic_condition(
+                        SafeValue::Visible,
+                        "[data-private='synthetic-selector-secret']",
+                        async {
+                            Err::<(), _>(anyhow::anyhow!(
+                                "Element synthetic-selector-secret is not visible after 100ms"
+                            ))
+                        },
+                    ),
+                ),
+            )
+            .await
+        })
+        .await;
+        assert!(result.is_err());
+        let reference = operation.finish(Outcome::Failure).await;
+        let mut found = false;
+        JournalReader::open(root.path(), &reference.operation_id)
+            .unwrap()
+            .visit(|record| {
+                let encoded = serde_json::to_string(&record).unwrap();
+                for secret in [
+                    "synthetic-hook-secret",
+                    "private-hook",
+                    "synthetic-selector-secret",
+                    "document.querySelector",
+                ] {
+                    assert!(!encoded.contains(secret));
+                }
+                if record.fields.get(&Field::Condition)
+                    == Some(&FieldValue::Kind(SafeValue::Visible))
+                    && record.outcome == Some(Outcome::Failure)
+                {
+                    found = true;
+                    assert_eq!(
+                        record.fields.get(&Field::ActionIndex),
+                        Some(&FieldValue::Number(7))
+                    );
+                    assert_eq!(
+                        record.fields.get(&Field::ActionType),
+                        Some(&FieldValue::Kind(SafeValue::Click))
+                    );
+                }
+            })
+            .unwrap();
+        assert!(found);
+    }
+
     #[tokio::test]
     async fn navigation_timeout_identifies_stage_and_cause_without_credentials() {
         use crate::diagnostics::{journal::JournalReader, record::*, runtime};

@@ -252,18 +252,24 @@ impl ScenarioPage {
         // A popup can close itself. Handle switching before touching the old
         // document so returning to a surviving tab does not depend on that page.
         if let TestAction::SwitchTab(selection) = action {
+            use crate::diagnostics::{record::Stage, runtime as diagnostics};
+            let fields = super::test_action::action_diagnostic_fields(
+                action,
+                diagnostics::next_action_index(),
+            );
             let tabs = self
                 .tabs
                 .as_mut()
                 .ok_or_else(|| anyhow!("Tab tracking was not initialized"))?;
-            crate::progress::scenario_log!(
-                "{} Switching to {:?} tab...",
-                ctx.log_prefix,
-                selection.switch_tab
-            );
-            let (page, runtime, first_visit) = tabs
-                .switch(browser, selection, ctx.url_replacements)
-                .await?;
+            let (page, runtime, first_visit) = diagnostics::action_scope(
+                fields.clone(),
+                diagnostics::stage(
+                    Stage::ActionsFrames,
+                    fields,
+                    tabs.switch(browser, selection, ctx.url_replacements),
+                ),
+            )
+            .await?;
             self.page = page;
             self.runtime = runtime;
             hooks.apply(&self.page).await?;
@@ -303,14 +309,7 @@ async fn prepare_page_for_actions(
         stabilize_capture_animations(page, log_prefix).await?;
     }
     if !resolved.no_scroll_top {
-        crate::progress::scenario_log!("{} Scrolling page to load lazy images...", log_prefix);
-        let scroll_start = std::time::Instant::now();
         trigger_lazy_loading(page).await?;
-        crate::progress::scenario_log!(
-            "{} Lazy-load scroll completed in {} ms.",
-            log_prefix,
-            scroll_start.elapsed().as_millis()
-        );
     }
     Ok(())
 }
@@ -745,8 +744,18 @@ fn resolve_work_dir_path(path: &str) -> Result<Option<PathBuf>> {
 async fn load_state_cookies(
     page: &chromiumoxide::Page,
     state: &Needs,
-    log_prefix: &str,
+    _log_prefix: &str,
 ) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::stage(
+        Stage::StateHooks,
+        [(Field::ActionType, FieldValue::Kind(SafeValue::Restore))],
+        load_state_cookies_inner(page, state),
+    )
+    .await
+}
+
+async fn load_state_cookies_inner(page: &chromiumoxide::Page, state: &Needs) -> Result<()> {
     let state_names = match state {
         Needs::String(s) => vec![s.clone()],
         Needs::StringArray(v) => v.clone(),
@@ -754,8 +763,6 @@ async fn load_state_cookies(
 
     for name in &state_names {
         let (_, state) = load_persisted_state(name)?;
-
-        crate::progress::scenario_log!("{} Loading state: {}", log_prefix, name);
 
         // Restore cookies
         if let Some(cookies) = state.get("cookies").and_then(|c| c.as_array()) {
@@ -778,17 +785,28 @@ async fn load_state_cookies(
 async fn load_cookie_path(
     page: &chromiumoxide::Page,
     cookie_path: &str,
-    log_prefix: &str,
+    _log_prefix: &str,
 ) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::stage(
+        Stage::StateHooks,
+        [
+            (Field::ActionType, FieldValue::Kind(SafeValue::Restore)),
+            (
+                Field::Artifact,
+                FieldValue::Identity(SafeIdentity::fingerprint(cookie_path)),
+            ),
+        ],
+        load_cookie_path_inner(page, cookie_path),
+    )
+    .await
+}
+
+async fn load_cookie_path_inner(page: &chromiumoxide::Page, cookie_path: &str) -> Result<()> {
     let Some(cookie_path) = resolve_work_dir_path(cookie_path)? else {
         return Ok(()); // No cookie file — that's fine
     };
 
-    crate::progress::scenario_log!(
-        "{} Loading cookies from: {}",
-        log_prefix,
-        cookie_path.display()
-    );
     let content = std::fs::read_to_string(&cookie_path)?;
     let cookies: Vec<serde_json::Value> = serde_yaml::from_str(&content)?;
     let cookies = super::capture::expand_cookie_entries(
