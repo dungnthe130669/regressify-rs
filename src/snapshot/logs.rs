@@ -194,6 +194,49 @@ mod tests {
     };
 
     #[test]
+    fn partial_publication_retains_readable_prefix_and_unknown_missing_count() {
+        let root = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let mut writer =
+            JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                .unwrap();
+        for _ in 0..600 {
+            writer
+                .write(&DiagnosticRecordV1::new(
+                    metadata.operation_id.clone(),
+                    OperationKind::Capture,
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Decision,
+                ))
+                .unwrap();
+        }
+        writer.flush().unwrap();
+        drop(writer);
+        let source = CaptureLog {
+            state: ArchiveState::Partial,
+            archive: Some(ArchiveReference {
+                operation_id: metadata.operation_id,
+                execution_id: None,
+                state: ArchiveState::Partial,
+                missing_records: Some(0),
+            }),
+        };
+        let log = publish(
+            root.path(),
+            output.path(),
+            Some(source),
+            &mut LogCache::new(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(log.state, ArchiveState::Partial);
+        assert_eq!(log.records, 600);
+        assert_eq!(log.missing_records, None);
+        assert_eq!(log.chunks.len(), 3);
+    }
+
+    #[test]
     fn public_capture_logs_are_bounded_shared_and_never_include_deployment_history() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();

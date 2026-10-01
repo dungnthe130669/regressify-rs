@@ -26,6 +26,7 @@ static ROUTES: OnceLock<Mutex<HashMap<OperationId, Weak<JournalSink>>>> = OnceLo
 tokio::task_local! {
     static CURRENT: Arc<OperationContext>;
     static ACTION: Vec<(Field, FieldValue)>;
+    static STAGE_SPAN: (SpanId, Option<SpanId>);
 }
 
 pub struct JournalLayer;
@@ -114,6 +115,10 @@ impl OperationContext {
         record.outcome = completion.outcome;
         record.error_cause = completion.error;
         record.duration_ms = completion.duration_ms;
+        let _ = STAGE_SPAN.try_with(|(span, parent)| {
+            record.span_id = span.clone();
+            record.parent_span = parent.clone();
+        });
         if install::current().is_some_and(|installation| installation.installed()) {
             let _ = super::adapter::emit(&record);
         } else {
@@ -397,37 +402,43 @@ pub fn stage_sync<Output>(
     fields: impl IntoIterator<Item = (Field, FieldValue)>,
     work: impl FnOnce() -> anyhow::Result<Output>,
 ) -> anyhow::Result<Output> {
-    let fields: Vec<_> = fields.into_iter().collect();
-    event(
-        stage,
-        DiagnosticEvent::StageStarted,
-        Severity::Info,
-        fields.iter().cloned(),
+    let span = (
+        SpanId::new(),
+        STAGE_SPAN.try_with(|(span, _)| span.clone()).ok(),
     );
-    let started = Instant::now();
-    let result = work();
-    if let Some(context) = current() {
-        context.record(
+    STAGE_SPAN.sync_scope(span, || {
+        let fields: Vec<_> = fields.into_iter().collect();
+        event(
             stage,
-            DiagnosticEvent::StageFinished,
-            if result.is_ok() {
-                Severity::Info
-            } else {
-                Severity::Error
-            },
-            fields,
-            Completion {
-                outcome: Some(if result.is_ok() {
-                    Outcome::Success
-                } else {
-                    Outcome::Failure
-                }),
-                error: result.as_ref().err().map(SanitizedError::capture),
-                duration_ms: Some(started.elapsed().as_millis() as u64),
-            },
+            DiagnosticEvent::StageStarted,
+            Severity::Info,
+            fields.iter().cloned(),
         );
-    }
-    result
+        let started = Instant::now();
+        let result = work();
+        if let Some(context) = current() {
+            context.record(
+                stage,
+                DiagnosticEvent::StageFinished,
+                if result.is_ok() {
+                    Severity::Info
+                } else {
+                    Severity::Error
+                },
+                fields,
+                Completion {
+                    outcome: Some(if result.is_ok() {
+                        Outcome::Success
+                    } else {
+                        Outcome::Failure
+                    }),
+                    error: result.as_ref().err().map(SanitizedError::capture),
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                },
+            );
+        }
+        result
+    })
 }
 
 pub async fn navigation<Output>(
@@ -457,35 +468,197 @@ pub fn stage<Output>(
     let fields: Vec<_> = fields.into_iter().collect();
     let work = Box::pin(work);
     async move {
-        event(
-            stage,
-            DiagnosticEvent::StageStarted,
-            Severity::Info,
-            fields.iter().cloned(),
+        let span = (
+            SpanId::new(),
+            STAGE_SPAN.try_with(|(span, _)| span.clone()).ok(),
         );
-        let started = Instant::now();
-        let result = work.await;
-        if let Some(context) = current() {
-            context.record(
-                stage,
-                DiagnosticEvent::StageFinished,
-                if result.is_ok() {
-                    Severity::Info
+        STAGE_SPAN
+            .scope(span, async move {
+                event(
+                    stage,
+                    DiagnosticEvent::StageStarted,
+                    Severity::Info,
+                    fields.iter().cloned(),
+                );
+                let started = Instant::now();
+                let result = work.await;
+                if let Some(context) = current() {
+                    context.record(
+                        stage,
+                        DiagnosticEvent::StageFinished,
+                        if result.is_ok() {
+                            Severity::Info
+                        } else {
+                            Severity::Error
+                        },
+                        fields,
+                        Completion {
+                            outcome: Some(if result.is_ok() {
+                                Outcome::Success
+                            } else {
+                                Outcome::Failure
+                            }),
+                            error: result.as_ref().err().map(SanitizedError::capture),
+                            duration_ms: Some(started.elapsed().as_millis() as u64),
+                        },
+                    );
+                }
+                result
+            })
+            .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        diagnostics::{
+            adapter::{DiagnosticLayer, LiveProgressAdapter},
+            journal::{ArchiveState, JournalReader},
+        },
+        progress,
+    };
+    use tracing::instrument::WithSubscriber;
+    use tracing_subscriber::prelude::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn interleaved_executions_survive_live_eviction_and_propagate_blocking_context() {
+        install::install_subscriber();
+        let root = tempfile::tempdir().unwrap();
+        let live = Arc::new(Mutex::new(progress::LiveProgress::default()));
+        let received = live.clone();
+        let adapter = Arc::new(LiveProgressAdapter::new(move |event| {
+            received.lock().unwrap().apply(progress::Record {
+                version: 1,
+                elapsed_ms: 0,
+                event,
+            })
+        }));
+        let subscriber = tracing_subscriber::registry()
+            .with(JournalLayer)
+            .with(DiagnosticLayer::new(adapter.clone(), |_| {}));
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let mut tasks = Vec::new();
+        for job in 1..=2 {
+            live.lock().unwrap().apply(progress::Record {
+                version: 1,
+                elapsed_ms: 0,
+                event: progress::Event::Queued {
+                    job: progress::Job {
+                        id: job,
+                        suite_id: format!("suite-{job}"),
+                        suite_name: "Suite".into(),
+                        scenario_id: "page".into(),
+                        label: "Page".into(),
+                        viewport: format!("viewport-{job}"),
+                        captures: vec![],
+                    },
+                },
+            });
+            let execution = ExecutionIdentity {
+                execution_id: ExecutionId::new(),
+                suite_id: SafeIdentity::fingerprint(format!("suite-{job}")),
+                scenario_id: SafeIdentity::fingerprint("page"),
+                viewport: ViewportIdentity {
+                    name: SafeIdentity::fingerprint(format!("viewport-{job}")),
+                    width: 320 * job as u32,
+                    height: 480,
+                },
+                capture_role: if job == 1 {
+                    CaptureRole::Reference
                 } else {
-                    Severity::Error
+                    CaptureRole::Test
                 },
-                fields,
-                Completion {
-                    outcome: Some(if result.is_ok() {
-                        Outcome::Success
-                    } else {
-                        Outcome::Failure
-                    }),
-                    error: result.as_ref().err().map(SanitizedError::capture),
-                    duration_ms: Some(started.elapsed().as_millis() as u64),
-                },
+                attempt: job as u32,
+            };
+            adapter.bind(execution.execution_id.clone(), job).unwrap();
+            let operation = Operation::start(
+                root.path(),
+                OperationKind::Capture,
+                None,
+                Some(execution.clone()),
+                None,
             );
+            let context = operation.context();
+            let dispatch = dispatch.clone();
+            tasks.push(tokio::spawn(
+                async move {
+                    scope(Some(context.clone()), async {
+                        for index in 0..4200 {
+                            event(
+                                Stage::ActionsFrames,
+                                DiagnosticEvent::Decision,
+                                Severity::Debug,
+                                [(Field::ActionIndex, FieldValue::Number(index))],
+                            );
+                            if (index + 1) % 16 == 0 {
+                                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                                    while context.sink.health().records_written < index + 1 {
+                                        tokio::task::yield_now().await;
+                                    }
+                                })
+                                .await
+                                .unwrap();
+                            }
+                        }
+                        let blocking_context = current();
+                        tokio::task::spawn_blocking(move || {
+                            in_scope(blocking_context, || {
+                                event(
+                                    Stage::CaptureArtifacts,
+                                    DiagnosticEvent::Captured,
+                                    Severity::Info,
+                                    [(Field::Bytes, FieldValue::Number(42))],
+                                );
+                            })
+                        })
+                        .await
+                        .unwrap();
+                        stage(
+                            Stage::StateHooks,
+                            [],
+                            stage(Stage::ActionsFrames, [], async { Ok(()) }),
+                        )
+                        .await
+                        .unwrap();
+                    })
+                    .await;
+                    let reference = operation
+                        .finish(if job == 1 {
+                            Outcome::Success
+                        } else {
+                            Outcome::Failure
+                        })
+                        .await;
+                    (reference, execution)
+                }
+                .with_subscriber(dispatch),
+            ));
         }
-        result
+        for task in tasks {
+            let (reference, execution) = task.await.unwrap();
+            assert_eq!(reference.state, ArchiveState::Complete);
+            let reader = JournalReader::open(root.path(), &reference.operation_id).unwrap();
+            let mut count = 0;
+            let mut spans = Vec::new();
+            reader
+                .visit(|record| {
+                    assert_eq!(record.sequence, count);
+                    count += 1;
+                    if let Some(identity) = &record.execution {
+                        assert_eq!(identity, &execution);
+                    }
+                    if record.event_name == DiagnosticEvent::StageStarted {
+                        spans.push((record.span_id, record.parent_span));
+                    }
+                })
+                .unwrap();
+            assert_eq!(count, 4207);
+            assert_eq!(spans[1].1, Some(spans[0].0.clone()));
+        }
+        assert!(live.lock().unwrap().omitted_logs > 0);
+        assert!(live.lock().unwrap().logs.len() <= 4096);
+        live.lock().unwrap().clear_logs();
     }
 }

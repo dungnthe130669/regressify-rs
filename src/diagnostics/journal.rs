@@ -789,6 +789,18 @@ impl JournalReader {
                 "Diagnostic segment checksum mismatch"
             );
         }
+        let header_bytes = checked_file(&self.directory.join("operation.json"), &self.directory)?
+            .metadata()?
+            .len();
+        let segment_bytes = index.segments.iter().try_fold(0_u64, |total, segment| {
+            total
+                .checked_add(segment.bytes)
+                .ok_or_else(|| anyhow!("Diagnostic index byte count overflow"))
+        })?;
+        ensure!(
+            header_bytes.checked_add(segment_bytes) == Some(index.bytes),
+            "Diagnostic index byte count mismatch"
+        );
         let mut terminal = None;
         let summary = self.visit(|record| {
             terminal = Some((record.event_name, record.outcome));
@@ -954,6 +966,98 @@ pub(crate) mod tests {
         }
         writer.flush().unwrap();
         (writer, metadata)
+    }
+
+    #[test]
+    fn forced_flush_failure_retains_prefix_and_refuses_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 1);
+        writer.output = Some(BufWriter::with_capacity(
+            BUFFER_BYTES,
+            File::open(writer.directory().join("segment-000000.jsonl")).unwrap(),
+        ));
+        let record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::Finish,
+            DiagnosticEvent::Decision,
+        );
+        writer.write(&record).unwrap();
+        assert!(writer.flush().is_err());
+        assert!(writer.finalize(Outcome::Success).is_err());
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Partial);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 1);
+    }
+
+    #[test]
+    fn oversized_records_and_tampered_indexes_never_look_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 1);
+        let mut record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::Finish,
+            DiagnosticEvent::Finished,
+        );
+        record.message = "private\u{1b}<script>\u{1f600}".repeat(MAX_RECORD_BYTES);
+        assert!(writer.write(&record).is_err());
+        assert!(writer.finalize(Outcome::Success).is_err());
+        writer.flush().unwrap();
+        assert_eq!(
+            JournalReader::open(root.path(), &metadata.operation_id)
+                .unwrap()
+                .archive_state(),
+            ArchiveState::Partial
+        );
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 1);
+        writer.finalize(Outcome::Success).unwrap();
+        let path = writer.directory().join("index.json");
+        let mut index: ArchiveIndex = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        index.bytes += 1;
+        fs::write(path, serde_json::to_vec(&index).unwrap()).unwrap();
+        assert_eq!(
+            JournalReader::open(root.path(), &metadata.operation_id)
+                .unwrap()
+                .archive_state(),
+            ArchiveState::LoadingError
+        );
+    }
+
+    #[test]
+    fn abrupt_process_exit_retains_flushed_records_and_never_infers_success() {
+        const FIXTURE: &str = "REGRESSIFY_JOURNAL_ABORT_FIXTURE";
+        if let Some(root) = std::env::var_os(FIXTURE) {
+            let (mut writer, _) = write_records(Path::new(&root), JournalOptions::default(), 500);
+            writer.flush().unwrap();
+            std::process::exit(23);
+        }
+        let root = tempfile::tempdir().unwrap();
+        let result = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "diagnostics::journal::tests::abrupt_process_exit_retains_flushed_records_and_never_infers_success"])
+            .env(FIXTURE, root.path()).output().unwrap();
+        assert_eq!(result.status.code(), Some(23));
+        let operation = fs::read_dir(root.path().join("_diagnostics"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        let operation =
+            OperationId::try_from(operation.file_name().into_string().unwrap()).unwrap();
+        let reader = JournalReader::open(root.path(), &operation).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Partial);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 500);
+        let path = archive_directory(root.path(), &operation).join("segment-000000.jsonl");
+        OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(b"{\"schemaVersion\":")
+            .unwrap();
+        let summary = reader.visit(|_| {}).unwrap();
+        assert!(summary.interrupted_tail);
+        assert_eq!(summary.records, 500);
+        assert_eq!(reader.archive_state(), ArchiveState::Partial);
     }
 
     #[test]

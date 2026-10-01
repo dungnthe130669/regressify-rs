@@ -9,6 +9,235 @@ use regressify::desktop::{
     worker::{WORKER_FLAG, WorkerRequest},
 };
 
+struct LoggingSite {
+    server: std::sync::Arc<tiny_http::Server>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    origin: String,
+}
+
+impl LoggingSite {
+    fn new() -> Self {
+        let server = std::sync::Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
+        let origin = format!("http://{}", server.server_addr());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let requests = server.clone();
+        let stopped = stop.clone();
+        let thread = std::thread::spawn(move || {
+            while !stopped.load(std::sync::atomic::Ordering::Acquire) {
+                if let Ok(Some(request)) =
+                    requests.recv_timeout(std::time::Duration::from_millis(100))
+                {
+                    let _ = request.respond(tiny_http::Response::from_string("<!doctype html><title>Logging fixture</title><body><main><h1>Capture fixture</h1><input id='entry'><button id='ready'>Ready</button></main></body>")
+                        .with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap()));
+                }
+            }
+        });
+        Self {
+            server,
+            stop,
+            thread: Some(thread),
+            origin,
+        }
+    }
+}
+
+impl Drop for LoggingSite {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.server.unblock();
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+fn logging_workspace(root: &Path, site: &LoggingSite, suites: usize, fail_first: bool) {
+    std::fs::create_dir_all(root.join("visual_tests")).unwrap();
+    std::fs::create_dir_all(root.join("common")).unwrap();
+    std::fs::write(root.join("regressify.yaml"), "delay: 0\npostInteractionWait: 0\nsettleTimeout: 0\nfreezeAnimations: false\nnoScrollTop: true\nelementTimeout: 2000\nactionabilityTimeout: 2000\nscenarioTimeout: 15000\nlogLevel: error\n").unwrap();
+    std::fs::write(root.join("common/_viewports.yaml"), "- label: desktop\n  width: 800\n  height: 600\n- label: mobile\n  width: 375\n  height: 667\n").unwrap();
+    for index in 0..suites {
+        let target = if fail_first && index == 0 {
+            "#absent-synthetic-selector-secret"
+        } else {
+            "#ready"
+        };
+        let suite = serde_json::json!({"scenarios":[{"id":"page", "label":format!("Page {index}"),
+            "url":format!("{}/capture?token=synthetic-navigation-secret", site.origin),
+            "actions":[{"input":"#entry", "value":"synthetic-input-secret"},{"click":target}], "selectors":["viewport"]}]});
+        std::fs::write(
+            root.join(format!("visual_tests/suite-{index}.tests.json")),
+            serde_json::to_vec(&suite).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
+fn logging_cli(
+    root: &Path,
+    run: &str,
+    command: &str,
+    disabled: bool,
+    skip_compare: bool,
+) -> Output {
+    let mut process = Command::new(env!("CARGO_BIN_EXE_regressify"));
+    process
+        .args(["--root"])
+        .arg(root)
+        .args([
+            "--run-id",
+            run,
+            "--no-print",
+            "--async-capture-limit",
+            "5",
+            "--async-capture-ramp-ms",
+            "0",
+            command,
+            "--fetch-browser",
+            "false",
+        ])
+        .env(
+            "REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE",
+            if disabled { "true" } else { "false" },
+        );
+    if skip_compare {
+        process.arg("--skip-compare");
+    }
+    process.output().unwrap()
+}
+
+#[test]
+#[ignore = "requires cached managed Chromium; uses loopback fixtures only"]
+fn standalone_cli_persists_passed_and_failed_logs_without_desktop_initialization() {
+    use regressify::diagnostics::{
+        journal::{ArchiveState, JournalReader},
+        record::Outcome,
+    };
+    let site = LoggingSite::new();
+    let root = tempfile::tempdir().unwrap();
+    logging_workspace(root.path(), &site, 2, false);
+    let baseline = logging_cli(root.path(), "baseline", "ref", false, false);
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stderr)
+    );
+    for suite in 0..2 {
+        for viewport in ["desktop", "mobile"] {
+            assert!(
+                root.path()
+                    .join(format!(
+                        ".regressify/suite-{suite}/bitmaps_reference/page_{viewport}__VIEWPORT.png"
+                    ))
+                    .is_file(),
+                "Baseline image missing: {}",
+                String::from_utf8_lossy(&baseline.stderr)
+            );
+        }
+    }
+    logging_workspace(root.path(), &site, 2, true);
+    let captured = logging_cli(root.path(), "mixed", "test", false, false);
+    assert!(
+        captured.status.success(),
+        "{}",
+        String::from_utf8_lossy(&captured.stderr)
+    );
+    for stream in [&captured.stdout, &captured.stderr] {
+        let text = String::from_utf8_lossy(stream);
+        for secret in [
+            "synthetic-input-secret",
+            "synthetic-selector-secret",
+            "synthetic-navigation-secret",
+        ] {
+            assert!(
+                !text.contains(secret),
+                "Sensitive payload reached command output"
+            );
+        }
+    }
+    let output = root.path().join(".regressify");
+    for suite in 0..2 {
+        for viewport in ["desktop", "mobile"] {
+            let image = output.join(format!(
+                "suite-{suite}/bitmaps_test/mixed/page_{viewport}__VIEWPORT.png"
+            ));
+            let link = regressify::test::capture::read_capture_log(&output, &image).unwrap();
+            assert_eq!(link.state, ArchiveState::Complete);
+            let reader = JournalReader::open(&output, &link.archive.unwrap().operation_id).unwrap();
+            assert_eq!(
+                reader.verified_index().unwrap().outcome,
+                if suite == 0 {
+                    Outcome::Failure
+                } else {
+                    Outcome::Success
+                }
+            );
+            reader
+                .visit(|record| {
+                    let text = serde_json::to_string(&record).unwrap();
+                    for secret in [
+                        "synthetic-input-secret",
+                        "synthetic-selector-secret",
+                        "synthetic-navigation-secret",
+                    ] {
+                        assert!(!text.contains(secret));
+                    }
+                })
+                .unwrap();
+            let report: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(output.join(format!("_snapshot/data/suites/suite-{suite}.json")))
+                    .unwrap(),
+            )
+            .unwrap();
+            for capture in report["tests"].as_array().unwrap() {
+                assert_eq!(capture["logs"]["test"]["state"], "complete");
+                assert_eq!(capture["logs"]["reference"]["state"], "complete");
+            }
+        }
+    }
+    let journal_count = std::fs::read_dir(output.join("_diagnostics"))
+        .unwrap()
+        .count();
+    let disabled = logging_cli(root.path(), "disabled", "test", true, true);
+    assert!(
+        disabled.status.success(),
+        "{}",
+        String::from_utf8_lossy(&disabled.stderr)
+    );
+    assert_eq!(
+        std::fs::read_dir(output.join("_diagnostics"))
+            .unwrap()
+            .count(),
+        journal_count
+    );
+    let disabled_log = regressify::test::capture::read_capture_log(
+        &output,
+        &output.join("suite-1/bitmaps_test/disabled/page_desktop__VIEWPORT.png"),
+    )
+    .unwrap();
+    assert_eq!(disabled_log.state, ArchiveState::Missing);
+    if let Some(destination) = std::env::var_os("REGRESSIFY_LOG_BROWSER_FIXTURE") {
+        let destination = std::path::PathBuf::from(destination);
+        assert!(
+            !destination.exists(),
+            "Logging browser fixture destination must be new"
+        );
+        std::fs::create_dir_all(&destination).unwrap();
+        for entry in walkdir::WalkDir::new(&output)
+            .into_iter()
+            .map(Result::unwrap)
+        {
+            let path = destination.join(entry.path().strip_prefix(&output).unwrap());
+            if entry.file_type().is_dir() {
+                std::fs::create_dir_all(path).unwrap();
+            } else {
+                std::fs::copy(entry.path(), path).unwrap();
+            }
+        }
+    }
+}
+
 fn invoke(executable: &Path, request: &RunRequest) -> Output {
     invoke_with_events(executable, request, None)
 }
