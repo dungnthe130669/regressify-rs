@@ -112,9 +112,53 @@ pub(super) struct Capture {
     pub reference: Option<String>,
     pub test: Option<String>,
     pub diff: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previews: Option<CapturePreviews>,
     pub reference_url: Option<String>,
     pub test_url: Option<String>,
     pub dimensions: Option<Dimensions>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct CapturePreviews {
+    pub reference: Option<String>,
+    pub test: Option<String>,
+    pub diff: Option<String>,
+    pub grid: Option<String>,
+}
+
+impl CapturePreviews {
+    fn images(&self) -> impl Iterator<Item = &String> {
+        [&self.reference, &self.test, &self.diff, &self.grid]
+            .into_iter()
+            .flatten()
+    }
+}
+
+impl Capture {
+    fn images(&self) -> impl Iterator<Item = &String> {
+        [&self.reference, &self.test, &self.diff]
+            .into_iter()
+            .flatten()
+            .chain(self.previews.iter().flat_map(CapturePreviews::images))
+    }
+
+    #[cfg(feature = "desktop")]
+    fn images_mut(&mut self) -> impl Iterator<Item = &mut String> {
+        [&mut self.reference, &mut self.test, &mut self.diff]
+            .into_iter()
+            .flatten()
+            .chain(self.previews.iter_mut().flat_map(|previews| {
+                [
+                    &mut previews.reference,
+                    &mut previews.test,
+                    &mut previews.diff,
+                    &mut previews.grid,
+                ]
+                .into_iter()
+                .flatten()
+            }))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -704,23 +748,20 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
         for capture in report.tests {
             ensure!(
                 valid_segment(&capture.id)
-                    && captures.insert(capture.id)
+                    && captures.insert(capture.id.clone())
                     && matches!(capture.status.as_str(), "pass" | "fail"),
                 "Invalid snapshot capture"
             );
-            for image in [capture.reference, capture.test, capture.diff]
-                .into_iter()
-                .flatten()
-            {
-                let relative = versioned_path(&image, "images")?;
+            for image in capture.images() {
+                let relative = versioned_path(image, "images")?;
                 if let Some(previous) = image_versions.insert(relative.clone(), image.clone()) {
                     ensure!(
-                        previous == image,
+                        previous == *image,
                         "Conflicting cache versions for a snapshot image"
                     );
                 }
                 if paths.insert(relative) {
-                    read_versioned(&root, &image, "images")?;
+                    read_versioned(&root, image, "images")?;
                 }
             }
         }
@@ -779,10 +820,7 @@ pub(crate) fn update_suite(
         if let Some(new_id) = new_id.filter(|id| *id != old_id) {
             let prefix = Path::new("_snapshot/images").join(old_id);
             for capture in &mut report.tests {
-                for image in [&mut capture.reference, &mut capture.test, &mut capture.diff]
-                    .into_iter()
-                    .flatten()
-                {
+                for image in capture.images_mut() {
                     let relative = versioned_path(image, "images")?;
                     if let Ok(suffix) = relative.strip_prefix(&prefix) {
                         let bytes = read_versioned(&root, image, "images")?;
@@ -841,9 +879,9 @@ pub(crate) fn image_roles(output: &Path) -> Result<Option<BTreeMap<PathBuf, Imag
             serde_json::from_slice(&read_versioned(&root, &summary.report, "data")?)?;
         for capture in report.tests {
             for (image, diff) in [
-                (capture.reference, false),
-                (capture.test, false),
-                (capture.diff, true),
+                (&capture.reference, false),
+                (&capture.test, false),
+                (&capture.diff, true),
             ] {
                 if let Some(image) = image {
                     let role = if diff || capture.error.is_some() {
@@ -854,10 +892,13 @@ pub(crate) fn image_roles(output: &Path) -> Result<Option<BTreeMap<PathBuf, Imag
                         ImageRole::Comparison
                     };
                     roles
-                        .entry(versioned_path(&image, "images")?)
+                        .entry(versioned_path(image, "images")?)
                         .and_modify(|previous| *previous = (*previous).max(role))
                         .or_insert(role);
                 }
+            }
+            for image in capture.previews.iter().flat_map(CapturePreviews::images) {
+                roles.insert(versioned_path(image, "images")?, ImageRole::Protected);
             }
         }
     }
@@ -874,10 +915,7 @@ pub(crate) fn refresh_site_versions(output: &Path) -> Result<()> {
         let mut report: SuiteReport =
             serde_json::from_slice(&read_versioned(&root, &summary.report, "data")?)?;
         for capture in &mut report.tests {
-            for image in [&mut capture.reference, &mut capture.test, &mut capture.diff]
-                .into_iter()
-                .flatten()
-            {
+            for image in capture.images_mut() {
                 let relative = versioned_path(image, "images")?;
                 let replacement = if let Some(replacement) = replacements.get(&relative) {
                     replacement.clone()
@@ -1387,9 +1425,16 @@ mod tests {
         .unwrap();
         let second =
             store_asset(&root, "_snapshot/images/one/test/home.png", b"second image").unwrap();
+        let preview = store_asset(
+            &root,
+            "_snapshot/images/one/test-thumbnail/home.png",
+            b"preview image",
+        )
+        .unwrap();
         let capture: Capture = serde_json::from_value(serde_json::json!({
             "id": "home.png", "label": "Home", "scenario": "Home", "selector": "document", "status": "fail", "threshold": 0.1,
-            "mismatch": 1.0, "error": null, "reference": first, "test": second, "diff": null, "referenceUrl": null, "testUrl": null, "dimensions": null
+            "mismatch": 1.0, "error": null, "reference": first, "test": second, "diff": null, "referenceUrl": null, "testUrl": null, "dimensions": null,
+            "previews": { "reference": null, "test": preview, "diff": null, "grid": preview }
         })).unwrap();
         let report = SuiteReport {
             id: "one".into(),
@@ -1422,8 +1467,10 @@ mod tests {
         let old_index = fs::read(root.join("index.html")).unwrap();
         let first_path = versioned_path(&first, "images").unwrap();
         let second_path = versioned_path(&second, "images").unwrap();
+        let preview_path = versioned_path(&preview, "images").unwrap();
         fs::write(root.join(&first_path), b"second image").unwrap();
         fs::write(root.join(&second_path), b"third image").unwrap();
+        fs::write(root.join(&preview_path), b"updated preview").unwrap();
         refresh_site_versions(&root).unwrap();
         artifact_paths(&root, &["one".into()]).unwrap();
         assert_ne!(fs::read(root.join("index.html")).unwrap(), old_index);
@@ -1448,9 +1495,27 @@ mod tests {
             versioned_path(report.tests[0].test.as_ref().unwrap(), "images").unwrap(),
             second_path
         );
+        let previews = report.tests[0].previews.as_ref().unwrap();
+        assert_eq!(previews.test, previews.grid);
+        assert_eq!(
+            read_versioned(&root, previews.grid.as_ref().unwrap(), "images").unwrap(),
+            b"updated preview"
+        );
+        assert_eq!(
+            versioned_path(previews.grid.as_ref().unwrap(), "images").unwrap(),
+            preview_path
+        );
         let index = fs::read(root.join("index.html")).unwrap();
         refresh_site_versions(&root).unwrap();
         assert_eq!(fs::read(root.join("index.html")).unwrap(), index);
+        update_suite(&root, "one", Some("renamed"), None).unwrap();
+        let inventory = artifact_paths(&root, &["renamed".into()]).unwrap();
+        assert!(inventory.contains(&PathBuf::from(
+            "_snapshot/images/renamed/test-thumbnail/home.png"
+        )));
+        assert!(!root.join(preview_path).exists());
+        update_suite(&root, "renamed", None, None).unwrap();
+        assert!(!root.join("_snapshot/images/renamed").exists());
     }
 
     #[cfg(feature = "desktop")]
@@ -1507,9 +1572,16 @@ mod tests {
         )
         .unwrap();
         let diff = store_asset(&root, "_snapshot/images/one/diff/shared.png", b"diff").unwrap();
+        let preview = store_asset(
+            &root,
+            "_snapshot/images/one/test-preview/shared.png",
+            b"preview",
+        )
+        .unwrap();
         let tests = [("pass", None, passed.clone()), ("fail", Some("Timeout"), shared.clone())].into_iter().enumerate().map(|(index, (status, error, reference))| serde_json::from_value(serde_json::json!({
             "id": format!("capture-{index}"), "label": "", "scenario": "", "selector": "", "status": status, "threshold": 0.1, "mismatch": null,
-            "error": error, "reference": reference, "test": shared, "diff": diff, "referenceUrl": null, "testUrl": null, "dimensions": null
+            "error": error, "reference": reference, "test": shared, "diff": diff, "referenceUrl": null, "testUrl": null, "dimensions": null,
+            "previews": { "reference": null, "test": preview, "diff": null, "grid": preview }
         })).unwrap()).collect();
         let report = SuiteReport {
             id: "one".into(),
@@ -1546,6 +1618,10 @@ mod tests {
         assert_eq!(
             roles[&versioned_path(&passed, "images").unwrap()],
             ImageRole::Passed
+        );
+        assert_eq!(
+            roles[&versioned_path(&preview, "images").unwrap()],
+            ImageRole::Protected
         );
     }
 }

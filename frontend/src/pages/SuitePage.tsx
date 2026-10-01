@@ -135,7 +135,10 @@ export function SuitePage() {
               {!list && (
                 <div className="capture-thumbnail">
                   <ReportImage
-                    path={capture.test || capture.reference}
+                    path={
+                      (capture.test || capture.reference) &&
+                      (capture.previews?.grid || capture.test || capture.reference)
+                    }
                     alt={`${capture.label} preview`}
                   />
                   <span className="open-capture">
@@ -164,14 +167,23 @@ export function SuitePage() {
               {list && (
                 <div className="capture-comparison">
                   {[
-                    { label: "Reference", path: capture.reference },
-                    { label: "Test", path: capture.test },
-                    ...(capture.diff ? [{ label: "Diff", path: capture.diff }] : []),
-                  ].map(({ label, path }) => (
+                    {
+                      label: "Reference",
+                      path: capture.reference,
+                      preview: capture.previews?.reference,
+                    },
+                    { label: "Test", path: capture.test, preview: capture.previews?.test },
+                    ...(capture.diff
+                      ? [{ label: "Diff", path: capture.diff, preview: capture.previews?.diff }]
+                      : []),
+                  ].map(({ label, path, preview }) => (
                     <figure className="capture-lane" key={label}>
                       <figcaption>{label}</figcaption>
                       <div className="capture-lane-preview">
-                        <ReportImage path={path} alt={`${capture.label} ${label.toLowerCase()}`} />
+                        <ReportImage
+                          path={path ? preview || path : null}
+                          alt={`${capture.label} ${label.toLowerCase()}`}
+                        />
                       </div>
                     </figure>
                   ))}

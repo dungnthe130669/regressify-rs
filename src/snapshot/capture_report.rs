@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    io::Cursor,
     path::{Path, PathBuf},
 };
 
@@ -9,9 +10,46 @@ use serde::Deserialize;
 use crate::helpers::{ScenarioName, scenario_names};
 
 use super::site::{
-    Capture, Dimensions, MAX_IMAGE_BYTES, MAX_REPORT_BYTES, SuiteReport, checked_file,
-    read_bounded, store_asset, valid_segment,
+    Capture, CapturePreviews, Dimensions, MAX_IMAGE_BYTES, MAX_REPORT_BYTES, SuiteReport,
+    checked_file, read_bounded, store_asset, valid_segment,
 };
+
+#[derive(Clone)]
+pub(super) struct ImageAsset {
+    full: String,
+    preview: String,
+    grid: Option<String>,
+}
+
+fn encode_preview(preview: image::DynamicImage) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    preview.write_with_encoder(image::codecs::png::PngEncoder::new_with_quality(
+        &mut bytes,
+        image::codecs::png::CompressionType::Fast,
+        image::codecs::png::FilterType::Sub,
+    ))?;
+    Ok(bytes)
+}
+
+fn preview_images(bytes: &[u8], include_grid: bool) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+    let decoded = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png)
+        .decode()
+        .context("Failed to decode PNG capture")?;
+    let (width, height) = (decoded.width(), decoded.height());
+    let preview = encode_preview(decoded.thumbnail(width.min(640), height.min(480)))?;
+    let grid = include_grid
+        .then(|| {
+            let crop_width = width.min(height.saturating_mul(8) / 5).max(1);
+            let crop_height = height.min(width.saturating_mul(5) / 8).max(1);
+            encode_preview(
+                decoded
+                    .crop_imm((width - crop_width) / 2, 0, crop_width, crop_height)
+                    .thumbnail(crop_width.min(640), crop_height.min(400)),
+            )
+        })
+        .transpose()?;
+    Ok((preview, grid))
+}
 
 #[derive(Deserialize)]
 struct RawReport {
@@ -134,8 +172,9 @@ fn image_asset(
     suite: &str,
     path: Option<&str>,
     role: &str,
-    images: &mut BTreeMap<PathBuf, String>,
-) -> Result<Option<String>> {
+    images: &mut BTreeMap<PathBuf, ImageAsset>,
+    grid_paths: &BTreeSet<String>,
+) -> Result<Option<ImageAsset>> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -177,6 +216,13 @@ fn image_asset(
         "Snapshot capture is not a PNG image: {}",
         source.display()
     );
+    let (preview, grid) =
+        preview_images(&bytes, grid_paths.contains(&normalized)).with_context(|| {
+            format!(
+                "Failed to create snapshot previews for '{}'",
+                source.display()
+            )
+        })?;
     let name = if reference {
         relative
     } else {
@@ -185,11 +231,27 @@ fn image_asset(
             .context("Snapshot test image has no capture run")?
             .1
     };
-    let asset = store_asset(
-        output,
-        &format!("_snapshot/images/{suite}/{role}/{name}"),
-        &bytes,
-    )?;
+    let asset = ImageAsset {
+        full: store_asset(
+            output,
+            &format!("_snapshot/images/{suite}/{role}/{name}"),
+            &bytes,
+        )?,
+        preview: store_asset(
+            output,
+            &format!("_snapshot/images/{suite}/{role}-preview/{name}"),
+            &preview,
+        )?,
+        grid: grid
+            .map(|bytes| {
+                store_asset(
+                    output,
+                    &format!("_snapshot/images/{suite}/{role}-thumbnail/{name}"),
+                    &bytes,
+                )
+            })
+            .transpose()?,
+    };
     images.insert(source, asset.clone());
     Ok(Some(asset))
 }
@@ -198,7 +260,7 @@ pub(super) fn load_suite(
     root: &Path,
     output: &Path,
     id: &str,
-    images: &mut BTreeMap<PathBuf, String>,
+    images: &mut BTreeMap<PathBuf, ImageAsset>,
 ) -> Result<Option<SuiteReport>> {
     ensure!(
         valid_segment(id) && id != "_snapshot",
@@ -253,6 +315,7 @@ pub(super) fn load_suite(
         );
         report
     };
+    let grid_paths = paths.into_iter().collect();
     let mut tests = Vec::with_capacity(report.tests.len());
     let mut identifiers = BTreeSet::new();
     let names = scenario_names(
@@ -316,9 +379,26 @@ pub(super) fn load_suite(
             pair.reference.as_deref(),
             "reference",
             images,
+            &grid_paths,
         )?;
-        let current = image_asset(root, output, id, pair.test.as_deref(), "test", images)?;
-        let diff = image_asset(root, output, id, pair.diff_image.as_deref(), "diff", images)?;
+        let current = image_asset(
+            root,
+            output,
+            id,
+            pair.test.as_deref(),
+            "test",
+            images,
+            &grid_paths,
+        )?;
+        let diff = image_asset(
+            root,
+            output,
+            id,
+            pair.diff_image.as_deref(),
+            "diff",
+            images,
+            &grid_paths,
+        )?;
         let key = capture_id.strip_suffix(".png").unwrap_or(&capture_id);
         let label = if crate::helpers::generated_capture_label(&pair.label, key) {
             let (_, detail) =
@@ -340,9 +420,15 @@ pub(super) fn load_suite(
             threshold: pair.mis_match_threshold,
             mismatch,
             error: pair.engine_error_msg,
-            reference,
-            test: current,
-            diff,
+            reference: reference.as_ref().map(|asset| asset.full.clone()),
+            test: current.as_ref().map(|asset| asset.full.clone()),
+            diff: diff.as_ref().map(|asset| asset.full.clone()),
+            previews: Some(CapturePreviews {
+                reference: reference.as_ref().map(|asset| asset.preview.clone()),
+                test: current.as_ref().map(|asset| asset.preview.clone()),
+                diff: diff.as_ref().map(|asset| asset.preview.clone()),
+                grid: current.as_ref().and_then(|asset| asset.grid.clone()),
+            }),
             reference_url: pair.reference_url,
             test_url: pair.url,
             dimensions: pair.diff.map(|diff| Dimensions {
@@ -368,6 +454,10 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
+    fn png(value: u8) -> Vec<u8> {
+        lodepng::encode32(&[value, value, value, 255], 1, 1).unwrap()
+    }
+
     fn fixture() -> (tempfile::TempDir, serde_json::Value) {
         let temp = tempfile::tempdir().unwrap();
         let suite = temp.path().join("suite");
@@ -383,7 +473,7 @@ mod tests {
             "bitmaps_test/current/home.png",
             "bitmaps_reference/home.png",
         ] {
-            fs::write(suite.join(path), b"\x89PNG\r\n\x1a\npixels").unwrap();
+            fs::write(suite.join(path), png(80)).unwrap();
         }
         let report = json!({ "id": "suite", "tests": [{ "status": "fail", "pair": {
             "label": "Home <desktop>", "scenarioLabel": "Home", "selector": "document", "fileName": "home.png",
@@ -415,6 +505,163 @@ mod tests {
             "suite",
             &mut BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn shared_diff_and_test_source_keeps_its_grid_thumbnail() {
+        let (temp, mut report) = fixture();
+        let mut second = report["tests"][0].clone();
+        second["pair"]["fileName"] = json!("shared.png");
+        second["pair"]["test"] = json!("../bitmaps_test/current/shared.png");
+        report["tests"][0]["pair"]["diffImage"] = second["pair"]["test"].clone();
+        report["tests"].as_array_mut().unwrap().push(second);
+        fs::write(
+            temp.path().join("suite/bitmaps_test/current/shared.png"),
+            png(120),
+        )
+        .unwrap();
+        write_fixture(temp.path(), &report);
+        let loaded = load(temp.path()).unwrap().unwrap();
+        assert_eq!(loaded.tests[0].diff, loaded.tests[1].test);
+        assert!(loaded.tests[1].previews.as_ref().unwrap().grid.is_some());
+    }
+
+    #[test]
+    fn preview_images_are_byte_identical_for_repeated_inputs() {
+        let mut pixels = vec![0u8; 800 * 1600 * 4];
+        for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(&[
+                (index % 251) as u8,
+                (index / 800 % 251) as u8,
+                (index / 13 % 251) as u8,
+                255,
+            ]);
+        }
+        let source = lodepng::encode32(&pixels, 800, 1600).unwrap();
+        let expected = preview_images(&source, true).unwrap();
+        for _ in 0..3 {
+            assert_eq!(preview_images(&source, true).unwrap(), expected);
+        }
+        let (list_only, grid) = preview_images(&source, false).unwrap();
+        assert_eq!(list_only, expected.0);
+        assert!(grid.is_none());
+    }
+
+    #[test]
+    fn preview_images_preserve_alpha_and_bound_extreme_aspect_ratios() {
+        for (width, height) in [(1, 1), (2048, 4), (4, 2048), (800, 800)] {
+            let pixels = vec![rgb::RGBA8::new(30, 60, 90, 64); width * height];
+            let source = lodepng::encode32(&pixels, width, height).unwrap();
+            let (preview, grid) = preview_images(&source, true).unwrap();
+            for bytes in [preview, grid.unwrap()] {
+                let image = lodepng::decode32(&bytes).unwrap();
+                assert!(image.width <= width.min(640));
+                assert!(image.height <= height.min(480));
+                assert_eq!(image.buffer[0].a, 64);
+            }
+        }
+        assert!(preview_images(b"\x89PNG\r\n\x1a\ncorrupt", true).is_err());
+    }
+
+    #[test]
+    fn corrupt_preview_input_preserves_the_previous_published_site() {
+        let (temp, _) = fixture();
+        let root = temp.path();
+        let args = crate::cli::args::SnapshotArgs {
+            test_suite: Vec::new(),
+            title: None,
+            heading: None,
+            subheading: None,
+        };
+        let config = crate::config::WorkspaceConfig::default();
+        super::super::site::generate_site(root, &["suite".into()], &args, &config).unwrap();
+        let inventory = super::super::site::artifact_paths(root, &["suite".into()]).unwrap();
+        let previous: Vec<_> = inventory
+            .iter()
+            .map(|path| fs::read(root.join(path)).unwrap())
+            .collect();
+        fs::write(
+            root.join("suite/bitmaps_test/current/home.png"),
+            b"\x89PNG\r\n\x1a\ncorrupt",
+        )
+        .unwrap();
+        let error =
+            super::super::site::generate_site(root, &["suite".into()], &args, &config).unwrap_err();
+        assert!(format!("{error:#}").contains("home.png"));
+        assert!(format!("{error:#}").contains("PNG"));
+        for (path, bytes) in inventory.iter().zip(previous) {
+            assert_eq!(fs::read(root.join(path)).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn generates_bounded_previews_without_changing_original_captures() {
+        let (temp, _) = fixture();
+        let root = temp.path().canonicalize().unwrap();
+        let mut pixels = vec![0u8; 320 * 6000 * 4];
+        for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+            pixel.copy_from_slice(if index < 320 * 200 {
+                &[240, 20, 20, 255]
+            } else {
+                &[20, 20, 240, 255]
+            });
+        }
+        let original = lodepng::encode32(&pixels, 320, 6000).unwrap();
+        for path in [
+            "bitmaps_reference/home.png",
+            "bitmaps_test/current/home.png",
+        ] {
+            fs::write(root.join("suite").join(path), &original).unwrap();
+        }
+        super::super::site::generate_site(
+            &root,
+            &["suite".into()],
+            &crate::cli::args::SnapshotArgs {
+                test_suite: Vec::new(),
+                title: None,
+                heading: None,
+                subheading: None,
+            },
+            &crate::config::WorkspaceConfig::default(),
+        )
+        .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(
+            &fs::read(root.join("_snapshot/data/suites/suite.json")).unwrap(),
+        )
+        .unwrap();
+        let capture = &report["tests"][0];
+        let inventory = super::super::site::artifact_paths(&root, &["suite".into()]).unwrap();
+        let read_asset = |url: &str| {
+            let (path, version) = url.split_once("?v=").unwrap();
+            assert!(inventory.contains(&PathBuf::from(path)));
+            let bytes = fs::read(root.join(path)).unwrap();
+            assert_eq!(super::super::get_asset_version(&bytes, 20), version);
+            bytes
+        };
+        for role in ["reference", "test", "grid"] {
+            let url = capture["previews"][role]
+                .as_str()
+                .expect("preview is missing");
+            let bytes = read_asset(url);
+            let preview = lodepng::decode32(&bytes).unwrap();
+            assert!(preview.width <= 640 && preview.height <= 480);
+            if role == "grid" {
+                assert_eq!((preview.width, preview.height), (320, 200));
+                assert_eq!(preview.buffer[0], rgb::RGBA8::new(240, 20, 20, 255));
+                assert_eq!(preview.buffer.last().unwrap(), &preview.buffer[0]);
+            } else {
+                assert_eq!(preview.height, 480);
+                assert!(preview.width < 30);
+            }
+        }
+        assert!(capture["previews"]["diff"].is_null());
+        for role in ["reference", "test"] {
+            assert_eq!(read_asset(capture[role].as_str().unwrap()), original);
+        }
+        assert_eq!(
+            fs::read(root.join("suite/bitmaps_test/current/home.png")).unwrap(),
+            original
+        );
     }
 
     #[test]
@@ -469,7 +716,7 @@ mod tests {
                 temp.path()
                     .join("suite/bitmaps_test/current")
                     .join(&filename),
-                b"\x89PNG\r\n\x1a\npixels",
+                png(80),
             )
             .unwrap();
             filenames.push(filename);
@@ -636,11 +883,7 @@ mod tests {
                 (path, bytes)
             })
             .collect::<BTreeMap<_, _>>();
-        fs::write(
-            root.join("suite/bitmaps_test/current/home.png"),
-            b"\x89PNG\r\n\x1a\nchanged image",
-        )
-        .unwrap();
+        fs::write(root.join("suite/bitmaps_test/current/home.png"), png(120)).unwrap();
         fs::create_dir_all(root.join("z-bad/html_report")).unwrap();
         fs::write(root.join("z-bad/html_report/config.js"), "not a report").unwrap();
         assert!(
@@ -680,11 +923,7 @@ mod tests {
         let first_index = fs::read(root.join("index.html")).unwrap();
         let first_manifest = read("_snapshot/data/manifest.json");
         let first_report = read("_snapshot/data/suites/suite.json");
-        fs::write(
-            root.join("suite/bitmaps_test/current/home.png"),
-            b"\x89PNG\r\n\x1a\nupdated pixels",
-        )
-        .unwrap();
+        fs::write(root.join("suite/bitmaps_test/current/home.png"), png(160)).unwrap();
         fs::write(
             root.join("_snapshot/images/old-content-hash.png"),
             b"obsolete",
@@ -719,9 +958,14 @@ mod tests {
             .unwrap();
         assert_eq!(old_test.0, new_test.0);
         assert_ne!(old_test.1, new_test.1);
-        assert_eq!(
-            new_test.1,
-            super::super::get_asset_version(b"\x89PNG\r\n\x1a\nupdated pixels", 20)
+        assert_eq!(new_test.1, super::super::get_asset_version(&png(160), 20));
+        assert_ne!(
+            first_report["tests"][0]["previews"]["test"],
+            next_report["tests"][0]["previews"]["test"]
+        );
+        assert_ne!(
+            first_report["tests"][0]["previews"]["grid"],
+            next_report["tests"][0]["previews"]["grid"]
         );
         assert!(root.join("suite/bitmaps_test/prior").exists());
         assert!(fs::read_dir(root).unwrap().all(|entry| {

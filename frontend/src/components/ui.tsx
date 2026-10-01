@@ -8,7 +8,7 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { type ButtonHTMLAttributes, useState } from "react";
+import { type ButtonHTMLAttributes, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import type { StatusFilter } from "../data/report";
 
@@ -77,6 +77,38 @@ export function StatePanel({
   );
 }
 
+const previewObservers = new Map<
+  Element | null,
+  { observer: IntersectionObserver; targets: Map<Element, (visible: boolean) => void> }
+>();
+
+function observePreview(element: HTMLImageElement, update: (visible: boolean) => void) {
+  const root = element.closest(".review-scroll");
+  let group = previewObservers.get(root);
+  if (!group) {
+    const targets = new Map<Element, (visible: boolean) => void>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) targets.get(entry.target)?.(entry.isIntersecting);
+      },
+      { root, rootMargin: "600px 0px" },
+    );
+    group = { observer, targets };
+    previewObservers.set(root, group);
+  }
+  const { observer, targets } = group;
+  targets.set(element, update);
+  observer.observe(element);
+  return () => {
+    observer.unobserve(element);
+    targets.delete(element);
+    if (!targets.size) {
+      observer.disconnect();
+      previewObservers.delete(root);
+    }
+  };
+}
+
 export function ReportImage({
   path,
   alt,
@@ -89,11 +121,20 @@ export function ReportImage({
   eager?: boolean;
 }) {
   const [failed, setFailed] = useState<string>();
+  const [visible, setVisible] = useState(false);
+  const image = useRef<HTMLImageElement>(null);
+  useEffect(() => {
+    if (eager || !path || failed === path || !image.current) return;
+    return observePreview(image.current, setVisible);
+  }, [eager, path, failed]);
+  const active = eager || visible;
   return path && failed !== path ? (
     <img
+      ref={image}
       className={className}
-      src={`/${path}`}
+      src={active ? `/${path}` : undefined}
       alt={alt}
+      style={active ? undefined : { visibility: "hidden" }}
       loading={eager ? "eager" : "lazy"}
       decoding="async"
       onError={() => setFailed(path)}

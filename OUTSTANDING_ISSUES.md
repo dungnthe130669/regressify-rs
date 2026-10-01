@@ -2,6 +2,21 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Large-Suite Preview Performance (2026-10-01)
+
+- Confirmed: a read-only browser probe of 44 full-page captures downloaded about
+  104 MiB of PNGs during scrolling. Their combined uncompressed pixel size was
+  about 1.9 GiB, not a measurement of resident GPU memory; frame stalls reached
+  517 ms in that run. The JavaScript transfer was only about 180 KiB.
+- Resolved in generation/frontend: bounded small previews replace original-image
+  requests while browsing, and distant preview sources are released. Original
+  comparison/download images remain unchanged. Existing sites need regeneration
+  and redeployment; the live report was not modified.
+- Preview generation uses fast fixed PNG encoding, no expensive optimization,
+  and byte-for-byte repeatability tests. A 300-capture browser regression covers
+  bounded resources, filtering, view changes, distant failure jumps, and review.
+  Desktop tests cover exact staging inventories, version refresh, and cleanup.
+
 ## Deployment UI And Suite Links (2026-10-01)
 
 - Resolved: deployment dialogs now use a left-aligned native link with adjacent

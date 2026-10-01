@@ -98,6 +98,10 @@ both themes. Empty suites and rates that round to 100% retain their actual statu
 Header and Settings checks cover compact spacing, separate report-text lines,
 empty/long text, keyboard navigation, dismissal/focus return, and scrolling when
 more settings are added. Theme synchronization also runs with Settings closed.
+Large-suite checks use 300 captures and assert bounded image sources after scrolling,
+view changes, filtering, and distant failure jumps. Preview checks verify that suite
+browsing requests no full-resolution captures, while comparison and downloads do.
+Both generated previews and legacy reports without preview fields are covered.
 
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
 Rust-generated synthetic report instead of starting the Vite fixture server.
@@ -170,6 +174,23 @@ _snapshot/images/shop/diff/home_diff.png?v=<version>
 Suite JSON is loaded on demand. [Frontend schemas](src/data/report.ts) reject
 unversioned, unsafe, or noncanonical artifact URLs. Changing an image updates its
 version, its suite JSON version, and the manifest version without renaming files.
+
+Optional capture `previews` fields contain `reference`, `test`, `diff`, and `grid`
+image URLs under the same version-2 schema and path-validation rules. The
+[publisher](../src/snapshot/capture_report.rs) creates full-image previews bounded
+to 640 x 480 and top-cropped grid thumbnails bounded to 640 x 400, without upscaling.
+It uses fast thumbnail resizing and PNG Fast/Sub encoding without copied metadata
+or expensive optimization passes. Identical inputs produce byte-identical outputs;
+tests compare complete encoded bytes across repeated generations. Only the grid's
+source image needs a cropped thumbnail. Source captures are never resized or rewritten.
+
+[ReportImage](src/components/ui.tsx) uses one IntersectionObserver per scroll root,
+activating preview sources within 600 pixels and removing distant sources so the
+browser can reclaim image resources. Card labels and links remain available for
+search, keyboard navigation, and failure jumps. Missing and failed images retain
+their lanes. Full-resolution comparison images remain eager; downloads always
+use original URLs. Reports without `previews` fall back to their original images.
+Regenerate and redeploy existing reports to obtain the reduced-size assets.
 
 The shared [Rust naming resolver](../src/helpers/scenario_names.rs) supplies
 `scenario` and generated capture `label` values for both desktop and web reports.

@@ -1,6 +1,6 @@
 # Deployment Packaging
 
-Verified: 2026-09-29
+Verified: 2026-10-01
 
 - The [worker](../../src/desktop/worker.rs) regenerates selected snapshots, then
   stages only the active SPA manifest and its versioned dependencies. The shared
@@ -28,6 +28,8 @@ Verified: 2026-09-29
   owned by `src/test/data`, outside the generated snapshot directory.
 - Compression roles come from suite data. Post-compression updates image query
   versions, suite JSON versions, and the entry manifest without changing paths.
+  Optional capture `previews` are inventory dependencies and protected images;
+  snapshot tests cover their version refresh and suite rename/delete cleanup.
   Versions use `get_asset_version(bytes, 20)` (SHA-384/base64url). Regression coverage:
   `cargo test --features desktop --lib snapshot::site::tests` and
   `cargo test --features desktop --lib desktop::deployment::cloudflare::tests::optimized_snapshots_refresh_image_suite_and_manifest_versions`.

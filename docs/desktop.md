@@ -537,6 +537,11 @@ frontend assets, and hosting policies before publishing. Staging follows the
 generated manifest rather than walking capture folders. Snapshot generation reads
 the run referenced by each suite's `config.js`, including older selected runs,
 without modifying comparison data or deleting capture history.
+Snapshot generation also creates fast, deterministic small PNG previews for suite
+browsing. Staging includes those versioned preview dependencies alongside original
+images; comparison and downloads retain full resolution. Preview generation does
+not resize source captures or run expensive image optimization. Repeating it with
+identical inputs produces identical preview bytes and cache versions.
 
 Snapshot and Deploy use `snapshotTitle`, `snapshotHeading`, and
 `snapshotSubheading` from the workspace configuration unless an explicit override
@@ -581,7 +586,7 @@ images (99 down to 80). Larger images are tried first at each quality level;
 processing stops when the report fits, with a higher-quality search for the last
 image when possible. Every attempt starts from the original, and replacements
 are kept only if smaller. Dimensions, transparency support, and test results
-remain intact; failed diff images and error placeholders stay lossless. Any changed
+remain intact; failed diff images, error placeholders, and generated previews stay lossless. Any changed
 image bytes receive a new `?v=...` value from `get_asset_version`, and suite JSON
 plus the entry manifest receive updated versions as well. Filenames remain stable,
 and only the temporary staging copy is rewritten.

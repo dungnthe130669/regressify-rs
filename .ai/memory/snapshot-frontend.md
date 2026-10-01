@@ -98,9 +98,9 @@ Verified: 2026-10-01
   for the logo/favicon; [Vite](../../frontend/vite.config.ts) supplies its content
   version at build time. Suite/image titles prepend the route's decoded suite name;
   the overview restores the report title.
-- [Suite list rows](../../frontend/src/pages/SuitePage.tsx) contain complete images
-  in equal-width Reference/Test/optional Diff lanes, including on phones. Missing
-  images retain their lanes; grid thumbnails and filtered failure jumps are unchanged.
+- [Suite previews](../../src/snapshot/capture_report.rs) are fast deterministic PNGs:
+  full-image previews at most 640x480, top-cropped grid thumbnails at most 640x400.
+  [ReportImage](../../frontend/src/components/ui.tsx) bounds active sources; review uses originals.
 - [Theme startup](../../frontend/index.html) applies saved/system appearance before React.
   [ThemeControl](../../frontend/src/App.tsx) stays mounted in Settings > Appearance,
   persisting explicit choices and handling cross-tab/OS changes while closed.

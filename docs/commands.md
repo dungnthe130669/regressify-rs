@@ -91,6 +91,13 @@ Suite list view shows Reference and Test previews side by side, plus Diff when
 available. Images fit without cropping, and missing images keep their labeled lanes.
 Grid view keeps a single preview per capture. The site logo and favicon use the
 same artwork as the desktop app.
+Suite browsing uses generated PNG previews instead of downloading full-resolution
+captures: list previews fit within 640 x 480 pixels, and top-cropped grid thumbnails
+within 640 x 400. Only previews near the review viewport keep active image sources.
+Generation prioritizes speed, uses fixed PNG encoding settings, and produces
+byte-identical previews from identical input. Full-resolution captures remain
+unchanged for comparison and download. Regenerate and redeploy existing reports
+to get these previews; no new capture run is required.
 The image viewer supports reference, test, diff, side-by-side, wipe, overlay,
 button-controlled zoom, downloads, and safe links to captured pages. Images scroll
 with the right page, not an inner image canvas; wheel/touch scrolling never zooms.

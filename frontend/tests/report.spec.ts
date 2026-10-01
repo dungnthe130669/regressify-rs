@@ -547,6 +547,112 @@ test('navigation stays in the SPA, preserves filters, and refreshes deep links',
   }
 });
 
+test('large suites keep preview images bounded while scrolling and jumping to failures', async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+    const response = await route.fetch();
+    const manifest = await response.json();
+    const summary = manifest.suites.find((suite: { id: string }) => suite.id === 'workspace-overview');
+    Object.assign(summary, { total: 300, passed: 299, failed: 1, errors: 0 });
+    await route.fulfill({ response, json: manifest });
+  });
+  await page.route('**/_snapshot/data/suites/**', async (route) => {
+    const response = await route.fetch();
+    const suite = await response.json();
+    suite.tests = Array.from({ length: 300 }, (_, index) => ({
+      ...suite.tests[0],
+      id: `capture-${index}.png`,
+      label: `Capture ${index}`,
+      scenario: `Scenario ${index}`,
+      status: index === 250 ? 'fail' : 'pass',
+      mismatch: index === 250 ? 1 : 0,
+    }));
+    await route.fulfill({ response, json: suite });
+  });
+  await page.goto('/suites/workspace-overview?view=list');
+  const cards = page.locator('.capture-card');
+  const images = cards.locator('img[src]');
+  await expect(cards).toHaveCount(300);
+  await expect.poll(() => images.count()).toBeGreaterThan(0);
+  await expect.poll(() => images.count()).toBeLessThan(45);
+  const first = cards.first();
+  const last = cards.last();
+  const review = page.locator('.review-scroll');
+  await last.scrollIntoViewIfNeeded();
+  await expect.poll(() => last.locator('img[src]').count()).toBe(3);
+  await expect.poll(() => first.locator('img[src]').count()).toBe(0);
+  await expect.poll(() => images.count()).toBeLessThan(45);
+  await review.evaluate((element) => element.scrollTo(0, 0));
+  await expect.poll(() => first.locator('img[src]').count()).toBe(3);
+  await expect.poll(() => last.locator('img[src]').count()).toBe(0);
+  await page.getByRole('button', { name: 'Next failed comparison', exact: true }).click();
+  const selected = page.locator('.capture-card[data-active-failure="true"]');
+  await expect(selected).toContainText('Capture 250');
+  await expect(selected).toBeFocused();
+  await expect.poll(() => selected.locator('img[src]').count()).toBe(3);
+  await expect.poll(() => images.count()).toBeLessThan(45);
+  await page.getByRole('button', { name: 'Grid view' }).click();
+  await expect(page.getByRole('button', { name: 'Grid view' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('.capture-grid')).toBeVisible();
+  await expect.poll(() => images.count()).toBeGreaterThan(0);
+  await expect.poll(() => images.count()).toBeLessThan(45);
+  await page.getByRole('searchbox', { name: 'Search captures' }).fill('Capture 299');
+  await expect(cards).toHaveCount(1);
+  await expect(cards).toContainText('Capture 299');
+  await cards.click();
+  await expect(page).toHaveURL(/\/images\/capture-299\.png\?q=Capture\+299$/);
+  await expect.poll(() => page.locator('.image-world img').evaluateAll((elements) => elements.length > 0 && elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+});
+
+test('suite previews avoid full-resolution downloads until opening image review', async ({ page, isMobile }) => {
+  let originals: string[] = [];
+  const requested = new Set<string>();
+  page.on('request', (request) => requested.add(request.url()));
+  await page.route('**/_snapshot/data/suites/**', async (route) => {
+    const response = await route.fetch();
+    const suite = await response.json();
+    originals = [suite.tests[0].reference, suite.tests[0].test, suite.tests[0].diff].filter(Boolean).map((path) => new URL(`/${path}`, route.request().url()).href);
+    await route.fulfill({ response, json: suite });
+  });
+  await page.goto('/suites/workspace-overview?view=list');
+  const capture = page.locator('.capture-card').first();
+  const images = capture.locator('img');
+  await expect(images).toHaveCount(3);
+  await expect.poll(() => images.evaluateAll((elements) => elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  expect(await images.evaluateAll((elements) => elements.every((element) => (element as HTMLImageElement).naturalWidth <= 640 && (element as HTMLImageElement).naturalHeight <= 480))).toBe(true);
+  expect(originals.length).toBe(3);
+  expect(originals.some((url) => requested.has(url))).toBe(false);
+  await page.getByRole('button', { name: 'Grid view' }).click();
+  await expect(images).toHaveCount(1);
+  await expect.poll(() => images.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
+  expect(await images.evaluate((element: HTMLImageElement) => element.naturalWidth <= 640 && element.naturalHeight <= 400)).toBe(true);
+  expect(originals.some((url) => requested.has(url))).toBe(false);
+  await capture.click();
+  if (isMobile) await page.getByRole('combobox', { name: 'Comparison mode' }).selectOption('side');
+  await expect.poll(() => page.locator('.image-world img').evaluateAll((elements) => elements.length === 3 && elements.every((element) => (element as HTMLImageElement).naturalWidth > 0))).toBe(true);
+  expect(originals.every((url) => requested.has(url))).toBe(true);
+  for (const [index, role] of ['reference', 'test', 'diff'].entries()) {
+    const original = new URL(originals[index]);
+    await expect(page.getByRole('link', { name: `Download ${role}`, exact: true })).toHaveAttribute('href', original.pathname + original.search);
+  }
+});
+
+test('legacy suite reports without previews remain readable', async ({ page }) => {
+  let original = '';
+  await page.route('**/_snapshot/data/suites/**', async (route) => {
+    const response = await route.fetch();
+    const suite = await response.json();
+    for (const capture of suite.tests) delete capture.previews;
+    original = `/${suite.tests[0].test}`;
+    await route.fulfill({ response, json: suite });
+  });
+  await page.goto('/suites/workspace-overview');
+  const image = page.locator('.capture-card').first().locator('img');
+  await expect(image).toBeVisible();
+  await expect(image).toHaveAttribute('src', original);
+  await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBeGreaterThan(0);
+});
+
 test('suite list compares reference, test, and available diff captures side by side', async ({ page }, info) => {
   await page.goto('/suites/workspace-overview?view=list');
   const capture = page.locator('.capture-list .capture-card').first();
@@ -589,7 +695,7 @@ test('suite list preserves missing-image lanes and wraps long capture labels', a
   await page.route('**/_snapshot/data/suites/**', async (route) => {
     const response = await route.fetch();
     const data = await response.json();
-    unavailableImage = new URL(`/${data.tests[0].test}`, route.request().url()).href;
+    unavailableImage = new URL(`/${data.tests[0].previews?.test || data.tests[0].test}`, route.request().url()).href;
     data.tests[0].reference = null;
     data.tests[0].label = label;
     await route.fulfill({ response, json: data });

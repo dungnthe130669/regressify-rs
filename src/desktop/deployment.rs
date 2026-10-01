@@ -1914,12 +1914,19 @@ mod tests {
             ("one/bitmaps_test/older/home.png", "test"),
             ("one/bitmaps_test/older/home_diff.png", "diff"),
         ] {
-            let bytes = [b"\x89PNG\r\n\x1a\n".as_slice(), pixels.as_bytes()].concat();
+            let bytes = lodepng::encode32(&[pixels.as_bytes()[0], 40, 60, 255], 1, 1).unwrap();
             fs::write(output.join(path), &bytes).unwrap();
             expected.insert(format!(
                 "_snapshot/images/one/{pixels}/{}",
                 Path::new(path).file_name().unwrap().to_str().unwrap()
             ));
+            expected.insert(format!(
+                "_snapshot/images/one/{pixels}-preview/{}",
+                Path::new(path).file_name().unwrap().to_str().unwrap()
+            ));
+            if pixels == "test" {
+                expected.insert("_snapshot/images/one/test-thumbnail/home.png".into());
+            }
         }
         let report = serde_json::json!({ "id": "one", "tests": [{ "status": "fail", "pair": {
             "label": "Home", "test": "../bitmaps_test/older/home.png", "reference": "../bitmaps_reference/home.png", "diffImage": "../bitmaps_test/older/home_diff.png"
