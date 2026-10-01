@@ -211,6 +211,53 @@ pub fn archive_directory(output: &Path, operation: &OperationId) -> PathBuf {
     output.join("_diagnostics").join(operation.as_str())
 }
 
+pub fn inspect_archive(
+    output: &Path,
+    operation: Option<&OperationId>,
+    archive_aware: bool,
+) -> ArchiveState {
+    if !archive_aware {
+        return ArchiveState::LegacyUnavailable;
+    }
+    let Some(operation) = operation else {
+        return ArchiveState::Missing;
+    };
+    inspect_present_archive(output, operation).unwrap_or(ArchiveState::LoadingError)
+}
+
+fn inspect_present_archive(output: &Path, operation: &OperationId) -> Result<ArchiveState> {
+    let directory = archive_directory(output, operation);
+    match fs::symlink_metadata(&directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ArchiveState::Missing);
+        }
+        Err(error) => return Err(error.into()),
+        Ok(_) => {}
+    }
+    let root = output.canonicalize()?;
+    checked_directory(output, &root)?;
+    checked_directory(&root.join("_diagnostics"), &root)?;
+    let directory = checked_directory(&directory, &root)?;
+    if fs::read_dir(&directory)?.next().transpose()?.is_none() {
+        return Ok(ArchiveState::Missing);
+    }
+    if matches!(fs::symlink_metadata(directory.join("operation.json")), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        let marker: ArchiveIndex =
+            read_json(&directory.join("index.json"), &directory, MAX_RECORD_BYTES)?;
+        ensure!(
+            marker.version == JOURNAL_VERSION
+                && marker.operation_id == *operation
+                && marker.state == ArchiveState::Partial
+                && marker.records == 0
+                && marker.segments.is_empty(),
+            "Invalid diagnostic partial marker"
+        );
+        return Ok(ArchiveState::Partial);
+    }
+    Ok(JournalReader::open(&root, operation)?.archive_state())
+}
+
 fn checked_directory(path: &Path, root: &Path) -> Result<PathBuf> {
     let metadata = fs::symlink_metadata(path)?;
     ensure!(
@@ -701,6 +748,124 @@ pub(crate) mod tests {
         }
         writer.flush().unwrap();
         (writer, metadata)
+    }
+
+    #[test]
+    fn legacy_report_without_archive_is_explicit_not_an_error() {
+        let root = tempfile::tempdir().unwrap();
+        let operation = OperationId::new();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&operation), false),
+            ArchiveState::LegacyUnavailable
+        );
+        assert_eq!(
+            inspect_archive(root.path(), None, false),
+            ArchiveState::LegacyUnavailable
+        );
+        fs::create_dir_all(archive_directory(root.path(), &operation)).unwrap();
+        fs::write(
+            archive_directory(root.path(), &operation).join("operation.json"),
+            b"corrupt",
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&operation), false),
+            ArchiveState::LegacyUnavailable
+        );
+    }
+
+    #[test]
+    fn archive_missing_when_expected_is_distinct_from_legacy() {
+        let root = tempfile::tempdir().unwrap();
+        let operation = OperationId::new();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&operation), true),
+            ArchiveState::Missing
+        );
+        fs::create_dir_all(archive_directory(root.path(), &operation)).unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&operation), true),
+            ArchiveState::Missing
+        );
+        assert_ne!(
+            inspect_archive(root.path(), Some(&operation), false),
+            ArchiveState::Missing
+        );
+        assert_eq!(
+            inspect_archive(root.path(), None, true),
+            ArchiveState::Missing
+        );
+    }
+
+    #[test]
+    fn partial_marker_is_distinct_from_legacy_and_empty_storage() {
+        let root = tempfile::tempdir().unwrap();
+        let operation = OperationId::new();
+        let directory = archive_directory(root.path(), &operation);
+        fs::create_dir_all(&directory).unwrap();
+        let marker = ArchiveIndex {
+            version: JOURNAL_VERSION,
+            operation_id: operation.clone(),
+            state: ArchiveState::Partial,
+            records: 0,
+            bytes: 0,
+            segments: Vec::new(),
+            outcome: Outcome::Unknown,
+            missing_records: None,
+        };
+        fs::write(
+            directory.join("index.json"),
+            serde_json::to_vec(&marker).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&operation), true),
+            ArchiveState::Partial
+        );
+        let (writer, metadata) = write_records(root.path(), JournalOptions::default(), 3);
+        drop(writer);
+        assert_eq!(
+            inspect_archive(root.path(), Some(&metadata.operation_id), true),
+            ArchiveState::Partial
+        );
+    }
+
+    #[test]
+    fn loading_error_when_segment_corrupt_despite_finalized_index() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 3);
+        writer.finalize(Outcome::Success).unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&metadata.operation_id), true),
+            ArchiveState::Complete
+        );
+        let segment = writer.directory().join("segment-000000.jsonl");
+        let mut contents = fs::read(&segment).unwrap();
+        contents[0] = b'!';
+        fs::write(&segment, &contents).unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&metadata.operation_id), true),
+            ArchiveState::LoadingError
+        );
+        fs::remove_file(&segment).unwrap();
+        assert_eq!(
+            inspect_archive(root.path(), Some(&metadata.operation_id), true),
+            ArchiveState::LoadingError
+        );
+    }
+
+    #[test]
+    fn only_complete_archives_allow_complete_exports() {
+        for state in [
+            ArchiveState::Complete,
+            ArchiveState::Partial,
+            ArchiveState::Missing,
+            ArchiveState::LegacyUnavailable,
+            ArchiveState::LoadingError,
+        ] {
+            assert_eq!(state.can_export(), state == ArchiveState::Complete);
+            assert!(!state.label().is_empty());
+        }
     }
 
     #[test]
