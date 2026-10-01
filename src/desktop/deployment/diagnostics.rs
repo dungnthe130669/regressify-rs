@@ -1,15 +1,11 @@
-use std::sync::LazyLock;
-
 use anyhow::{Error, anyhow};
 use futures::StreamExt;
-use regex::{Captures, Regex};
-use reqwest::{Response, Url, header::HeaderValue};
+use reqwest::{Response, header::HeaderValue};
 use serde_json::{Value, json};
 
 use super::DeploymentProvider;
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-const MAX_DETAIL_CHARS: usize = 2048;
 
 pub(super) async fn http_error(
     response: Response,
@@ -171,41 +167,7 @@ fn collect_details(value: &Value, depth: usize, messages: &mut Vec<String>) {
 }
 
 pub(super) fn sanitize(message: &str, authorization: &HeaderValue) -> String {
-    static URLS: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r#"https?://[^\s<>"']+"#).expect("valid URL pattern"));
-    static SECRETS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r#"(?i)\b(?:authorization|password|secret|signature|sig|token|api[_-]?key|access[_-]?token|deployment[_-]?token)\s*[=:]\s*["']?[^\s,;"'<>]+|\bBearer\s+[^\s,;"'<>]+"#,
-        )
-        .expect("valid credential pattern")
-    });
-    let mut message = message.to_owned();
-    if let Ok(header) = authorization.to_str()
-        && let Some((_, token)) = header
-            .split_once(' ')
-            .filter(|(_, token)| !token.is_empty())
-    {
-        message = message.replace(token, "[redacted]");
-    }
-    let message = URLS.replace_all(&message, |capture: &Captures<'_>| {
-        Url::parse(&capture[0])
-            .ok()
-            .and_then(|url| {
-                url.host_str()
-                    .map(|host| format!("{}://{host}/[redacted]", url.scheme()))
-            })
-            .unwrap_or_else(|| "[redacted URL]".into())
-    });
-    let message = SECRETS.replace_all(&message, "[redacted]");
-    let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
-    if message.chars().count() > MAX_DETAIL_CHARS {
-        format!(
-            "{}...",
-            message.chars().take(MAX_DETAIL_CHARS).collect::<String>()
-        )
-    } else {
-        message
-    }
+    crate::diagnostics::redaction::sanitize(message, authorization)
 }
 
 #[cfg(test)]

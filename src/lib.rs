@@ -7,6 +7,7 @@ pub mod compare;
 pub mod config;
 #[cfg(feature = "desktop")]
 pub mod desktop;
+pub mod diagnostics;
 pub mod github;
 pub mod helpers;
 pub mod init;
