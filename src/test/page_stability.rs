@@ -74,6 +74,28 @@ pub async fn prepare_screenshot(
         stabilize_capture_animations(page, log_prefix).await?;
     }
 
+    hide_text_carets(page).await?;
+
+    Ok(())
+}
+
+async fn hide_text_carets(page: &Page) -> Result<()> {
+    tokio::time::timeout(
+        EVALUATION_TIMEOUT,
+        page.evaluate(
+            r#"(() => {
+                const styleId = '__regressify_capture_stability__';
+                if (!document.getElementById(styleId)) {
+                    const style = document.createElement('style');
+                    style.id = styleId;
+                    style.textContent = '*, *::before, *::after { caret-color: transparent !important; }';
+                    (document.head || document.documentElement).appendChild(style);
+                }
+            })()"#,
+        ),
+    )
+    .await
+    .map_err(|_| anyhow!("Timed out while hiding text carets before capture"))??;
     Ok(())
 }
 
@@ -171,7 +193,7 @@ pub async fn trigger_lazy_loading(page: &Page) -> Result<()> {
     Ok(())
 }
 
-/// Freeze active CSS/Web Animations and hide the text caret before capture.
+/// Freeze active CSS/Web Animations before capture.
 pub async fn freeze_animations(page: &Page) -> Result<(u64, u64)> {
     let result = tokio::time::timeout(
         EVALUATION_TIMEOUT,
@@ -199,13 +221,6 @@ pub async fn freeze_animations(page: &Page) -> Result<(u64, u64)> {
                     }
                 }
 
-                const styleId = '__regressify_capture_stability__';
-                if (!document.getElementById(styleId)) {
-                    const style = document.createElement('style');
-                    style.id = styleId;
-                    style.textContent = '*, *::before, *::after { caret-color: transparent !important; }';
-                    (document.head || document.documentElement).appendChild(style);
-                }
                 return { completed, frozen };
             })()"#,
         ),
@@ -373,6 +388,137 @@ mod tests {
             .await
             .expect("Missing or non-positive screenshot delays must not wait");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn screenshot_preparation_hides_carets_without_blurring_inputs() -> Result<()> {
+        use chromiumoxide::{
+            cdp::browser_protocol::page::CaptureScreenshotFormat, page::ScreenshotParams,
+        };
+
+        let (mut browser, handler, directory) =
+            crate::test::browser_tests::launch_browser("capture-caret", Default::default()).await?;
+        let result: Result<()> = async {
+            for (freeze_animations, tag) in [
+                (false, "input"),
+                (true, "input"),
+                (false, "textarea"),
+                (true, "textarea"),
+                (false, "div"),
+                (true, "div"),
+            ] {
+                let page = browser.new_page("about:blank").await?;
+                page.evaluate(format!(
+                    "window.fixtureTag = {}",
+                    serde_json::to_string(tag)?
+                ))
+                .await?;
+                page.evaluate(
+                    r#"(() => {
+                        const input = document.createElement(window.fixtureTag);
+                        input.style.cssText = 'caret-color: rgb(255, 0, 255); width: 240px; height: 50px; font: 20px monospace';
+                        if (window.fixtureTag === 'div') {
+                            input.contentEditable = 'true';
+                            input.textContent = 'test@example.com';
+                        } else {
+                            input.value = 'test@example.com';
+                        }
+                        document.body.appendChild(input);
+                        input.focus();
+                        if (window.fixtureTag === 'div') {
+                            document.getSelection().setBaseAndExtent(input.firstChild, 4, input.firstChild, 4);
+                        } else {
+                            input.setSelectionRange(4, 4);
+                        }
+                        window.fixtureInput = input;
+                        window.fixtureBlurEvents = 0;
+                        input.addEventListener('blur', () => window.fixtureBlurEvents++);
+                        const animated = document.createElement('div');
+                        animated.style.cssText = 'position: fixed; left: -100px; width: 10px; height: 10px';
+                        document.body.appendChild(animated);
+                        window.fixtureAnimation = animated.animate(
+                            [{ opacity: 1 }, { opacity: 0.5 }],
+                            { duration: 60000, iterations: Infinity }
+                        );
+                    })()"#,
+                )
+                .await?;
+                let config = ResolvedConfig {
+                    freeze_animations,
+                    delay: None,
+                    settle_timeout_ms: 0,
+                    ..Default::default()
+                };
+                let mut previous_pixels = None;
+                for capture_index in 0..2 {
+                    if capture_index > 0 {
+                        tokio::time::sleep(Duration::from_millis(350)).await;
+                    }
+                    prepare_screenshot(&page, &config, "caret-test").await?;
+                    let state: serde_json::Value = page
+                        .evaluate(
+                            r#"({
+                                caret: getComputedStyle(window.fixtureInput).caretColor,
+                                focused: document.activeElement === window.fixtureInput,
+                                selection: window.fixtureTag === 'div'
+                                    ? [document.getSelection().anchorOffset, document.getSelection().focusOffset]
+                                    : [window.fixtureInput.selectionStart, window.fixtureInput.selectionEnd],
+                                value: window.fixtureInput.value || window.fixtureInput.textContent,
+                                blurEvents: window.fixtureBlurEvents,
+                                animation: window.fixtureAnimation.playState,
+                            })"#,
+                        )
+                        .await?
+                        .into_value()?;
+                    anyhow::ensure!(
+                        state["caret"] == "rgba(0, 0, 0, 0)",
+                        "{tag} caret remains visible with freezeAnimations={freeze_animations}: {state}"
+                    );
+                    anyhow::ensure!(
+                        state["focused"] == true
+                            && state["selection"] == serde_json::json!([4, 4])
+                            && state["value"] == "test@example.com"
+                            && state["blurEvents"] == 0,
+                        "Screenshot preparation changed the focused input: {state}"
+                    );
+                    let expected_animation = if freeze_animations { "paused" } else { "running" };
+                    anyhow::ensure!(state["animation"] == expected_animation);
+                    let png = page
+                        .screenshot(
+                            ScreenshotParams::builder()
+                                .format(CaptureScreenshotFormat::Png)
+                                .from_surface(true)
+                                .omit_background(false)
+                                .build(),
+                        )
+                        .await?;
+                    let image = lodepng::decode32(png)?;
+                    anyhow::ensure!(
+                        image.buffer.iter().any(|pixel| (pixel.r, pixel.g, pixel.b) != (255, 255, 255)),
+                        "{tag} screenshot is blank"
+                    );
+                    anyhow::ensure!(
+                        !image.buffer.iter().any(|pixel| (pixel.r, pixel.g, pixel.b) == (255, 0, 255)),
+                        "{tag} screenshot contains caret pixels"
+                    );
+                    if let Some(previous) = &previous_pixels {
+                        anyhow::ensure!(
+                            previous == &image.buffer,
+                            "{tag} screenshots changed across the caret blink interval"
+                        );
+                    }
+                    previous_pixels = Some(image.buffer);
+                }
+                page.close().await?;
+            }
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
     }
 
     #[tokio::test]

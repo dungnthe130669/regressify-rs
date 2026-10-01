@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-09-30
+Verified: 2026-10-01
 
 - [Initial navigation](../../src/test/runtime.rs) uses a bounded 60000 ms default,
   matching the legacy Node/VS Code runner. Omitted or zero
@@ -38,6 +38,11 @@ Verified: 2026-09-30
   scenario -> workspace -> default, not through the suite; `postInteractionWait`
   remains final-only. The [save regression](../../src/test/test_action.rs) checks
   pixels, repeated checkpoints, opt-outs, and animations started by finish callbacks.
+- [Caret suppression](../../src/test/page_stability.rs) runs after preparation even
+  with animation freezing and settling disabled. The ignored
+  `screenshot_preparation_hides_carets_without_blurring_inputs` fixture failed
+  before this separation and verifies stable pixels, focus, selection, and values
+  for inputs, textareas, and editable content with both animation settings.
 - [Tab selection](../../src/test/tabs.rs) is explicit: `new` selects an unvisited
   direct popup of the active page (including iframe openers and `noopener`),
   `previous` steps through selection history, and `original` selects the initial

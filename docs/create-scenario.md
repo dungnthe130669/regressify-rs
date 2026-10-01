@@ -421,6 +421,8 @@ Default value: Test suite's value, then workspace value, then `1000`.
 
 Wait for X milliseconds after actions and before taking the screenshot. Set this to `0` when the scenario should capture immediately after interactions.
 
+Capture preparation hides blinking text carets without blurring focused fields or changing their selection and values. This also applies with animation freezing or settling disabled; extra waiting is not needed to avoid caret-only mismatches.
+
 {% end %}
 
 {% spoiler() %}

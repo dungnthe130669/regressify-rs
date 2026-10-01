@@ -325,6 +325,8 @@ font/image/layout settling as the final capture. This does not repeat lazy-load
 scrolling or move the pointer. `freezeAnimations: false` and `settleTimeout: 0`
 disable their respective checks; `delay: 0` skips the explicit delay.
 `postInteractionWait` still runs only after actions, before the final captures.
+Text carets are hidden before each checkpoint even when animation freezing or
+settling is disabled; input focus, selection, and values are preserved.
 
 Example:
 
