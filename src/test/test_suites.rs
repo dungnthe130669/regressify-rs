@@ -309,16 +309,32 @@ fn spawn_capture_jobs(
             });
             let status =
                 runtime::scope(operation.as_ref().map(runtime::Operation::context), async {
+                    let resolved =
+                        config::resolve_config(&ws_config, &suite, &suite.scenarios[scenario_idx]);
+                    let fields = queue_setup_fields(&resolved);
                     runtime::event(
                         Stage::QueueSetup,
                         DiagnosticEvent::Queued,
                         Severity::Info,
-                        [],
+                        fields.clone(),
                     );
-                    let Ok((_suite_permit, _global_permit)) =
-                        acquire_capture_permits(suite_sem, sem).await
-                    else {
-                        eprintln!("  {} Capture semaphore closed", "ERROR:".red());
+                    let queued = std::time::Instant::now();
+                    let permits = runtime::stage(
+                        Stage::QueueSetup,
+                        fields,
+                        acquire_capture_permits(suite_sem, sem),
+                    )
+                    .await;
+                    runtime::event(
+                        Stage::QueueSetup,
+                        DiagnosticEvent::Decision,
+                        Severity::Debug,
+                        [(
+                            Field::QueueMs,
+                            FieldValue::Number(queued.elapsed().as_millis() as u64),
+                        )],
+                    );
+                    let Ok((_suite_permit, _global_permit)) = permits else {
                         progress::emit(ProgressEvent::Captured {
                             id: index,
                             error: Some("Capture semaphore closed".into()),
@@ -402,6 +418,40 @@ fn spawn_capture_jobs(
     }
 
     handles
+}
+
+fn queue_setup_fields(
+    config: &config::ResolvedConfig,
+) -> Vec<(
+    crate::diagnostics::record::Field,
+    crate::diagnostics::record::FieldValue,
+)> {
+    use crate::diagnostics::record::{Field, FieldValue};
+    vec![
+        (
+            Field::ElementTimeoutMs,
+            FieldValue::Number(config.element_timeout_ms),
+        ),
+        (
+            Field::ActionabilityTimeoutMs,
+            FieldValue::Number(config.actionability_timeout_ms),
+        ),
+        (
+            Field::PollIntervalMs,
+            FieldValue::Number(
+                crate::test::actionability::ActionabilityConfig::default().poll_interval_ms,
+            ),
+        ),
+        (
+            Field::ScenarioTimeoutMs,
+            FieldValue::Number(config.scenario_timeout_ms),
+        ),
+        (
+            Field::RetryLimit,
+            FieldValue::Number(crate::test::browsers::MAX_LAUNCH_RETRIES as u64),
+        ),
+        (Field::QueueMs, FieldValue::Number(0)),
+    ]
 }
 
 /// Acquire the suite limit before the global limit. This prevents a job that
@@ -1523,6 +1573,103 @@ fn generate_snapshot_reports() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queue_setup_stage_records_for_passed_and_timed_out_captures() {
+        use crate::diagnostics::{
+            journal::{ArchiveState, JournalReader},
+            record::*,
+            runtime,
+        };
+        let root = tempfile::tempdir().unwrap();
+        for fails in [false, true] {
+            let execution = ExecutionIdentity {
+                execution_id: ExecutionId::new(),
+                suite_id: SafeIdentity::fingerprint("suite"),
+                scenario_id: SafeIdentity::fingerprint("scenario"),
+                viewport: ViewportIdentity {
+                    name: SafeIdentity::fingerprint("desktop"),
+                    width: 1920,
+                    height: 1080,
+                },
+                capture_role: CaptureRole::Test,
+                attempt: 1,
+            };
+            let operation = runtime::Operation::start(
+                root.path(),
+                OperationKind::Capture,
+                None,
+                Some(execution),
+                None,
+            );
+            let result = runtime::scope(
+                Some(operation.context()),
+                runtime::stage(
+                    Stage::QueueSetup,
+                    queue_setup_fields(&config::ResolvedConfig::default()),
+                    async {
+                        if fails {
+                            anyhow::bail!("Synthetic setup timeout containing private-input");
+                        }
+                        Ok(())
+                    },
+                ),
+            )
+            .await;
+            let reference = operation
+                .finish(if result.is_ok() {
+                    Outcome::Success
+                } else {
+                    Outcome::Failure
+                })
+                .await;
+            assert_eq!(reference.state, ArchiveState::Complete);
+            let reader = JournalReader::open(root.path(), &reference.operation_id).unwrap();
+            assert_eq!(reader.metadata.build.version, env!("CARGO_PKG_VERSION"));
+            assert!(!reader.metadata.build.source_commit.is_empty());
+            let mut found = false;
+            reader
+                .visit(|record| {
+                    assert!(
+                        !serde_json::to_string(&record)
+                            .unwrap()
+                            .contains("private-input")
+                    );
+                    if record.stage == Stage::QueueSetup
+                        && record.event_name == DiagnosticEvent::StageFinished
+                    {
+                        found = true;
+                        assert_eq!(
+                            record.outcome,
+                            Some(if fails {
+                                Outcome::Failure
+                            } else {
+                                Outcome::Success
+                            })
+                        );
+                        assert!(record.execution.is_some());
+                        for field in [
+                            Field::ElementTimeoutMs,
+                            Field::ActionabilityTimeoutMs,
+                            Field::PollIntervalMs,
+                            Field::ScenarioTimeoutMs,
+                            Field::RetryLimit,
+                            Field::QueueMs,
+                        ] {
+                            assert!(record.fields.contains_key(&field));
+                        }
+                        if fails {
+                            assert_eq!(
+                                record.error_cause.unwrap().category,
+                                ErrorCategory::Timeout
+                            );
+                        }
+                    }
+                })
+                .unwrap();
+            assert!(found);
+        }
+    }
 
     #[test]
     fn capture_job_journal_opens_writes_and_finalizes_before_comparing() {

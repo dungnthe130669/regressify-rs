@@ -67,17 +67,22 @@ async fn install_with_client(
         .tempdir_in(cache_dir)
         .with_context(|| format!("Cannot create Chromium staging directory. {DISK_HINT}"))?;
     let archive_path = staging.path().join("chromium.zip");
-    crate::progress::scenario_log!("Chromium download URL: {}", browser.url);
-    crate::progress::scenario_log!(
-        "Chromium installation limits: {:.0}s for response, {:.0}s without download data, {:.0}s total download, {:.0}s extraction",
-        limits.response.as_secs_f64(),
-        limits.idle.as_secs_f64(),
-        limits.download.as_secs_f64(),
-        limits.extraction.as_secs_f64()
-    );
-    crate::progress::scenario_log!(
-        "Chromium staging directory: {} (incomplete downloads are not used as a cached browser)",
-        staging.path().display()
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::event(
+        Stage::QueueSetup,
+        DiagnosticEvent::Started,
+        Severity::Info,
+        [
+            (Field::State, FieldValue::Kind(SafeValue::Download)),
+            (
+                Field::Destination,
+                FieldValue::Identity(SafeIdentity::fingerprint(&browser.url)),
+            ),
+            (
+                Field::TimeoutMs,
+                FieldValue::Number(limits.download.as_millis() as u64),
+            ),
+        ],
     );
     let received = download_archive(client, &browser.url, &archive_path, limits).await?;
     browser_status(format!(
@@ -90,15 +95,18 @@ async fn install_with_client(
         .to_path_buf();
     let extraction_started = tokio::time::Instant::now();
     let extraction_lock = cache_lock.clone();
+    let diagnostic_context = diagnostics::current();
     let mut extraction = tokio::task::spawn_blocking(move || {
-        let _cache_lock = extraction_lock;
-        let unpacked = staging.path().join("unpacked");
-        extract_archive(&archive_path, &unpacked, limits.extraction)?;
-        ensure!(
-            unpacked.join(relative_executable).is_file(),
-            "Chromium archive did not contain the expected executable. Check antivirus/quarantine logs, then retry."
-        );
-        Ok::<_, anyhow::Error>(staging)
+        diagnostics::in_scope(diagnostic_context, || {
+            let _cache_lock = extraction_lock;
+            let unpacked = staging.path().join("unpacked");
+            extract_archive(&archive_path, &unpacked, limits.extraction)?;
+            ensure!(
+                unpacked.join(relative_executable).is_file(),
+                "Chromium archive did not contain the expected executable. Check antivirus/quarantine logs, then retry."
+            );
+            Ok::<_, anyhow::Error>(staging)
+        })
     });
     let mut heartbeat = tokio::time::interval_at(
         extraction_started + limits.log_interval,
@@ -282,7 +290,15 @@ fn extract_archive(archive_path: &Path, directory: &Path, limit: Duration) -> Re
     };
     let mut archive = zip::ZipArchive::new(reader)
         .context("Cannot read Chromium ZIP archive; it may be corrupt or a proxy returned a non-ZIP response. Retry the install")?;
-    crate::progress::scenario_log!("Extracting {} Chromium archive entries", archive.len());
+    crate::diagnostics::runtime::event(
+        crate::diagnostics::record::Stage::QueueSetup,
+        crate::diagnostics::record::DiagnosticEvent::Decision,
+        crate::diagnostics::record::Severity::Debug,
+        [(
+            crate::diagnostics::record::Field::FileCount,
+            crate::diagnostics::record::FieldValue::Number(archive.len() as u64),
+        )],
+    );
     archive.extract(directory).with_context(|| {
         format!(
             "Cannot extract Chromium archive (time limit {:.0}s). {DISK_HINT}",

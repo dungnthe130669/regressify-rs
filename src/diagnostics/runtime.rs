@@ -237,6 +237,19 @@ pub fn current() -> Option<Arc<OperationContext>> {
     CURRENT.try_with(Arc::clone).ok()
 }
 
+pub fn in_scope<Output>(
+    context: Option<Arc<OperationContext>>,
+    work: impl FnOnce() -> Output,
+) -> Output {
+    match context {
+        Some(context) => {
+            let span = context.identity.span();
+            CURRENT.sync_scope(context, || span.in_scope(work))
+        }
+        None => work(),
+    }
+}
+
 pub async fn scope<Work: Future>(
     context: Option<Arc<OperationContext>>,
     work: Work,
@@ -283,4 +296,42 @@ pub fn result(stage: Stage, result: &anyhow::Result<()>, duration_ms: u64) {
             },
         );
     }
+}
+
+pub async fn stage<Output>(
+    stage: Stage,
+    fields: impl IntoIterator<Item = (Field, FieldValue)>,
+    work: impl Future<Output = anyhow::Result<Output>>,
+) -> anyhow::Result<Output> {
+    let fields: Vec<_> = fields.into_iter().collect();
+    event(
+        stage,
+        DiagnosticEvent::StageStarted,
+        Severity::Info,
+        fields.iter().cloned(),
+    );
+    let started = Instant::now();
+    let result = work.await;
+    if let Some(context) = current() {
+        context.record(
+            stage,
+            DiagnosticEvent::StageFinished,
+            if result.is_ok() {
+                Severity::Info
+            } else {
+                Severity::Error
+            },
+            fields,
+            Completion {
+                outcome: Some(if result.is_ok() {
+                    Outcome::Success
+                } else {
+                    Outcome::Failure
+                }),
+                error: result.as_ref().err().map(SanitizedError::capture),
+                duration_ms: Some(started.elapsed().as_millis() as u64),
+            },
+        );
+    }
+    result
 }

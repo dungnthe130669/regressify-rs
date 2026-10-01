@@ -13,6 +13,13 @@ use tokio::task::JoinHandle;
 
 use crate::{
     common,
+    diagnostics::{
+        record::{
+            DiagnosticEvent, Field, FieldValue, OperationKind, Outcome, SafeIdentity, SafeValue,
+            Severity, Stage,
+        },
+        runtime as diagnostics,
+    },
     helpers::OnceLockBoolExtensions,
     progress::{self, Event as ProgressEvent},
 };
@@ -82,7 +89,15 @@ const BROWSER_LOCK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 fn browser_status(message: impl Into<String>) {
     let message = message.into();
-    crate::progress::scenario_log!("{message}");
+    if diagnostics::current().is_none() {
+        eprintln!("{message}");
+    }
+    diagnostics::event(
+        Stage::QueueSetup,
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [(Field::Endpoint, FieldValue::Kind(SafeValue::Browser))],
+    );
     progress::emit(ProgressEvent::Phase { name: message });
 }
 
@@ -141,7 +156,28 @@ async fn lock_browser_cache_with_timeout(
 }
 
 pub(super) async fn prepare_browser(fetch_browser: Option<bool>) -> anyhow::Result<PathBuf> {
-    prepare_browser_in(&browser_cache_dir()?, fetch_browser).await
+    let operation = common::REGRESSIFY_DIR.get().map(|output| {
+        diagnostics::Operation::start(output, OperationKind::Capture, None, None, None)
+    });
+    let result = diagnostics::scope(
+        operation.as_ref().map(diagnostics::Operation::context),
+        diagnostics::stage(
+            Stage::QueueSetup,
+            [(Field::Endpoint, FieldValue::Kind(SafeValue::Browser))],
+            async { prepare_browser_in(&browser_cache_dir()?, fetch_browser).await },
+        ),
+    )
+    .await;
+    if let Some(operation) = operation {
+        operation
+            .finish(if result.is_ok() {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            })
+            .await;
+    }
+    result
 }
 
 async fn prepare_browser_in(
@@ -151,14 +187,16 @@ async fn prepare_browser_in(
     browser_status("Checking Chromium cache");
     let browser = managed_browser(cache_dir)?;
     let cached_executable = &browser.executable;
-    crate::progress::scenario_log!(
-        "Shared Chromium cache: {} (downloads {})",
-        cache_dir.display(),
-        if fetch_browser == Some(false) {
-            "disabled"
-        } else {
-            "enabled"
-        }
+    diagnostics::event(
+        Stage::QueueSetup,
+        DiagnosticEvent::Decision,
+        Severity::Debug,
+        [(
+            Field::Artifact,
+            FieldValue::Identity(SafeIdentity::fingerprint(
+                cache_dir.to_string_lossy().as_bytes(),
+            )),
+        )],
     );
     if fetch_browser == Some(false) && !cached_executable.is_file() {
         return resolve_executable(&Some(cached_executable.clone()));
@@ -174,7 +212,13 @@ async fn prepare_browser_in(
     let cache_lock = std::sync::Arc::new(lock_browser_cache(cache_dir).await?);
     browser_status("Checking cached Chromium executable");
     if cached_executable.is_file() {
-        crate::progress::scenario_log!("Reusing cached Chromium; no download needed");
+        browser_status("Reusing cached Chromium; no download needed");
+        diagnostics::event(
+            Stage::QueueSetup,
+            DiagnosticEvent::Decision,
+            Severity::Info,
+            [(Field::State, FieldValue::Kind(SafeValue::Cached))],
+        );
     } else if fetch_browser.unwrap_or(true) {
         install::install_browser(&browser, cache_lock.clone()).await?;
     } else {
@@ -189,13 +233,22 @@ async fn prepare_browser_in(
         let metadata = std::fs::metadata(&exe)?;
         let perms = metadata.permissions();
         if perms.mode() & 0o111 == 0 {
-            crate::progress::scenario_log!("Fixing executable permissions for: {}", exe.display());
+            diagnostics::event(
+                Stage::QueueSetup,
+                DiagnosticEvent::Decision,
+                Severity::Debug,
+                [(
+                    Field::Artifact,
+                    FieldValue::Identity(SafeIdentity::fingerprint(
+                        exe.to_string_lossy().as_bytes(),
+                    )),
+                )],
+            );
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;
         }
     }
 
     browser_status("Chromium ready");
-    crate::progress::scenario_log!("Managed Chromium executable: {}", exe.display());
     Ok(exe)
 }
 
@@ -212,11 +265,36 @@ fn resolve_executable(exe_path: &Option<PathBuf>) -> anyhow::Result<PathBuf> {
     Ok(path.clone())
 }
 
-const MAX_LAUNCH_RETRIES: u32 = 2;
+pub(super) const MAX_LAUNCH_RETRIES: u32 = 2;
 
 pub async fn launch_browser(
     exe_path: &Option<PathBuf>,
     log_prefix: &str,
+    options: LaunchOptions,
+) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
+    diagnostics::stage(
+        Stage::QueueSetup,
+        [
+            (Field::Endpoint, FieldValue::Kind(SafeValue::Browser)),
+            (
+                Field::RetryLimit,
+                FieldValue::Number(MAX_LAUNCH_RETRIES as u64),
+            ),
+            (Field::TimeoutMs, FieldValue::Number(45_000)),
+        ],
+        async {
+            launch_browser_inner(exe_path, log_prefix, options)
+                .await
+                .map_err(|error| anyhow!("{error}"))
+        },
+    )
+    .await
+    .map_err(Into::into)
+}
+
+async fn launch_browser_inner(
+    exe_path: &Option<PathBuf>,
+    _log_prefix: &str,
     options: LaunchOptions,
 ) -> Result<(Browser, JoinHandle<()>, PathBuf), Box<dyn std::error::Error>> {
     let debug = (common::DEBUG.get_bool() || options.debug) && !common::is_ci();
@@ -304,18 +382,19 @@ pub async fn launch_browser(
         .build()
         .map_err(|e| anyhow!("Cannot create browser config: {:?}", e))?;
 
-    crate::progress::scenario_log!(
-        "{} Launching Chromium (executable: {})...",
-        log_prefix,
-        resolved.display()
-    );
-
     let mut last_err = None;
     for attempt in 1..=MAX_LAUNCH_RETRIES {
+        diagnostics::event(
+            Stage::QueueSetup,
+            DiagnosticEvent::Started,
+            Severity::Info,
+            [(Field::RetryAttempt, FieldValue::Number(attempt as u64))],
+        );
         match Browser::launch(config.clone()).await {
             Ok((browser, mut handler)) => {
                 let data_dir = user_data_dir.clone();
-                let handle = tokio::spawn(async move {
+                let context = diagnostics::current();
+                let handle = tokio::spawn(diagnostics::scope(context, async move {
                     // Pump CDP events for the full lifetime of the browser. The loop
                     // ends naturally when the browser is closed/dropped (stream yields
                     // None) or on a transport error. Do NOT use an idle timeout here:
@@ -329,16 +408,32 @@ pub async fn launch_browser(
                         }
                     }
                     let _ = tokio::fs::remove_dir_all(&data_dir).await;
-                });
+                    diagnostics::event(
+                        Stage::CompletionCleanup,
+                        DiagnosticEvent::StageFinished,
+                        Severity::Debug,
+                        [(Field::Endpoint, FieldValue::Kind(SafeValue::Handler))],
+                    );
+                }));
                 return Ok((browser, handle, user_data_dir));
             }
             Err(e) => {
-                crate::progress::scenario_log!(
-                    "{} Browser launch attempt {}/{} failed: {:?}",
-                    log_prefix,
-                    attempt,
-                    MAX_LAUNCH_RETRIES,
-                    e
+                diagnostics::event(
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Retry,
+                    Severity::Warn,
+                    [
+                        (Field::RetryAttempt, FieldValue::Number(attempt as u64)),
+                        (
+                            Field::BackoffMs,
+                            FieldValue::Number(if attempt < MAX_LAUNCH_RETRIES {
+                                2000
+                            } else {
+                                0
+                            }),
+                        ),
+                        (Field::Reason, FieldValue::Kind(SafeValue::Transient)),
+                    ],
                 );
                 last_err = Some(e);
                 if attempt < MAX_LAUNCH_RETRIES {
