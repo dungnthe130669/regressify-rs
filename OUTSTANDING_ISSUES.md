@@ -2,6 +2,20 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Deployment UI And Suite Links (2026-10-01)
+
+- Resolved: deployment dialogs now use a left-aligned native link with adjacent
+  Copy and omit suite listings while retaining subset confirmation. Deployment
+  activity uses a single-line suite summary, omits capture statistics, and fills
+  the remaining height with a selectable, read-only log editor.
+- Runs adds Open Site beside Open Report, using persisted publication membership
+  and completion order to find the latest site containing the selected suites.
+  Subset redeployments replace membership; failures preserve previous links.
+  Legacy target URLs gain suite membership on the next successful deployment.
+- Focused model and GPUI checks cover reloads, target changes, private publication,
+  safe deep links, full-height layouts, and exact copying. The deployment slice
+  passes 103 local tests with six live-provider checks ignored; no site was published.
+
 ## Popup Captures (2026-09-30)
 
 - Resolved: actions and captures previously stayed on the original scenario page.

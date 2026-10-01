@@ -136,7 +136,8 @@ test('overview is responsive, accessible, sortable, and theme-aware', async ({ p
   await expect(page).toHaveURL(/\/$/);
   await expect(page.getByRole('heading', { name: 'A clear view of every change.' })).toBeVisible();
   await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
-  await expect(page.locator('.metrics > div > span')).toHaveText(['Total tests', 'Passed', 'Failed', 'Pass rate']);
+  await expect(page.locator('.metrics > div > span')).toHaveText(['TOTAL TESTS', 'PASSED', 'FAILED', 'PASS RATE']);
+  await expect(page.locator('.metrics svg')).toHaveCount(0);
   await expect(page.getByRole('columnheader')).toHaveText(['Test suite', 'Total tests', 'Passed', 'Failed', 'Pass rate']);
   await page.getByRole('columnheader', { name: 'Test suite', exact: true }).getByRole('button').click();
   await expect(page.locator('.results-table th').first()).toHaveAttribute('aria-sort', 'descending');

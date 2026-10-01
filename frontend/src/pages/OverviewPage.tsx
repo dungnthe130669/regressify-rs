@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, Percent, ScanLine, X } from "lucide-react";
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, X } from "lucide-react";
 import Markdown from "react-markdown";
 import { Link, useSearchParams } from "react-router";
 import { Filters, StatePanel, useFilters } from "../components/ui";
@@ -93,33 +93,21 @@ export function OverviewPage() {
       </header>
       <section className="metrics" aria-label="Snapshot totals">
         <div>
-          <span>
-            <ScanLine size={16} />
-            Total tests
-          </span>
+          <span>TOTAL TESTS</span>
           <strong>{totals.total}</strong>
         </div>
         <div>
-          <span>
-            <Check size={16} />
-            Passed
-          </span>
+          <span>PASSED</span>
           <strong className={totals.total > 0 && !totals.failed ? "text-pass" : ""}>
             {totals.passed}
           </strong>
         </div>
         <div>
-          <span>
-            <X size={16} />
-            Failed
-          </span>
+          <span>FAILED</span>
           <strong className={totals.failed ? "text-fail" : ""}>{totals.failed}</strong>
         </div>
         <div>
-          <span>
-            <Percent size={16} />
-            Pass rate
-          </span>
+          <span>PASS RATE</span>
           <strong>{passRate(totals.passed, totals.total)}%</strong>
         </div>
       </section>

@@ -49,6 +49,21 @@ function Clear-DeploymentFixtureSelection {
     }
 }
 
+function Test-DeploymentCopy([string]$Control, [string]$Expected, [switch]$SelectAll) {
+    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    try {
+        [System.Windows.Forms.Clipboard]::SetText('No deployment text copied')
+        Invoke-Control $Control -Pointer
+        if ($SelectAll) {
+            Send-FixtureKeys A -Control
+            Send-FixtureKeys C -Control
+        }
+        Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -ceq $Expected } "Incorrect copied text from '$Control'."
+    } finally {
+        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+    }
+}
+
 function Test-DeploymentFlows {
     Clear-DeploymentFixtureSelection
     if (Test-ControlInvokable 'Deploy') { throw 'Deploy must be disabled without selected suites.' }
@@ -87,10 +102,22 @@ function Test-DeploymentFlows {
     Invoke-Control 'Close'
     $script:process.CloseMainWindow() | Out-Null
     if (-not $script:process.WaitForExit(10000)) { throw 'Deployment fixture did not close normally.' }
+    $publishedUrl = 'https://reports.example.com/'
+    $targetSettings = Get-Content -LiteralPath $targetSettingsPath -Raw | ConvertFrom-Json -AsHashtable
+    $targetSettings.targets[0].publishedUrl = $publishedUrl
+    $targetSettings.reportPublications = @(@{ targetId = $targetSettings.targets[0].id; suiteIds = @('smoke') })
+    Write-JsonFixture $targetSettingsPath $targetSettings
     Start-Fixture
     Invoke-Control 'Deployment targets'
     Wait-Control 'QA reports' | Out-Null
     if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'The saved token did not survive an app restart.' }
+    $link = Wait-Control 'Open deployed site'
+    if ($link.Current.ControlType -ne [System.Windows.Automation.ControlType]::Hyperlink) { throw 'The deployed URL must use a native link.' }
+    $linkBounds = $link.Current.BoundingRectangle
+    $copyBounds = (Wait-Control 'Copy deployed URL').Current.BoundingRectangle
+    if ($copyBounds.Left -lt $linkBounds.Right -or $copyBounds.Left - $linkBounds.Right -gt 12) { throw 'Copy must be next to the deployed link.' }
+    if ($linkBounds.Width -gt 280) { throw 'A short deployed URL must not fill the dialog width.' }
+    Test-DeploymentCopy 'Copy deployed URL' $publishedUrl
     Capture-Window 'deploy-target-restored'
     Invoke-Control 'Close'
     Clear-DeploymentFixtureSelection
@@ -105,6 +132,11 @@ function Test-DeploymentFlows {
         Select-Theme $theme
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
         Capture-Window ('compact-titlebar-' + $theme.ToLowerInvariant())
+        Invoke-Control 'Runs'
+        $siteBounds = (Wait-Control 'Open Site').Current.BoundingRectangle
+        $reportBounds = (Wait-Control 'Open Report').Current.BoundingRectangle
+        if ($siteBounds.Top -ne $reportBounds.Top -or $siteBounds.Left -lt $reportBounds.Right) { throw 'Open Site must be beside Open Report.' }
+        Capture-Window ('deploy-runs-links-' + $theme.ToLowerInvariant() + '-compact')
         Invoke-Control 'Deploy'
         Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
         Capture-Window ('deploy-' + $theme.ToLowerInvariant() + '-compact')
@@ -117,6 +149,11 @@ function Test-DeploymentFlows {
     Wait-Control 'Report deployment' | Out-Null
     Wait-Control 'Deployment log' | Out-Null
     if ($null -ne (Find-Control 'Scenarios / viewports: 0')) { throw 'Deployment activity must not show scenario counters.' }
+    if ($null -ne (Find-Control 'Refresh saved captures')) { throw 'Deployment activity must not show the suite statistics row.' }
+    Wait-SourceText 'No saved deployment token' 'Deployment log text'
+    $deploymentLog = Read-ControlText 'Deployment log text'
+    Test-DeploymentCopy 'Copy deployment log' $deploymentLog
+    Test-DeploymentCopy 'Deployment log text' $deploymentLog -SelectAll
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
@@ -228,5 +265,5 @@ function Test-DeploymentFlows {
     Wait-Control 'No deployment targets' | Out-Null
     if ([RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Netlify credential was not removed with its target.' }
     Invoke-Control 'Close'
-    Write-Output 'Azure and Netlify provider selection, masked credentials, machine-local storage, restart persistence, credential deletion, subset guards, and safe missing-token failures passed without remote deployment.'
+    Write-Output 'Azure and Netlify provider selection, credentials, restart persistence, adjacent saved-site links, selectable deployment logs, subset guards, and safe missing-token failures passed without remote deployment.'
 }

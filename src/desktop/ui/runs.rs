@@ -213,6 +213,7 @@ pub(super) struct RunPanel {
     started: Option<Instant>,
     executed_suites: Vec<(String, String)>,
     artifacts: artifacts::ArtifactScan,
+    deployment_path: Option<PathBuf>,
 }
 
 impl EventEmitter<RunEvent> for RunPanel {}
@@ -254,6 +255,7 @@ impl RunPanel {
             started: None,
             executed_suites: Vec::new(),
             artifacts: artifacts::ArtifactScan::default(),
+            deployment_path: None,
         };
         panel.rebuild(window, cx);
         panel
@@ -606,6 +608,7 @@ impl RunPanel {
         self.started = None;
         self.executed_suites.clear();
         self.artifacts.clear();
+        self.deployment_path = None;
         self.log
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.status = "No command running".into();
@@ -1454,6 +1457,23 @@ impl RunPanel {
                                     },
                                 )),
                             )
+                        })
+                        .when_some(self.suite_site_url(&suite.name), |row, url| {
+                            row.child(
+                                Button::new(SharedString::from(format!(
+                                    "saved-site-{}",
+                                    suite.name
+                                )))
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::ExternalLink)
+                                .label("Open Site")
+                                .tooltip(url.clone())
+                                .disabled(disabled)
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| this.open_site(&url, cx)),
+                                ),
+                            )
                         }),
                 )
                 .child(
@@ -1575,6 +1595,8 @@ impl Render for RunPanel {
         let running = self.running();
         let focus = self.focus.clone();
         let scope = self.scope_label();
+        let site_url = self.selected_site_url().filter(|_| !running);
+        let can_open_report = self.can_open_report();
         let content = match self.tab {
             0 => self.render_activity(cx),
             1 => div()
@@ -1681,16 +1703,41 @@ impl Render for RunPanel {
                             .disabled(!running)
                             .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
                     )
-                    .when(self.can_open_report(), |bar| {
+                    .when(can_open_report || site_url.is_some(), |bar| {
                         bar.child(
-                            Button::new("activity-view-results")
-                                .primary()
-                                .small()
-                                .icon(gpui_kit::assets::IconName::Images)
-                                .label("Open Report")
-                                .tooltip("Open this run's test and reference comparison")
-                                .disabled(self.disabled)
-                                .on_click(cx.listener(|this, _, _, cx| this.open_report(cx))),
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .when(can_open_report, |row| {
+                                    row.child(
+                                        Button::new("activity-view-results")
+                                            .primary()
+                                            .small()
+                                            .icon(gpui_kit::assets::IconName::Images)
+                                            .label("Open Report")
+                                            .tooltip(
+                                                "Open this run's test and reference comparison",
+                                            )
+                                            .disabled(self.disabled)
+                                            .on_click(
+                                                cx.listener(|this, _, _, cx| this.open_report(cx)),
+                                            ),
+                                    )
+                                })
+                                .when_some(site_url, |row, url| {
+                                    row.child(
+                                        Button::new("run-open-site")
+                                            .small()
+                                            .icon(gpui_kit::assets::IconName::ExternalLink)
+                                            .label("Open Site")
+                                            .tooltip(url.clone())
+                                            .disabled(self.disabled)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.open_site(&url, cx)
+                                            })),
+                                    )
+                                }),
                         )
                     })
                     .child(
@@ -1700,12 +1747,20 @@ impl Render for RunPanel {
                             .aria_label(scope.clone())
                             .test_support()
                             .w_full()
+                            .min_w_0()
+                            .truncate()
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .child(scope),
                     ),
             )
-            .child(self.render_artifact_status(cx))
+            .when(
+                self.manager
+                    .request
+                    .as_ref()
+                    .is_none_or(|request| request.command != RunCommand::Deploy),
+                |panel| panel.child(self.render_artifact_status(cx)),
+            )
             .when_some(
                 self.pending_request.as_ref().filter(|_| self.confirmation),
                 |panel, intent| {
@@ -1846,6 +1901,143 @@ mod tests {
     use gpui_kit::{AppContext, TestAppContext};
     use serde_json::json;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    async fn runs_open_site_reloads_latest_suite_publication(cx: &mut TestAppContext) {
+        use crate::desktop::deployment::DeployTargets;
+
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let output = root.join(".regressify/ui-test");
+        let run = output.join("bitmaps_test/existing-run");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::create_dir_all(output.join("bitmaps_reference")).unwrap();
+        let png = lodepng::encode32(&[255_u8; 4], 1, 1).unwrap();
+        std::fs::write(run.join("home.png"), &png).unwrap();
+        std::fs::write(output.join("bitmaps_reference/home.png"), &png).unwrap();
+        std::fs::write(
+            run.join("report.json"),
+            serde_json::to_vec(&json!({
+                "id": "ui-test", "tests": [{"status": "pass", "pair": {"label": "Home"}}]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (handle, view) = super::super::tests::editor_at_size(
+            cx,
+            &root,
+            gpui_kit::size(gpui_kit::px(1080.), gpui_kit::px(720.)),
+        );
+        let path = cx.update(|cx| {
+            DeployTargets::path_in(&root, view.read(cx).preferences_path.as_ref().unwrap()).unwrap()
+        });
+        let settings: DeployTargets = serde_json::from_value(json!({
+            "targets": [{"id": "old", "name": "Old"}, {"id": "latest", "name": "Latest"}],
+            "selected": "old"
+        }))
+        .unwrap();
+        settings.save(&path).unwrap();
+        for (target, url) in settings
+            .targets
+            .iter()
+            .zip(["https://older.example.com/", "https://latest.example.com/"])
+        {
+            DeployTargets::record_report_publication(&path, target, Some(url), &["ui-test".into()])
+                .unwrap();
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.close_workspace(window, cx);
+                this.load_workspace(root.clone(), window, cx);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(5), |_, cx| {
+            !view.read(cx).busy
+                && view
+                    .read(cx)
+                    .runs
+                    .read(cx)
+                    .suite_site_url("ui-test")
+                    .is_some()
+                && view.read(cx).runs.read(cx).can_open_saved_suite("ui-test")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 1;
+                this.runs.update(cx, |panel, cx| {
+                    panel.select_all(true, cx);
+                    assert_eq!(
+                        panel.selected_site_url().as_deref(),
+                        Some("https://latest.example.com/suites/ui-test")
+                    );
+                    assert!(panel.suite_site_url("missing").is_none());
+                });
+                cx.notify();
+            });
+            for dark in [false, true] {
+                super::super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                assert_eq!(window.find("run-open-site").label(), Some("Open Site"));
+                let report = window.find("activity-view-results").bounds();
+                let site = window.find("run-open-site").bounds();
+                assert_eq!(report.origin.y, site.origin.y);
+                assert!(report.origin.x + report.size.width <= site.origin.x);
+                assert!(site.origin.x + site.size.width <= gpui_kit::px(1080.));
+                window.within("run-tabs").click(1_usize, cx);
+                window.render_frame(cx);
+                assert!(window.find("saved-report-ui-test").visible());
+                assert!(window.find("saved-site-ui-test").visible());
+                let report = window.find("saved-report-ui-test").bounds();
+                let site = window.find("saved-site-ui-test").bounds();
+                assert_eq!(report.origin.y, site.origin.y);
+                assert!(report.origin.x + report.size.width <= site.origin.x);
+            }
+            view.update(cx, |this, cx| {
+                this.runs.update(cx, |panel, cx| {
+                    panel.suites[0].name = "different-file-name".into();
+                    panel.select_all(true, cx);
+                    assert_eq!(
+                        panel.selected_site_url().as_deref(),
+                        Some("https://latest.example.com/suites/ui-test")
+                    );
+                    panel.suites[0].name = "ui-test".into();
+                    panel.select_all(true, cx);
+                });
+            });
+        })
+        .unwrap();
+        std::fs::write(&path, b"{invalid").unwrap();
+        cx.update(|cx| {
+            view.update(cx, |this, cx| {
+                this.runs
+                    .update(cx, |panel, cx| panel.refresh_artifacts(cx))
+            })
+        });
+        cx.wait_for(handle.into(), std::time::Duration::from_secs(5), |_, cx| {
+            view.read(cx)
+                .runs
+                .read(cx)
+                .suite_site_url("ui-test")
+                .is_none()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("run-open-site").is_none());
+            assert!(window.try_find("saved-site-ui-test").is_none());
+            assert!(window.find("activity-view-results").visible());
+            assert!(
+                view.read(cx)
+                    .runs
+                    .read(cx)
+                    .status
+                    .contains("Cannot load deployed sites")
+            );
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     async fn reopening_recovers_legacy_results_even_with_corrupt_activity(cx: &mut TestAppContext) {

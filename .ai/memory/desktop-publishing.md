@@ -1,6 +1,6 @@
 # Desktop Publishing
 
-Verified: 2026-09-28
+Verified: 2026-10-01
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
@@ -19,6 +19,15 @@ Verified: 2026-09-28
   URLs with completed activity; landing completion saves before notifying the UI.
   Target/runner regressions and `saved_deployment_urls_reopen_and_copy` cover reload,
   provider isolation, unsafe links, failure preservation, and native copy controls.
+- Report publications also retain suite output IDs in completion order. Runs links
+  resolve the newest site containing the requested suites, encode single-suite
+  paths, and reload asynchronously through artifact refresh. A subset redeployment
+  replaces the site's membership; legacy URLs do not imply membership. The
+  `published_report_sites_` and `runs_open_site_` regressions cover these contracts.
+- The dialog's native link uses content-sized flex layout so Copy stays beside it;
+  the toolkit's label wrapper centers text inside a stretched button. Deployment
+  activity reuses the Log tab's read-only editor, fills available height, and keeps
+  retained lines intact. Native tests cover full-height bounds and exact copying.
 - Cloudflare publication may succeed without a public URL. Nullable progress and
   saved results retain compatibility with existing strings; confirmed private
   results clear stale URLs. Asset-option edits preserve URLs, routing edits clear

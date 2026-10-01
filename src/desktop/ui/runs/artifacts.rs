@@ -1,4 +1,5 @@
 use super::*;
+use crate::desktop::deployment::DeployTargets;
 use crate::desktop::results::{SavedRun, SuiteArtifacts};
 
 #[derive(Default)]
@@ -7,6 +8,7 @@ pub(super) struct ArtifactScan {
     generation: u64,
     pub(super) loading: bool,
     suites: BTreeMap<String, std::result::Result<SuiteArtifacts, String>>,
+    publications: DeployTargets,
 }
 
 impl ArtifactScan {
@@ -15,10 +17,55 @@ impl ArtifactScan {
         self.root = None;
         self.loading = false;
         self.suites.clear();
+        self.publications = DeployTargets::default();
     }
 }
 
 impl RunPanel {
+    pub(in crate::desktop::ui) fn set_deployment_storage_path(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) {
+        self.manager.set_deployment_storage_path(path.clone());
+        self.deployment_path = Some(path);
+        self.artifacts.publications = DeployTargets::default();
+        self.refresh_artifacts(cx);
+    }
+
+    pub(super) fn suite_site_url(&self, name: &str) -> Option<String> {
+        let suite = self.suites.iter().find(|suite| suite.name == name)?;
+        self.artifacts
+            .publications
+            .latest_report_url(std::slice::from_ref(&suite.output_id))
+    }
+
+    pub(super) fn selected_site_url(&self) -> Option<String> {
+        let ids = if self.selection.is_empty() {
+            self.executed_suites
+                .iter()
+                .map(|(_, id)| id.clone())
+                .collect::<Vec<_>>()
+        } else {
+            self.suites
+                .iter()
+                .filter(|suite| self.selection.contains(&suite.name))
+                .map(|suite| suite.output_id.clone())
+                .collect()
+        };
+        self.artifacts.publications.latest_report_url(&ids)
+    }
+
+    pub(super) fn open_site(&mut self, url: &str, cx: &mut Context<Self>) {
+        if self.disabled || self.running() {
+            return;
+        }
+        if let Err(error) = open::that_detached(url) {
+            self.status = format!("Cannot open deployed site: {error}");
+            cx.notify();
+        }
+    }
+
     pub(in crate::desktop::ui) fn suite_counts(&self, id: &str) -> crate::progress::Counts {
         let Ok(root) = self.output_root() else {
             return crate::progress::Counts::default();
@@ -61,6 +108,7 @@ impl RunPanel {
         self.artifacts.root = Some(root.clone());
         self.artifacts.loading = true;
         let generation = self.artifacts.generation;
+        let deployment_path = self.deployment_path.clone();
         let ids = self
             .suites
             .iter()
@@ -68,22 +116,36 @@ impl RunPanel {
             .map(|suite| suite.output_id.clone())
             .collect::<BTreeSet<_>>();
         let task = cx.background_executor().spawn(async move {
-            ids.into_iter()
+            let artifacts = ids
+                .into_iter()
                 .map(|id| {
                     let artifacts =
                         SuiteArtifacts::load(&root, &id).map_err(|error| format!("{error:#}"));
                     (id, artifacts)
                 })
-                .collect::<BTreeMap<_, _>>()
+                .collect::<BTreeMap<_, _>>();
+            let publications = deployment_path
+                .as_deref()
+                .map(DeployTargets::load)
+                .transpose()
+                .map(Option::unwrap_or_default);
+            (artifacts, publications)
         });
         cx.spawn(async move |panel, cx| {
-            let artifacts = task.await;
+            let (artifacts, publications) = task.await;
             let _ = panel.update(cx, |panel, cx| {
                 if panel.artifacts.generation != generation {
                     return;
                 }
                 panel.artifacts.suites = artifacts;
                 panel.artifacts.loading = false;
+                match publications {
+                    Ok(publications) => panel.artifacts.publications = publications,
+                    Err(error) => {
+                        panel.artifacts.publications = DeployTargets::default();
+                        panel.status = format!("Cannot load deployed sites: {error:#}");
+                    }
+                }
                 cx.emit(RunEvent::ArtifactsChanged);
                 cx.notify();
             });

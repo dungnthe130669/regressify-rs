@@ -23,6 +23,7 @@ description: 'Use when changing desktop deployment targets, saved target configu
 1. Landing targets use app-managed identity, not linked-site workspaces. See the [landing skill](../desktop-landing-apps/SKILL.md).
 1. Store the optional `publishedUrl` with its target ID after successful publication. Reload current settings before updating, preserve other targets/selection, and reject removed or changed destinations. Accept only credential-free HTTPS URLs without query/fragment data. Failure/cancellation retains the previous URL.
 1. Name-only edits, Cloudflare asset options, and Netlify/Cloudflare token changes preserve the URL. Destination/routing-mode changes clear it; replacing an Azure token also clears it because the token identifies the app. A confirmed private Cloudflare publication clears stale URLs; failure/cancellation does not. Surface persistence errors without hiding a successful URL. Report completion writes in the runner's background task; landing completion writes before returning to the UI.
+1. `reportPublications` stores target IDs and suite output IDs in completion order, atomically with report URLs. Replace membership when redeploying that target/site, clear it with invalidated URLs or removed targets, and retain it on failure/cancellation. Resolve the latest publication containing every requested suite; single suites use URL path-segment encoding under `/suites/`. Legacy URLs without membership must not imply that a suite was published. Load Runs links off the UI thread and refresh after completion or target changes.
 
 ## Checks
 
@@ -31,7 +32,9 @@ cargo test --features desktop --lib desktop::deployment::credentials::tests
 cargo test --features desktop --lib desktop::deployment::tests
 cargo test --features desktop --lib desktop::deployment::tokens::tests
 cargo test --features desktop --lib completed_deployments_persist_urls
+cargo test --features desktop --lib published_report_sites_
 cargo test --features gui-tests --lib saved_deployment_urls_reopen_and_copy -- --test-threads=1
+cargo test --features gui-tests --lib runs_open_site_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tokens::tests -- --test-threads=1
 ```
 

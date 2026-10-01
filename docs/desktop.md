@@ -435,7 +435,9 @@ Existing targets without a provider setting continue to use Azure.
 
 Each target stores its last successfully deployed HTTPS URL. Open **Deployment
 targets**, choose a target, then click its URL to open the site or use **Copy
-deployed URL**. These controls do not require suite selection or a saved token,
+deployed URL** directly beside the left-aligned link. The dialog omits the selected
+suite list; partial selections still require explicit confirmation.
+These controls do not require suite selection or a saved token,
 and remain available after switching tabs or restarting the app. Failed or
 cancelled deployments keep the previous URL. Renaming a target preserves it;
 changing provider, Azure environment, Netlify Site ID, Cloudflare account/Worker,
@@ -445,6 +447,16 @@ preserve the URL. A successful private Cloudflare deployment clears any previous
 public URL; it still appears as a completed deployment without an Open Site button.
 Azure tokens identify the destination app as well as authorize it. If saving a
 successful deployment's URL fails, the app reports the local persistence error.
+
+In **Runs**, **Open Site** appears beside **Open Report** in the toolbar and on
+each published suite's row. It opens the most recently deployed site containing
+that suite at `/suites/<suite-id>`. With multiple suites selected, the toolbar
+opens the newest site containing all of them. Publication membership survives
+restarts and other runs; redeploying a subset replaces the previous membership
+for that site. Failed or cancelled deployments preserve it. Destination changes,
+target removal, or successful private publication remove the affected links.
+Older saved URLs without suite membership remain available in the deployment
+dialog and gain suite-specific links after the next successful report deployment.
 
 For **Azure Static Web Apps**, choose that provider and enter the app's deployment
 token. The Azure environment field remains optional.
@@ -702,8 +714,11 @@ stage, and elapsed time. Deployment activity replaces scenario counters with
 deployment-specific feedback. Completion, failure, and cancellation have distinct
 status icons and colors; View Log remains available, and successful deployments
 offer Open Site.
-Activity also shows the 12 most recent nonempty worker log lines, bounded for
-responsive rendering; View Log retains the full bounded run log. Staging and
+The suite summary stays on one line, with an ellipsis for overflow, and deployment
+activity omits the reference/capture statistics row. Its read-only log editor
+fills the remaining container height and retains the full bounded run log, just
+like the Log tab. Select text to copy it, or use **Copy deployment log** for all
+retained text. Staging and
 packaging report file/byte counts, optimization reports actual savings, and
 Netlify reports reused paths, per-file bytes sent, and accepted file/byte counts;
 Azure reports acknowledged bytes. Azure block commits,

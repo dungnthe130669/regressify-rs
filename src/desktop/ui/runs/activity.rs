@@ -613,12 +613,14 @@ impl RunPanel {
             Some(RunOutcome::Failed(error)) => Some(error.as_str()),
             _ => None,
         });
-        let recent_logs = deployment_log_tail(&self.manager.logs);
-        let log_count = recent_logs.len();
         div()
             .id("activity-scroll")
+            .test_support()
+            .flex()
+            .flex_col()
             .size_full()
-            .overflow_y_scrollbar()
+            .min_h_0()
+            .overflow_hidden()
             .child(
                 div()
                     .id("deployment-progress")
@@ -627,6 +629,7 @@ impl RunPanel {
                     .test_support()
                     .flex()
                     .flex_col()
+                    .flex_shrink_0()
                     .gap_3()
                     .p_4()
                     .w_full()
@@ -741,6 +744,7 @@ impl RunPanel {
                         .role(Role::Status)
                         .aria_label(error.to_string())
                         .test_support()
+                        .flex_shrink_0()
                         .px_4()
                         .py_3()
                         .text_color(cx.theme().danger)
@@ -750,6 +754,7 @@ impl RunPanel {
             .child(
                 div()
                     .flex()
+                    .flex_shrink_0()
                     .items_center()
                     .flex_wrap()
                     .gap_2()
@@ -790,57 +795,64 @@ impl RunPanel {
                         },
                     ),
             )
-            .when(!recent_logs.is_empty(), |body| {
-                body.child(
-                    div()
-                        .id("deployment-live-log")
-                        .role(Role::Group)
-                        .aria_label("Deployment log")
-                        .test_support()
-                        .w_full()
-                        .min_w_0()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .px_4()
-                        .py_3()
-                        .border_t_1()
-                        .border_color(cx.theme().border)
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Deployment log"),
-                        )
-                        .child(
-                            div()
-                                .w_full()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .gap_1()
-                                .text_xs()
-                                .font_family(cx.theme().mono_font_family.clone())
-                                .children(recent_logs.into_iter().enumerate().map(
-                                    |(index, line)| {
-                                        div()
-                                            .id(SharedString::from(if index + 1 == log_count {
-                                                "deployment-log-latest".to_string()
-                                            } else {
-                                                format!("deployment-log-line-{index}")
-                                            }))
-                                            .role(Role::ListItem)
-                                            .aria_label(line.clone())
-                                            .test_support()
-                                            .w_full()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(line)
-                                    },
-                                )),
-                        ),
-                )
-            })
+            .child(
+                div()
+                    .id("deployment-live-log")
+                    .role(Role::Group)
+                    .aria_label("Deployment log")
+                    .test_support()
+                    .w_full()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .border_t_1()
+                    .border_color(cx.theme().border)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_shrink_0()
+                            .items_center()
+                            .gap_2()
+                            .px_4()
+                            .py_2()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child("Deployment log"),
+                            )
+                            .child(
+                                Button::new("copy-deployment-log")
+                                    .ghost()
+                                    .small()
+                                    .icon(IconName::Copy)
+                                    .tooltip("Copy log")
+                                    .accessibility_label("Copy deployment log")
+                                    .disabled(self.log_text.is_empty())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            this.log_text.clone(),
+                                        ))
+                                    })),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("deployment-log-editor")
+                            .test_support()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                CodeEditor::new(&self.log)
+                                    .aria_label("Deployment log text")
+                                    .size_full()
+                                    .readonly(true),
+                            ),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -930,27 +942,6 @@ impl RunPanel {
     }
 }
 
-fn deployment_log_tail(
-    logs: &std::collections::VecDeque<crate::desktop::runner::LogLine>,
-) -> Vec<String> {
-    let mut lines = logs
-        .iter()
-        .rev()
-        .flat_map(|entry| entry.text.lines().rev())
-        .filter(|line| !line.trim().is_empty())
-        .take(12)
-        .map(|line| {
-            let mut text = line.chars().take(512).collect::<String>();
-            if line.chars().nth(512).is_some() {
-                text.push_str("...");
-            }
-            text
-        })
-        .collect::<Vec<_>>();
-    lines.reverse();
-    lines
-}
-
 fn suite_status(counts: Counts, finished: bool) -> Status {
     if counts.running > 0 {
         Status::Running
@@ -999,26 +990,6 @@ mod tests {
                 ..Default::default()
             },
         }
-    }
-
-    #[test]
-    fn deployment_log_tail_keeps_recent_messages_in_order_and_bounds_rendering() {
-        let logs = (0..30)
-            .map(|index| LogLine {
-                stderr: true,
-                text: format!("\nStep {index}\n"),
-            })
-            .chain([LogLine {
-                stderr: true,
-                text: "x".repeat(10_000),
-            }])
-            .collect();
-        let lines = super::deployment_log_tail(&logs);
-        assert_eq!(lines.len(), 12);
-        assert_eq!(lines[0], "Step 19");
-        assert_eq!(lines[10], "Step 29");
-        assert_eq!(lines[11].len(), 515);
-        assert!(lines[11].ends_with("..."));
     }
 
     #[gpui_kit::test]
@@ -1111,16 +1082,18 @@ mod tests {
                             name: "Uploading selected reports".into(),
                         },
                     });
+                    panel.refresh_log(window, cx);
                     cx.notify();
                 });
                 cx.notify();
             });
             window.render_frame(cx);
             assert!(window.try_find("deployment-progress").is_some());
+            assert!(window.try_find("artifact-status").is_none());
             assert!(window.find("deployment-live-log").visible());
             assert_eq!(
-                window.find("deployment-log-latest").label(),
-                Some("Azure tier: Free; storage budget 250 MiB")
+                view.read(cx).runs.read(cx).log_text,
+                "[stderr] Azure tier: Free; storage budget 250 MiB\n"
             );
             assert_eq!(
                 window.find("run-outcome-heading").label(),
@@ -1161,14 +1134,33 @@ mod tests {
                             stderr: true,
                             text: format!("{phase}\n"),
                         });
+                        panel.refresh_log(window, cx);
                         cx.notify();
                     });
                 });
                 window.render_frame(cx);
                 assert_eq!(window.find("live-phase").label(), Some(phase));
-                assert_eq!(window.find("deployment-log-latest").label(), Some(phase));
+                assert!(view.read(cx).runs.read(cx).log_text.ends_with(&format!("{phase}\n")));
                 assert!(window.find("deployment-spinner").visible());
             }
+            window.click("copy-deployment-log", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                view.read(cx).runs.read(cx).log_text
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("not the deployment log".into()));
+            window.click("deployment-log-editor", cx);
+            window.press("ctrl-a", cx);
+            window.press("ctrl-c", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().unwrap(),
+                view.read(cx).runs.read(cx).log_text
+            );
+            window.input("cannot edit deployment logs", cx);
+            assert_eq!(
+                view.read(cx).runs.read(cx).log.read(cx).value().as_str(),
+                view.read(cx).runs.read(cx).log_text
+            );
             window.click("activity-view-log", cx);
             window.render_frame(cx);
             assert_eq!(window.find("run-log-heading").label(), Some("All run logs"));
@@ -1235,6 +1227,9 @@ mod tests {
                 view.update(cx, |this, cx| {
                     this.main_tab = 1;
                     this.runs.update(cx, |panel, cx| {
+                        panel.command = RunCommand::Deploy;
+                        panel.suites[0].name = "Long deployment suite ".repeat(30);
+                        panel.select_all(true, cx);
                         let mut request = deployment_request(directory.path());
                         let job = request.options.deployment.as_mut().unwrap();
                         job.target.name = "Long deployment destination ".repeat(4);
@@ -1247,6 +1242,7 @@ mod tests {
                             stderr: true,
                             text: format!("Upload step {index}: {}\n", "details ".repeat(100)),
                         }));
+                        panel.refresh_log(window, cx);
                         cx.notify();
                     });
                     cx.notify();
@@ -1254,6 +1250,9 @@ mod tests {
                 for dark in [false, true] {
                     super::super::super::design::apply_theme(dark, Some(window), cx);
                     window.render_frame(cx);
+                    let scope = window.find("run-scope");
+                    assert!(scope.label().unwrap().len() > 100);
+                    assert!(scope.bounds().size.height <= px(24.));
                     let band = window.find("deployment-progress").bounds();
                     assert!(band.size.width > px(400.));
                     assert!(band.origin.x + band.size.width <= px(width));
@@ -1292,16 +1291,26 @@ mod tests {
                     assert!(
                         live_log.origin.x + live_log.size.width <= band.origin.x + band.size.width
                     );
-                    let latest = window.find("deployment-log-latest").bounds();
-                    assert!(latest.origin.x >= live_log.origin.x);
+                    let activity = window.find("activity-scroll").bounds();
+                    assert_eq!(
+                        live_log.origin.y + live_log.size.height,
+                        activity.origin.y + activity.size.height
+                    );
+                    let editor = window.find("deployment-log-editor").bounds();
+                    assert!(editor.size.height > px(200.));
+                    assert!(editor.origin.x >= live_log.origin.x);
                     assert!(
-                        latest.origin.x + latest.size.width
+                        editor.origin.x + editor.size.width
                             <= live_log.origin.x + live_log.size.width
                     );
-                    assert!(
-                        latest.origin.y + latest.size.height
-                            <= live_log.origin.y + live_log.size.height
+                    assert_eq!(
+                        editor.origin.y + editor.size.height,
+                        live_log.origin.y + live_log.size.height
                     );
+                    let text = &view.read(cx).runs.read(cx).log_text;
+                    assert!(text.contains("Upload step 0:"));
+                    assert!(text.contains("Upload step 29:"));
+                    assert!(text.contains(&"details ".repeat(100)));
                 }
             })
             .unwrap();

@@ -28,8 +28,9 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 1. Native pointer clicks synchronize compositor frames after movement and press; always release in `finally`. Back-to-back native mouse events can miss scenario clicks even when frame-stepped GPUI tests pass. Keep pointer sequencing and failure cleanup covered by the headless harness.
 1. Remote management has a distinct accessible `Save remote` command so the form's submit action cannot be confused with the disabled Add/Rename toolbar controls. Test dropdowns through their popup items after they render. Keep activity below the diff pane so expanded logs cannot collapse file trees; compact tests must include expanded comparison rows, not only visible commit controls.
 1. Publishing controls live in the global Publish menu. Bound long token-selector labels so Add/Edit/Remove remain inside the dialog. Landing forms retain an explicit scroll handle; offscreen inputs may not have accessibility nodes until scrolled into view. Use distinct landing deployment labels, settle password focus after native clicks, and wait for menu-driven form changes before asserting them.
-1. Report and landing deployment dialogs expose the selected target's saved URL through `deploy-open-published` and `deploy-copy-published`. Keep copy visible for long URLs, independent of suite/token availability. Test disk reload with a fresh panel, provider switching, pointer copy, and compact light/dark layouts.
+1. Report and landing deployment dialogs expose the selected target's saved URL through `deploy-open-published` and `deploy-copy-published`. Use the native link style without an external icon, content-sized and left-aligned, with Copy beside it and visible for long URLs. Omit report suite listings but retain subset confirmation. Test disk reload, provider switching, pointer copy, and compact light/dark layouts.
 1. Cloudflare target routing defaults to Public (production). Preserve advanced HTML/date/exclusion settings and masked credentials across edits. Keep expanded asset settings scrollable without losing the outer dialog accessibility ID; GPUI's scrollbar wrapper changes element type. `label()` in native tests reads the accessibility name when one overrides visible text. Hide public-link controls for successful private deployments.
+1. Deployment activity uses the shared read-only log editor at full remaining height, not static tail lines. Keep the suite summary ellipsized and hide its capture-statistics row. Test native selection/copy with a clipboard sentinel, long lines, compact/large windows, and a distinct editor accessibility name. Runs Open Site belongs beside Open Report and resolves saved publication membership by output ID, not display name.
 
 ## Checks
 
@@ -38,6 +39,8 @@ For smoke harness edits, run `./ci/test-desktop-smoke.ps1` in PowerShell 7 first
 ```sh
 cargo test --features gui-tests --lib suite_name_dialog_ -- --test-threads=1
 cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
+cargo test --features gui-tests --lib deployment_activity_ -- --test-threads=1
+cargo test --features gui-tests --lib runs_open_site_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui -- --test-threads=1
 ```
 
@@ -46,6 +49,8 @@ Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-Comp
 `-ArtifactFlows` also exercises New/Rename filename focus and stem selection, Enter from inputs/focused Create, X cancellation, F2 rename, independent display-name editing in Rename and Fields, byte-preserving reference/history migration, and Delete cancellation/confirmation. Inputs and the deletion prompt need accessible names, not only visible text or test IDs.
 
 `-PublishingFlows` covers automatic landing storage, Markdown/remote URLs, draft guards, local removal, named tokens, Cloudflare account inheritance, and both themes/window sizes. It backs up/restores global catalogs and cannot use KeepOpen.
+
+`-DeploymentFlows` covers synthetic target URL reload, native link/adjacent Copy, Runs Open Site placement, exact deployment-log copying, and missing-token outcomes without remote publication. It preserves clipboard data around copy checks.
 
 ## Maintain
 

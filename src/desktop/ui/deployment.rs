@@ -231,6 +231,9 @@ impl Workbench {
                 if settings.selected.is_none() {
                     settings.selected = settings.targets.first().map(|target| target.id.clone());
                 }
+                this.runs.update(cx, |panel, cx| {
+                    panel.set_deployment_storage_path(path.clone(), cx);
+                });
                 this.deployment.update(cx, |state, cx| {
                     state.settings = settings;
                     state.tokens = tokens;
@@ -395,8 +398,8 @@ impl Workbench {
                 if let Some(url) = selected.and_then(|target| target.published_url.clone()) {
                     let open_url = url.clone();
                     body = body.child(div().id("deploy-published-url").flex().items_center().gap_2().min_w_0()
-                        .child(Button::new("deploy-open-published").small().ghost().flex_1().min_w_0().overflow_hidden().justify_start()
-                            .icon(gpui_kit::assets::IconName::ExternalLink).label(url.clone()).tooltip(url.clone()).accessibility_label("Open deployed site")
+                        .child(Button::new("deploy-open-published").small().link().flex_initial().min_w_0().overflow_hidden()
+                            .label(url.clone()).tooltip(url.clone()).accessibility_label("Open deployed site")
                             .on_click(window.listener_for(&view, move |this, _, _, cx| {
                                 if let Err(error) = open::that_detached(&open_url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
                             })))
@@ -408,9 +411,6 @@ impl Workbench {
                     body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(landing.app.heading.clone()))
                         .child(format!("Sites: {}", landing.app.sites.len()));
                 } else {
-                body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(format!("Selected suites: {} of {}", state.suite_ids.len(), state.catalog_ids.len())));
-                body = body.child(div().id("deployment-suite-list").max_h(px(112.)).overflow_y_scrollbar().text_sm()
-                    .children(state.intent.iter().flat_map(|intent| intent.suite_names.iter()).map(|name| div().truncate().child(name.clone()))));
                 if state.suite_ids.is_empty() {
                     body = body.child(div().text_color(cx.theme().warning).child("Select at least one test suite to deploy."));
                 } else if state.partial {
@@ -812,10 +812,12 @@ impl Workbench {
                     cx.notify();
                 });
                 this.sync_modal(cx);
-                if succeeded && let Some(intent) = pending {
-                    this.runs.update(cx, |panel, _| {
-                        panel.manager.set_deployment_storage_path(deployment_path);
+                if succeeded && this.deployment.read(cx).landing.is_none() {
+                    this.runs.update(cx, |panel, cx| {
+                        panel.set_deployment_storage_path(deployment_path, cx);
                     });
+                }
+                if succeeded && let Some(intent) = pending {
                     window.close_dialog(cx);
                     this.guard_run(Box::new(intent), window, cx);
                 }
@@ -1084,6 +1086,7 @@ mod tests {
                         Some("azure")
                     );
                     assert!(!view.read(cx).deployment.read(cx).can_deploy());
+                    assert!(window.try_find("deployment-suite-list").is_none());
                     for dark in [false, true] {
                         super::super::design::apply_theme(dark, Some(window), cx);
                         for target in &settings.targets {
@@ -1105,6 +1108,13 @@ mod tests {
                                 let open = window.find("deploy-open-published").bounds();
                                 let copy = window.find("deploy-copy-published").bounds();
                                 assert!(open.origin.x + open.size.width <= copy.origin.x);
+                                assert!(
+                                    copy.origin.x - open.origin.x - open.size.width
+                                        <= gpui_kit::px(8.)
+                                );
+                                if url.len() < 50 {
+                                    assert!(open.size.width <= gpui_kit::px(280.));
+                                }
                                 assert!(copy.origin.x + copy.size.width <= gpui_kit::px(1000.));
                                 assert!(copy.origin.y + copy.size.height <= gpui_kit::px(640.));
                                 window.click("deploy-copy-published", cx);
@@ -1601,6 +1611,7 @@ mod tests {
                             site_id: String::new(),
                             cloudflare: None,
                         }],
+                        ..Default::default()
                     };
                     state.catalog_ids =
                         suites.iter().map(|suite| suite.output_id.clone()).collect();

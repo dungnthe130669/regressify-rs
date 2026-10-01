@@ -310,6 +310,13 @@ pub fn validate_published_url(value: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReportPublication {
+    pub target_id: String,
+    pub suite_ids: Vec<String>,
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DeployTargets {
@@ -317,6 +324,8 @@ pub struct DeployTargets {
     pub targets: Vec<DeployTarget>,
     #[serde(default)]
     pub selected: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_publications: Vec<ReportPublication>,
 }
 
 impl DeployTargets {
@@ -388,6 +397,28 @@ impl DeployTargets {
         target: &DeployTarget,
         url: Option<&str>,
     ) -> Result<Self> {
+        Self::record_publication_for_suites(path, target, url, &[])
+    }
+
+    pub fn record_report_publication(
+        path: &Path,
+        target: &DeployTarget,
+        url: Option<&str>,
+        suite_ids: &[String],
+    ) -> Result<Self> {
+        ensure!(
+            !suite_ids.is_empty(),
+            "Published reports must contain at least one suite"
+        );
+        Self::record_publication_for_suites(path, target, url, suite_ids)
+    }
+
+    fn record_publication_for_suites(
+        path: &Path,
+        target: &DeployTarget,
+        url: Option<&str>,
+        suite_ids: &[String],
+    ) -> Result<Self> {
         if let Some(url) = url {
             validate_published_url(url)?;
         } else {
@@ -408,9 +439,53 @@ impl DeployTargets {
                     || saved.credential_id == target.credential_id),
             "Deployment target changed while publishing; the deployed URL was not saved"
         );
+        let previous_url = saved.published_url.clone();
         saved.published_url = url.map(str::to_owned);
+        // A new publication replaces the site's membership, not just its latest URL.
+        settings.report_publications.retain(|publication| {
+            publication.target_id != target.id
+                && !settings.targets.iter().any(|saved| {
+                    saved.id == publication.target_id
+                        && saved.published_url.as_deref().is_some_and(|saved_url| {
+                            Some(saved_url) == url || Some(saved_url) == previous_url.as_deref()
+                        })
+                })
+        });
+        if url.is_some() && !suite_ids.is_empty() {
+            settings.report_publications.push(ReportPublication {
+                target_id: target.id.clone(),
+                suite_ids: suite_ids.to_vec(),
+            });
+        }
         settings.save(path)?;
         Ok(settings)
+    }
+
+    pub fn latest_report_url(&self, suite_ids: &[String]) -> Option<String> {
+        if suite_ids.is_empty() || suite_ids.iter().any(|id| validate_suite_id(id).is_err()) {
+            return None;
+        }
+        let publication = self.report_publications.iter().rev().find(|publication| {
+            suite_ids
+                .iter()
+                .all(|id| publication.suite_ids.contains(id))
+        })?;
+        let published = self
+            .targets
+            .iter()
+            .find(|target| target.id == publication.target_id)?
+            .published_url
+            .as_deref()?;
+        validate_published_url(published).ok()?;
+        let mut url = reqwest::Url::parse(published).ok()?;
+        if let [suite] = suite_ids {
+            url.path_segments_mut()
+                .ok()?
+                .pop_if_empty()
+                .push("suites")
+                .push(suite);
+        }
+        Some(url.into())
     }
 
     pub fn save_target(
@@ -457,6 +532,10 @@ impl DeployTargets {
         target.credential_id = Some(credential_id.clone());
         let mut next = self.clone();
         next.targets.retain(|previous| previous.id != target.id);
+        if target.published_url.is_none() {
+            next.report_publications
+                .retain(|publication| publication.target_id != target.id);
+        }
         next.selected = Some(target.id.clone());
         next.targets.push(target);
         next.validate()?;
@@ -538,6 +617,10 @@ impl DeployTargets {
             .flatten();
         let mut next = self.clone();
         next.targets.retain(|entry| entry.id != target.id);
+        if target.published_url.is_none() {
+            next.report_publications
+                .retain(|publication| publication.target_id != target.id);
+        }
         next.selected = Some(target.id.clone());
         next.targets.push(target);
         next.validate()?;
@@ -574,6 +657,8 @@ impl DeployTargets {
             .flatten();
         let mut next = self.clone();
         next.targets.retain(|target| target.id != id);
+        next.report_publications
+            .retain(|publication| publication.target_id != id);
         if next.selected.as_deref() == Some(id) {
             next.selected = next.targets.first().map(|target| target.id.clone());
         }
@@ -619,6 +704,28 @@ impl DeployTargets {
             self.selected.as_ref().is_none_or(|id| ids.contains(id)),
             "Selected deployment target no longer exists"
         );
+        let mut published = BTreeSet::new();
+        for publication in &self.report_publications {
+            ensure!(
+                published.insert(&publication.target_id)
+                    && self.targets.iter().any(|target| {
+                        target.id == publication.target_id && target.published_url.is_some()
+                    }),
+                "Published reports must identify a unique target with a public URL"
+            );
+            let mut suites = BTreeSet::new();
+            ensure!(
+                !publication.suite_ids.is_empty(),
+                "Published reports must contain at least one suite"
+            );
+            for id in &publication.suite_ids {
+                validate_suite_id(id)?;
+                ensure!(
+                    suites.insert(id),
+                    "Published report suite IDs must be unique"
+                );
+            }
+        }
         Ok(())
     }
 }
@@ -1002,6 +1109,7 @@ mod tests {
         let settings = DeployTargets {
             targets: vec![target.clone()],
             selected: Some(target.id.clone()),
+            ..Default::default()
         };
         let path = directory.path().join("targets.json");
         settings.save(&path).unwrap();
@@ -1131,6 +1239,119 @@ mod tests {
     }
 
     #[test]
+    fn published_report_sites_follow_latest_membership_and_reload() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        let settings: DeployTargets = serde_json::from_value(serde_json::json!({
+            "targets": [{"id": "first", "name": "First"}, {"id": "second", "name": "Second"}],
+            "selected": "first"
+        }))?;
+        settings.save(&path)?;
+        let suites = |ids: &[&str]| ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
+        assert!(settings.latest_report_url(&suites(&["alloy"])).is_none());
+        DeployTargets::record_report_publication(
+            &path,
+            &settings.targets[0],
+            Some("https://first.example.com/"),
+            &suites(&["alloy", "dark"]),
+        )?;
+        DeployTargets::record_report_publication(
+            &path,
+            &settings.targets[1],
+            Some("https://second.example.com/"),
+            &suites(&["alloy", "light"]),
+        )?;
+        let loaded = DeployTargets::load(&path)?;
+        assert_eq!(loaded.selected.as_deref(), Some("first"));
+        assert_eq!(
+            loaded.latest_report_url(&suites(&["alloy"])).as_deref(),
+            Some("https://second.example.com/suites/alloy")
+        );
+        assert_eq!(
+            loaded.latest_report_url(&suites(&["dark"])).as_deref(),
+            Some("https://first.example.com/suites/dark")
+        );
+        assert_eq!(
+            loaded
+                .latest_report_url(&suites(&["alloy", "dark"]))
+                .as_deref(),
+            Some("https://first.example.com/")
+        );
+        assert!(
+            loaded
+                .latest_report_url(&suites(&["dark", "light"]))
+                .is_none()
+        );
+        assert!(loaded.latest_report_url(&[]).is_none());
+
+        let updated = DeployTargets::record_report_publication(
+            &path,
+            &settings.targets[1],
+            Some("https://second.example.com/"),
+            &suites(&["light"]),
+        )?;
+        assert_eq!(
+            updated.latest_report_url(&suites(&["alloy"])).as_deref(),
+            Some("https://first.example.com/suites/alloy")
+        );
+        assert_eq!(updated.report_publications.len(), 2);
+        let replaced = DeployTargets::record_report_publication(
+            &path,
+            &settings.targets[1],
+            Some("https://first.example.com/"),
+            &suites(&["light"]),
+        )?;
+        assert!(replaced.latest_report_url(&suites(&["alloy"])).is_none());
+        assert_eq!(replaced.report_publications.len(), 1);
+        let landing = DeployTargets::record_publication(
+            &path,
+            &settings.targets[1],
+            Some("https://first.example.com/"),
+        )?;
+        assert!(landing.latest_report_url(&suites(&["light"])).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn published_report_sites_reject_invalid_membership_without_writes() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("targets.json");
+        let settings: DeployTargets = serde_json::from_value(serde_json::json!({
+            "targets": [{"id": "qa", "name": "QA"}]
+        }))?;
+        settings.save(&path)?;
+        let before = fs::read(&path)?;
+        for suites in [
+            vec![],
+            vec!["../escape".into()],
+            vec!["alloy".into(), "alloy".into()],
+        ] {
+            assert!(
+                DeployTargets::record_report_publication(
+                    &path,
+                    &settings.targets[0],
+                    Some("https://qa.example.com/"),
+                    &suites,
+                )
+                .is_err()
+            );
+            assert_eq!(fs::read(&path)?, before);
+        }
+        let saved = DeployTargets::record_report_publication(
+            &path,
+            &settings.targets[0],
+            Some("https://qa.example.com/reports/"),
+            &["suite #1".into()],
+        )?;
+        assert_eq!(
+            saved.latest_report_url(&["suite #1".into()]).as_deref(),
+            Some("https://qa.example.com/reports/suites/suite%20%231")
+        );
+        assert!(saved.latest_report_url(&["../escape".into()]).is_none());
+        Ok(())
+    }
+
+    #[test]
     fn published_urls_update_only_the_matching_target() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("targets.json");
@@ -1214,6 +1435,7 @@ mod tests {
                 DeployTargets {
                     targets,
                     selected: None,
+                    ..Default::default()
                 }
                 .save(&path)?;
                 let before = fs::read(&path)?;
@@ -1240,10 +1462,11 @@ mod tests {
             let mut target: DeployTarget = serde_json::from_value(input)?;
             let mut settings = DeployTargets::default();
             settings.save_target(root.path(), &path, target.clone(), &token)?;
-            settings = DeployTargets::record_published_url(
+            settings = DeployTargets::record_report_publication(
                 &path,
                 &settings.targets[0],
-                "https://qa.example.com/",
+                Some("https://qa.example.com/"),
+                &["alloy".into()],
             )?;
             target.name = "Renamed".into();
             settings.save_target(root.path(), &path, target.clone(), "")?;
@@ -1251,15 +1474,24 @@ mod tests {
                 settings.targets[0].published_url.as_deref(),
                 Some("https://qa.example.com/")
             );
+            assert_eq!(
+                settings.latest_report_url(&["alloy".into()]).as_deref(),
+                Some("https://qa.example.com/suites/alloy")
+            );
             settings.save_target(root.path(), &path, target.clone(), &token)?;
             assert_eq!(
                 settings.targets[0].published_url.is_some(),
                 target.provider != DeploymentProvider::AzureSwa
             );
-            settings = DeployTargets::record_published_url(
+            assert_eq!(
+                settings.latest_report_url(&["alloy".into()]).is_some(),
+                target.provider != DeploymentProvider::AzureSwa
+            );
+            settings = DeployTargets::record_report_publication(
                 &path,
                 &settings.targets[0],
-                "https://qa.example.com/",
+                Some("https://qa.example.com/"),
+                &["alloy".into()],
             )?;
             match target.provider {
                 DeploymentProvider::AzureSwa => target.environment = "preview".into(),
@@ -1270,6 +1502,16 @@ mod tests {
             }
             settings.save_target(root.path(), &path, target, "")?;
             assert!(settings.targets[0].published_url.is_none());
+            assert!(settings.latest_report_url(&["alloy".into()]).is_none());
+            assert!(settings.report_publications.is_empty());
+            settings = DeployTargets::record_report_publication(
+                &path,
+                &settings.targets[0],
+                Some("https://new.example.com/"),
+                &["alloy".into()],
+            )?;
+            settings.remove_target(root.path(), &path, "qa")?;
+            assert!(settings.report_publications.is_empty());
         }
         Ok(())
     }
@@ -1541,11 +1783,28 @@ mod tests {
             "id":"cloudflare", "name":"Reports", "provider":"cloudflareWorkers", "publishedUrl":"https://reports.account.workers.dev/",
             "cloudflare":{"accountId":"0123456789abcdef0123456789abcdef", "workerName":"reports"}
         }))?;
+        let mut alias = target.clone();
+        alias.id = "alias".into();
+        alias.name = "Same site".into();
         DeployTargets {
-            targets: vec![target.clone()],
+            targets: vec![target.clone(), alias.clone()],
             selected: Some(target.id.clone()),
+            ..Default::default()
         }
         .save(&path)?;
+        let published = DeployTargets::record_report_publication(
+            &path,
+            &target,
+            target.published_url.as_deref(),
+            &["alloy".into()],
+        )?;
+        assert!(published.latest_report_url(&["alloy".into()]).is_some());
+        DeployTargets::record_report_publication(
+            &path,
+            &alias,
+            target.published_url.as_deref(),
+            &["alloy".into()],
+        )?;
         let mut updated = target.clone();
         let settings = updated.cloudflare.as_mut().unwrap();
         settings.html_handling = "none".into();
@@ -1555,8 +1814,11 @@ mod tests {
         assert!(target.same_destination(&updated));
         updated.cloudflare.as_mut().unwrap().workers_dev = Some(false);
         assert!(!target.same_destination(&updated));
-        let saved = DeployTargets::record_publication(&path, &target, None)?;
+        let saved =
+            DeployTargets::record_report_publication(&path, &target, None, &["alloy".into()])?;
         assert!(saved.targets[0].published_url.is_none());
+        assert!(saved.report_publications.is_empty());
+        assert!(saved.latest_report_url(&["alloy".into()]).is_none());
         let mut azure = target.clone();
         azure.provider = DeploymentProvider::AzureSwa;
         azure.cloudflare = None;

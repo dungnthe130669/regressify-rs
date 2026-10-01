@@ -513,10 +513,11 @@ impl RunSnapshot {
                     .deployment
                     .as_ref()
                     .context("Completed deployment is missing its target")?;
-                super::deployment::DeployTargets::record_publication(
+                super::deployment::DeployTargets::record_report_publication(
                     deployment_path,
                     &job.target,
                     deployment.url.as_deref(),
+                    &job.suite_ids,
                 )
                 .context("Site deployed, but its URL could not be saved to the target")?;
             }
@@ -1701,8 +1702,15 @@ mod tests {
             DeployTargets {
                 targets: vec![target.clone()],
                 selected: Some(target.id.clone()),
+                ..Default::default()
             }
             .save(&path)?;
+            DeployTargets::record_report_publication(
+                &path,
+                &target,
+                Some("https://previous.example.com/"),
+                &["older-report".into()],
+            )?;
             let mut request = request(RunCommand::Deploy);
             request.root = root.path().into();
             request.options.deployment = Some(DeploymentJob {
@@ -1733,6 +1741,18 @@ mod tests {
                     .published_url
                     .as_deref(),
                 Some(expected)
+            );
+            let settings = DeployTargets::load(&path)?;
+            let completed = matches!(outcome, RunOutcome::Completed) && has_url;
+            assert_eq!(
+                settings.latest_report_url(&["reports".into()]).as_deref(),
+                completed.then_some("https://latest.example.com/suites/reports")
+            );
+            assert_eq!(
+                settings
+                    .latest_report_url(&["older-report".into()])
+                    .as_deref(),
+                (!completed).then_some("https://previous.example.com/suites/older-report")
             );
             assert!(RunSnapshot::load(&history, root.path())?.is_some());
             if has_url && matches!(outcome, RunOutcome::Completed) {

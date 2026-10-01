@@ -540,6 +540,10 @@ impl Workbench {
             move || {
                 let mut session = Session::default();
                 session.connect(instance.root())?;
+                let deployment_path = preferences
+                    .as_ref()
+                    .map(|path| super::deployment::DeployTargets::path_in(instance.root(), path))
+                    .transpose()?;
                 let activity_path = preferences
                     .ok_or_else(|| anyhow!("Desktop preferences path unavailable"))
                     .and_then(|path| super::runner::RunSnapshot::path_in(instance.root(), &path));
@@ -566,10 +570,18 @@ impl Workbench {
                     activity_path.ok(),
                     activity,
                     activity_warning,
+                    deployment_path,
                 ))
             },
             |this,
-             (session, mut instance, activity_path, activity, activity_warning),
+             (
+                session,
+                mut instance,
+                activity_path,
+                activity,
+                activity_warning,
+                deployment_path,
+            ),
              window,
              cx| {
                 this.activation_task = instance.activation_events().map(|mut events| {
@@ -620,6 +632,9 @@ impl Workbench {
                 }
                 this.sync_editor(window, cx);
                 this.runs.update(cx, |panel, cx| {
+                    if let Some(path) = deployment_path {
+                        panel.set_deployment_storage_path(path, cx);
+                    }
                     panel.restore_activity(activity_path, activity, activity_warning, window, cx)
                 });
                 this.status = "Workspace opened".into();
