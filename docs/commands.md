@@ -37,6 +37,20 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 | `--proxy`                     | Proxy URL used by HTTP clients where supported.                                                                                                                                                                                                                   |
 | `--pause`, `--pause-if-error` | Wait for input after execution or after errors.                                                                                                                                                                                                                   |
 
+### Diagnostic Verbosity
+
+`--log-level trace|debug|info|warn|error` controls diagnostic console display.
+`--log-verbose` (or the existing `--verbose`) selects debug detail unless an
+explicit `--log-level` is supplied. Display precedence is CLI flag, then
+`REGRESSIFY_LOG_LEVEL`, then scenario `logLevel`, suite `logLevel`, workspace
+`logLevel`, and finally `info`. Parallel captures keep independent display levels.
+`--no-print` suppresses diagnostic console records, not command-result stdout.
+
+Display filters never reduce the standard archived timeline. For example,
+`regressify --log-level error test` still archives detailed standard debug events
+for passed captures. Storage limits and the archive kill-switch below are separate
+operation-level settings, not scenario configuration.
+
 ### Diagnostic Storage Limits
 
 `--diagnostic-chunk-size-bytes` controls journal segment size (default `524288`,

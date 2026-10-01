@@ -61,6 +61,13 @@ data before Chromium launches.
 
 ## Properties
 
+### Diagnostic Display
+
+Set `logLevel: trace|debug|info|warn|error` to control diagnostic display for a
+suite. Scenarios can override it; the workspace provides an inherited default.
+CLI flags and `REGRESSIFY_LOG_LEVEL` take precedence. Display filtering never
+changes the archived capture timeline. See [diagnostic verbosity](commands.md#diagnostic-verbosity).
+
 ### Display Name
 
 Set the optional `displayName` string to label a suite in the desktop app and

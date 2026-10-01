@@ -39,6 +39,11 @@ pub fn run_stdio() -> Result<()> {
     }
     let result = (|| -> Result<()> {
         let cli = request.run.cli()?;
+        crate::diagnostics::install::configure_console(
+            cli.log_level,
+            cli.log_verbose || cli.verbose,
+            cli.no_print,
+        )?;
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()?

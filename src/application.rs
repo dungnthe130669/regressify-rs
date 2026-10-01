@@ -57,6 +57,16 @@ pub async fn execute(cli: Cli) -> Result<()> {
 }
 
 fn set_global_vars(cli: &Cli) -> Result<()> {
+    let flag = cli.log_level.or_else(|| {
+        (cli.log_verbose || cli.verbose).then_some(crate::diagnostics::record::Severity::Debug)
+    });
+    let environment = std::env::var("REGRESSIFY_LOG_LEVEL").ok();
+    let level = crate::config::resolve_log_level(flag, environment.as_deref(), None, None, None)?;
+    common::LOG_LEVEL_OVERRIDE
+        .set_value((flag.is_some() || environment.is_some()).then_some(level))?;
+    if let Some(installation) = crate::diagnostics::install::current() {
+        installation.set_console_level(level);
+    }
     common::DISABLE_DIAGNOSTIC_ARCHIVE.set_value(crate::diagnostics::health::archives_disabled(
         |name| std::env::var(name).ok(),
     )?)?;

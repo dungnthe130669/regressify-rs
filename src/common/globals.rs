@@ -17,6 +17,8 @@ pub static REGRESSIFY_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static RUN_ID: OnceLock<String> = OnceLock::new();
 pub static NO_PRINT: OnceLock<bool> = OnceLock::new();
 pub static VERBOSE: OnceLock<bool> = OnceLock::new();
+pub static LOG_LEVEL_OVERRIDE: OnceLock<Option<crate::diagnostics::record::Severity>> =
+    OnceLock::new();
 pub static PROXY: OnceLock<Proxy> = OnceLock::new();
 pub static DEBUG: OnceLock<bool> = OnceLock::new();
 pub static REQUIRED_LOGIN: OnceLock<bool> = OnceLock::new();

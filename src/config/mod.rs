@@ -28,6 +28,8 @@ pub const DEFAULT_PIXEL_MATCH_THRESHOLD: f64 = 5.0;
 #[derive(Deserialize, Serialize, Clone, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkspaceConfig {
+    /// Diagnostic display level only: trace, debug, info, warn, or error. Default: info; archives are unaffected.
+    pub log_level: Option<crate::diagnostics::record::Severity>,
     /// Default HTTP Basic Auth credentials as one object or a list. Every entry requires origin, username, and password.
     pub basic_auth: Option<BasicAuthConfig>,
     /// Maximum simultaneous browser captures. Positive whole number; default: 5.
@@ -116,6 +118,7 @@ pub struct WorkspaceConfig {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ResolvedConfig {
+    pub log_level: crate::diagnostics::record::Severity,
     #[serde(skip_serializing)]
     pub basic_auth: Vec<BasicAuth>,
     pub async_capture_limit: usize,
@@ -150,6 +153,7 @@ pub struct ResolvedConfig {
 impl Default for ResolvedConfig {
     fn default() -> Self {
         Self {
+            log_level: crate::diagnostics::record::Severity::Info,
             basic_auth: Vec::new(),
             async_capture_limit: DEFAULT_ASYNC_CAPTURE_LIMIT,
             async_compare_limit: DEFAULT_ASYNC_COMPARE_LIMIT,
@@ -372,6 +376,11 @@ pub fn resolve_config(
             .or(workspace.css_override_path.clone()),
 
         debug: suite.debug.or(workspace.debug).unwrap_or(defaults.debug),
+        log_level: scenario
+            .log_level
+            .or(suite.log_level)
+            .or(workspace.log_level)
+            .unwrap_or(defaults.log_level),
 
         delay: scenario.delay.or(workspace.delay).or(defaults.delay),
 
@@ -472,8 +481,152 @@ pub fn resolve_config(
     }
 }
 
+pub fn resolve_log_level(
+    flag: Option<crate::diagnostics::record::Severity>,
+    environment: Option<&str>,
+    scenario: Option<crate::diagnostics::record::Severity>,
+    suite: Option<crate::diagnostics::record::Severity>,
+    workspace: Option<crate::diagnostics::record::Severity>,
+) -> Result<crate::diagnostics::record::Severity> {
+    if let Some(flag) = flag {
+        return Ok(flag);
+    }
+    if let Some(environment) = environment {
+        return environment.parse().map_err(anyhow::Error::msg);
+    }
+    Ok(scenario
+        .or(suite)
+        .or(workspace)
+        .unwrap_or(crate::diagnostics::record::Severity::Info))
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_level_precedence_matrix() {
+        use crate::diagnostics::{journal::*, record::*};
+        let root = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                Some(Severity::Trace),
+                Some("error"),
+                Some(Severity::Warn),
+                Some(Severity::Info),
+                Some(Severity::Debug),
+                Severity::Trace,
+            ),
+            (
+                None,
+                Some("error"),
+                Some(Severity::Warn),
+                Some(Severity::Info),
+                Some(Severity::Debug),
+                Severity::Error,
+            ),
+            (
+                None,
+                None,
+                Some(Severity::Warn),
+                Some(Severity::Info),
+                Some(Severity::Debug),
+                Severity::Warn,
+            ),
+            (
+                None,
+                None,
+                None,
+                Some(Severity::Error),
+                Some(Severity::Debug),
+                Severity::Error,
+            ),
+            (
+                None,
+                None,
+                None,
+                None,
+                Some(Severity::Debug),
+                Severity::Debug,
+            ),
+            (None, None, None, None, None, Severity::Info),
+        ];
+        for (flag, environment, scenario, suite, workspace, expected) in cases {
+            assert_eq!(
+                super::resolve_log_level(flag, environment, scenario, suite, workspace).unwrap(),
+                expected
+            );
+            let metadata = OperationMetadata::new(OperationKind::Capture, None);
+            let mut writer =
+                JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                    .unwrap();
+            let mut record = DiagnosticRecordV1::new(
+                metadata.operation_id.clone(),
+                OperationKind::Capture,
+                Stage::ActionsFrames,
+                DiagnosticEvent::Decision,
+            );
+            record.severity = Severity::Debug;
+            for _ in 0..20 {
+                writer.write(&record).unwrap();
+            }
+            writer.finalize(Outcome::Success).unwrap();
+            assert_eq!(
+                JournalReader::open(root.path(), &metadata.operation_id)
+                    .unwrap()
+                    .visit(|_| {})
+                    .unwrap()
+                    .records,
+                21
+            );
+        }
+        assert!(super::resolve_log_level(None, Some("invalid"), None, None, None).is_err());
+        assert_eq!(
+            super::resolve_log_level(Some(Severity::Info), Some("invalid"), None, None, None)
+                .unwrap(),
+            Severity::Info
+        );
+    }
+
+    #[test]
+    fn archive_writer_settings_are_not_scenario_cascaded() {
+        use crate::diagnostics::{journal::JournalOptions, record::Severity};
+        for level in [Severity::Trace, Severity::Error] {
+            let workspace = super::WorkspaceConfig {
+                log_level: Some(level),
+                ..Default::default()
+            };
+            let mut suite = crate::types::TestSuite::default();
+            let mut scenario = crate::types::TestScenario::default();
+            for scope in 0..3 {
+                if scope == 1 {
+                    suite.log_level = Some(level);
+                }
+                if scope == 2 {
+                    scenario.log_level = Some(level);
+                }
+                let options = JournalOptions::resolve(Some(4096), Some(8192), |_| None).unwrap();
+                assert_eq!(
+                    super::resolve_config(&workspace, &suite, &scenario).log_level,
+                    level
+                );
+                assert_eq!(
+                    (options.chunk_bytes, options.disk_budget_bytes),
+                    (4096, 8192)
+                );
+                assert_eq!(
+                    JournalOptions::resolve(None, None, |_| None).unwrap(),
+                    JournalOptions::default()
+                );
+            }
+        }
+        for json in [
+            r#"{"diagnosticChunkSizeBytes":4096}"#,
+            r#"{"diagnosticDiskBudgetBytes":8192}"#,
+        ] {
+            assert!(serde_json::from_str::<super::WorkspaceConfig>(json).is_err());
+            assert!(serde_json::from_str::<crate::types::TestScenario>(json).is_err());
+        }
+    }
+
     use super::*;
 
     fn suite() -> TestSuite {

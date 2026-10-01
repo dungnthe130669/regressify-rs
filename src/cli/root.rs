@@ -40,6 +40,14 @@ pub struct Cli {
     #[clap(long, default_value = "false")]
     pub verbose: bool,
 
+    /// Diagnostic display level; overrides REGRESSIFY_LOG_LEVEL and logLevel configuration
+    #[clap(long, value_enum)]
+    pub log_level: Option<crate::diagnostics::record::Severity>,
+
+    /// Show debug-level diagnostics without changing archive collection
+    #[clap(long)]
+    pub log_verbose: bool,
+
     /// Diagnostic journal segment size in bytes (env: REGRESSIFY_DIAGNOSTIC_CHUNK_SIZE_BYTES; default: 524288)
     #[clap(long)]
     pub diagnostic_chunk_size_bytes: Option<usize>,
@@ -96,6 +104,21 @@ mod tests {
     use clap::Parser;
 
     use super::Cli;
+
+    #[test]
+    fn cli_log_level_flags_are_typed_and_do_not_change_storage_settings() {
+        let cli =
+            Cli::try_parse_from(["regressify", "--log-level", "warn", "--log-verbose", "test"])
+                .unwrap();
+        assert_eq!(
+            cli.log_level,
+            Some(crate::diagnostics::record::Severity::Warn)
+        );
+        assert!(cli.log_verbose);
+        assert!(cli.diagnostic_chunk_size_bytes.is_none());
+        assert!(cli.diagnostic_disk_budget_bytes.is_none());
+        assert!(Cli::try_parse_from(["regressify", "--log-level", "invalid", "test"]).is_err());
+    }
 
     #[test]
     fn cli_rejects_zero_global_capture_limit() {

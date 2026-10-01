@@ -69,9 +69,25 @@ pub struct OperationContext {
     started: Instant,
     sequence: AtomicU64,
     action_index: AtomicU64,
+    display_level: std::sync::atomic::AtomicU8,
 }
 
 impl OperationContext {
+    pub fn set_display_level(&self, level: Severity) {
+        self.display_level.store(level as u8, Ordering::Relaxed);
+    }
+
+    pub fn display_level(&self) -> Option<Severity> {
+        match self.display_level.load(Ordering::Relaxed) {
+            0 => Some(Severity::Trace),
+            1 => Some(Severity::Debug),
+            2 => Some(Severity::Info),
+            3 => Some(Severity::Warn),
+            4 => Some(Severity::Error),
+            _ => None,
+        }
+    }
+
     pub fn record(
         &self,
         stage: Stage,
@@ -187,6 +203,7 @@ impl Operation {
             started: Instant::now(),
             sequence: AtomicU64::new(0),
             action_index: AtomicU64::new(0),
+            display_level: std::sync::atomic::AtomicU8::new(u8::MAX),
         });
         if let Ok(mut routes) = ROUTES.get_or_init(Default::default).lock() {
             routes.insert(metadata.operation_id, Arc::downgrade(&sink));
@@ -209,17 +226,19 @@ impl Operation {
     }
 
     pub async fn finish(mut self, outcome: Outcome) -> ArchiveReference {
-        self.context.record(
-            Stage::Finish,
-            DiagnosticEvent::Finished,
-            Severity::Info,
-            [],
-            Completion {
-                outcome: Some(outcome),
-                error: None,
-                duration_ms: Some(self.context.started.elapsed().as_millis() as u64),
-            },
-        );
+        in_scope(Some(self.context.clone()), || {
+            self.context.record(
+                Stage::Finish,
+                DiagnosticEvent::Finished,
+                Severity::Info,
+                [],
+                Completion {
+                    outcome: Some(outcome),
+                    error: None,
+                    duration_ms: Some(self.context.started.elapsed().as_millis() as u64),
+                },
+            )
+        });
         let owner = self
             .owner
             .take()

@@ -12,6 +12,7 @@ description: 'Use when changing workspace, suite, or scenario configuration, def
 ## Procedure and Invariants
 
 1. Trace parsing and resolution to the consumer. Preserve scenario -> suite -> workspace -> defaults, explicit false/zero, and list replacement semantics. Snapshot report text is workspace-only; follow [snapshot precedence](../snapshot-command/SKILL.md) instead of the capture cascade.
+1. `logLevel` is display-only: CLI `--log-level` (or `--log-verbose`/`--verbose`), then `REGRESSIFY_LOG_LEVEL`, override the file cascade; default is `info`. Keep per-execution console filtering independent of standard archive collection and operation-level journal limits.
 1. Keep serde names, unknown-field rejection, schema constraints/descriptions, desktop validation, and effective configuration aligned when adding a field.
 1. `pixelMatchThreshold` cascades at all three levels: finite 0-100, default 5, explicit zero preserved. Desktop steps are 0.1. It controls pixel-color sensitivity, not `misMatchThreshold`'s pass/fail percentage; capture manifests preserve the resolved value for later comparison.
 1. Suite `displayName` is an optional presentation label, not a cascading capture option or an ID. Preserve file/output identity and use blank-name fallbacks in desktop and report consumers. Include explicitly set optional fields in schema-coverage fixtures when serialization omits unset values.

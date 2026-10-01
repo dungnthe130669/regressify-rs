@@ -18,6 +18,11 @@ extra:
 
 Each scenario describes one path through a page, from the first URL load to any clicks, waits, or overrides needed before the screenshot is captured.
 
+The optional `logLevel` setting accepts `trace`, `debug`, `info`, `warn`, or
+`error`. It overrides suite/workspace diagnostic display settings, but CLI flags
+and `REGRESSIFY_LOG_LEVEL` take precedence. It never filters archived records;
+see [diagnostic verbosity](commands.md#diagnostic-verbosity).
+
 ## Properties
 
 ### Required properties

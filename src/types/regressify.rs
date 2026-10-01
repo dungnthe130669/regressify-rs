@@ -23,6 +23,8 @@ pub enum TestSuiteFormat {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct TestSuite {
+    /// Diagnostic display level. Inherits workspace logLevel; does not filter archived records.
+    pub log_level: Option<crate::diagnostics::record::Severity>,
     /// Stable suite identifier used for report and screenshot folders. Normally generated from the suite filename.
     pub id: Option<String>,
 
@@ -129,6 +131,8 @@ pub enum Browser {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct TestScenario {
+    /// Diagnostic display level. Inherits suite/workspace logLevel; does not filter archived records.
+    pub log_level: Option<crate::diagnostics::record::Severity>,
     /// Browser actions, executed in order. Use one action per list item; a failed action stops this scenario but not other scenarios.
     pub actions: Option<Vec<TestAction>>,
 

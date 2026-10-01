@@ -311,6 +311,15 @@ fn spawn_capture_jobs(
                 runtime::scope(operation.as_ref().map(runtime::Operation::context), async {
                     let resolved =
                         config::resolve_config(&ws_config, &suite, &suite.scenarios[scenario_idx]);
+                    if let Some(context) = runtime::current() {
+                        context.set_display_level(
+                            common::LOG_LEVEL_OVERRIDE
+                                .get()
+                                .copied()
+                                .flatten()
+                                .unwrap_or(resolved.log_level),
+                        );
+                    }
                     let fields = queue_setup_fields(&resolved);
                     runtime::event(
                         Stage::QueueSetup,

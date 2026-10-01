@@ -9,6 +9,11 @@ use regressify::{application, cli::Cli};
 async fn main() -> Result<()> {
     regressify::diagnostics::install::install_subscriber();
     let cli = Cli::parse();
+    regressify::diagnostics::install::configure_console(
+        cli.log_level,
+        cli.log_verbose || cli.verbose,
+        cli.no_print,
+    )?;
     let pause = cli.pause;
     let pause_if_error = cli.pause_if_error;
     let mut exit_code = 1;

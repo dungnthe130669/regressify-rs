@@ -35,6 +35,7 @@ struct Console {
     output: Mutex<Box<dyn Write + Send>>,
     level: AtomicU8,
     failed: AtomicBool,
+    silent: AtomicBool,
 }
 
 impl Console {
@@ -43,11 +44,18 @@ impl Console {
             output: Mutex::new(Box::new(output)),
             level: AtomicU8::new(level as u8),
             failed: AtomicBool::new(false),
+            silent: AtomicBool::new(false),
         }
     }
 
     fn receive(&self, record: &DiagnosticRecordV1) {
-        if (record.severity as u8) < self.level.load(Ordering::Relaxed)
+        let level = super::runtime::current()
+            .and_then(|context| context.display_level())
+            .map(|level| level as u8)
+            .unwrap_or_else(|| self.level.load(Ordering::Relaxed));
+        if self.silent.load(Ordering::Relaxed)
+            || crate::common::NO_PRINT.get().copied().unwrap_or(false)
+            || (record.severity as u8) < level
             || self.failed.load(Ordering::Relaxed)
         {
             return;
@@ -110,6 +118,22 @@ pub fn current() -> Option<&'static Installation> {
     INSTALLATION.get()
 }
 
+pub fn configure_console(
+    level: Option<Severity>,
+    verbose: bool,
+    silent: bool,
+) -> anyhow::Result<()> {
+    let flag = level.or_else(|| verbose.then_some(Severity::Debug));
+    let environment = std::env::var("REGRESSIFY_LOG_LEVEL").ok();
+    let resolved =
+        crate::config::resolve_log_level(flag, environment.as_deref(), None, None, None)?;
+    if let Some(installation) = current() {
+        installation.set_console_level(resolved);
+        installation.console.silent.store(silent, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
 pub fn flush() {
     if let Some(installation) = INSTALLATION.get()
         && (installation.console.flush().is_err()
@@ -166,6 +190,52 @@ mod tests {
         });
         assert_eq!(captured.lock().unwrap().len(), 1);
         assert!(output.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn per_execution_console_levels_do_not_filter_archives() {
+        use crate::diagnostics::{journal::JournalReader, runtime};
+        let root = tempfile::tempdir().unwrap();
+        let output = Output::default();
+        let console = Console::new(output.clone(), Severity::Info);
+        for level in [Severity::Trace, Severity::Error] {
+            let operation =
+                runtime::Operation::start(root.path(), OperationKind::Capture, None, None, None);
+            operation.context().set_display_level(level);
+            runtime::scope(Some(operation.context()), async {
+                let mut record = DiagnosticRecordV1::new(
+                    operation.context().identity.operation_id.clone(),
+                    OperationKind::Capture,
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Decision,
+                );
+                record.severity = Severity::Debug;
+                console.receive(&record);
+                runtime::event(
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Decision,
+                    Severity::Debug,
+                    [],
+                );
+            })
+            .await;
+            let reference = operation.finish(Outcome::Success).await;
+            assert_eq!(
+                JournalReader::open(root.path(), &reference.operation_id)
+                    .unwrap()
+                    .visit(|_| {})
+                    .unwrap()
+                    .records,
+                3
+            );
+        }
+        assert_eq!(
+            String::from_utf8(output.0.lock().unwrap().clone())
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
     }
 
     #[test]
