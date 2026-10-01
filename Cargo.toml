@@ -64,6 +64,8 @@ tera = "1.20.1"
 tempfile = "3"
 tiny_http = { version = "0.12", optional = true }
 tokio = { version = "1.49.0", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["registry", "std"] }
 tree-sitter = { version = "0.26", optional = true }
 tree-sitter-json = { version = "0.24", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }

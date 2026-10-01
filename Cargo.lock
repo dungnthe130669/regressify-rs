@@ -6561,6 +6561,8 @@ dependencies = [
  "time",
  "tiny_http",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "tree-sitter",
  "tree-sitter-json",
  "tree-sitter-yaml",
