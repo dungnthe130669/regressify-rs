@@ -87,6 +87,7 @@ pub fn format_record(record: &DiagnosticRecordV1) -> String {
     for (field, value) in &record.fields {
         use super::record::FieldValue;
         let value = match value {
+            FieldValue::PublicUrl(value) => value.as_str().to_owned(),
             FieldValue::Number(value) => value.to_string(),
             FieldValue::Coordinate(value) => value.to_string(),
             FieldValue::Boolean(value) => value.to_string(),
@@ -102,7 +103,7 @@ pub fn format_record(record: &DiagnosticRecordV1) -> String {
         message.push_str(&format!(" duration={duration}ms"));
     }
     if let Some(error) = &record.error_cause {
-        message.push_str(&format!(" cause={:?}", error.causes));
+        message.push_str(&format!(" cause={}", error.summary()));
     }
     message
 }

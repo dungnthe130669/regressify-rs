@@ -89,8 +89,16 @@ impl NetlifyClient {
     }
 
     async fn get<Response: DeserializeOwned>(&self, path: &str) -> Result<Response> {
+        use crate::diagnostics::record::SafeValue;
+        let endpoint = if path.starts_with("sites/") {
+            SafeValue::Preflight
+        } else {
+            SafeValue::Poll
+        };
         let url = self.endpoint.join(path)?;
         for attempt in 0..6 {
+            diagnostics::request_started(DeploymentProvider::Netlify, endpoint, attempt + 1);
+            let started = Instant::now();
             let response = self
                 .client
                 .get(url.clone())
@@ -98,6 +106,16 @@ impl NetlifyClient {
                 .timeout(self.read_timeout)
                 .send()
                 .await;
+            diagnostics::response_received(
+                DeploymentProvider::Netlify,
+                endpoint,
+                attempt + 1,
+                response
+                    .as_ref()
+                    .ok()
+                    .map(|response| response.status().as_u16()),
+                started.elapsed(),
+            );
             let mut retry_after = None;
             let error = match response {
                 Ok(response) if response.status().is_success() => match read_json(response).await {
@@ -135,6 +153,7 @@ impl NetlifyClient {
                 );
             }
             let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            diagnostics::retry(DeploymentProvider::Netlify, endpoint, attempt + 2, delay);
             phase(&format!(
                 "Netlify retry {}/6 in {:.1}s: {error}",
                 attempt + 2,
@@ -215,6 +234,12 @@ impl NetlifyClient {
                 manifest.files.len(),
                 manifest.bytes as f64 / (1024.0 * 1024.0)
             ));
+            let create_started = Instant::now();
+            diagnostics::request_started(
+                DeploymentProvider::Netlify,
+                crate::diagnostics::record::SafeValue::Publication,
+                1,
+            );
             let response = self
                 .client
                 .post(self.endpoint.join(&format!("{site_path}/deploys"))?)
@@ -223,7 +248,17 @@ impl NetlifyClient {
                 .timeout(Duration::from_secs(30))
                 .body(body)
                 .send().await
-                .map_err(|_| anyhow!("Netlify deployment creation did not complete; check the site's deploy history before retrying"))?;
+                .map_err(|_| {
+                    diagnostics::response_received(DeploymentProvider::Netlify, crate::diagnostics::record::SafeValue::Publication, 1, None, create_started.elapsed());
+                    anyhow!("Netlify deployment creation did not complete; check the site's deploy history before retrying")
+                })?;
+            diagnostics::response_received(
+                DeploymentProvider::Netlify,
+                crate::diagnostics::record::SafeValue::Publication,
+                1,
+                Some(response.status().as_u16()),
+                create_started.elapsed(),
+            );
             if !response.status().is_success() {
                 let error = diagnostics::http_error(
                     response,
@@ -277,6 +312,7 @@ impl NetlifyClient {
                             .context("Netlify deployment is ready without an HTTPS site URL")?;
                         let url = site_url(value)?;
                         phase(&format!("Deployed: {url}"));
+                        diagnostics::published(DeploymentProvider::Netlify, Some(&url));
                         return Ok(url);
                     }
                     "error" | "failed" | "canceled" | "cancelled" | "rejected" => {
@@ -376,6 +412,9 @@ impl NetlifyClient {
             .pop_if_empty()
             .extend(file.path.split('/'));
         for attempt in 0..6 {
+            let endpoint = crate::diagnostics::record::SafeValue::Upload;
+            diagnostics::request_started(DeploymentProvider::Netlify, endpoint, attempt + 1);
+            let started = Instant::now();
             let mut input = manifest.open_file(&file.path)?;
             ensure!(
                 input.metadata()?.len() == file.bytes,
@@ -418,6 +457,16 @@ impl NetlifyClient {
                 }
             })
             .await;
+            diagnostics::response_received(
+                DeploymentProvider::Netlify,
+                endpoint,
+                attempt + 1,
+                response
+                    .as_ref()
+                    .ok()
+                    .map(|response| response.status().as_u16()),
+                started.elapsed(),
+            );
             ensure!(
                 !transfer.read_failed.load(Ordering::Acquire),
                 "Cannot upload changed or unreadable staged content to Netlify"
@@ -472,6 +521,7 @@ impl NetlifyClient {
                 return Err(error);
             }
             let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            diagnostics::retry(DeploymentProvider::Netlify, endpoint, attempt + 2, delay);
             // File PUTs are idempotent within this deploy; creating another deploy is not.
             phase(&format!(
                 "Netlify file {position}/{count} retry {}/6 in {:.1}s: {error}",
@@ -836,6 +886,40 @@ fn validate_static_configuration(root: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn netlify_retry_then_success_records_attempts() -> Result<()> {
+        let uploads = Arc::new(AtomicUsize::new(0));
+        let attempts = uploads.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let mut body = Vec::new();
+            request.as_reader().read_to_end(&mut body).unwrap();
+            let value = if request.url().ends_with(SITE_ID) {
+                json!({"id":SITE_ID})
+            } else if request.method().as_str() == "POST" {
+                json!({"id":"deploy-retry", "site_id":SITE_ID, "state":"prepared", "required":["7c211433f02071597741e6ff5a8ea34789abbf43"]})
+            } else if request.method().as_str() == "PUT" {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = request.respond(tiny_http::Response::empty(503));
+                    return;
+                }
+                json!({})
+            } else {
+                json!({"id":"deploy-retry", "site_id":SITE_ID, "state":"ready", "ssl_url":"https://qa-reports.netlify.app/"})
+            };
+            let _ = request.respond(tiny_http::Response::from_string(value.to_string()));
+        })?;
+        let root = tempfile::tempdir()?;
+        let logs = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "world")?;
+        super::super::with_deployment_journal(
+            logs.path(),
+            client(&site.origin).deploy(root.path(), &target()),
+        )
+        .await?;
+        assert_eq!(uploads.load(Ordering::SeqCst), 2);
+        super::diagnostics::assert_retry_journal(logs.path(), DeploymentProvider::Netlify, &[TOKEN])
+    }
+
     use super::*;
     use serde_json::json;
     use std::sync::{

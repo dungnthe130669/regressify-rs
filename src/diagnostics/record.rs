@@ -214,6 +214,7 @@ impl DiagnosticEvent {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Field {
+    PublicationUrl,
     ActionIndex,
     ActionType,
     Target,
@@ -320,6 +321,7 @@ pub enum SafeValue {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "camelCase")]
 pub enum FieldValue {
+    PublicUrl(PublicUrl),
     Number(u64),
     Coordinate(i32),
     Boolean(bool),
@@ -330,6 +332,7 @@ pub enum FieldValue {
 impl Field {
     fn accepts(self, value: &FieldValue) -> bool {
         match self {
+            Self::PublicationUrl => matches!(value, FieldValue::PublicUrl(_)),
             Self::Target | Self::Destination | Self::Artifact | Self::Capture | Self::RequestId => {
                 matches!(value, FieldValue::Identity(_))
             }
@@ -350,6 +353,42 @@ impl Field {
             Self::X | Self::Y => matches!(value, FieldValue::Coordinate(_)),
             _ => matches!(value, FieldValue::Number(number) if *number <= MAX_JSON_INTEGER),
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct PublicUrl(String);
+
+impl PublicUrl {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PublicUrl {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let url = reqwest::Url::parse(&value).map_err(|_| "Invalid public URL")?;
+        if value.len() > 2048
+            || url.scheme() != "https"
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || !matches!(url.path(), "" | "/")
+            || value.chars().any(char::is_control)
+        {
+            return Err("Unsafe public URL");
+        }
+        Ok(Self(url.to_string()))
+    }
+}
+
+impl From<PublicUrl> for String {
+    fn from(value: PublicUrl) -> Self {
+        value.0
     }
 }
 
@@ -417,7 +456,9 @@ pub struct SanitizedError {
 
 impl SanitizedError {
     pub fn summary(&self) -> String {
-        format!("{:?} failure (causes: {:?})", self.category, self.causes)
+        self.local_detail
+            .clone()
+            .unwrap_or_else(|| format!("{:?} failure (causes: {:?})", self.category, self.causes))
     }
 
     pub fn capture(error: &anyhow::Error) -> Self {
@@ -544,6 +585,10 @@ impl DiagnosticRecordV1 {
             "Diagnostic integer exceeds JSON precision"
         );
         for (field, value) in &self.fields {
+            ensure!(
+                *field != Field::PublicationUrl || self.operation_kind == OperationKind::Deployment,
+                "Publication URLs are deployment-only"
+            );
             ensure!(field.accepts(value), "Invalid diagnostic field type");
         }
         if let Some(execution) = &self.execution {
@@ -577,6 +622,32 @@ impl DiagnosticRecordV1 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn publication_urls_reject_credentials_signed_values_and_capture_export() {
+        for url in [
+            "http://reports.example.test/",
+            "https://user:secret@reports.example.test/",
+            "https://reports.example.test/?sig=private",
+            "https://reports.example.test/#secret",
+            "https://reports.example.test/private-token",
+        ] {
+            assert!(PublicUrl::try_from(url.to_owned()).is_err());
+        }
+        let url = PublicUrl::try_from("https://reports.example.test/".to_owned()).unwrap();
+        let mut record = DiagnosticRecordV1::new(
+            OperationId::new(),
+            OperationKind::Capture,
+            Stage::Finish,
+            DiagnosticEvent::Finished,
+        );
+        record
+            .fields
+            .insert(Field::PublicationUrl, FieldValue::PublicUrl(url));
+        assert!(record.validate().is_err());
+        record.operation_kind = OperationKind::Deployment;
+        record.validate().unwrap();
+    }
+
     use super::*;
 
     #[test]

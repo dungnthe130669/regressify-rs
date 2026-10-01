@@ -147,10 +147,23 @@ impl SwaClient {
 
     async fn send(
         &self,
+        endpoint: crate::diagnostics::record::SafeValue,
         request: impl Fn() -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response> {
         for attempt in 0..6 {
+            diagnostics::request_started(DeploymentProvider::AzureSwa, endpoint, attempt + 1);
+            let started = std::time::Instant::now();
             let result = request().send().await;
+            diagnostics::response_received(
+                DeploymentProvider::AzureSwa,
+                endpoint,
+                attempt + 1,
+                result
+                    .as_ref()
+                    .ok()
+                    .map(|response| response.status().as_u16()),
+                started.elapsed(),
+            );
             let mut retry_after = None;
             let error = match result {
                 Ok(response) if response.status().is_success() => return Ok(response),
@@ -186,6 +199,7 @@ impl SwaClient {
                 return Err(error);
             }
             let delay = retry_after.unwrap_or(self.backoff * (1 << attempt));
+            diagnostics::retry(DeploymentProvider::AzureSwa, endpoint, attempt + 2, delay);
             phase(&format!(
                 "Azure retry {}/6 in {:.1}s: {error}",
                 attempt + 2,
@@ -197,12 +211,19 @@ impl SwaClient {
     }
 
     async fn api(&self, operation: &str, body: Option<&Value>) -> Result<Value> {
+        use crate::diagnostics::record::SafeValue;
+        let endpoint = match operation {
+            "validateapitoken" => SafeValue::Preflight,
+            "checkstatus" => SafeValue::Poll,
+            "updatestatus" => SafeValue::Publication,
+            _ => SafeValue::Upload,
+        };
         let mut url = self.endpoint.join(&format!("/api/upload/{operation}"))?;
         url.query_pairs_mut()
             .append_pair("apiVersion", "v1")
             .append_pair("deploymentCorrelationId", &self.correlation);
         let response = self
-            .send(|| {
+            .send(endpoint, || {
                 let request = self
                     .client
                     .post(url.clone())
@@ -280,11 +301,19 @@ impl SwaClient {
                         vec![0; (length - offset).min(self.block_bytes as u64) as usize];
                     input.read_exact(&mut chunk).await?;
                     let count = chunk.len() as u64;
-                    eprintln!(
-                        "Azure upload: sending block {} of {total} ({} KiB)",
-                        index + 1,
-                        count / 1024
-                    );
+                    {
+                        use crate::diagnostics::{record::*, runtime};
+                        runtime::event(
+                            Stage::ApiUploads,
+                            DiagnosticEvent::Started,
+                            Severity::Debug,
+                            [
+                                (Field::Provider, FieldValue::Kind(SafeValue::Azure)),
+                                (Field::BatchCount, FieldValue::Number(total)),
+                                (Field::Bytes, FieldValue::Number(count)),
+                            ],
+                        );
+                    }
                     let mut destination = url.clone();
                     if total > 1 {
                         destination
@@ -292,7 +321,7 @@ impl SwaClient {
                             .append_pair("comp", "block")
                             .append_pair("blockid", id);
                     }
-                    self.send(|| {
+                    self.send(crate::diagnostics::record::SafeValue::Upload, || {
                         let request = self
                             .client
                             .put(destination.clone())
@@ -332,7 +361,7 @@ impl SwaClient {
                     .map(|id| format!("<Latest>{id}</Latest>"))
                     .collect::<String>()
             );
-            self.send(|| {
+            self.send(crate::diagnostics::record::SafeValue::Upload, || {
                 self.client
                     .put(destination.clone())
                     .header("x-ms-version", "2023-11-03")
@@ -439,6 +468,7 @@ impl SwaClient {
                             "Azure returned an unsafe site URL"
                         );
                         phase(&format!("Deployed: {url}"));
+                        diagnostics::published(DeploymentProvider::AzureSwa, Some(url.as_str()));
                         return Ok(url.to_string());
                     }
                     Some("Failed" | "Canceled" | "Cancelled") => {
@@ -606,7 +636,13 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_protocol_retries_upload_and_never_sends_token_to_blob() -> Result<()> {
-        azure_retry_fixture().await
+        let logs = tempfile::tempdir()?;
+        super::super::with_deployment_journal(logs.path(), azure_retry_fixture()).await?;
+        super::diagnostics::assert_retry_journal(
+            logs.path(),
+            DeploymentProvider::AzureSwa,
+            &[&token(), "sensitive"],
+        )
     }
 
     async fn azure_retry_fixture() -> Result<()> {
@@ -754,7 +790,7 @@ mod tests {
         })?;
         let client = SwaClient::new(&token())?;
         let error = client
-            .send(|| {
+            .send(crate::diagnostics::record::SafeValue::Upload, || {
                 client
                     .client
                     .put(format!("{}/blob?sig=private", site.origin))

@@ -266,6 +266,13 @@ impl CloudflareClient {
     ) -> Result<Value> {
         let attempts = if retry { 6 } else { 1 };
         for attempt in 0..attempts {
+            let endpoint = crate::diagnostics::record::SafeValue::Upload;
+            super::diagnostics::request_started(
+                super::DeploymentProvider::CloudflareWorkers,
+                endpoint,
+                attempt + 1,
+            );
+            let started = Instant::now();
             let request = build()?
                 .build()
                 .map_err(|_| anyhow!("Cannot construct Cloudflare request"))?;
@@ -276,14 +283,36 @@ impl CloudflareClient {
                 .unwrap_or_else(|| self.authorization.clone());
             let result = match self.client.execute(request).await {
                 Ok(response) => {
+                    super::diagnostics::response_received(
+                        super::DeploymentProvider::CloudflareWorkers,
+                        endpoint,
+                        attempt + 1,
+                        Some(response.status().as_u16()),
+                        started.elapsed(),
+                    );
                     api_response(response, &[&self.authorization, &authorization], secrets).await
                 }
-                Err(error) => Err(network_failure(error)),
+                Err(error) => {
+                    super::diagnostics::response_received(
+                        super::DeploymentProvider::CloudflareWorkers,
+                        endpoint,
+                        attempt + 1,
+                        None,
+                        started.elapsed(),
+                    );
+                    Err(network_failure(error))
+                }
             };
             match result {
                 Ok(value) => return Ok(value),
                 Err(error) if error.retryable && attempt + 1 < attempts => {
                     let delay = error.retry_after.unwrap_or(self.backoff * (1 << attempt));
+                    super::diagnostics::retry(
+                        super::DeploymentProvider::CloudflareWorkers,
+                        endpoint,
+                        attempt + 2,
+                        delay,
+                    );
                     super::phase(&format!(
                         "Cloudflare retry {}/{} in {:.1}s",
                         attempt + 2,
@@ -315,9 +344,16 @@ impl CloudflareClient {
 
     pub async fn deploy(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
         target.validate()?;
-        tokio::time::timeout(self.deadline, self.deploy_inner(root, target))
+        let result = tokio::time::timeout(self.deadline, self.deploy_inner(root, target))
             .await
-            .map_err(|_| anyhow!("Cloudflare deployment exceeded its deadline; check the Worker's deployment history before retrying"))?
+            .map_err(|_| anyhow!("Cloudflare deployment exceeded its deadline; check the Worker's deployment history before retrying"))?;
+        if let Ok(url) = &result {
+            super::diagnostics::published(
+                super::DeploymentProvider::CloudflareWorkers,
+                url.as_deref(),
+            );
+        }
+        result
     }
 
     async fn deploy_inner(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
@@ -1395,6 +1431,63 @@ fn hash_with_content_type(bytes: &[u8], path: &str, mime: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cloudflare_retry_then_success_records_attempts() -> Result<()> {
+        let sessions = Arc::new(AtomicUsize::new(0));
+        let attempts = sessions.clone();
+        let site = crate::test::browser_tests::Site::new(move |mut request| {
+            let path = request.url().to_owned();
+            let mut body = String::new();
+            request.as_reader().read_to_string(&mut body).unwrap();
+            let value = if path.ends_with("/settings") {
+                json!({})
+            } else if path.ends_with("/workers/subdomain") {
+                json!({"subdomain":"account"})
+            } else if path.ends_with("/subdomain") {
+                json!({"enabled":true})
+            } else if path.ends_with("/assets-upload-session") {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    let _ = request.respond(
+                        tiny_http::Response::from_string(
+                            json!({"success":false,"errors":[{"code":1000,"message":"temporary"}]})
+                                .to_string(),
+                        )
+                        .with_status_code(503),
+                    );
+                    return;
+                }
+                json!({"jwt":"synthetic-completion-jwt", "buckets":[]})
+            } else if request.method().as_str() == "PUT" {
+                json!({"id":"report-worker","has_assets":true})
+            } else {
+                let _ = request.respond(
+                    tiny_http::Response::from_string("report").with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/html; charset=utf-8")
+                            .unwrap(),
+                    ),
+                );
+                return;
+            };
+            let _ = request.respond(tiny_http::Response::from_string(
+                json!({"success":true,"result":value}).to_string(),
+            ));
+        })?;
+        let root = tempfile::tempdir()?;
+        let logs = tempfile::tempdir()?;
+        std::fs::write(root.path().join("index.html"), "report")?;
+        super::super::with_deployment_journal(
+            logs.path(),
+            client(&site.origin).deploy(root.path(), &target()),
+        )
+        .await?;
+        assert_eq!(sessions.load(Ordering::SeqCst), 2);
+        super::super::diagnostics::assert_retry_journal(
+            logs.path(),
+            super::super::DeploymentProvider::CloudflareWorkers,
+            &[TOKEN, "synthetic-completion-jwt"],
+        )
+    }
+
     use super::*;
     use serde_json::json;
     use std::sync::{

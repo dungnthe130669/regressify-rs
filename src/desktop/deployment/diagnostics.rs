@@ -7,6 +7,145 @@ use super::DeploymentProvider;
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 
+pub(super) fn request_started(
+    provider: DeploymentProvider,
+    endpoint: crate::diagnostics::record::SafeValue,
+    attempt: u64,
+) {
+    use crate::diagnostics::{record::*, runtime};
+    runtime::event(
+        Stage::ApiUploads,
+        DiagnosticEvent::StageStarted,
+        Severity::Debug,
+        [
+            (
+                Field::Provider,
+                FieldValue::Kind(provider.diagnostic_value()),
+            ),
+            (Field::Endpoint, FieldValue::Kind(endpoint)),
+            (Field::RetryAttempt, FieldValue::Number(attempt)),
+        ],
+    );
+}
+
+pub(super) fn response_received(
+    provider: DeploymentProvider,
+    endpoint: crate::diagnostics::record::SafeValue,
+    attempt: u64,
+    status: Option<u16>,
+    elapsed: std::time::Duration,
+) {
+    use crate::diagnostics::{record::*, runtime};
+    let mut fields = vec![
+        (
+            Field::Provider,
+            FieldValue::Kind(provider.diagnostic_value()),
+        ),
+        (Field::Endpoint, FieldValue::Kind(endpoint)),
+        (Field::RetryAttempt, FieldValue::Number(attempt)),
+        (
+            Field::ElapsedMs,
+            FieldValue::Number(elapsed.as_millis() as u64),
+        ),
+    ];
+    if let Some(status) = status {
+        fields.push((Field::StatusCode, FieldValue::Number(status as u64)));
+    }
+    runtime::event(
+        Stage::ApiUploads,
+        DiagnosticEvent::StageFinished,
+        if status.is_some_and(|status| (200..300).contains(&status)) {
+            Severity::Debug
+        } else {
+            Severity::Warn
+        },
+        fields,
+    );
+}
+
+pub(super) fn retry(
+    provider: DeploymentProvider,
+    endpoint: crate::diagnostics::record::SafeValue,
+    attempt: u64,
+    delay: std::time::Duration,
+) {
+    use crate::diagnostics::{record::*, runtime};
+    runtime::event(
+        Stage::RetryPolling,
+        DiagnosticEvent::Retry,
+        Severity::Warn,
+        [
+            (
+                Field::Provider,
+                FieldValue::Kind(provider.diagnostic_value()),
+            ),
+            (Field::Endpoint, FieldValue::Kind(endpoint)),
+            (Field::RetryAttempt, FieldValue::Number(attempt)),
+            (
+                Field::BackoffMs,
+                FieldValue::Number(delay.as_millis() as u64),
+            ),
+            (Field::Reason, FieldValue::Kind(SafeValue::Transient)),
+        ],
+    );
+}
+
+pub(super) fn published(provider: DeploymentProvider, url: Option<&str>) {
+    use crate::diagnostics::{record::*, runtime};
+    let mut fields = vec![
+        (
+            Field::Provider,
+            FieldValue::Kind(provider.diagnostic_value()),
+        ),
+        (Field::State, FieldValue::Kind(SafeValue::Complete)),
+    ];
+    if let Some(url) = url.and_then(|url| PublicUrl::try_from(url.to_owned()).ok()) {
+        fields.push((Field::PublicationUrl, FieldValue::PublicUrl(url)));
+    }
+    runtime::event(
+        Stage::CompletionCleanup,
+        DiagnosticEvent::Published,
+        Severity::Info,
+        fields,
+    );
+}
+
+#[cfg(test)]
+pub(super) fn assert_retry_journal(
+    root: &std::path::Path,
+    provider: DeploymentProvider,
+    secrets: &[&str],
+) -> anyhow::Result<()> {
+    use crate::diagnostics::{
+        journal::{ArchiveState, JournalReader},
+        record::*,
+    };
+    let entries =
+        std::fs::read_dir(root.join("_diagnostics"))?.collect::<std::io::Result<Vec<_>>>()?;
+    assert_eq!(entries.len(), 1);
+    let operation = OperationId::try_from(entries[0].file_name().into_string().unwrap()).unwrap();
+    let reader = JournalReader::open(root, &operation)?;
+    assert_eq!(reader.archive_state(), ArchiveState::Complete);
+    let mut retried = false;
+    let mut published = false;
+    reader.visit(|record| {
+        let encoded = serde_json::to_string(&record).unwrap();
+        for secret in secrets { assert!(!encoded.contains(secret), "Secret reached diagnostic archive"); }
+        if record.event_name == DiagnosticEvent::Retry {
+            retried = true;
+            assert!(matches!(record.fields.get(&Field::RetryAttempt), Some(FieldValue::Number(attempt)) if *attempt >= 2));
+            assert!(record.fields.contains_key(&Field::Reason));
+            assert!(record.fields.contains_key(&Field::BackoffMs));
+        }
+        if record.event_name == DiagnosticEvent::Published {
+            published = true;
+            assert_eq!(record.fields.get(&Field::Provider), Some(&FieldValue::Kind(provider.diagnostic_value())));
+        }
+    })?;
+    assert!(retried && published);
+    Ok(())
+}
+
 pub(super) async fn http_error(
     response: Response,
     provider: DeploymentProvider,
@@ -112,10 +251,33 @@ pub(super) fn failure(
     } else {
         detail
     };
-    anyhow!(
+    let error = anyhow!(
         "{} {operation} failed{status}: {detail} {hint}",
         provider.label()
-    )
+    );
+    if let Some(context) = crate::diagnostics::runtime::current()
+        && context.identity.operation_kind == crate::diagnostics::record::OperationKind::Deployment
+    {
+        use crate::diagnostics::{record::*, runtime::Completion};
+        context.record(
+            Stage::ApiUploads,
+            DiagnosticEvent::StageFinished,
+            Severity::Error,
+            [(
+                Field::Provider,
+                FieldValue::Kind(provider.diagnostic_value()),
+            )],
+            Completion {
+                outcome: Some(Outcome::Failure),
+                error: Some(SanitizedError::deployment(
+                    &error.to_string(),
+                    authorization,
+                )),
+                duration_ms: None,
+            },
+        );
+    }
+    error
 }
 
 fn collect_details(value: &Value, depth: usize, messages: &mut Vec<String>) {
