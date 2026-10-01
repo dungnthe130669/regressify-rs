@@ -1,8 +1,7 @@
 import { ArrowDown, ArrowUp, ArrowUpDown, Check, X } from "lucide-react";
-import Markdown from "react-markdown";
 import { Link, useSearchParams } from "react-router";
 import { Filters, StatePanel, useFilters } from "../components/ui";
-import { passRate, safePageUrl, suiteLabel, suitePath } from "../data/report";
+import { passRate, suiteLabel, suitePath } from "../data/report";
 import { useManifest } from "../data/store";
 
 const columns = [
@@ -63,25 +62,7 @@ export function OverviewPage() {
   return (
     <div className="page overview-page">
       <header className="page-heading">
-        <div>
-          <div className="eyebrow">Snapshot overview</div>
-          <h1>{manifest.heading}</h1>
-          <div className="report-subheading">
-            <Markdown
-              skipHtml
-              allowedElements={["p", "strong", "em", "a", "code", "br", "ul", "ol", "li"]}
-              components={{
-                a: ({ children, href }) => (
-                  <a href={safePageUrl(href || null)} target="_blank" rel="noopener noreferrer">
-                    {children}
-                  </a>
-                ),
-              }}
-            >
-              {manifest.subheading}
-            </Markdown>
-          </div>
-        </div>
+        <h1 className="overview-title">Snapshot Overview</h1>
         <span className={`run-status ${totals.failed ? "fail" : "pass"}`}>
           {totals.failed ? <X size={16} /> : <Check size={16} />}
           {totals.failed

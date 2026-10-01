@@ -134,6 +134,15 @@ svg {
 .text-fail {
   color: var(--fail);
 }
+.snapshot-app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+}
+.snapshot-review {
+  height: 100dvh;
+  overflow: hidden;
+}
 .app-header {
   height: 54px;
   padding: 0 24px;
@@ -143,6 +152,29 @@ svg {
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   gap: 16px;
+}
+.app-header.snapshot-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  height: auto;
+  min-height: 60px;
+  flex-shrink: 0;
+  padding: 8px 24px;
+}
+.report-identity {
+  min-width: 0;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.report-identity:empty {
+  border: 0;
+  padding: 0;
+}
+.report-title {
+  font-size: 16px;
+  line-height: 1.25;
+  font-weight: 600;
 }
 .brand {
   display: inline-flex;
@@ -169,6 +201,68 @@ svg {
   display: flex;
   gap: 12px;
   align-items: center;
+}
+.settings-dialog {
+  width: min(360px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
+  margin: auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 32px #00000026;
+}
+.settings-dialog[open] {
+  display: flex;
+  flex-direction: column;
+}
+.settings-dialog::backdrop {
+  background: #00000038;
+}
+body:has(.settings-dialog[open]) {
+  overflow: hidden;
+}
+.settings-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 16px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.settings-heading h2 {
+  font-size: 16px;
+  font-weight: 600;
+}
+.settings-content {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 16px;
+}
+.settings-section + .settings-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.settings-section h3 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.settings-row + .settings-row {
+  margin-top: 12px;
 }
 .segmented {
   display: inline-flex;
@@ -208,13 +302,13 @@ svg {
 .app-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  min-height: calc(100dvh - 54px);
+  flex: 1;
+  min-height: 0;
 }
 .app-layout.with-panel {
   grid-template-columns: var(--panel-width, 280px) minmax(0, 1fr);
 }
 .review-layout {
-  height: calc(100dvh - 54px);
   min-height: 0;
   overflow: hidden;
 }
@@ -275,9 +369,9 @@ svg {
   max-width: 1580px;
   margin: 0 auto;
 }
-.overview-page {
+.page.overview-page {
   max-width: 1340px;
-  padding-top: 28px;
+  padding-top: 16px;
 }
 .page-heading {
   display: flex;
@@ -293,6 +387,14 @@ svg {
   font-size: 28px;
   line-height: 1.25;
   font-weight: 600;
+}
+.overview-page .page-heading {
+  align-items: center;
+  margin-bottom: 16px;
+  gap: 12px;
+}
+.page-heading .overview-title {
+  font-size: 20px;
 }
 .eyebrow {
   font-family: var(--font-mono);
@@ -313,6 +415,12 @@ svg {
 .report-subheading ul,
 .report-subheading ol {
   padding-left: 22px;
+}
+.snapshot-header .report-subheading {
+  margin-top: 2px;
+  max-width: none;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .landing-layout {
   display: flex;
@@ -448,14 +556,13 @@ svg {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
   border: 1px solid var(--border);
   border-radius: 5px;
-  padding: 7px 10px;
+  padding: 4px 8px;
   background: var(--surface);
   white-space: nowrap;
-  margin-top: 24px;
 }
 .run-status.fail {
   color: var(--fail);
@@ -469,16 +576,16 @@ svg {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  margin: 30px 0 36px;
-  padding: 24px 0;
+  margin: 16px 0 20px;
+  padding: 16px 0;
 }
 .metrics > div {
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
-  gap: 9px;
-  padding: 0 28px;
+  gap: 4px;
+  padding: 0 12px;
   border-right: 1px solid var(--border);
 }
 .metrics > div:last-child {
@@ -492,7 +599,7 @@ svg {
   font-size: 12px;
 }
 .metrics strong {
-  font-size: 36px;
+  font-size: 28px;
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -1586,9 +1693,6 @@ figcaption {
   .suite-toolbar {
     flex-wrap: wrap;
   }
-  .metrics > div {
-    padding: 0 20px;
-  }
   .snapshot-date {
     font-size: 10px;
   }
@@ -1625,6 +1729,20 @@ figcaption {
     height: 54px;
     padding: 0 16px;
   }
+  .app-header.snapshot-header {
+    padding: 8px 16px;
+    gap: 12px;
+  }
+  .snapshot-header :where(.brand) > span {
+    display: none;
+  }
+  .report-identity {
+    border-left: 0;
+    padding-left: 0;
+  }
+  .report-title {
+    font-size: 14px;
+  }
   .brand {
     font-size: 16px;
     gap: 8px;
@@ -1644,23 +1762,12 @@ figcaption {
   .page-heading h1 {
     font-size: 24px;
   }
-  .run-status {
-    margin-top: 0;
-  }
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 24px 0;
-    padding: 24px 0;
-    margin: 24px 0;
-  }
-  .metrics > div {
-    padding: 0 20px;
+    gap: 16px 0;
   }
   .metrics > div:nth-child(even) {
     border-right: 0;
-  }
-  .metrics strong {
-    font-size: 30px;
   }
   .search-input {
     flex-basis: 100%;

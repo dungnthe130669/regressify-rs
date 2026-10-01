@@ -42,6 +42,111 @@ async function screenshot(page: Page, project: string, name: string) {
   });
 }
 
+async function chooseTheme(page: Page, theme: 'Light' | 'Dark' | 'System') {
+  await page.getByRole('button', { name: 'Settings', exact: true }).click();
+  const popup = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await popup.getByRole('button', { name: `${theme} theme`, exact: true }).click();
+  await popup.getByRole('button', { name: 'Close settings' }).click();
+}
+
+test('report header keeps the configured heading and subheading above each page', async ({ page }) => {
+  await page.route('**/_snapshot/data/manifest.json?*', async (route) => {
+    const response = await route.fetch();
+    const manifest = await response.json();
+    manifest.heading = 'Release <summary>';
+    manifest.subheading = '**Staging** / [Release notes](https://example.com/releases)';
+    await route.fulfill({ response, json: manifest });
+  });
+  await page.goto('/');
+  const header = page.locator('.app-header');
+  await expect(header.locator('.report-title')).toHaveText('Release <summary>');
+  await expect(header.locator('.report-subheading strong')).toHaveText('Staging');
+  await expect(header.getByRole('link', { name: 'Release notes' })).toHaveAttribute('href', 'https://example.com/releases');
+  await expect(header.getByRole('link', { name: 'Release notes' })).toHaveAttribute('rel', 'noopener noreferrer');
+  await expect(header.getByText('Snapshot', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Snapshot Overview');
+  await expect(page.locator('#main .report-subheading')).toHaveCount(0);
+  await page.evaluate(() => document.fonts.ready);
+  expect(await header.evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(64);
+  expect(await page.locator('.page-heading').evaluate((element) => element.getBoundingClientRect().height)).toBeLessThanOrEqual(32);
+  expect(await page.locator('.overview-page').evaluate((element) => getComputedStyle(element).paddingTop)).toBe('16px');
+  const titleBottom = await header.locator('.report-title').evaluate((element) => element.getBoundingClientRect().bottom);
+  expect(await header.locator('.report-subheading').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(titleBottom);
+  await page.getByRole('link', { name: 'workspace-overview', exact: true }).click();
+  await expect(header.locator('.report-title')).toHaveText('Release <summary>');
+  await expect(header.locator('.report-subheading strong')).toHaveText('Staging');
+  await header.getByRole('link', { name: 'Regressify overview' }).click();
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText('Snapshot Overview');
+  await assertLayout(page);
+});
+
+test('settings popup contains theme choices and restores focus on dismissal', async ({ page }, info) => {
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto('/');
+  const trigger = page.getByRole('button', { name: 'Settings', exact: true, includeHidden: true });
+  const popup = page.getByRole('dialog', { name: 'Settings', exact: true });
+  await expect(popup).toBeHidden();
+  await expect(page.getByRole('group', { name: 'Color theme' })).toBeHidden();
+  await expect(trigger).toHaveAttribute('aria-haspopup', 'dialog');
+  await trigger.press('Enter');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'true');
+  await expect(popup.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+  await expect(popup.getByRole('heading', { name: 'Appearance', exact: true })).toBeVisible();
+  await expect(popup.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
+  expect(await page.evaluate(() => localStorage.getItem('regressify-theme'))).toBeNull();
+  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(popup.getByRole('button', { name: 'Light theme' })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeFocused();
+  await popup.getByRole('button', { name: 'System theme' }).focus();
+  await page.keyboard.press('Tab');
+  expect(await popup.evaluate((element) => document.activeElement === document.body || element.contains(document.activeElement))).toBe(true);
+  await popup.click({ position: { x: 8, y: 8 } });
+  await expect(popup).toBeVisible();
+  expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
+  await screenshot(page, info.project.name, 'settings-light');
+  await popup.getByRole('button', { name: 'Dark theme' }).click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await screenshot(page, info.project.name, 'settings-dark');
+  await popup.getByRole('button', { name: 'Close settings' }).click();
+  await expect(popup).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await trigger.click();
+  await expect(popup.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
+  await popup.getByRole('button', { name: 'System theme' }).click();
+  await page.keyboard.press('Escape');
+  await expect(popup).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await trigger.click();
+  await page.setViewportSize({ width: 320, height: 360 });
+  const content = popup.locator('.settings-content');
+  await content.evaluate((element) => {
+    const section = document.createElement('section');
+    section.className = 'settings-section';
+    section.style.minHeight = '600px';
+    section.textContent = 'Additional settings';
+    element.append(section);
+  });
+  expect(await content.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await content.evaluate((element) => element.scrollTo(0, element.scrollHeight));
+  await expect(popup.getByRole('button', { name: 'Close settings' })).toBeVisible();
+  const bounds = await popup.boundingBox();
+  if (!bounds) throw new Error('Settings is not visible');
+  expect(bounds.x).toBeGreaterThanOrEqual(0);
+  expect(bounds.y).toBeGreaterThanOrEqual(0);
+  expect(bounds.x + bounds.width).toBeLessThanOrEqual(320);
+  expect(bounds.y + bounds.height).toBeLessThanOrEqual(360);
+  await page.mouse.click(1, 1);
+  await expect(popup).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
 for (const system of ['light', 'dark'] as const) {
   for (const preference of ['light', 'dark', 'system', 'invalid', null, 'blocked'] as const) {
     test(`theme is applied before the app bundle loads (${preference ?? 'unset'}, system ${system})`, async ({ page }) => {
@@ -72,6 +177,7 @@ for (const system of ['light', 'dark'] as const) {
       await expect(page.locator('html')).toHaveCSS('background-color', resolved === 'dark' ? 'rgb(21, 25, 25)' : 'rgb(247, 248, 248)');
       await page.unroute(appBundle);
       await page.reload();
+      await page.getByRole('button', { name: 'Settings', exact: true }).click();
       await expect(page.getByRole('button', { name: `${selected} theme`, exact: false })).toHaveAttribute('aria-pressed', 'true');
       await expect(page.locator('html')).toHaveAttribute('data-theme', resolved);
       if (preference === 'blocked') {
@@ -92,18 +198,18 @@ test('theme choices sync across tabs and only system mode follows OS changes', a
   await other.emulateMedia({ colorScheme: 'dark' });
   await page.goto('/');
   await other.goto('/');
-  await expect(page.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
-  await expect(other.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
-  await page.getByRole('button', { name: 'Dark theme' }).click();
-  await expect(other.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(other.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
+  await chooseTheme(page, 'Dark');
+  await expect(other.getByRole('button', { name: 'Dark theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
   await other.emulateMedia({ colorScheme: 'light' });
   await expect(other.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await other.getByRole('button', { name: 'Light theme' }).click();
-  await expect(page.getByRole('button', { name: 'Light theme' })).toHaveAttribute('aria-pressed', 'true');
+  await chooseTheme(other, 'Light');
+  await expect(page.getByRole('button', { name: 'Light theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await other.getByRole('button', { name: 'System theme' }).click();
-  await expect(page.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
+  await chooseTheme(other, 'System');
+  await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await expect(other.locator('html')).toHaveAttribute('data-theme', 'light');
   await page.emulateMedia({ colorScheme: 'light' });
@@ -116,14 +222,14 @@ test('theme storage resets restore system mode without being overwritten', async
   const other = await context.newPage();
   await other.goto('/');
   for (const reset of ['invalid', 'remove', 'clear'] as const) {
-    await page.getByRole('button', { name: 'Dark theme' }).click();
-    await expect(other.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
+    await chooseTheme(page, 'Dark');
+    await expect(other.getByRole('button', { name: 'Dark theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
     await other.evaluate((mode) => {
       if (mode === 'clear') localStorage.clear();
       else if (mode === 'remove') localStorage.removeItem('regressify-theme');
       else localStorage.setItem('regressify-theme', 'invalid');
     }, reset);
-    await expect(page.getByRole('button', { name: 'System theme' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'System theme', includeHidden: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
     expect(await page.evaluate(() => localStorage.getItem('regressify-theme'))).toBe(reset === 'invalid' ? 'invalid' : null);
   }
@@ -134,7 +240,8 @@ test('overview is responsive, accessible, sortable, and theme-aware', async ({ p
   page.on('pageerror', (error) => errors.push(error.message));
   await page.goto('/index.html');
   await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByRole('heading', { name: 'A clear view of every change.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
+  await expect(page.locator('.app-header .report-title')).toHaveText('A clear view of every change.');
   await expect(page.locator('.results-table tbody tr')).toHaveCount(7);
   await expect(page.locator('.metrics > div > span')).toHaveText(['TOTAL TESTS', 'PASSED', 'FAILED', 'PASS RATE']);
   await expect(page.locator('.metrics svg')).toHaveCount(0);
@@ -143,12 +250,12 @@ test('overview is responsive, accessible, sortable, and theme-aware', async ({ p
   await expect(page.locator('.results-table th').first()).toHaveAttribute('aria-sort', 'descending');
   await screenshot(page, info.project.name, 'overview-light');
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
-  await page.getByRole('button', { name: 'Dark theme' }).click();
+  await chooseTheme(page, 'Dark');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   await screenshot(page, info.project.name, 'overview-dark');
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await page.getByRole('button', { name: 'System theme' }).click();
+  await chooseTheme(page, 'System');
   await page.emulateMedia({ colorScheme: 'light' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
   expect(errors).toEqual([]);
@@ -157,8 +264,8 @@ test('overview is responsive, accessible, sortable, and theme-aware', async ({ p
 test('pass-rate bars distinguish failing suites in light and dark themes', async ({ page }, info) => {
   await mockOverview(page);
   await expect(page.locator('.metrics strong')).toHaveText(['10030', '10023', '7', '99.9%']);
-  for (const theme of ['Light', 'Dark']) {
-    await page.getByRole('button', { name: `${theme} theme`, exact: true }).click();
+  for (const theme of ['Light', 'Dark'] as const) {
+    await chooseTheme(page, theme);
     const neutralColor = await page.locator('.section-title .muted').evaluate((element) => getComputedStyle(element).color);
     for (const suite of overviewSuites) {
       const row = page.locator('.results-table tbody tr').filter({
@@ -610,7 +717,7 @@ test('review navigation dropdown contains long suite names and scrolls independe
   });
   await page.setViewportSize({ width: isMobile ? 320 : 1280, height: 720 });
   await page.goto('/suites/workspace-overview');
-  await page.getByRole('button', { name: 'Dark theme' }).click();
+  await chooseTheme(page, 'Dark');
   if (isMobile) await page.getByRole('button', { name: 'Toggle suite index' }).click();
   const selector = page.getByRole('button', { name: `Test suite: ${displayName}` });
   await expect(selector).toContainText(displayName);
@@ -1134,7 +1241,7 @@ test('invalid report data fails visibly and can be retried', async ({ page }) =>
   await expect(page.getByRole('heading', { name: 'Snapshot unavailable' })).toBeVisible();
   await page.unroute('**/_snapshot/**');
   await page.getByRole('button', { name: 'Retry', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'A clear view of every change.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
 });
 
 test('untrusted Markdown is not executable markup or a remote image request', async ({ page }) => {
@@ -1153,13 +1260,17 @@ test('untrusted Markdown is not executable markup or a remote image request', as
 });
 
 test('empty snapshots and very long report text fit narrow and wide screens', async ({ page }) => {
+  let reportText = {
+    heading: 'LongUnbrokenReportHeading'.repeat(8),
+    subheading: `**Release** / ${'VeryLongBuildIdentifier'.repeat(8)}`,
+  };
   await page.route('**/_snapshot/**', async (route) => {
     if (!new URL(route.request().url()).pathname.endsWith('.json')) return route.continue();
     const response = await route.fetch();
     const data = await response.json();
     if (data.version === 2) {
-      data.heading = 'LongUnbrokenReportHeading'.repeat(8);
-      data.subheading = `**Release** / ${'VeryLongBuildIdentifier'.repeat(8)}`;
+      data.heading = reportText.heading;
+      data.subheading = reportText.subheading;
       data.suites = [];
     }
     await route.fulfill({ response, json: data });
@@ -1168,6 +1279,21 @@ test('empty snapshots and very long report text fit narrow and wide screens', as
   await expect(page.getByRole('heading', { name: 'No comparisons yet' })).toBeVisible();
   for (const width of [320, 768, 1920]) {
     await page.setViewportSize({ width, height: 900 });
+    await assertLayout(page);
+    const header = page.locator('.app-header');
+    const headerBottom = await header.evaluate((element) => element.getBoundingClientRect().bottom);
+    expect(await page.locator('.breadcrumb-bar').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(headerBottom);
+    expect(await header.locator('.report-identity').evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  }
+  for (reportText of [
+    { heading: '', subheading: '' },
+    { heading: 'Release', subheading: '' },
+    { heading: '', subheading: '**Staging**' },
+  ]) {
+    await page.reload();
+    await expect(page.getByRole('heading', { name: 'Snapshot Overview', exact: true })).toBeVisible();
+    await expect(page.locator('.app-header .report-title')).toHaveCount(reportText.heading ? 1 : 0);
+    await expect(page.locator('.app-header .report-subheading')).toHaveCount(reportText.subheading ? 1 : 0);
     await assertLayout(page);
   }
 });

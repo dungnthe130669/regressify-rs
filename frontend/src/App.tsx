@@ -1,10 +1,20 @@
-import { ChevronRight, Monitor, Moon, PanelLeftClose, PanelLeftOpen, Sun, X } from "lucide-react";
+import {
+  ChevronRight,
+  Monitor,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Settings,
+  Sun,
+  X,
+} from "lucide-react";
 import { type CSSProperties, useEffect, useRef, useState } from "react";
+import Markdown from "react-markdown";
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useMatch } from "react-router";
 import desktopIcon from "../../assets/icon.svg?url";
 import { ReviewNavigation } from "./components/ReviewNavigation";
 import { IconButton, StatePanel } from "./components/ui";
-import { suiteLabel, suitePath } from "./data/report";
+import { safePageUrl, suiteLabel, suitePath } from "./data/report";
 import { ReportProvider, useManifest } from "./data/store";
 import ImagePage from "./pages/ImagePage";
 import { OverviewPage } from "./pages/OverviewPage";
@@ -81,6 +91,68 @@ export function ThemeControl() {
   );
 }
 
+function SettingsControl() {
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <IconButton
+        label="Settings"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls="snapshot-settings"
+        onClick={() => {
+          dialog.current?.showModal();
+          setOpen(true);
+        }}
+      >
+        <Settings size={18} />
+      </IconButton>
+      <dialog
+        ref={dialog}
+        id="snapshot-settings"
+        className="settings-dialog"
+        aria-labelledby="settings-title"
+        onClose={() => setOpen(false)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.defaultPrevented) {
+            event.preventDefault();
+            event.currentTarget.close();
+          }
+        }}
+        onClick={(event) => {
+          if (event.target !== event.currentTarget) return;
+          const bounds = event.currentTarget.getBoundingClientRect();
+          if (
+            event.clientX < bounds.left ||
+            event.clientX > bounds.right ||
+            event.clientY < bounds.top ||
+            event.clientY > bounds.bottom
+          ) {
+            event.currentTarget.close();
+          }
+        }}
+      >
+        <div className="settings-heading">
+          <h2 id="settings-title">Settings</h2>
+          <IconButton label="Close settings" onClick={() => dialog.current?.close()}>
+            <X size={18} />
+          </IconButton>
+        </div>
+        <div className="settings-content">
+          <section className="settings-section" aria-labelledby="appearance-settings">
+            <h3 id="appearance-settings">Appearance</h3>
+            <div className="settings-row">
+              <span>Theme</span>
+              <ThemeControl />
+            </div>
+          </section>
+        </div>
+      </dialog>
+    </>
+  );
+}
+
 function Shell() {
   const manifest = useManifest();
   const location = useLocation();
@@ -145,19 +217,37 @@ function Shell() {
     } else setPanelOpen(!panelOpen);
   };
   return (
-    <>
+    <div className={`snapshot-app${match ? " snapshot-review" : ""}`}>
       <a href="#main" className="skip-link">
         Skip to results
       </a>
-      <header className="app-header">
+      <header className="app-header snapshot-header">
         <Link to="/" className="brand" aria-label="Regressify overview">
           <img src={iconUrl} width={24} height={24} alt="" />
           <span>Regressify</span>
-          <span className="brand-divider" />
-          <span className="brand-context">Snapshot</span>
         </Link>
+        <div className="report-identity">
+          {manifest.heading && <p className="report-title">{manifest.heading}</p>}
+          {manifest.subheading && (
+            <div className="report-subheading">
+              <Markdown
+                skipHtml
+                allowedElements={["p", "strong", "em", "a", "code", "br", "ul", "ol", "li"]}
+                components={{
+                  a: ({ children, href }) => (
+                    <a href={safePageUrl(href || null)} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {manifest.subheading}
+              </Markdown>
+            </div>
+          )}
+        </div>
         <div className="header-actions">
-          <ThemeControl />
+          <SettingsControl />
         </div>
       </header>
       <div
@@ -308,7 +398,7 @@ function Shell() {
           )}
         </div>
       </dialog>
-    </>
+    </div>
   );
 }
 

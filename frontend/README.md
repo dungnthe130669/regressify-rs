@@ -95,6 +95,9 @@ both document and review-pane scrolling on desktop and mobile.
 Overview checks cover all five sort columns in both directions, filter preservation,
 aggregate totals, conditional count highlights, and rendered pass-rate colors in
 both themes. Empty suites and rates that round to 100% retain their actual status.
+Header and Settings checks cover compact spacing, separate report-text lines,
+empty/long text, keyboard navigation, dismissal/focus return, and scrolling when
+more settings are added. Theme synchronization also runs with Settings closed.
 
 Set `SNAPSHOT_URL=http://127.0.0.1:4174` before `bun run test:e2e` to test the
 Rust-generated synthetic report instead of starting the Vite fixture server.
@@ -233,6 +236,12 @@ and React keys continue to use `id`; never derive identity from presentation tex
 Suite and image pages use `suite name | report title` as the browser tab title.
 Returning to the overview restores the configured report title.
 
+The shared top bar places the configured report heading and safe Markdown
+subheading on separate lines beside the logo. On phones, the wordmark is hidden
+to leave room for report text; long text wraps without overlapping the controls.
+The overview uses the page heading `Snapshot Overview` with compact summary
+spacing. Review panes fill the remaining viewport below the actual header height.
+
 The overview summarizes Total tests, Passed, Failed, and Pass rate across all
 suites. Test totals count captures, and filters do not change the summary. The
 table shows Test suite, Total tests, Passed, Failed, and Pass rate. Every column
@@ -250,8 +259,14 @@ Markdown subheadings allow text, emphasis, lists, code, and safe HTTP(S) links.
 Raw HTML and embedded images are not rendered. Page links reject credentials and
 non-HTTP(S) protocols. No analytics run.
 
-Theme preferences are local. The saved Light, Dark, or System choice and page
-background apply in the document head before the app bundle or report data loads.
+The header's Settings icon opens a native dialog with an Appearance section and
+the Light, Dark, and System theme control. Its bounded, scrollable content supports
+additional settings rows and sections without hiding the close button. Escape,
+the close button, and backdrop clicks dismiss it and return focus to the trigger.
+The theme control stays mounted while the dialog is closed.
+
+Theme preferences are local. The saved choice and page background apply in the
+document head before the app bundle or report data loads.
 Missing, invalid, or inaccessible preferences fall back to the system theme.
 Explicit theme changes synchronize across report tabs on the same origin; only
 System mode follows operating-system appearance changes. Loading a report does

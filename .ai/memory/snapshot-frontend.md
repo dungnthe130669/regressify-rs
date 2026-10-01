@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-09-30
+Verified: 2026-10-01
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -75,8 +75,9 @@ Verified: 2026-09-30
   pixels in both themes, including empty bars and rounded 100% failures. Phones
   retain every column in a horizontally scrollable table. Mocked suite IDs must
   be explicit: search includes IDs, and Vite/production manifest orders differ.
-- The main/footer wrapper in [Shell](../../frontend/src/App.tsx) must be a growing
-  flex column; otherwise `#main` growth and footer auto margins have no effect.
+- [Shell](../../frontend/src/App.tsx) uses growing flex columns and review panes
+  below the actual compact header height. It stacks report heading/subheading;
+  the overview page heading is `Snapshot Overview`.
   `bun run test:e2e --grep footer` covers short/filtered/missing pages and long
   document/review scrolling on desktop and mobile.
 - [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) has no wheel/pan
@@ -100,11 +101,11 @@ Verified: 2026-09-30
 - [Suite list rows](../../frontend/src/pages/SuitePage.tsx) contain complete images
   in equal-width Reference/Test/optional Diff lanes, including on phones. Missing
   images retain their lanes; grid thumbnails and filtered failure jumps are unchanged.
-- [Theme startup](../../frontend/index.html) applies saved/system appearance and a
-  low-specificity background before React loads. [ThemeControl](../../frontend/src/App.tsx)
-  persists only explicit selections and listens for cross-tab changes and resets.
-  `bun run test:e2e --grep theme` blocks the app bundle to verify first-paint styling
-  and covers missing, invalid, and blocked storage on desktop/mobile.
+- [Theme startup](../../frontend/index.html) applies saved/system appearance before React.
+  [ThemeControl](../../frontend/src/App.tsx) stays mounted in Settings > Appearance,
+  persisting explicit choices and handling cross-tab/OS changes while closed.
+  `--grep 'report header|settings popup|theme'` tests spacing, dialog growth/focus,
+  first-paint styling, and unavailable storage on desktop/mobile.
 - Browser image-failure tests intercept the exact URL returned in suite data.
   Development fixtures share preview images instead of using production's
   per-suite image directories; assuming those directories misses the request.

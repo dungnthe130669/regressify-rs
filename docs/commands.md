@@ -101,8 +101,9 @@ images and coordinates outside a smaller image are excluded. Wipe follows mouse
 movement; keyboard and touch users can also use its slider. Hover, focus, or pin
 the Info icon for selectable/copyable diff statistics, capture details, URLs, and
 engine errors. Previous/next failure arrows on suite pages scroll to visible failed
-cards while keeping the current filters. Theme selection supports light, dark, or
-system appearance and is remembered in the browser.
+cards while keeping the current filters. The header's Settings icon opens a compact
+popup with an Appearance section. Its theme control supports light, dark, or system
+appearance and is remembered in the browser.
 
 Snapshot generation preserves capture runs, baseline images, `config.js`, and
 `report.json`. It publishes copies of referenced images and JSON under `_snapshot`,
@@ -164,9 +165,11 @@ and `Snapshot regression test results`, respectively.
 
 `snapshotTitle` controls the overview's HTML page title; suite and image pages
 prepend the suite name as `suite name | snapshotTitle`. `snapshotHeading` is the
-visible heading. Both settings are plain text. `snapshotSubheading` supports safe Markdown text,
-emphasis, lists, code, and HTTP(S) links; raw HTML and embedded images are omitted. An empty
-string is an explicit value, while `null` falls back to the built-in default.
+report heading in the compact top bar on every page, with `snapshotSubheading`
+on its own line below it. The overview's page heading is `Snapshot Overview`.
+The title and heading are plain text. The subheading supports safe Markdown text,
+emphasis, lists, code, and HTTP(S) links; raw HTML and embedded images are omitted.
+An empty string is an explicit value, while `null` falls back to the built-in default.
 
 Workspace settings also apply to reports generated automatically by `test` and
 `ref`. Override just one setting for a standalone report without changing the
