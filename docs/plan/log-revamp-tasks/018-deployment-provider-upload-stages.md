@@ -24,6 +24,7 @@ Deployment Diagnostics' required-context table and Task 4.3's own acceptance cri
 
 ## Inputs
 
+- [Verified producer and sanitizer inventory](../../logging-audit.md).
 - Task 4.2's preflight/staging/packaging instrumentation
 - Each provider's existing deploy()/retry/error-handling code (reference)
 - src/desktop/deployment/diagnostics.rs::http_error() (reused)

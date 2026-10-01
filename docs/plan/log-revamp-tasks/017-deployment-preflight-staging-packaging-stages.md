@@ -22,6 +22,7 @@ Deployment Diagnostics' required-context table mandates these three stages; a mo
 
 ## Inputs
 
+- [Verified producer and sanitizer inventory](../../logging-audit.md).
 - Task 4.1's deployment-kind journal integration
 - src/desktop/deployment/optimization.rs and package.rs (reference)
 - src/desktop/deployment/diagnostics.rs's sanitize()/failure() (reused, not reimplemented)

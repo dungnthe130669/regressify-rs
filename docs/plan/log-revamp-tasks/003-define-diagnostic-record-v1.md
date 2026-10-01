@@ -18,11 +18,12 @@ Every later Phase 1-6 task (the adapter, the journal writer, every instrumentati
 
 - progress.rs already defines an unrelated `pub struct Record { pub version: u8, pub elapsed_ms: u64, pub event: Event }` at schema VERSION: u8 = 1 (src/progress.rs lines 15, 125-129) — DiagnosticRecordV1's own schema_version must be a distinct, independently-evolving field, not reuse or collide with this constant.
 - The Interfaces section's Rust sketch for DiagnosticRecordV1 is an explicit starting proposal, not a frozen contract — field names/types may be adjusted, but `fields` must stay a typed, allowlisted BTreeMap<String, FieldValue> rather than Debug-formatted free text.
-- error_cause: Option<SanitizedError> must be constructible by wrapping/extending src/desktop/deployment/diagnostics.rs's existing sanitize()/failure() helpers for deployment-sourced errors, not a second redaction implementation; capture-sourced errors need their own sanitization path defined in this task.
+- `error_cause: Option<SanitizedError>` must be constructible by wrapping/extending src/desktop/deployment/diagnostics.rs's existing sanitize()/failure() helpers for deployment-sourced errors, not a second redaction implementation; capture-sourced errors need their own sanitization path defined in this task.
 - Module ownership (new src/diagnostics/ vs. extending src/progress.rs) is an explicitly open decision per Interfaces; this task's acceptance criterion only requires the new module to compile and round-trip, not a specific location.
 
 ## Inputs
 
+- [Verified output and safe-field inventory](../../logging-audit.md).
 - Task 1.2's Cargo.toml with tracing/tracing-subscriber available
 - The Interfaces section's DiagnosticRecordV1 sketch
 - Task 1.1's inventory for the safe-field allowlist

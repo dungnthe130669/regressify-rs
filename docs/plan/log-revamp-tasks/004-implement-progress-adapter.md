@@ -22,6 +22,7 @@ Phase 1's exit criterion requires CLI and worker to 'emit equivalent attributed 
 
 ## Inputs
 
+- [Verified output and event inventory](../../logging-audit.md).
 - Task 1.3's DiagnosticRecordV1 type
 - src/progress.rs's existing Event/emit API (read-only)
 
