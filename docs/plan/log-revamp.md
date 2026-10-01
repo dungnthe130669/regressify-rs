@@ -1,7 +1,39 @@
 # Logging Revamp Plan
 
-Status: Proposed, with product decisions confirmed on 2026-10-01; ready to refine
-into implementation tasks.
+Status: Proposed, with product decisions confirmed on 2026-10-01 and an initial
+task breakdown drafted this round; ready for reviewer re-check before
+implementation kickoff.
+
+## Context and Motivation
+
+Capture and deployment failures in Regressify are hard to diagnose today without
+reproducing the run. `scenario_log!` always writes to stderr, but the desktop's
+retained live history is bounded (2 MiB, 4,096 entries, 16 KiB per retained
+message) and is explicitly not the full-log source of truth; deployment
+orchestration also writes phases and heartbeat messages directly to stderr
+instead of a structured, durable record (see Current Evidence). There is
+currently no durable, capture-linked timeline of stages, timings, decisions,
+retries, and error causes for either a passed or a failed capture, and no
+equivalent durable timeline for deployment operations.
+
+This matters for three concrete reasons: (1) intermittent capture problems —
+timeouts, flaky navigation, actionability waits — are difficult to triage once
+the live buffer has been evicted or the process has exited; (2) deployment
+failures across the three supported providers (Azure, Netlify, Cloudflare)
+currently surface only as terminal stderr output, with no durable, shareable
+record for support or post-mortem; and (3) the snapshot frontend and desktop
+reports currently expose only a pass/fail result and an error string, with no
+execution-log reference at all (see Current Evidence).
+
+This plan proposes extending the existing structured event pipeline
+(`src/progress.rs`) with durable, capture-linked diagnostics, rather than
+building a separate logging system, to close this visibility gap while
+preserving existing exit semantics, scenario isolation, worker cancellation,
+report compatibility, and credential boundaries (see Goals). This working
+hypothesis is not yet proven; see Assumptions for what would make it wrong, and
+the first implementation check described at the end of Current Evidence for how
+it will be tested. What this initiative deliberately does not attempt is listed
+in Non-Goals.
 
 ## Goals
 
@@ -14,9 +46,25 @@ into implementation tasks.
 - Preserve existing exit semantics, scenario isolation, worker cancellation,
   report compatibility, and credential boundaries.
 
-This is a design plan, not a change to current behavior. It does not propose a
-hosted observability service, a new deployment command, or unrestricted collection
-of page content, browser console output, or network bodies.
+## Non-Goals
+
+This is a design plan, not a change to current behavior by itself; shipping the
+behavior change requires the work in Task Breakdown. Specifically out of scope
+for this initiative:
+
+- A hosted observability service, or any remote log collector/exporter (see
+  Logging Mechanism: Options Considered — no OpenTelemetry exporter in the
+  initial scope).
+- A new deployment command or provider.
+- Unrestricted collection of page content, browser console output, or network
+  request/response bodies. An opt-in collector for these is explicitly not an
+  implicit extra task of this revamp (see Confirmed Product Decisions).
+- A per-workspace log-exclusion/opt-out policy beyond the sanitized-and-always-
+  published default (resolved this round — see Confirmed Product Decisions and
+  Open Questions and Remaining Decisions).
+- Automatic age-based pruning of capture logs. Separate local startup/deployment
+  operational logs keep their own existing retention; capture logs instead stay
+  tied to their captures/reports (see Confirmed Product Decisions).
 
 ## Current Evidence
 
@@ -58,6 +106,7 @@ logs available in saved and deployed reports.
 The first implementation check should follow two interleaved scenario jobs, one
 passing and one failing, from emission through persistence and report loading.
 Both clients must recover each complete timeline after live buffers are evicted.
+
 
 ## Istari Design Review
 
@@ -187,8 +236,16 @@ Confirmed with the user on 2026-10-01:
   deployment logs until explicitly removed. Capture logs remain tied to their
   captures/reports. Report regeneration may still prune stale generated copies
   under the existing inventory rules, without deleting retained source history.
+- **No additional per-workspace log-exclusion policy (resolves Q1).** Published
+  capture logs always use the sanitized default described in Privacy and Safety.
+  This initiative does not add a per-workspace opt-out/exclusion policy for
+  compliance-sensitive workspaces on top of that default. If a concrete
+  compliance need emerges later, treat it as a follow-up proposal with its own
+  review rather than an implicit extension of this plan — the same pattern
+  already used above to keep browser console/network collection out of scope.
 
-## Logging Mechanism
+
+## Logging Mechanism: Options Considered
 
 Use `tracing` for application diagnostics and spans, with `tracing-subscriber`
 providing independently filtered outputs. Retain typed progress events for
@@ -196,11 +253,19 @@ lifecycle and result transitions; never derive pass/fail or progress counts by
 parsing human-readable log messages.
 
 | Option                        | Assessment                                                                                                               |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | `println!` / `eprintln!`      | Presentation only; poor attribution under concurrency and no reusable structured fields.                                 |
 | `log` + a logger              | Useful ecosystem facade, but async span context and multiple structured consumers require more custom plumbing.          |
 | `tracing` + subscriber layers | Recommended: structured events, nested spans, async context propagation, and separate CLI, archive, and desktop outputs. |
 | Another structured logger     | Possible, but no identified advantage over `tracing` for the existing Tokio/CDP worker architecture.                     |
+
+**Decision:** adopt `tracing` + `tracing-subscriber` layers. It is the only
+option offering structured fields, nested async-aware spans, and independently
+filtered multi-consumer outputs (CLI, archive, desktop) at once; `println!`
+lacks structure and attribution, `log` would need equivalent custom plumbing for
+span context without the ecosystem's own span model, and no other structured
+logger shows an identified advantage for the existing Tokio/CDP worker
+architecture.
 
 Recommended dependencies to evaluate during implementation:
 
@@ -259,6 +324,44 @@ verbosity. A quiet CLI still records the complete standard capture timeline.
 Per-layer filters must not accidentally disable persistence through a global
 console filter. Optional third-party debug/trace noise is local-only by default.
 
+### End-to-End Data Flow
+
+The diagram below shows both producer paths (CLI-only and desktop/worker), the
+shared durable journal, the finalize-before-compare ordering, and the two
+independent report consumers. It illustrates the proposed design, not code that
+exists yet (see Current Evidence for what exists today).
+
+```mermaid
+flowchart TD
+    subgraph CLI["CLI path (src/main.rs)"]
+        CLI_Start["CLI entry point"] --> CLI_Install["Install tracing subscriber + progress sink"]
+        CLI_Install --> CLI_Op["Run operation (capture or deployment)"]
+    end
+
+    subgraph Desktop["Desktop/worker path (src/desktop/worker.rs)"]
+        D_Start["Desktop spawns bundled worker"] --> D_Bootstrap["Worker bootstrap diagnostics"]
+        D_Bootstrap --> D_Handoff{"Handoff to operation journal OK?"}
+        D_Handoff -- "yes" --> D_Op["Run operation (capture or deployment)"]
+        D_Handoff -- "no: warn, keep source" --> D_Fallback["Retain original bootstrap log + visible warning"]
+        D_Fallback --> D_Op
+    end
+
+    CLI_Op --> Journal[("Operation-owned durable journal (incremental, versioned records)")]
+    D_Op --> Journal
+
+    Journal --> Finalize["Finalize index/manifest atomically"]
+
+    Finalize --> Compare["Automatic comparison / snapshot generation"]
+    Finalize --> DesktopReport["Desktop Results + Activity (lazy-loaded archive reader)"]
+    Finalize --> WebReport["Snapshot frontend report (lazy-loaded archive fetch)"]
+```
+
+Both report consumers (desktop and web) load independently and lazily from the
+same finalized journal; neither depends on the other, and neither depends on the
+live progress buffers once the journal is finalized. A failed bootstrap handoff
+degrades to a visible warning rather than losing the operation's diagnostics (see
+Full-Log Persistence).
+
 ### Identity and Record Contract
 
 Define a versioned diagnostic record independently of the progress transport and
@@ -286,6 +389,7 @@ their operation, not whichever scenario happens to be active.
 Define ordering within an execution using sequence numbers, not wall-clock sort.
 Give retries distinct attempt identities and keep their history. No frontend
 heuristics should infer scenario ownership from interleaved text.
+
 
 ### Full-Log Persistence
 
@@ -342,6 +446,121 @@ sequence, and the original file until the destination is confirmed written. A
 failed handoff falls back to the retained source with a visible warning. This is
 diagnostic continuity, not permission to write arbitrary workspace directories.
 
+## Interfaces
+
+This section sketches the concrete contracts Task Breakdown's Phase 1 tasks
+implement. Every type, trait, module path, and flag name below is a **proposed,
+unconfirmed sketch** for implementation to validate against the real source
+(especially `src/progress.rs`, `src/test/test_suites.rs`, and `src/config`), not
+a claim about code that exists today — see Current Evidence for what exists now.
+
+### Diagnostic record type (proposed)
+
+A new versioned record type, independent of the progress-transport and
+snapshot-report schema versions (see Identity and Record Contract for the full
+field rationale):
+
+```rust
+/// Schema version 1 of the durable diagnostic record. Persisted to the
+/// operation-owned journal; never the wire format for live progress updates.
+pub struct DiagnosticRecordV1 {
+    pub schema_version: u16, // 1
+    pub operation_id: OperationId,
+    pub operation_kind: OperationKind,        // Capture | Deployment
+    pub capture_run_id: Option<CaptureRunId>, // present for capture-kind operations
+    pub suite_id: String,
+    pub scenario_id: String,
+    pub viewport: ViewportIdentity,
+    pub execution_id: ExecutionId,
+    pub capture_role: Option<CaptureRole>,    // Reference | Test
+    pub attempt: u32,
+    pub sequence: u64,
+    pub timestamp_utc: DateTime<Utc>,
+    pub elapsed: Duration,                    // monotonic, process-local
+    pub severity: Severity,                   // Trace | Debug | Info | Warn | Error
+    pub stage: Stage,
+    pub event_name: &'static str,
+    pub message: String,                      // sanitized, human-readable
+    pub fields: BTreeMap<String, FieldValue>, // typed, allowlisted only
+    pub parent_span: Option<SpanId>,
+    pub duration: Option<Duration>,
+    pub outcome: Option<Outcome>,
+    pub error_cause: Option<SanitizedError>,
+}
+```
+
+Field names/types above are a starting proposal for Task 1.3, not a frozen
+contract; `OperationKind`, `Stage`, `Severity`, and `FieldValue` are proposed
+enums to be defined alongside it. `fields` is intentionally a typed, allowlisted
+map rather than `Debug`-formatted free text, per Logging Mechanism: Options
+Considered and Privacy and Safety.
+
+### Adapter boundary (proposed)
+
+Module ownership is an open implementation decision (new module, tentatively
+`src/diagnostics/`, versus extending `src/progress.rs` directly); whichever is
+chosen, the adapter is one-way so the progress module does not take a dependency
+on the new archive format:
+
+```rust
+/// Converts a diagnostic record into the existing typed progress protocol so
+/// current consumers (CLI renderer, desktop live view) keep working unmodified
+/// while they migrate. Implemented once by the new tracing layer; existing
+/// progress.rs event types are the output, never the input, of this trait.
+pub trait ProgressAdapter {
+    fn on_diagnostic(&self, record: &DiagnosticRecordV1);
+}
+```
+
+Task 1.4 confirms the exact trait shape (or a plain function, if a trait proves
+unnecessary) against the real `progress.rs` event enum before this is final.
+
+### CLI flags and environment precedence (proposed)
+
+Proposed surface, names to be finalized in Task 5.1 (tracked in Open Questions
+and Remaining Decisions, item 4):
+
+- `--log-level <trace|debug|info|warn|error>` and `REGRESSIFY_LOG_LEVEL`: console
+  display verbosity only.
+- `--log-verbose` as a concise/default-vs-verbose console toggle, matching
+  "Desktop and CLI Experience"'s concise/default and verbose views.
+- Precedence: CLI flag > environment variable > per-scenario config >
+  per-suite config > workspace config > built-in default. This six-level order
+  is new design work for Task 5.1, not an extension of an existing pattern: the
+  real `ResolvedConfig` cascade is a pure four-level scenario/suite/workspace/
+  defaults file-config merge with no CLI/env step at all (`src/config/mod.rs:115`),
+  matching AGENTS.md's documented cascade (`AGENTS.md:56`,
+  "Configuration resolves scenario -> suite -> workspace -> defaults."). The
+  only existing CLI/env precedence in this codebase resolves replacement-profile
+  selection through a separate, simpler three-level fallback that never touches
+  the scenario/suite/workspace cascade at all — `src/config/replacements.rs:56`,
+  whose own order is CLI arg, then the `REPLACEMENT_PROFILE` environment
+  variable, then a literal default. Task 5.1 may take that fallback's
+  CLI-then-env shape as inspiration, but combining it with the four-level
+  cascade below is new design work, not an adaptation of an already-unified
+  precedence chain.
+- These flags affect **console/UI display verbosity only**. They must never gate
+  whether the full standard timeline is archived (Confirmed Product Decisions;
+  Desktop and CLI Experience).
+
+### Configuration-cascade integration (proposed)
+
+Two different settings families, proposed to integrate differently:
+
+- **Display verbosity** (console/UI filtering) is proposed to join the existing
+  scenario -> suite -> workspace -> defaults cascade as a new optional field at
+  each level, resolved the same way other cascading settings already resolve
+  today.
+- **Archive writer behavior** (journal chunk size, disk budget, retention) is
+  proposed to be operation-level/global only — a CLI flag or environment
+  variable read at process start — not scenario-cascaded, because the durable
+  journal is operation-scoped rather than a per-scenario setting.
+
+This split is an assumption pending the storage task's design (see Assumptions);
+Task 2.1 and Task 5.1 confirm it against the real configuration loader in
+`src/config`.
+
+
 ## Capture Diagnostics
 
 Instrument shared reference/test capture paths, including successful executions.
@@ -349,7 +568,7 @@ Every meaningful stage should record start, duration/outcome, and enough safe
 context to distinguish timeout, website failure, and infrastructure failure.
 
 | Stage                 | Required diagnostic context                                                                                                                   |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | Queue and setup       | IDs, viewport, effective non-secret timeout/retry settings, queue wait, browser/page setup, and worker/runtime version.                       |
 | Navigation            | Sanitized destination identity, redirect/navigation milestones, observed response status when available, waits, and timeout cause.            |
 | State and hooks       | Restore/persist and before/ready hook stage, duration, outcome, and safe error category; never state or script contents.                      |
@@ -371,8 +590,16 @@ and sanitized export. Deployment operational logs need not be embedded in the
 public report being uploaded; that report cannot contain its own eventual upload
 completion without a second publication cycle.
 
+Deployment diagnostics reuse the same operation-owned durable journal that
+Delivery Phases' phase 2 builds for captures (see Shared Architecture: Full-Log
+Persistence and Identity and Record Contract, both already defined generically
+per *operation*, not only per capture). This is a deliberate consequence of "do
+not add a second implementation" in Shared Architecture: Producers and
+Consumers — deployment instrumentation (phase 4) depends on phase 2, not only
+phase 1 (see Delivery Phases).
+
 | Stage                      | Required diagnostic context                                                                                                                  |
-| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Preflight                  | Provider, safe target identity, selected suites/run, validation outcome, and credential presence only.                                       |
 | Snapshot and staging       | Generation/staging duration, selected dependency counts, bytes, version checks, and failing operation/artifact.                              |
 | Packaging and optimization | Applicable provider budget, before/after sizes, file counts, compression decision, and package/hash duration.                                |
@@ -396,7 +623,8 @@ tokens/JWTs, raw response bodies, or whole request/config objects.
   calls. Include severity, stage, and enough context to separate parallel jobs.
 - Offer concise/default and verbose diagnostic views. Console verbosity must not
   decide whether passed scenarios get complete archived logs. Define exact flags
-  and environment-variable precedence before adding public options.
+  and environment-variable precedence before adding public options (see
+  Interfaces for a proposed starting sketch).
 - Desktop Activity receives structured live records with bounded, nonblocking
   polling. Keep draining legacy child stdout/stderr even when buffers are full;
   label unattributed fallback output instead of guessing scenario ownership.
@@ -416,12 +644,14 @@ tokens/JWTs, raw response bodies, or whole request/config objects.
   the missing diagnostics visible. Disable unavailable exports rather than
   presenting a shortened download as complete.
 
+
 ## Snapshot Frontend and Publication
 
 - Extend synchronized Rust/TypeScript report contracts with optional execution-log
   references and explicit availability/completeness metadata. Keep old reports
   readable; verify whether an additive version-2 extension is sufficient before
-  choosing a schema bump. Do not overload the existing `error` string.
+  choosing a schema bump (flagged as an explicit assumption to validate — see
+  Assumptions). Do not overload the existing `error` string.
 - Publish only sanitized standard capture timelines as explicit report assets,
   including passed captures. Prefer separately fetched, bounded JSON chunks under
   the existing versioned data namespace rather than inflating every suite JSON.
@@ -433,7 +663,9 @@ tokens/JWTs, raw response bodies, or whole request/config objects.
   partial/legacy states. Share timelines across images from one execution.
 - Load logs on demand. Render messages as text, never HTML/Markdown or executable
   data. Keep desktop/mobile layout, keyboard navigation, focus, and scrolling
-  usable with long lines and large histories.
+  usable with long lines and large histories. Give the Capture Log view a
+  stable, deep-linkable URL per capture/execution that survives a full page
+  refresh without losing or misattributing the selected log.
 - Add log dependencies to snapshot inventory, content-version hashing, deployment
   staging, exact package manifests, cleanup, and suite rename/delete handling.
   Preserve source archives when refreshing published assets.
@@ -465,25 +697,252 @@ Published standard logs must never depend on best-effort regex redaction alone.
 
 ## Delivery Phases
 
-| Phase                         | Scope                                                                                                                                                     | Exit Criterion                                                                                                                     |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Contract and foundations   | Audit direct prints and existing event producers; define safe fields, identities, levels, archive states, and subscriber ownership; add tracing adapters. | CLI and worker emit equivalent attributed records without duplicate output or changed result semantics.                            |
-| 2. Durable capture history    | Incremental journal, finalization/recovery, capture-manifest linkage, reference/test provenance, and migration behavior.                                  | Passed/failed concurrent captures reload complete logs after live-buffer eviction; interrupted/write-failed archives are explicit. |
-| 3. Capture instrumentation    | Stage/action/wait/artifact diagnostics in shared capture paths.                                                                                           | Synthetic success and targeted failure cases identify the failing stage and cause without sensitive payloads.                      |
-| 4. Deployment instrumentation | Shared/provider-specific stages, HTTP diagnostics, retries, heartbeat, completion, and cleanup.                                                           | Mocked providers expose actionable failure timelines and never leak injected test secrets.                                         |
-| 5. Desktop and CLI views      | Live filtering, archive-backed Results/Activity, history reload, sanitized export, and verbosity controls.                                                | Both entry points work independently; desktop remains responsive and cancellation drains/flushing complete.                        |
-| 6. Frontend and packaging     | Report schema, lazy log assets/viewer, versioning, selected-only packaging, and legacy support.                                                           | Generated and deployed-fixture reports expose complete passed/failed capture logs on desktop and mobile.                           |
-| 7. Hardening and docs         | Concurrency, crash recovery, limits, compatibility, performance, and user/developer documentation.                                                        | Affected gates pass; documentation explains completeness, privacy, retention, and diagnostic workflow.                             |
+| Phase                                                        | Scope                                                                                                                                                                                                 | Exit Criterion                                                                                                                      |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Contract and foundations                                   | Audit direct prints and existing event producers; define safe fields, identities, levels, archive states, and subscriber ownership; add tracing adapters.                                           | CLI and worker emit equivalent attributed records without duplicate output or changed result semantics.                             |
+| 2. Durable operation history (captures **and** deployments)   | Operation-generic incremental journal, finalization/recovery, capture-manifest linkage, reference/test provenance, and migration behavior — shared by every operation kind, not capture-exclusive.  | Passed/failed concurrent captures reload complete logs after live-buffer eviction; interrupted/write-failed archives are explicit.  |
+| 3. Capture instrumentation                                     | Stage/action/wait/artifact diagnostics in shared capture paths, built on phase 2's journal.                                                                                                          | Synthetic success and targeted failure cases identify the failing stage and cause without sensitive payloads.                       |
+| 4. Deployment instrumentation                                  | Shared/provider-specific stages, HTTP diagnostics, retries, heartbeat, completion, and cleanup, reusing phase 2's journal (no second storage implementation).                                       | Mocked providers expose actionable failure timelines and never leak injected test secrets.                                          |
+| 5. Desktop and CLI views                                       | Live filtering, archive-backed Results/Activity, history reload, sanitized export, and verbosity controls.                                                                                          | Both entry points work independently; desktop remains responsive and cancellation drains/flushing complete.                         |
+| 6. Frontend and packaging                                      | Report schema, lazy log assets/viewer, versioning, selected-only packaging, and legacy support.                                                                                                      | Generated and deployed-fixture reports expose complete passed/failed capture logs on desktop and mobile.                            |
+| 7. Hardening and docs                                          | Concurrency, crash recovery, limits, compatibility, performance, and user/developer documentation.                                                                                                   | Affected gates pass; documentation explains completeness, privacy, retention, and diagnostic workflow.                              |
 
-Dependencies: phase 1 precedes storage and instrumentation; phase 2 precedes
-archive-backed client/report work. Deployment instrumentation can proceed after
-phase 1 without waiting for the frontend. Define task-level ownership and estimates
-later; these phases are not a pre-expanded implementation task list.
+Dependencies: phase 1 precedes every later phase. Phase 2 precedes
+archive-backed client/report work (phases 5 and 6) **and precedes phase 4**:
+deployment instrumentation reuses the same operation-generic durable-journal
+mechanism phase 2 builds (see Identity and Record Contract, which already
+describes the archive generically per *operation*, and Deployment Diagnostics).
+Phase 4 therefore depends on phases 1 **and** 2, not phase 1 alone — correcting
+an earlier version of this table that said phase 4 could proceed after phase 1
+"without waiting for the frontend," which conflated "does not depend on the
+frontend" with "does not depend on phase 2." It does not depend on the frontend
+(phase 6), but it does depend on phase 2. See Task Breakdown for the concrete,
+independently buildable tasks within each phase, including per-task
+dependencies.
+
+
+## Task Breakdown
+
+Each phase below decomposes into independently buildable tasks. Every task names
+its concrete deliverable and an acceptance criterion an implementer or reviewer
+can check; exact struct/module names follow the proposed sketches in Interfaces
+and remain subject to change during implementation. Dependencies reference task
+IDs within this section, not just phase numbers.
+
+### Phase 1 — Contract and Foundations
+
+- **Task 1.1 — Audit existing output and event producers.** Enumerate every
+  direct `eprintln!`/`println!` call site in engine code (e.g. `src/test/`,
+  `src/desktop/deployment.rs`) and every existing `progress.rs` event variant;
+  classify each as "keep as presentation", "replace with tracing", or "needs a
+  new event". *Acceptance:* a written inventory covering every call site found
+  by a repository-wide search, reviewed against Capture Diagnostics' and
+  Deployment Diagnostics' required-context tables. *Depends on:* none.
+- **Task 1.2 — Add `tracing`/`tracing-subscriber` as direct engine
+  dependencies.** Add them to the shared engine's `Cargo.toml`, available
+  without `desktop`/`gui` features. *Acceptance:* `cargo build` (default
+  features) succeeds and the crate compiles with these types available outside
+  `desktop`/`gui` gates. *Depends on:* none.
+- **Task 1.3 — Define the versioned diagnostic record and its enums.**
+  Implement `DiagnosticRecordV1` and the `OperationKind`/`Stage`/`Severity`/
+  `FieldValue` enums from Interfaces. *Acceptance:* the new module compiles; a
+  unit test constructs a record for a synthetic event and round-trips its
+  (de)serialization. *Depends on:* Task 1.2.
+- **Task 1.4 — Implement the progress-protocol adapter.** Build the one-way
+  adapter from Interfaces so existing `progress.rs` consumers are unaffected.
+  *Acceptance:* `cargo test --lib progress::tests` passes unchanged, plus a new
+  test proving the CLI renderer and desktop live view receive the same typed
+  events as before when the new tracing layer is installed. *Depends on:* Task
+  1.3.
+- **Task 1.5 — Install the subscriber at CLI and worker entry points only.**
+  Wire installation into `src/main.rs` and `src/desktop/worker.rs`, not into
+  library functions or per-scenario code. *Acceptance:* both entry points call
+  the install function exactly once; a test or documented manual run shows no
+  duplicate output and no panic on repeated test-harness invocations. *Depends
+  on:* Task 1.4.
+
+Phase 1 exit criterion (unchanged): CLI and worker emit equivalent attributed
+records without duplicate output or changed result semantics.
+
+### Phase 2 — Durable Operation History (Captures and Deployments)
+
+- **Task 2.1 — Operation-owned incremental journal writer.** Streaming or
+  segmented storage with bounded memory, per Full-Log Persistence.
+  *Acceptance:* a synthetic test writes over 10,000 records across multiple
+  segments; a reader reconstructs the full ordered sequence; peak memory stays
+  within a documented bound. *Depends on:* Task 1.3.
+- **Task 2.2 — Atomic index/manifest finalization.** *Acceptance:* a test that
+  interrupts the writer mid-stream still leaves a readable archive explicitly
+  marked partial/interrupted, never a silently truncated archive marked
+  complete. *Depends on:* Task 2.1.
+- **Task 2.3 — Operation-kind linkage for captures and deployments.** The
+  journal reader/writer is operation-generic, not capture-exclusive (resolves
+  the phase 2/phase 4 dependency fixed in Delivery Phases). *Acceptance:* one
+  shared test helper exercises both a capture-kind and a deployment-kind
+  operation through the same reader/writer code path. *Depends on:* Task 2.1.
+- **Task 2.4 — Legacy/migration behavior.** *Acceptance:* loading a pre-revamp
+  report or saved run with no durable archive shows an explicit "legacy, log
+  not available" state, never an error or a fabricated empty-but-complete log.
+  *Depends on:* Task 2.2.
+- **Task 2.5 — Bootstrap handoff with retained source and failure fallback.**
+  Regression-tests the Istari finding "Bootstrap handoff can discard recovery
+  data". *Acceptance:* a test that forces the handoff copy/open to fail proves
+  the original bootstrap log is retained, a visible warning is raised, and no
+  successful-copy event is emitted on that path. *Depends on:* Task 2.1.
+- **Task 2.6 — Writer-health signal and kill-switch.** Surfaces degraded-writer
+  warnings outside the failing writer (Full-Log Persistence) and implements the
+  last-resort disable-archive-writing fallback from Risks and Rollback (risk
+  R3). *Acceptance:* a forced disk-full/write-failure test shows a surfaced
+  warning, preserved capture results and exit status, and a documented
+  environment-variable/config switch that disables durable-archive writing
+  while keeping the existing bounded live buffer. *Depends on:* Task 2.1.
+
+Phase 2 exit criterion (unchanged): passed/failed concurrent captures reload
+complete logs after live-buffer eviction; interrupted/write-failed archives are
+explicit.
+
+### Phase 3 — Capture Instrumentation
+
+- **Task 3.1 — Queue/setup stage.** IDs, viewport, timeout/retry settings,
+  browser/page setup, per Capture Diagnostics. *Acceptance:* synthetic passed
+  and timed-out captures both produce a queue/setup record with the listed
+  fields. *Depends on:* Task 1.5, Task 2.3.
+- **Task 3.2 — Navigation stage.** Sanitized destination identity, redirect
+  milestones, response status, timeout cause. *Acceptance:* a
+  navigation-timeout fixture identifies navigation as the failing stage with a
+  timeout cause and no raw URL credentials present. *Depends on:* Task 3.1.
+- **Task 3.3 — State/hooks, actions/frames, and screenshot-settling stages.**
+  *Acceptance:* a fixture with a failing action records the action index/type
+  and the last unmet actionability condition; no script contents or hook bodies
+  appear in the record. *Depends on:* Task 3.1.
+- **Task 3.4 — Capture/artifacts and finish stages.** Link comparison outcome
+  without conflating it with capture failure. *Acceptance:* a passed capture
+  with a visual mismatch shows capture outcome = success and comparison outcome
+  = mismatch as distinct fields. *Depends on:* Task 3.1.
+
+Phase 3 exit criterion (unchanged): synthetic success and targeted failure cases
+identify the failing stage and cause without sensitive payloads.
+
+
+### Phase 4 — Deployment Instrumentation
+
+- **Task 4.1 — Reuse the phase 2 journal for deployment-kind operations.** No
+  second storage implementation (see the Delivery Phases dependency fix and
+  Deployment Diagnostics). *Acceptance:* a mocked deployment run produces a
+  journal via the same reader/writer introduced in Task 2.1/2.3, verified by
+  the shared test helper from Task 2.3. *Depends on:* Task 2.3.
+- **Task 4.2 — Preflight, snapshot/staging, and packaging/optimization
+  stages.** *Acceptance:* a mocked provider run with a staging failure shows
+  the failing stage and artifact identity, without leaking credentials.
+  *Depends on:* Task 4.1.
+- **Task 4.3 — API/upload, retry/polling, and completion/cleanup stages per
+  provider (Azure, Netlify, Cloudflare).** *Acceptance:* for each provider, a
+  mocked transient-error-then-success run shows retry attempts, backoff
+  reason, and a final confirmed-publication record; no secrets, tokens, or
+  signed URLs appear in captured output. *Depends on:* Task 4.1.
+- **Task 4.4 — Cancellation and partial-publication handling.** *Acceptance:* a
+  cancelled-mid-upload mock run distinguishes local cancellation from
+  unknown/unconfirmed remote state in the record. *Depends on:* Task 4.3.
+
+Phase 4 exit criterion (unchanged): mocked providers expose actionable failure
+timelines and never leak injected test secrets. Phase 4 depends on phases 1 and
+2 (see Delivery Phases); it does not depend on phase 6 (frontend).
+
+### Phase 5 — Desktop and CLI Views
+
+- **Task 5.1 — CLI verbosity flags and environment precedence.** Finalizes the
+  proposed names/precedence from Interfaces. *Acceptance:* a flag/environment
+  matrix test proves the precedence order, and proves archive completeness is
+  unaffected by verbosity level in every combination tested. *Depends on:* Task
+  1.5.
+- **Task 5.2 — Evolve the scoped log screen to load archived records.**
+  *Acceptance:* reopening a workspace after restart shows the full archived
+  timeline for a previously completed run, replacing the omitted-live-history
+  notice with a "loaded from archive" state. *Depends on:* Task 2.4.
+- **Task 5.3 — Desktop Results Capture Log view.** Grouped by
+  execution/viewport/attempt; reference and test independently selectable.
+  *Acceptance:* a fixture run with two viewports, two attempts, and both
+  reference and test captures shows each combination independently selectable
+  with deduplicated shared history. *Depends on:* Task 5.2.
+- **Task 5.4 — Filtering/search/follow-tail/copy/download.** In both Activity
+  (live) and Results (archived) views. *Acceptance:* a UI test or documented
+  manual script exercises filter-by-severity/stage, search, and
+  download-sanitized-log without blocking the UI on a large synthetic log.
+  *Depends on:* Task 5.3.
+
+Phase 5 exit criterion (unchanged): both entry points work independently;
+desktop remains responsive and cancellation drains/flushing complete.
+
+### Phase 6 — Frontend and Packaging
+
+- **Task 6.1 — Extend report schema (Rust and `frontend/src/data/report.ts`).**
+  Optional execution-log reference plus availability/completeness metadata.
+  *Acceptance:* a fixture report round-trips the additive version-2 fields
+  through both the Rust generator and the existing TypeScript types without
+  breaking a version-1 fixture report (validates the Snapshot Frontend
+  assumption that an additive extension is sufficient; see Assumptions).
+  *Depends on:* Task 1.3.
+- **Task 6.2 — Lazy-loaded log viewer component.** Including partial/legacy
+  states, deep-linkable capture selection, and a responsive desktop/mobile
+  layout (see Snapshot Frontend and Publication). *Acceptance:* (a) a browser
+  test shows the bounded JSON chunk loading only when the Capture Log view
+  opens, not on initial suite load; (b) a browser test opens a specific
+  capture's log view via its deep-linked URL and separately reloads (full
+  page refresh) that same URL, with both cases showing that capture's log
+  rather than a different or missing one; (c) a browser test at a mobile
+  viewport width and at a desktop viewport width both show the log view's
+  filter/search controls and log content usable without clipped or
+  overlapping elements. *Depends on:* Task 6.1.
+- **Task 6.3 — Snapshot inventory/content-hash/staging/packaging updates.**
+  Include only logs referenced by selected captures/suites. *Acceptance:* a
+  deployed-fixture upload includes only referenced logs, verified against a
+  package-manifest test; a budget-exceeded case produces an actionable
+  packaging failure instead of silent truncation. *Depends on:* Task 6.1.
+- **Task 6.4 — Suite rename/delete and reference-promotion provenance for
+  logs.** *Acceptance:* renaming/deleting a suite updates associated log assets
+  per existing inventory rules without deleting still-referenced history;
+  promoting a reference does not fabricate a new log for the promoted capture.
+  *Depends on:* Task 6.3.
+
+Phase 6 exit criterion (unchanged): generated and deployed-fixture reports
+expose complete passed/failed capture logs on desktop and mobile.
+
+### Phase 7 — Hardening and Docs
+
+- **Task 7.1 — Concurrency and crash-recovery regression suite.** One
+  automated test per Verification Strategy scenario that exercises engine-level
+  concurrency, crash-recovery, or failure-injection behavior — the scenarios
+  reachable from this task's own dependencies (Tasks 2.5, 2.6, 3.1–3.4, and
+  4.1–4.4): interleaved/concurrent captures, bootstrap/writer failure injection,
+  capture stage-level failure cases, and deployment provider-mock failure/
+  cancellation cases. *Acceptance:* every such engine-level scenario listed in
+  Verification Strategy has a corresponding passing automated test on the
+  target platforms. This task does not cover the Verification Strategy
+  scenarios that depend on desktop/CLI views or the frontend — "reload desktop
+  history without rerunning", lazy loading, filtering/search, downloads,
+  refresh/deep links, and desktop/mobile layouts — which are proven instead by
+  Task 5.2's, Task 5.4's, and Task 6.2's own acceptance criteria. *Depends on:*
+  Tasks 2.5, 2.6, 3.1–3.4, 4.1–4.4.
+- **Task 7.2 — Performance/overhead benchmark and budget.** Resolves Risks and
+  Rollback risk R2. *Acceptance:* a documented benchmark compares capture
+  wall-time and disk I/O with instrumentation on vs. off, against the budget
+  agreed in Definition of Done. *Depends on:* Tasks 3.1–3.4.
+- **Task 7.3 — Documentation updates.** `docs/commands.md`, `docs/desktop.md`,
+  `frontend/README.md`, and affected task skills. *Acceptance:* each doc is
+  updated and cross-linked; a reviewer can find the new flags/behavior from
+  existing docs entry points. *Depends on:* Tasks 5.1, 6.1.
+
+Phase 7 exit criterion (unchanged): affected gates pass; documentation explains
+completeness, privacy, retention, and diagnostic workflow.
+
 
 ## Verification Strategy
 
 Extend existing test modules and fixtures. Start with focused regressions, then
 run the affected feature gates; default CLI tests alone do not cover the GUI.
+Each task in Task Breakdown names its own acceptance test; the scenarios below
+are the cross-task verification strategy those task-level tests draw from and
+extend.
 
 - Interleave passed/failed scenarios across suites, viewports, attempts, and
   multiple captures. Assert identity, ordering, complete history, and no duplicate
@@ -541,22 +1000,128 @@ In `frontend`, run `bun run lint`, `bun run test`, `bun run build`, and
 GUI/worker/browser gates require the prerequisites in the relevant task skills.
 Build embedded assets from frontend source, never by editing generated files.
 
-## Decisions to Finalize Before Task Breakdown
+## Risks and Rollback
 
-1. Standard capture event inventory and safe field allowlist: what is guaranteed
-  within the confirmed Regressify-only execution timeline?
-1. Durable layout, chunk sizes, resource budgets, and a bounded writer/health
-  protocol implementing warning-only failures without automatic retention cleanup.
-1. Capture-manifest/progress/report schema migration and provenance for promoted
-   references, interrupted jobs, and failures before an image exists.
-1. CLI verbosity/filter option names, environment precedence, and desktop export
-   behavior, without coupling either to mandatory archive collection.
-1. Whether report-log publication needs additional workspace policy beyond the
-   sanitized default. Any exclusion must be explicit in the UI and must not
-   silently weaken the passed/failed full-log requirement.
+| # | Risk | Likelihood | Impact | Mitigation | Rollback trigger / path |
+| - | ---- | ---------- | ------ | ---------- | ------------------------ |
+| R1 | Unbounded disk growth: every passed capture now writes a full, unpruned durable journal ("No automatic operational-log pruning" plus full logs for passing captures too). | High | Medium–High: disk exhaustion over time on CI agents and desktop users with large suites. | Bounded per-operation chunk size and disk budget (Task 2.1); cleanup still respects reference provenance (Full-Log Persistence). Monitor disk usage during Phase 7 hardening. | If disk-usage incidents recur after shipping, add an opt-in time- or size-based retention cap per workspace as a follow-up (explicitly out of scope for v1 — see Non-Goals); until then, use the Task 2.6 kill-switch (R3) as an interim mitigation. |
+| R2 | Per-capture instrumentation performance/IO overhead is unbudgeted: every stage in Capture Diagnostics now writes always-archived events, even for passing captures. | Medium | Medium: slower captures, especially at high concurrency or constrained CI. | Task 7.2 benchmarks wall-time/IO overhead with instrumentation on vs. off against an explicit budget (see Definition of Done) before Phase 7 exit. | If the benchmark exceeds the agreed budget, reduce default-archived field verbosity or batch-flush more aggressively; if still exceeded, gate newly added stage-level instrumentation behind the Task 2.6 kill-switch per-environment rather than reverting the whole feature. |
+| R3 | No described fallback/kill-switch if the pipeline misbehaves in production (e.g. a disk-full desktop user), beyond the generic warning-only failure policy. | Low–Medium | High if archive writing itself destabilizes a run (would violate the warning-only decision in practice even if not in intent). | The warning-only policy (Confirmed Product Decisions) is a partial mitigation by design. Task 2.6 adds an explicit environment-variable/config switch to disable durable-archive writing entirely, keeping only the existing bounded live buffer, as a last resort. | Repeated user reports of disk-full/hangs correlated with archive writing flips the kill-switch default to off until root-caused; document the switch in Task 7.3. |
+| R4 | Schema/version drift between the new diagnostic record, `progress.rs`, and report schemas could silently desynchronize older desktop builds or cached frontend assets. | Medium | Medium: a consumer misreads or silently drops newer records. | Explicit `schema_version` field (Interfaces); additive-only evolution proven by Task 6.1's round-trip fixture test. | A version mismatch detected at load time falls back to an explicit "legacy/unavailable" state by construction, never a best-effort parse; if that is insufficient, revisit the additive-extension assumption (see Assumptions) before a schema bump. |
+| R5 | Sanitization/redaction gaps leak secrets into durable or publicly exported archives — the Istari review explicitly found redaction is "a backstop, not a public-export policy." | Medium | High: credential/secret leakage in a published report. | Allowlisted structured fields only, never arbitrary `Debug` dumps (Logging Mechanism: Options Considered; Privacy and Safety); dedicated secret-injection tests in Verification Strategy must pass before Phase 6/7 exit. | Any confirmed leak found in review or testing blocks promotion of the public-export path (Phase 6) until fixed — this is a hard Definition of Done gate, not a warning-only diagnostic failure. |
+
+Risks are owned by the task(s) noted in Mitigation and re-assessed at the
+corresponding phase's exit criterion (Delivery Phases) and at the overall
+Definition of Done.
+
+
+## Definition of Done
+
+The logging revamp initiative is complete when all of the following hold, in
+addition to each phase's own Exit Criterion in Delivery Phases:
+
+1. Every item in **Open Questions and Remaining Decisions** is resolved and
+   reflected in the shipped schema/config — no outstanding placeholder field
+   names or flag names.
+2. Every phase's Exit Criterion in **Delivery Phases** passes on the affected
+   feature gates (default CLI slice and, where applicable, `--features
+   desktop`/`gui`), per **Verification Strategy**.
+3. The Task 7.2 performance benchmark shows per-capture instrumentation
+   overhead within an agreed budget. Exact numeric threshold is not yet set —
+   this is an open item; see Open Questions and Remaining Decisions.
+4. Every **Risks and Rollback** item has its stated mitigation implemented (not
+   merely planned), or an explicit, documented decision to accept the residual
+   risk instead.
+5. Legacy reports and previously saved desktop Activity remain readable:
+   opening a pre-revamp report or run shows an explicit legacy/log-not-available
+   state, never an error or a fabricated log.
+6. Passed and failed captures, including reference captures, both expose a
+   complete standard-timeline log in desktop Results and the snapshot frontend,
+   verified by the interleaved passed/failed check described in Goals and
+   Current Evidence and exercised throughout Verification Strategy.
+7. No synthetic secret injected by Verification Strategy's redaction tests
+   appears in any sink: terminal, desktop UI, durable archive, or published
+   report assets.
+8. Documentation (`docs/commands.md`, `docs/desktop.md`, `frontend/README.md`,
+   and affected task skills) is updated to describe the new flags, views, and
+   completeness/privacy guarantees (Task 7.3).
+9. Exit status and exit code semantics are unchanged for existing passing and
+   failing runs: a diagnostic-only failure never flips a passed capture to
+   failed or changes the CLI exit code, verified by a dedicated regression
+   test (Confirmed Product Decisions).
+
+## Open Questions and Remaining Decisions
+
+Item 5 below (workspace log-exclusion policy) is resolved this round — see
+Confirmed Product Decisions. The remaining items are engineering decisions owned
+by a specific task, not open product questions; none blocks starting
+implementation, since each is scoped to the task that resolves it.
+
+1. **Standard capture event inventory and safe field allowlist** — what is
+   guaranteed within the confirmed Regressify-only execution timeline? Owned by
+   Task 1.1 (audit) and Task 1.3 (record type); Capture Diagnostics and
+   Deployment Diagnostics already constrain the answer per-stage.
+2. **Durable layout, chunk sizes, resource budgets, and a bounded writer/health
+   protocol** implementing warning-only failures without automatic retention
+   cleanup. Owned by Task 2.1 and Task 2.6.
+3. **Capture-manifest/progress/report schema migration and provenance** for
+   promoted references, interrupted jobs, and failures before an image exists.
+   Owned by Task 2.4, Task 2.3, and Task 6.1.
+4. **CLI verbosity/filter option names, environment precedence, and desktop
+   export behavior**, without coupling either to mandatory archive collection.
+   Owned by Task 5.1; Interfaces sketches a proposed starting point.
+5. ~~Whether report-log publication needs additional workspace policy beyond the
+   sanitized default.~~ **Resolved:** no additional policy in this initiative —
+   see Confirmed Product Decisions.
+
+One numeric item remains genuinely open rather than task-owned: the exact
+performance-overhead budget threshold in Definition of Done item 3. It is not
+blocking implementation start (phases 1–6 can proceed and be measured against
+whatever threshold is later agreed), but it must be set before Phase 7 can be
+declared complete. Proposed default, pending reviewer/product confirmation: no
+more than 10% added wall-clock time per capture versus an uninstrumented
+baseline, measured by Task 7.2. Revise this number if Task 7.2's benchmark shows
+it is impractical.
 
 Implementation should update [command docs](../commands.md),
 [desktop docs](../desktop.md), [frontend guidance](../../frontend/README.md), and
 the affected task skills when contracts change. Update known issues when concrete
 gaps are confirmed or resolved; this proposal itself does not change those
 contracts.
+
+## Assumptions
+
+Each assumption below names what would make it wrong and where that gets
+re-checked. None of these are yet validated; they are the load-bearing beliefs
+the rest of this plan depends on.
+
+- **The working hypothesis itself is unproven:** extending the existing
+  structured event pipeline with durable, capture-linked diagnostics will solve
+  the main visibility gap (see Context and Motivation). *Re-check:* after the
+  Phase 1–2 prototype, against real previously-hard-to-diagnose failure cases
+  — the two-interleaved-scenario check described at the end of Current
+  Evidence.
+- **An additive version-2 report-schema extension is sufficient**; no breaking
+  version bump is needed (Snapshot Frontend and Publication). *Re-check:* Task
+  6.1's round-trip fixture test. If the additive approach cannot express
+  completeness/availability metadata cleanly, a version bump may be required
+  (Risks and Rollback, R4).
+- **Desktop/CI disk space and filesystem latency are not meaningfully
+  constrained** for per-capture durable journals (Full-Log Persistence; Risks
+  and Rollback R1). *Re-check:* the Task 7.2 performance benchmark and real
+  CI/desktop disk quotas.
+- **`tracing`/`tracing-subscriber` can be adopted without conflicting with
+  existing dependency constraints** — Current Evidence confirms neither is
+  currently a direct dependency. *Re-check:* Task 1.2.
+- **The existing scenario -> suite -> workspace -> defaults configuration
+  cascade can be extended with a new display-verbosity field without a breaking
+  config migration** (Interfaces). *Re-check:* Task 5.1, against the real
+  `src/config` loader.
+- **Allowlisted structured fields plus sanitized error chains are sufficient to
+  make published logs safe by construction**, without a separate manual review
+  step per release (Privacy and Safety; Risks and Rollback R5). *Re-check:* the
+  Phase 7 secret-injection tests in Verification Strategy.
+- **No additional per-workspace log-exclusion policy is needed** beyond the
+  sanitized-and-always-published default. *Re-check:* if a concrete compliance
+  requirement surfaces after shipping (resolved this round as a Confirmed
+  Product Decision; see Non-Goals).

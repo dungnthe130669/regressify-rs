@@ -1,0 +1,15 @@
+{
+  "name": "regressify-cli",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "ver": "bun ver.ts",
+    "sync": "git add .istari -f"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}

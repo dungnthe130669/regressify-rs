@@ -8,6 +8,7 @@
 bitmaps_test/
 html_report/
 __pycache__/
+node_modules/
 
 # Istari local state (run logs + plan-review artifacts)
 .istari/
