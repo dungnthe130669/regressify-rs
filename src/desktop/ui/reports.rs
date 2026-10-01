@@ -14,6 +14,8 @@ use crate::desktop::results::{
 use gpui_kit::component::hover_card::HoverCard;
 use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
 
+mod log;
+
 const ZOOM_LEVELS: [f32; 17] = [
     0.25,
     1. / 3.,
@@ -303,6 +305,7 @@ impl Render for PointerLayer {
 }
 
 pub(super) struct ResultsPanel {
+    capture_log: log::CaptureLogView,
     root: Option<PathBuf>,
     catalog: Catalog,
     suites: Vec<crate::desktop::workspace::SuiteSummary>,
@@ -601,6 +604,7 @@ impl ResultsPanel {
             })
         });
         Self {
+            capture_log: log::CaptureLogView::new(window, cx),
             root: None,
             catalog: Catalog::default(),
             suites: Vec::new(),
@@ -640,6 +644,11 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_log.generation = self.capture_log.generation.wrapping_add(1);
+        self.capture_log.page = None;
+        self.capture_log.editor.update(cx, |state, cx| {
+            state.set_value("Loading capture log...", window, cx)
+        });
         let requested_run = self.preferred_run.clone();
         let requested_reports = self.preferred_reports.clone();
         let previous = self
@@ -855,6 +864,10 @@ impl ResultsPanel {
                 .scroll_to_item(position, gpui_kit::ScrollStrategy::Nearest);
         }
         self.capture = Some(capture);
+        if self.capture_log.active {
+            self.capture_log.query.offset = 0;
+            self.load_capture_log(window, cx);
+        }
         self.image_loading = true;
         self.generation += 1;
         let generation = self.generation;
@@ -1905,6 +1918,9 @@ impl ResultsPanel {
     }
 
     fn render_comparison(&self, cx: &mut Context<Self>) -> AnyElement {
+        if self.capture_log.active && self.capture.is_some() && self.selected_report().is_some() {
+            return self.render_capture_log(cx);
+        }
         let view = self.preview_views[self.image_mode];
         let test = self.selected_report().and_then(|report| {
             self.capture
@@ -1992,6 +2008,14 @@ impl ResultsPanel {
                     )
                     .when_some(test, |header, test| {
                         header
+                            .child(Button::new("results-show-capture-log").ghost().xsmall().icon(gpui_kit::assets::IconName::List)
+                                .tooltip("Capture Log").accessibility_label("Capture Log")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.capture_log.active = true;
+                                    this.capture_log.query.offset = 0;
+                                    this.load_capture_log(window, cx);
+                                    cx.notify();
+                                })))
                             .child(
                                 Button::new("copy-capture-details")
                                     .ghost()

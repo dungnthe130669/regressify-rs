@@ -1,7 +1,11 @@
 # Results Review
 
-Verified: 2026-09-30
+Verified: 2026-10-01
 
+- Native fixtures calling `ResultsPanel::show_run` directly must first supply
+  discovered suites through `set_suites`. A report can load into the catalog but
+  remain unselectable without its source-suite match. The `results_capture_log_view`
+  native regression verifies independent reference/test archive selection.
 - Suite `displayName` is independent of file/output identity. The
   [workspace model](../../src/desktop/workspace.rs) stages reference/history/site
   changes across known output roots for rename/delete and label saves. Explicit

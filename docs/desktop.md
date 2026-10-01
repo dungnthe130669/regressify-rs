@@ -1595,6 +1595,12 @@ be reconstructed from reports and are not fabricated.
 
 ## Reviewing Results
 
+The Capture Log icon opens the selected capture's archived timeline without
+leaving Results. Reference and Test select their original executions separately;
+the heading shows viewport dimensions and attempt when available. Multiple images
+from one execution share its history. Use Back to comparison to return to the
+same image and pass/fail result. Legacy and unavailable logs remain explicit.
+
 Results uses one left navigator with Test suites above Captures and one detail
 area on the right. Only the active suite's captures are shown. A suite without a
 report shows an empty capture list, never another suite's results. The report

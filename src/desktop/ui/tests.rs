@@ -8,6 +8,84 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn results_capture_log_view_selects_reference_and_test_without_changing_result(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let suite_id = cx.update(|cx| view.read(cx).session.suites[0].output_id.clone());
+    let (request, _, reference) = crate::desktop::logs::tests::fixture(directory.path(), 3);
+    crate::desktop::logs::tests::fixture(directory.path(), 7);
+    let output = request.options.output_directory(directory.path());
+    let suite = output.join(&suite_id);
+    std::fs::rename(output.join("suite"), &suite).unwrap();
+    let reference_image = suite.join("bitmaps_reference/page__FINAL.png");
+    std::fs::create_dir_all(reference_image.parent().unwrap()).unwrap();
+    let image = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    std::fs::write(&reference_image, &image).unwrap();
+    std::fs::write(suite.join("bitmaps_test/run/page__FINAL.png"), &image).unwrap();
+    crate::test::capture::write_capture_log(&output, &reference_image, &reference).unwrap();
+    crate::compare::report_gen::generate_comparison_report(&suite, &suite_id, "run", 0.0, 1)
+        .unwrap();
+    let catalog = crate::desktop::results::Catalog::load_selected(
+        &output,
+        crate::desktop::results::ReportSelection::Run("run"),
+    )
+    .unwrap();
+    assert_eq!(catalog.reports.len(), 1, "{:?}", catalog.warnings);
+    assert_eq!(catalog.reports[0].report.tests.len(), 1);
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 2;
+            let suites = this.session.suites.clone();
+            this.results.update(cx, |panel, cx| {
+                panel.set_suites(suites);
+                panel.set_visible(true, cx);
+                panel.show_run(output, "run".into(), window, cx);
+            });
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("results-show-capture-log")
+            .is_some_and(|element| element.visible())
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("results-show-capture-log", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .results
+            .read(cx)
+            .capture_log_text(cx)
+            .contains("#7]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("results-log-reference", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        let text = view.read(cx).results.read(cx).capture_log_text(cx);
+        text.contains("#3]") && !text.contains("#7]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("results-capture-log-view").visible());
+        window.click("results-log-back", cx);
+        window.render_frame(cx);
+        assert!(window.find("comparison-view").visible());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn run_log_loads_archive_after_restart(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (request, jobs, _) = crate::desktop::logs::tests::fixture(directory.path(), 501);

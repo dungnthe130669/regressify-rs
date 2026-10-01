@@ -157,6 +157,10 @@ pub struct Pair {
     pub display: CaptureDisplay,
     pub reference: Option<String>,
     pub test: Option<String>,
+    #[serde(default)]
+    pub reference_log: Option<crate::test::capture::CaptureLog>,
+    #[serde(default)]
+    pub test_log: Option<crate::test::capture::CaptureLog>,
     pub diff_image: Option<String>,
     pub engine_error_msg: Option<String>,
     pub reference_url: Option<String>,
@@ -177,6 +181,19 @@ pub struct CaptureDisplay {
 }
 
 impl Pair {
+    pub fn capture_log(&self, reference: bool) -> crate::test::capture::CaptureLog {
+        (if reference {
+            &self.reference_log
+        } else {
+            &self.test_log
+        })
+        .clone()
+        .unwrap_or(crate::test::capture::CaptureLog {
+            state: crate::diagnostics::journal::ArchiveState::LegacyUnavailable,
+            archive: None,
+        })
+    }
+
     fn scenario_name(&self) -> crate::helpers::ScenarioName<'_> {
         crate::helpers::ScenarioName::captured(
             self.scenario_id.as_deref().unwrap_or_default(),
@@ -818,6 +835,78 @@ fn read_report(root: &Path, path: &Path, modified: SystemTime) -> Result<ReportE
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn capture_log_view_groups_by_execution_viewport_attempt() {
+        use crate::diagnostics::{journal::*, record::*, runtime::ArchiveReference};
+        use crate::test::capture::CaptureLog;
+        let root = tempfile::tempdir().unwrap();
+        let mut sources = Vec::new();
+        let mut combinations = Vec::new();
+        for (width, height) in [(1920, 1080), (375, 667)] {
+            for attempt in [1, 2] {
+                let metadata = OperationMetadata::new(OperationKind::Capture, None);
+                let execution = ExecutionIdentity {
+                    execution_id: ExecutionId::new(),
+                    suite_id: SafeIdentity::fingerprint("suite"),
+                    scenario_id: SafeIdentity::fingerprint("page"),
+                    viewport: ViewportIdentity {
+                        name: SafeIdentity::fingerprint(format!("{width}")),
+                        width,
+                        height,
+                    },
+                    capture_role: CaptureRole::Test,
+                    attempt,
+                };
+                let mut writer =
+                    JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                        .unwrap();
+                let mut record = DiagnosticRecordV1::new(
+                    metadata.operation_id.clone(),
+                    OperationKind::Capture,
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Started,
+                );
+                record.execution = Some(execution.clone());
+                writer.write(&record).unwrap();
+                writer.finalize(Outcome::Success).unwrap();
+                let archive = ArchiveReference {
+                    operation_id: metadata.operation_id,
+                    execution_id: Some(execution.execution_id.clone()),
+                    state: ArchiveState::Complete,
+                    missing_records: Some(0),
+                };
+                for role in [CaptureRole::Reference, CaptureRole::Test] {
+                    let source = CaptureLog {
+                        state: ArchiveState::Complete,
+                        archive: Some(archive.clone()),
+                    };
+                    let page = crate::desktop::logs::load_page(
+                        root.path(),
+                        vec![source.clone()],
+                        &Default::default(),
+                    );
+                    let loaded = page
+                        .records
+                        .iter()
+                        .find_map(|record| record.execution.as_ref())
+                        .unwrap();
+                    assert_eq!((loaded.viewport.width, loaded.attempt), (width, attempt));
+                    combinations.push((width, attempt, role));
+                    sources.push(source);
+                }
+            }
+        }
+        assert_eq!(combinations.len(), 8);
+        let page = crate::desktop::logs::load_page(root.path(), sources, &Default::default());
+        assert_eq!(
+            page.records
+                .iter()
+                .filter(|record| record.event_name == DiagnosticEvent::Started)
+                .count(),
+            4
+        );
+    }
+
     #[test]
     fn saved_status_counts_preserve_scenario_ids_and_group_capture_steps() {
         let mut tests = Vec::new();
