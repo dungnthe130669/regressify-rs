@@ -1968,6 +1968,8 @@ mod tests {
         println!("fixture stdout");
         eprintln!("fixture stderr");
         if mode == "progress" {
+            crate::diagnostics::install::install_subscriber();
+            crate::diagnostics::install::install_subscriber();
             let path = std::env::var_os("REGRESSIFY_PROGRESS_FIXTURE").unwrap();
             crate::progress::install(Path::new(&path)).unwrap();
             for index in 0..2000 {
@@ -2017,6 +2019,21 @@ mod tests {
             .map(|line| line.text)
             .collect::<String>();
         assert_eq!(outcome, RunOutcome::Completed, "{output}");
+    }
+
+    #[test]
+    fn repeated_diagnostic_install_keeps_fixture_output_single() {
+        for _ in 0..2 {
+            let events = tempfile::NamedTempFile::new().unwrap();
+            let output = fixture("progress")
+                .env("REGRESSIFY_PROGRESS_FIXTURE", events.path())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(stderr.matches("fixture stderr").count(), 1);
+            assert_eq!(stderr.matches("Scoped fixture action").count(), 1);
+        }
     }
 
     #[test]

@@ -7,6 +7,7 @@ use regressify::{application, cli::Cli};
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    regressify::diagnostics::install::install_subscriber();
     let cli = Cli::parse();
     let pause = cli.pause;
     let pause_if_error = cli.pause_if_error;
@@ -33,5 +34,6 @@ async fn main() -> Result<()> {
         std::io::stdin().read_line(&mut line).ok();
     }
 
+    regressify::diagnostics::install::flush();
     exit(exit_code);
 }

@@ -2,6 +2,19 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Worker Snapshot Inventory Assertion (2026-10-01)
+
+- The worker integration test `filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies`
+  expects two staged images but observes five. Its count assertion does not account
+  for the generated preview dependencies described below.
+- The exact test fails identically with the new logging subscriber hooks removed
+  from the worker. The other ten non-ignored worker integration cases passed.
+  This is a pre-existing test gap, not a subscriber-induced asset change.
+- [Logging packaging Task 027](docs/plan/log-revamp-tasks/027-snapshot-log-packaging-inventory.md)
+  must assert the exact referenced dependency set, including previews and logs,
+  when extending staging inventory. Until then, report this full-gate failure
+  separately from the passing focused logging checks.
+
 ## Large-Suite Preview Performance (2026-10-01)
 
 - Confirmed: a read-only browser probe of 44 full-page captures downloaded about
