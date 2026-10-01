@@ -1,0 +1,24 @@
+# .istari.toml - istari project settings (managed by `istari init`).
+# See .istari.toml.example for every option and an explanation of each.
+# Secrets do NOT belong here - keep provider credentials in .env.local.
+[tickets]
+provider = "github"
+
+[pr]
+provider = "github"
+
+[github]
+owner = "tuyen-foundation"
+repo = "regressify-cli"
+
+[commands]
+build = "cargo build"
+test = "cargo test"
+lint = "cargo clippy --all-targets"
+
+[review]
+default_base_branch = "master"
+default_base_remote = "origin"
+
+[defaults]
+refine_rounds = 3

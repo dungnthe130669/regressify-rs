@@ -1,0 +1,293 @@
+# .istari.toml.example - sample configuration for istari.
+#
+# Copy this file to `.istari.toml` (or run `istari init`) and edit the values for
+# your project. Every section and key is OPTIONAL; an absent file uses built-in
+# defaults. Secrets do NOT belong here - put provider credentials in `.env.local`.
+#
+# Precedence (high -> low): CLI flags > environment (.env.local, ISTARI_*) >
+# .istari.toml > built-in defaults.
+# Init reruns preserve untouched settings and comments; keeping every answer
+# leaves the real file unchanged. Runtime environment overrides are never saved.
+
+# --- Ticket source -----------------------------------------------------------
+# Which system holds this project's tickets, used to resolve a bare ticket
+# number (e.g. `istari ticket-review 1234`). A kind ("jira", "github", "ado")
+# or an eligible configured [[providers]] id.
+[tickets]
+provider = "jira"
+
+# --- Pull-request source -----------------------------------------------------
+# Preferred source for a bare PR number (e.g. `istari pr-review 1234`) when the
+# git remote is ambiguous or unavailable. A kind ("github", "ado") or a
+# PR-capable configured [[providers]] id.
+[pr]
+provider = "github"
+
+# --- Jira --------------------------------------------------------------------
+[jira]
+# Default base URL, used to expand bare issue keys/numbers when JIRA_BASE_URL is
+# not set in the environment.
+base_url = "https://your-org.atlassian.net"
+# Default project key, used to expand a bare ticket number into a full key
+# (1234 -> ABC-1234).
+project = "ABC"
+# Custom-field IDs holding acceptance criteria; appended to the issue fetch and
+# rendered into the ticket context.
+acceptance_fields = ["customfield_10042"]
+
+# --- GitHub ------------------------------------------------------------------
+# Default repository coordinates, used to resolve a bare PR or issue number when
+# the workspace git remote can't be read.
+[github]
+owner = "your-org"
+repo = "your-repo"
+
+# --- Azure DevOps ------------------------------------------------------------
+# Default coordinates, used to resolve a bare PR number or work-item id when the
+# workspace git remote can't be read.
+[azure_devops]
+org = "your-org"
+project = "YourProject"
+repo = "your-repo"
+
+# --- Multiple provider instances (optional) ----------------------------------
+# Most repos need only ONE instance per provider kind - the singular [jira] /
+# [github] / [azure_devops] tables above. If several teams work this repo with
+# DIFFERENT backends or credentials, list each as a `[[providers]]` entry and
+# select it by `id` (via --provider / --ticket-provider, or [tickets]/[pr]
+# provider). A kind is configured by its singular table OR by [[providers]],
+# never both - so uncomment these only after removing the matching table above.
+# Config names ENV VARS, never secret values; put the values in `.env.local`.
+# `istari init` can select these IDs for ticket/PR defaults without modifying
+# any entry. Create, edit, rename, or delete the entries manually.
+#
+# [[providers]]
+# id = "team-a-jira"          # unique, ^[a-z][a-z0-9-]*$, not a kind alias
+# kind = "jira"               # jira | github | ado
+# base_url = "https://acme.atlassian.net"
+# project = "ABC"
+# email_env = "TEAM_A_JIRA_EMAIL"   # env var holding the account email
+# pat_env = "TEAM_A_JIRA_PAT"       # env var holding the API token
+# acceptance_fields = ["customfield_10042"]
+#
+# [[providers]]
+# id = "team-b-ado"           # no `repo` -> work-item (ticket) only, not PRs
+# kind = "ado"
+# org = "other-org"
+# project = "OtherProject"
+# pat_env = "TEAM_B_ADO_PAT"
+#
+# [[providers]]
+# id = "code"                 # `repo` present -> PR-capable
+# kind = "ado"
+# org = "your-org"
+# project = "YourProject"
+# repo = "your-repo"
+# pat_env = "CODE_ADO_PAT"
+#
+# [[providers]]
+# id = "issues"
+# kind = "github"
+# owner = "acme-issues"
+# repo = "tracker"
+# token_env = "ISSUES_GITHUB_TOKEN"
+# # use_default_chain = true  # instead of token_env, reuse GITHUB_TOKEN/GH_TOKEN
+# #                           # (at most one entry per kind may set this)
+
+# --- Run logs ----------------------------------------------------------------
+[logging]
+# Prune logs whose local date is older than this many days (default: 15).
+# Empty expired date folders are removed; other contents are kept.
+# Integer 0..65535; 0 keeps today and prunes earlier dates.
+retention_days = 15
+
+# --- Run defaults ------------------------------------------------------------
+[defaults]
+# Self-critique / revise rounds after the first valid draft (quality mode).
+# Capped at 5. Overridable per-run with --refine / --fast.
+refine_rounds = 1
+# Optional: route the cheaper cross-ticket analysis pass to a faster model.
+# Falls back to --model when unset, so synthesis keeps the strong model.
+# analysis_model = ["claude-haiku-4"]
+# Optional: reviewer model(s) for the cross-model adversarial review pass, best
+# first. By default the quality pass picks the strongest available model from the
+# OPPOSITE family to your --model author (a Claude author is audited by the best
+# OpenAI model, a GPT author by the best Claude model), routed through Copilot
+# auth - no extra API key. Set an explicit list to pin the preference (used
+# verbatim, no family steering), or an empty list ([]) to disable cross-model
+# review and use the same-model verify pass. Overridable per-run with
+# --reviewer-model / --same-model-review.
+# reviewer_model = [
+#   "gpt-6-astra",
+#   "gpt-6.1-sol",
+#   "gpt-6-sol",
+#   "gpt-5.6-sol",
+#   "gpt-6-luna",
+#   "gpt-5.6-terra",
+#   "gpt-5.6-luna",
+#   "gpt-5.5",
+#   "gpt-5.4",
+#   "gpt-5",
+#   "o3",
+#   "gpt-5-mini",
+#   "gpt-4.1",
+#   "gpt-4o"
+# ]
+# --- plan-review (multi-agent plan refinement) -------------------------------
+# Optional: architect and second-reviewer model preferences for `plan-review`.
+# Both default to built-in Claude preferences; the second reviewer can fall back
+# to the architect model. Override with --architect-model / --second-reviewer-model.
+# plan_architect_model = ["claude-opus-5.5", "claude-opus-5", "claude-opus-4.8", "claude-opus-4.6"]
+# plan_second_reviewer_model = ["claude-opus-5.5", "claude-opus-5", "claude-opus-4.8"]
+# Optional: a cheaper/faster model for the task DECOMPOSER. Decomposition turns an
+# already-settled plan into tasks, so it does not need the architect tier; the task
+# reviewers still audit the result. Falls back to the architect model. Overridable
+# with --decomposer-model.
+# plan_decomposer_model = [
+#   "gpt-5-mini"
+# ]
+# Optional: heading-paths to treat as NON-NORMATIVE (excluded from the plan's
+# convergence/removal checks, e.g. an audit-trail appendix). Each path is an array
+# of segments; a segment is a bare string (occurrence 0) or a { heading_text,
+# occurrence_index } table. Overridable with --non-normative-section.
+# plan_non_normative_sections = [["Self-adversarial review — round 1"], ["Appendix", { heading_text = "Old notes", occurrence_index = 1 }]]
+# Optional: implementation-readiness floor gating a plan-review run (scored in
+# BOTH develop and harden modes). One of "lenient", "standard" (default), or
+# "strict". A below-floor `auto` run develops the plan up and re-hardens; a
+# NotReady run is downgraded and skips the task deliverable. Overridable per-run
+# with --readiness-floor.
+# plan_readiness_floor = "standard"
+# Optional: directory for the visible, committed plan-review TASK deliverable of a
+# Ready run. Defaults to the sibling "<plan-dir>/<stem>-tasks/". Overridable with
+# --tasks-dir. (--draft-tasks-when-not-ready is intentionally per-run only.)
+# plan_tasks_dir = "docs/plan/tasks"
+# Optional: default task review to only the author and primary reviewer instead
+# of the two-phase default with an independent second reviewer. Overridable with
+# --single-phase-tasks.
+# plan_single_phase_tasks = false
+# Optional: session-rotation thresholds for a long plan-review run. Each ROLE
+# (author / decomposer / primary reviewer / second reviewer) gets its own session; past this many
+# turns OR prompt bytes, that role starts a fresh one. The typed debate ledger is
+# the authoritative memory and every prompt re-embeds it, so a rotation costs one
+# full artifact re-send and bounds the transcript. Large defaults (12 / ~400000),
+# so short runs never rotate. (The same keys bound the legacy peer path's reseed.)
+# plan_reseed_after_rounds = 12
+# plan_reseed_after_chars = 400000
+# Optional: what an UNATTENDED plan-review run (CI, no TTY, or --no-input) does when
+# it needs a decision only a human can make: "stop" (default) writes needs-input.json
+# and stops, so nothing is built on an unconfirmed premise; "assume" lets the agents
+# answer themselves, recording each question and the chosen answer in the plan's
+# Assumptions section and reporting Qualified{UnattendedAssumption}. Overridable
+# with --on-question. Interactive runs always ask.
+# plan_on_question = "stop"
+# Optional: hard ceiling on total model turns for one plan-review run. When it is hit
+# the run asks whether to spend more (continuing grants another full budget) rather
+# than silently spending on. Unset means no ceiling. Overridable with --max-turns.
+# plan_max_turns = 60
+# Optional: author-turn window for active ledger agenda items acknowledged without
+# closing progress before plan-review escalates to the human. Default 3; values
+# below 2 are clamped.
+# plan_agenda_stall_window = 3
+# Optional: default the implementation-readiness ADVERSARY pass on (QFC-6): an extra
+# reviewer turn that attacks shallow-but-present sections and emits readiness gaps.
+# It only downgrades readiness, never bypasses a gate. Overridable with
+# --readiness-adversary. Default off.
+# plan_readiness_adversary = false
+#
+# code-review:
+# Optional: author repair attempts per round when the round's patch turns a
+# configured check red. istari re-verifies right after applying a patch; a red
+# result goes back to the AUTHOR rather than spending a reviewer turn critiquing a
+# tree that does not build. Once these are spent the failure is filed as a blocking
+# regression and the round proceeds as usual. A repair costs a turn, not a round.
+# Overridable with --repair-rounds. Default 2.
+# code_repair_rounds = 2
+# Optional: how many times a code-review run may execute one of the [commands]
+# checks through the agents' own `run_check` tool. Higher than the shared default
+# (8) because this loop verifies every round; exhausting it silently returns both
+# actors to "cannot verify". Config/env only - it caps a safety ceiling, not a
+# per-invocation choice.
+# code_check_run_budget = 30
+# Optional: session-rotation thresholds for a long code-review run, exactly like
+# their plan_* counterparts above: per ROLE (author / reviewer), whichever of turns
+# or prompt bytes is hit first starts that role a fresh session. Config/env only.
+# code_reseed_after_rounds = 12
+# code_reseed_after_chars = 400000
+
+# --- Verification commands ---------------------------------------------------
+# Run by `pr-review --local` to verify a change before the agent reviews it.
+# Commands are NEVER guessed - only what you set here runs. Each string is split
+# into argv and executed directly (no shell); wrap pipelines in a script.
+# A failing build or test forces a RequestChanges verdict; lint is informational.
+[commands]
+build = "cargo build"
+test = "cargo test"
+lint = "cargo clippy --all-targets"
+
+# --- Review defaults ---------------------------------------------------------
+[review]
+# Base branch + remote for `pr-review --local --scope branch`. When unset, the
+# base branch is derived from the remote's default branch.
+default_base_branch = "develop"
+default_base_remote = "origin"
+
+# --- Limits (generous guardrails, NOT quality caps) --------------------------
+# Defaults favor best AI output: broad standards/context, large diffs, and useful
+# verification excerpts. You are free to lower or raise any value for your repo;
+# any key you omit keeps its default. `istari init` always writes this sample so
+# you can compare the defaults and choose suitable values later.
+[limits]
+# standards_per_file_bytes       = 65536   # per consumer-standards doc excerpt (bytes)
+# standards_total_bytes          = 524288  # total consumer-standards index (bytes)
+# tree_files                     = 2000    # ranked file-tree entries shown in the prompt
+# keywords                       = 24      # code-search keywords from the ticket/PR text
+# keyword_rarity_max_df_pct      = 20      # drop a keyword matching more than this % of tracked files (one survivor is always kept)
+# files_per_keyword              = 10      # files shown per keyword hit
+# lines_per_file                 = 40      # snippet lines per file hit
+# line_len                       = 500     # max characters per snippet line
+# grep_context                   = 3       # context lines per grep match
+# commits                        = 200     # commits listed in an incremental re-review
+# changed_files                  = 500     # changed files in an incremental re-review
+# diff_bytes                     = 400000  # PR diff text fed into the prompt (bytes)
+# verification_bytes             = 16000   # captured build/test/lint output (bytes)
+# agent_timeout_secs             = 1800    # max wall-clock per agent turn (anti-hang, NOT a total budget)
+# pr_metadata_pages              = 5       # GitHub PR reviews/comments/commits pages (~100 items each)
+# coordination_refine_rounds     = 1       # self-critique rounds for the cross-ticket coordination pass
+# tool_read_bytes                = 12000   # bytes per agent artifact-read window (minimum 4; responses return the next byte cursor)
+
+# --- Context gathering -------------------------------------------------------
+# Vendored, generated, minified and binary paths are excluded from the gathered
+# file tree and keyword hits by default, across ecosystems: node_modules,
+# bower_components, vendor, third_party, .venv, site-packages, Pods, dist,
+# target, bin, obj, __pycache__, coverage, *.min.*, *.map, *.lock, the common
+# lockfiles (package-lock.json, npm-shrinkwrap.json, pnpm-lock.yaml,
+# packages.lock.json, go.sum), and image/font/media/archive/compiled binaries.
+# Patterns below are APPENDED to those defaults; a leading `!` re-includes a path
+# a default excluded, which is how you review generated code you commit on
+# purpose.
+[context]
+# exclude_paths = ["generated/**", "*.g.cs", "!src/generated/**"]
+
+# --- Dependency source reads -------------------------------------------------
+# Lets the agent read the source of packages you actually depend on, so a claim
+# about a dependency is grounded instead of recalled. On by default and
+# zero-configuration: istari detects this machine's package caches (CARGO_HOME,
+# GOMODCACHE, NUGET_PACKAGES, ~/.m2, GRADLE_USER_HOME, PUB_CACHE, GEM_HOME) and
+# the repo's own vendored trees (node_modules/, vendor/, .venv, vendor/bundle).
+# Run `istari env-check` to see exactly which roots were detected.
+# Reads are bounded and framed as untrusted data; a WRITE into any of these
+# trees always asks for approval.
+[dependencies]
+# enabled = true
+# ecosystems = ["rust", "node"]                # omit for every ecosystem found
+# extra_roots = ["/opt/shared-packages", "~/mirrors/crates"]
+# exclude_paths = ["**/test/fixtures/**"]      # `!pattern` re-includes, as in [context]
+
+# --- Reference source registration -------------------------------------------
+# Explicit source directories, separate from package-layout dependency roots.
+# Relative paths resolve against this config's project root; ~ expands home.
+# At most 16 IDs, each 1-32 lowercase letters/digits/_/-. Reserved IDs:
+# workspace, root, default, none. Missing paths, home and filesystem roots fail.
+# Registration never grants writes, execution or native SDK directory access.
+[references.roots]
+# platform = "../reference-source"
