@@ -412,6 +412,7 @@ pub(super) fn load_suite(
             pair.label
         };
         tests.push(Capture {
+            logs: None,
             id: capture_id,
             label,
             scenario,

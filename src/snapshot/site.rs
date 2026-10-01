@@ -114,9 +114,29 @@ pub(super) struct Capture {
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previews: Option<CapturePreviews>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logs: Option<CaptureLogs>,
     pub reference_url: Option<String>,
     pub test_url: Option<String>,
     pub dimensions: Option<Dimensions>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct CaptureLogs {
+    pub reference: Option<ExecutionLog>,
+    pub test: Option<ExecutionLog>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ExecutionLog {
+    pub state: crate::diagnostics::journal::ArchiveState,
+    pub operation_id: Option<crate::diagnostics::record::OperationId>,
+    pub execution_id: Option<crate::diagnostics::record::ExecutionId>,
+    pub chunks: Vec<String>,
+    pub records: u64,
+    pub missing_records: Option<u64>,
+    pub build: Option<crate::diagnostics::journal::BuildIdentity>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -948,6 +968,51 @@ pub(crate) fn refresh_site_versions(output: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn manifest_round_trips_optional_execution_log_fields() {
+        use crate::diagnostics::journal::ArchiveState;
+        let legacy = serde_json::json!({"id":"page.png", "label":"Page", "scenario":"Page", "selector":"document", "status":"pass",
+            "threshold":0.1,"mismatch":0.0,"error":null,"reference":null,"test":null,"diff":null,
+            "referenceUrl":null,"testUrl":null,"dimensions":null});
+        let capture: super::Capture = serde_json::from_value(legacy.clone()).unwrap();
+        assert!(capture.logs.is_none());
+        let manifest = serde_json::json!({"version":2,"title":"Report","heading":"Report","subheading":"","generatedAt":"2026-10-01T00:00:00Z","suites":[]});
+        assert_eq!(
+            serde_json::from_value::<super::Manifest>(manifest)
+                .unwrap()
+                .version,
+            2
+        );
+        let mut states = std::collections::BTreeSet::new();
+        for state in [
+            ArchiveState::Complete,
+            ArchiveState::Partial,
+            ArchiveState::Missing,
+            ArchiveState::LegacyUnavailable,
+            ArchiveState::LoadingError,
+        ] {
+            let log = super::ExecutionLog {
+                state,
+                operation_id: None,
+                execution_id: None,
+                chunks: Vec::new(),
+                records: 0,
+                missing_records: None,
+                build: None,
+            };
+            let logs = super::CaptureLogs {
+                reference: None,
+                test: Some(log),
+            };
+            let mut value = legacy.clone();
+            value["logs"] = serde_json::to_value(&logs).unwrap();
+            let decoded: super::Capture = serde_json::from_value(value).unwrap();
+            assert_eq!(decoded.logs.unwrap(), logs);
+            states.insert(serde_json::to_string(&state).unwrap());
+        }
+        assert_eq!(states.len(), 5);
+    }
+
     use super::*;
 
     fn args() -> SnapshotArgs {

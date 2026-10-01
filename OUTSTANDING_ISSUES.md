@@ -2,6 +2,16 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Frontend Formatting Baseline (2026-10-01)
+
+- `bun run --cwd frontend lint` reports seven existing formatting errors during
+  logging schema work, including untouched UI, overview/suite pages, styles, and
+  browser tests. The modified report schema and schema tests pass scoped Biome
+  checks; frontend tests, typecheck, and production build pass.
+- Keep formatting fixes scoped to files changed by the logging tasks rather than
+  reformatting unrelated frontend code. Report the full-lint failure separately
+  until the remaining baseline files are intentionally normalized.
+
 ## Worker Snapshot Inventory Assertion (2026-10-01)
 
 - The worker integration test `filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies`

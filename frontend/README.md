@@ -147,6 +147,13 @@ unavailable/malformed status, retry, themes, responsive layout, and accessibilit
 
 ## Data And Hosting
 
+Version-2 captures may include optional `logs.reference` and `logs.test` metadata.
+Each reference records `complete`, `partial`, `missing`, `legacyUnavailable`, or
+`loadingError`, original operation/execution IDs, record counts, build identity,
+and versioned JSON chunk URLs. Missing fields identify pre-log reports. Log state
+is independent of the capture's result and existing `error` field; the manifest
+version remains 2.
+
 Resource filenames are stable; cache versions appear only in `?v=...`.
 The public aggregate endpoint `/_snapshot/status.json` is deliberately
 unversioned, uses `Cache-Control: no-cache`, and permits anonymous cross-origin
