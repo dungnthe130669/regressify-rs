@@ -62,6 +62,8 @@ impl RunPanel {
             ),
             jobs,
         });
+        self.log_query.offset = 0;
+        self.archive_key = None;
         self.tab = 3;
         self.refresh_log(window, cx);
         cx.notify();
@@ -88,6 +90,8 @@ impl RunPanel {
                 }
             ),
         });
+        self.log_query.offset = 0;
+        self.archive_key = None;
         self.tab = 3;
         self.refresh_log(window, cx);
         cx.notify();
@@ -95,12 +99,29 @@ impl RunPanel {
 
     pub(super) fn show_all_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.log_scope = None;
+        self.log_query.offset = 0;
+        self.archive_key = None;
         self.tab = 3;
         self.refresh_log(window, cx);
         cx.notify();
     }
 
     pub(super) fn refresh_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.running()
+            && self.manager.request.is_some()
+            && (self.tab == 3
+                || self
+                    .manager
+                    .request
+                    .as_ref()
+                    .is_some_and(|request| request.command == RunCommand::Deploy))
+        {
+            self.refresh_archive(window, cx);
+            return;
+        }
+        self.archive_key = None;
+        self.archive_page = None;
+        self.archive_loading = false;
         let text = if let Some(scope) = &self.log_scope {
             let progress = &self.manager.progress;
             let mut text = String::new();
@@ -157,6 +178,63 @@ impl RunPanel {
                 .update(cx, |state, cx| state.set_value(text.clone(), window, cx));
             self.log_text = text;
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::desktop::ui) fn rendered_log(&self) -> &str {
+        &self.log_text
+    }
+
+    fn refresh_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request) = self.manager.request.clone() else {
+            return;
+        };
+        let jobs = self
+            .manager
+            .progress
+            .scenarios
+            .values()
+            .filter(|entry| {
+                self.log_scope
+                    .as_ref()
+                    .is_none_or(|scope| scope.jobs.contains(&entry.job.id))
+            })
+            .map(|entry| entry.job.clone())
+            .collect::<Vec<_>>();
+        let query = self.log_query.clone();
+        let key = serde_json::to_string(&(&request, &jobs, &query)).unwrap_or_default();
+        if self.archive_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.archive_key = Some(key.clone());
+        self.archive_generation = self.archive_generation.wrapping_add(1);
+        let generation = self.archive_generation;
+        self.archive_page = None;
+        self.archive_loading = true;
+        self.log_text = "Loading archived log...".into();
+        self.log.update(cx, |state, cx| {
+            state.set_value(self.log_text.clone(), window, cx)
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let page = cx
+                .background_executor()
+                .spawn(async move { crate::desktop::logs::load_run_page(&request, &jobs, &query) })
+                .await;
+            let _ = view.update_in(cx, |this, window, cx| {
+                if this.archive_key.as_ref() != Some(&key) || this.archive_generation != generation
+                {
+                    return;
+                }
+                this.archive_loading = false;
+                this.log_text = page.text();
+                this.log.update(cx, |state, cx| {
+                    state.set_value(this.log_text.clone(), window, cx)
+                });
+                this.archive_page = Some(page);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     pub(super) fn render_log(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -221,15 +299,59 @@ impl RunPanel {
                             .ghost()
                             .small()
                             .icon(IconName::Copy)
-                            .tooltip("Copy log")
-                            .accessibility_label("Copy log")
+                            .tooltip(if self.archive_page.is_some() {
+                                "Copy displayed log page"
+                            } else {
+                                "Copy log"
+                            })
+                            .accessibility_label(if self.archive_page.is_some() {
+                                "Copy displayed log page"
+                            } else {
+                                "Copy log"
+                            })
                             .disabled(self.log_text.is_empty())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     this.log_text.clone(),
                                 ))
                             })),
-                    ),
+                    )
+                    .when_some(self.archive_page.as_ref(), |bar, page| {
+                        bar.child(
+                            Button::new("log-previous-page")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowLeft)
+                                .tooltip("Previous log page")
+                                .accessibility_label("Previous log page")
+                                .disabled(page.offset == 0)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.log_query.offset = this
+                                        .log_query
+                                        .offset
+                                        .saturating_sub(crate::desktop::logs::PAGE_RECORDS);
+                                    this.archive_key = None;
+                                    this.refresh_log(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(div().text_xs().child(format!("{} records", page.matched)))
+                        .child(
+                            Button::new("log-next-page")
+                                .ghost()
+                                .small()
+                                .icon(IconName::ArrowRight)
+                                .tooltip("Next log page")
+                                .accessibility_label("Next log page")
+                                .disabled(!page.has_more())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.log_query.offset += crate::desktop::logs::PAGE_RECORDS;
+                                    this.archive_key = None;
+                                    this.refresh_log(window, cx);
+                                    cx.notify();
+                                })),
+                        )
+                    }),
             )
             .child(
                 div()

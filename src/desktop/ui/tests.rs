@@ -8,6 +8,93 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn run_log_loads_archive_after_restart(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (request, jobs, _) = crate::desktop::logs::tests::fixture(directory.path(), 501);
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(request);
+                for job in jobs {
+                    panel.manager.progress.apply(crate::progress::Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: crate::progress::Event::Queued { job },
+                    });
+                }
+                panel.manager.progress.clear_logs();
+                panel.show_scenario_log("Suite", "page", window, cx);
+            });
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .runs
+            .read(cx)
+            .rendered_log()
+            .contains("Loaded from archive")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("log-next-page").visible());
+        window.click("log-next-page", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx).runs.read(cx).rendered_log().contains("#501]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        let text = view.read(cx).runs.read(cx).rendered_log();
+        assert!(text.contains("Loaded from archive"));
+        assert!(!text.contains("bounded history"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn run_log_shows_loading_error_state_for_corrupt_archive(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (request, jobs, reference) = crate::desktop::logs::tests::fixture(directory.path(), 3);
+    let archive = crate::diagnostics::journal::archive_directory(
+        &request.options.output_directory(directory.path()),
+        &reference.operation_id,
+    );
+    std::fs::write(archive.join("segment-000000.jsonl"), b"corrupt").unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.main_tab = 1;
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.request = Some(request);
+                for job in jobs {
+                    panel.manager.progress.apply(crate::progress::Record {
+                        version: 1,
+                        elapsed_ms: 0,
+                        event: crate::progress::Event::Queued { job },
+                    });
+                }
+                panel.manager.progress.clear_logs();
+                panel.show_scenario_log("Suite", "page", window, cx);
+            });
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .runs
+            .read(cx)
+            .rendered_log()
+            .contains("Archive could not be read")
+    })
+    .await;
+}
+
+#[gpui_kit::test]
 async fn update_dialog_preserves_the_draft_and_shows_build_status(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

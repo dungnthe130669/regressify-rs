@@ -307,6 +307,19 @@ fn spawn_capture_jobs(
                     Some(index),
                 )
             });
+            if let Some(operation) = &operation
+                && capture::write_execution_logs(
+                    &suite,
+                    &suite.scenarios[scenario_idx],
+                    viewport.as_ref().map(|viewport| viewport.label.as_str()),
+                    &operation.reference(),
+                )
+                .is_err()
+            {
+                crate::diagnostics::install::emergency_warning(
+                    "Initial capture log linkage could not be written",
+                );
+            }
             let status =
                 runtime::scope(operation.as_ref().map(runtime::Operation::context), async {
                     let resolved =

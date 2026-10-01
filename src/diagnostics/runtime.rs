@@ -225,6 +225,21 @@ impl Operation {
         self.context.clone()
     }
 
+    pub fn reference(&self) -> ArchiveReference {
+        let health = self.context.sink.health();
+        ArchiveReference {
+            operation_id: self.context.identity.operation_id.clone(),
+            execution_id: self
+                .context
+                .identity
+                .execution
+                .as_ref()
+                .map(|execution| execution.execution_id.clone()),
+            state: health.state,
+            missing_records: health.missing_records,
+        }
+    }
+
     pub async fn finish(mut self, outcome: Outcome) -> ArchiveReference {
         in_scope(Some(self.context.clone()), || {
             self.context.record(

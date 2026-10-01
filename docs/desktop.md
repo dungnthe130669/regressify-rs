@@ -1382,6 +1382,17 @@ or arbitrary executables.
 
 ## Running Commands
 
+Completed scenario/job logs load from their capture-owned archives, including after
+reopening a workspace or losing the bounded live buffer. The existing View Log
+navigation is preserved. Archives load in the background in 500-record pages;
+previous/next controls navigate the full history, and Copy copies the displayed
+page. Shared execution history is not repeated for each image.
+
+The view distinguishes loaded, partial/interrupted, expected-but-missing, legacy,
+and loading-error states. Live runs still show omitted-retained-history notices;
+those notices are not evidence that the durable archive lost records. Missing log
+data never changes a capture's pass/fail status.
+
 Runs provides direct Run Test, Run Reference, Approve Results, and Compare
 Results buttons. There is no command-mode selector followed by a generic Run.
 More actions provides Build Report, Optimize Images, Install Chromium, and
