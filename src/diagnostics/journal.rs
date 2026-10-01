@@ -379,6 +379,11 @@ impl JournalWriter {
                 && record.operation_kind == self.metadata.operation_kind,
             "Record belongs to another diagnostic operation"
         );
+        ensure!(
+            record.capture_run_id.is_none()
+                || record.capture_run_id == self.metadata.capture_run_id,
+            "Record belongs to another capture run"
+        );
         let mut record = record.clone();
         record.sequence = self.records;
         record.capture_run_id = self.metadata.capture_run_id.clone();
@@ -674,7 +679,7 @@ impl JournalReader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::record::{DiagnosticEvent, Stage};
     use super::*;
 
@@ -696,6 +701,74 @@ mod tests {
         }
         writer.flush().unwrap();
         (writer, metadata)
+    }
+
+    #[test]
+    fn operation_kind_linkage_round_trips_both_kinds() {
+        for kind in [OperationKind::Capture, OperationKind::Deployment] {
+            let run = (kind == OperationKind::Capture)
+                .then(|| CaptureRunId::try_from("run-one".to_owned()).unwrap());
+            let metadata = OperationMetadata::new(kind, run);
+            let record = DiagnosticRecordV1::new(
+                metadata.operation_id.clone(),
+                kind,
+                Stage::QueueSetup,
+                DiagnosticEvent::Started,
+            );
+            let records = exercise_journal_round_trip(metadata, vec![record]);
+            assert_eq!(
+                records[0].capture_run_id.is_some(),
+                kind == OperationKind::Capture
+            );
+        }
+    }
+
+    pub(crate) fn exercise_journal_round_trip(
+        metadata: OperationMetadata,
+        records: Vec<DiagnosticRecordV1>,
+    ) -> Vec<DiagnosticRecordV1> {
+        let root = tempfile::tempdir().unwrap();
+        let mut writer =
+            JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                .unwrap();
+        for record in &records {
+            writer.write(record).unwrap();
+        }
+        writer.finalize(Outcome::Success).unwrap();
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+        let mut loaded = Vec::new();
+        reader
+            .visit(|record| {
+                assert_eq!(record.sequence, loaded.len() as u64);
+                assert_eq!(record.operation_kind, metadata.operation_kind);
+                assert_eq!(record.capture_run_id, metadata.capture_run_id);
+                loaded.push(record);
+            })
+            .unwrap();
+        assert_eq!(loaded.len(), records.len() + 1);
+        loaded
+    }
+
+    #[test]
+    fn operation_kind_linkage_rejects_conflicting_run_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let metadata = OperationMetadata::new(
+            OperationKind::Capture,
+            Some(CaptureRunId::try_from("run-one".to_owned()).unwrap()),
+        );
+        let mut writer =
+            JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())
+                .unwrap();
+        let mut record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::QueueSetup,
+            DiagnosticEvent::Started,
+        );
+        record.capture_run_id = Some(CaptureRunId::try_from("run-two".to_owned()).unwrap());
+        assert!(writer.write(&record).is_err());
+        assert_eq!(writer.record_count(), 0);
     }
 
     #[test]
