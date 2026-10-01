@@ -69,6 +69,12 @@ pub struct ArchiveIndex {
     pub missing_records: Option<u64>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HandoffNotice {
+    Attached,
+    RetainedSource,
+}
+
 fn segment_info(path: &Path, root: &Path, number: usize) -> Result<SegmentInfo> {
     let mut file = checked_file(path, root)?;
     ensure!(
@@ -487,6 +493,102 @@ impl JournalWriter {
         Ok(())
     }
 
+    pub fn handoff_bootstrap(
+        mut self,
+        destination: &Path,
+        mut notify: impl FnMut(HandoffNotice),
+    ) -> Self {
+        let expected = archive_directory(destination, &self.metadata.operation_id);
+        if expected.canonicalize().ok().as_ref() == Some(&self.directory) {
+            return self;
+        }
+        match self.handoff_inner(destination) {
+            Ok(()) => notify(HandoffNotice::Attached),
+            Err(_) => notify(HandoffNotice::RetainedSource),
+        }
+        self
+    }
+
+    fn handoff_inner(&mut self, destination: &Path) -> Result<()> {
+        ensure!(
+            !self.failed && !self.finalized,
+            "Cannot hand off a degraded or finalized bootstrap journal"
+        );
+        self.flush()?;
+        if let Some(output) = &self.output {
+            output.get_ref().sync_all()?;
+        }
+        fs::create_dir_all(destination)?;
+        let root = destination.canonicalize()?;
+        checked_directory(destination, &root)?;
+        let diagnostics = root.join("_diagnostics");
+        match fs::create_dir(&diagnostics) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.into()),
+        }
+        checked_directory(&diagnostics, &root)?;
+        let directory = archive_directory(&root, &self.metadata.operation_id);
+        match fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => {
+                return Err(anyhow!(
+                    "Bootstrap destination already exists or is inaccessible"
+                ));
+            }
+        }
+        let temporary = tempfile::Builder::new()
+            .prefix(".bootstrap-")
+            .tempdir_in(&diagnostics)?;
+        let mut names = vec!["operation.json".to_owned()];
+        names.extend((0..self.segment_count).map(|number| format!("segment-{number:06}.jsonl")));
+        for name in &names {
+            let source_path = self.directory.join(name);
+            let before = segment_info(&source_path, &self.directory, 0)?;
+            let source = checked_file(&source_path, &self.directory)?;
+            let destination_path = temporary.path().join(name);
+            let mut target = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&destination_path)?;
+            let count = std::io::copy(&mut source.take(before.bytes + 1), &mut target)?;
+            target.sync_all()?;
+            drop(target);
+            let after = segment_info(&destination_path, temporary.path(), 0)?;
+            ensure!(
+                before == after && count == before.bytes,
+                "Bootstrap copy verification failed"
+            );
+        }
+        fs::rename(temporary.path(), &directory)?;
+        let directory = checked_directory(&directory, &root)?;
+        let reader = JournalReader::open(&root, &self.metadata.operation_id)?;
+        let summary = reader.visit(|_| {})?;
+        ensure!(
+            summary.records == self.records && !summary.interrupted_tail,
+            "Bootstrap record verification failed"
+        );
+        let output = if self.segment_count == 0 {
+            None
+        } else {
+            let path = directory.join(format!("segment-{:06}.jsonl", self.segment_count - 1));
+            checked_file(&path, &directory)?;
+            Some(BufWriter::with_capacity(
+                BUFFER_BYTES,
+                OpenOptions::new().append(true).open(path)?,
+            ))
+        };
+        crate::helpers::write_file_atomically(
+            &self.directory.join("handoff.json"),
+            &serde_json::to_vec(
+                &serde_json::json!({"operationId": self.metadata.operation_id, "records": self.records}),
+            )?,
+        )?;
+        self.directory = directory;
+        self.output = output;
+        Ok(())
+    }
+
     pub fn finalize(&mut self, outcome: Outcome) -> Result<ArchiveIndex> {
         ensure!(
             !self.failed && !self.finalized,
@@ -748,6 +850,67 @@ pub(crate) mod tests {
         }
         writer.flush().unwrap();
         (writer, metadata)
+    }
+
+    #[test]
+    fn bootstrap_handoff_retains_source_on_destination_failure() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let blocked = destination.path().join("blocked");
+        fs::write(&blocked, b"not a directory").unwrap();
+        let (writer, metadata) = write_records(source.path(), JournalOptions::default(), 3);
+        let source_directory = writer.directory().to_owned();
+        let original = fs::read(source_directory.join("segment-000000.jsonl")).unwrap();
+        let mut notices = Vec::new();
+        let mut writer = writer.handoff_bootstrap(&blocked, |notice| notices.push(notice));
+        assert_eq!(notices, vec![HandoffNotice::RetainedSource]);
+        assert_eq!(writer.directory(), source_directory);
+        assert_eq!(
+            fs::read(source_directory.join("segment-000000.jsonl")).unwrap(),
+            original
+        );
+        assert!(!source_directory.join("handoff.json").exists());
+        writer.finalize(Outcome::Failure).unwrap();
+        assert_eq!(
+            JournalReader::open(source.path(), &metadata.operation_id)
+                .unwrap()
+                .archive_state(),
+            ArchiveState::Complete
+        );
+    }
+
+    #[test]
+    fn bootstrap_handoff_marks_source_consumed_only_after_verified_append_open() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let (writer, metadata) = write_records(source.path(), JournalOptions::default(), 3);
+        let source_directory = writer.directory().to_owned();
+        let original = fs::read(source_directory.join("segment-000000.jsonl")).unwrap();
+        let mut notices = Vec::new();
+        let mut writer =
+            writer.handoff_bootstrap(destination.path(), |notice| notices.push(notice));
+        assert_eq!(notices, vec![HandoffNotice::Attached]);
+        assert!(source_directory.join("handoff.json").is_file());
+        assert_eq!(
+            fs::read(source_directory.join("segment-000000.jsonl")).unwrap(),
+            original
+        );
+        assert_eq!(writer.metadata.operation_id, metadata.operation_id);
+        writer = writer.handoff_bootstrap(destination.path(), |_| {
+            panic!("Repeated handoff must not copy or notify")
+        });
+        writer.finalize(Outcome::Success).unwrap();
+        let reader = JournalReader::open(destination.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 4);
+        assert_eq!(
+            JournalReader::open(source.path(), &metadata.operation_id)
+                .unwrap()
+                .visit(|_| {})
+                .unwrap()
+                .records,
+            3
+        );
     }
 
     #[test]
