@@ -416,6 +416,10 @@ pub struct SanitizedError {
 }
 
 impl SanitizedError {
+    pub fn summary(&self) -> String {
+        format!("{:?} failure (causes: {:?})", self.category, self.causes)
+    }
+
     pub fn capture(error: &anyhow::Error) -> Self {
         let causes: Vec<_> = error
             .chain()

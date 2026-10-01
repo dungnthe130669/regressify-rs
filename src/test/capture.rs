@@ -344,6 +344,108 @@ pub const REPORT_URLS_FILE: &str = ".report-urls.json";
 pub(crate) const REPORT_ORDER_VERSION: u8 = 1;
 pub(crate) const REPORT_URLS_VERSION: u8 = 1;
 
+pub(crate) fn mark_diagnostics_expected(suite: &TestSuite) -> Result<()> {
+    let path = run_dir(suite)?.join(".diagnostics.json");
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        anyhow::ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "Diagnostic marker must be a regular file"
+        );
+    }
+    write_file_atomically(&path, br#"{"version":1}"#)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureLog {
+    pub state: crate::diagnostics::journal::ArchiveState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archive: Option<crate::diagnostics::runtime::ArchiveReference>,
+}
+
+pub fn write_capture_log(
+    output: &Path,
+    image: &Path,
+    archive: &crate::diagnostics::runtime::ArchiveReference,
+) -> Result<()> {
+    let root = output.canonicalize()?;
+    let parent = image
+        .parent()
+        .ok_or_else(|| anyhow!("Capture log has no parent"))?;
+    anyhow::ensure!(
+        !fs::symlink_metadata(parent)?.file_type().is_symlink()
+            && parent.canonicalize()?.starts_with(&root),
+        "Capture log escapes output root"
+    );
+    let path = image.with_extension("log.json");
+    if let Ok(metadata) = fs::symlink_metadata(&path) {
+        anyhow::ensure!(
+            metadata.is_file() && !metadata.file_type().is_symlink(),
+            "Capture log must be a regular file"
+        );
+    }
+    let log = CaptureLog {
+        state: archive.state,
+        archive: Some(archive.clone()),
+    };
+    write_file_atomically(&path, &serde_json::to_vec(&log)?)
+}
+
+pub fn read_capture_log(output: &Path, image: &Path) -> Option<CaptureLog> {
+    use crate::diagnostics::journal::{ArchiveState, inspect_archive};
+    let path = image.with_extension("log.json");
+    if matches!(fs::symlink_metadata(&path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+    {
+        let marker = image.parent()?.join(".diagnostics.json");
+        if matches!(fs::symlink_metadata(&marker), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        {
+            return None;
+        }
+        let valid = output
+            .canonicalize()
+            .ok()
+            .and_then(|root| {
+                crate::diagnostics::journal::read_json::<serde_json::Value>(&marker, &root, 128)
+                    .ok()
+            })
+            .is_some_and(|value| value["version"] == 1);
+        return Some(CaptureLog {
+            state: if valid {
+                ArchiveState::Missing
+            } else {
+                ArchiveState::LoadingError
+            },
+            archive: None,
+        });
+    }
+    let loaded = (|| -> Result<CaptureLog> {
+        let root = output.canonicalize()?;
+        let mut log: CaptureLog = crate::diagnostics::journal::read_json(&path, &root, 64 * 1024)?;
+        if let Some(reference) = &log.archive {
+            log.state = inspect_archive(&root, Some(&reference.operation_id), true);
+        }
+        Ok(log)
+    })();
+    Some(loaded.unwrap_or(CaptureLog {
+        state: ArchiveState::LoadingError,
+        archive: None,
+    }))
+}
+
+pub(crate) fn write_execution_logs(
+    suite: &TestSuite,
+    scenario: &TestScenario,
+    viewport: Option<&str>,
+    archive: &crate::diagnostics::runtime::ArchiveReference,
+) -> Result<()> {
+    let directory = run_dir(suite)?;
+    for key in super::test_scenario::capture_progress_keys(scenario, &suite.scenarios, viewport)? {
+        let image = directory.join(format!("{key}.png"));
+        write_capture_log(common::REGRESSIFY_DIR.get_required()?, &image, archive)?;
+    }
+    Ok(())
+}
+
 /// Complete expected screenshot inventory for a capture run. Older runs stored
 /// a bare array and remain readable as order-only manifests.
 #[derive(Debug, Serialize, Deserialize)]
@@ -700,13 +802,52 @@ pub async fn save_screenshot(
     screenshot_type: ScreenshotType,
     viewport_label: Option<&str>,
 ) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    let key = final_screenshot_order_key(
+        scenario.id.as_deref().unwrap_or_default(),
+        viewport_label,
+        &screenshot_type,
+    );
+    diagnostics::stage(
+        Stage::CaptureArtifacts,
+        [(
+            Field::Capture,
+            FieldValue::Identity(SafeIdentity::fingerprint(key)),
+        )],
+        save_screenshot_inner(test_suite, scenario, page, screenshot_type, viewport_label),
+    )
+    .await
+}
+
+async fn save_screenshot_inner(
+    test_suite: &TestSuite,
+    scenario: &TestScenario,
+    page: &Page,
+    screenshot_type: ScreenshotType,
+    viewport_label: Option<&str>,
+) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime as diagnostics};
     let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)
         .map_err(|error| artifact_write_error("Failed to create screenshot output path", error))?;
 
     let png_bytes = capture_png(page, &screenshot_type).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
-    write_file_atomically(&path, &clean_bytes)
-        .map_err(|error| artifact_write_error("Failed to write screenshot", error))?;
+    let (width, height) = crate::helpers::png::read_bounded_png_dimensions_from_reader(
+        std::io::Cursor::new(&clean_bytes),
+        &path,
+    )?;
+    diagnostics::stage_sync(
+        Stage::CaptureArtifacts,
+        [
+            (Field::Width, FieldValue::Number(width as u64)),
+            (Field::Height, FieldValue::Number(height as u64)),
+            (Field::Bytes, FieldValue::Number(clean_bytes.len() as u64)),
+        ],
+        || {
+            write_file_atomically(&path, &clean_bytes)
+                .map_err(|error| artifact_write_error("Failed to write screenshot", error))
+        },
+    )?;
     let marker_path = error_marker_path(&path);
     if marker_path.exists() {
         fs::remove_file(marker_path).map_err(|error| {
@@ -1043,6 +1184,78 @@ pub fn read_error_marker(png_path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn passed_capture_with_mismatch_shows_distinct_capture_and_comparison_outcomes() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime as diagnostics};
+        let root = tempfile::tempdir().unwrap();
+        let suite = root.path().join("shop");
+        let captures = suite.join("bitmaps_test/run");
+        let references = suite.join("bitmaps_reference");
+        std::fs::create_dir_all(&captures).unwrap();
+        std::fs::create_dir_all(&references).unwrap();
+        let path = captures.join("home__FINAL.png");
+        std::fs::write(
+            references.join("home__FINAL.png"),
+            lodepng::encode32(&[0_u8, 0, 0, 255], 1, 1).unwrap(),
+        )
+        .unwrap();
+        let operation =
+            diagnostics::Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        diagnostics::in_scope(Some(operation.context()), || {
+            diagnostics::stage_sync(Stage::CaptureArtifacts, [], || {
+                std::fs::write(&path, lodepng::encode32(&[255_u8, 255, 255, 255], 1, 1)?)?;
+                Ok(())
+            })
+        })
+        .unwrap();
+        let reference = operation.finish(Outcome::Success).await;
+        super::write_capture_log(root.path(), &path, &reference).unwrap();
+        let reader = JournalReader::open(root.path(), &reference.operation_id).unwrap();
+        let index =
+            crate::diagnostics::journal::archive_directory(root.path(), &reference.operation_id)
+                .join("index.json");
+        let before = std::fs::read(&index).unwrap();
+        crate::compare::report_gen::generate_comparison_report(&suite, "shop", "run", 0.0, 1)
+            .unwrap();
+        let report: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(captures.join("report.json")).unwrap()).unwrap();
+        assert_eq!(report["tests"][0]["pair"]["comparisonOutcome"], "mismatch");
+        assert_eq!(
+            report["tests"][0]["pair"]["testLog"]["archive"]["operationId"],
+            reference.operation_id.as_str()
+        );
+        let mut finished = false;
+        reader
+            .visit(|record| {
+                if record.event_name == DiagnosticEvent::Finished {
+                    finished = true;
+                    assert_eq!(record.outcome, Some(Outcome::Success));
+                }
+            })
+            .unwrap();
+        assert!(finished);
+        assert_eq!(std::fs::read(index).unwrap(), before);
+    }
+
+    #[test]
+    fn corrupt_capture_log_is_loading_error_not_legacy_or_capture_failure() {
+        let root = tempfile::tempdir().unwrap();
+        let image = root.path().join("home__FINAL.png");
+        assert!(super::read_capture_log(root.path(), &image).is_none());
+        std::fs::write(root.path().join(".diagnostics.json"), br#"{"version":1}"#).unwrap();
+        assert_eq!(
+            super::read_capture_log(root.path(), &image).unwrap().state,
+            crate::diagnostics::journal::ArchiveState::Missing
+        );
+        std::fs::write(image.with_extension("log.json"), b"not JSON").unwrap();
+        let log = super::read_capture_log(root.path(), &image).unwrap();
+        assert_eq!(
+            log.state,
+            crate::diagnostics::journal::ArchiveState::LoadingError
+        );
+        assert!(log.archive.is_none());
+    }
+
     use super::*;
 
     #[test]

@@ -72,6 +72,13 @@ count unknown. Only verified complete logs are eligible for complete-log exports
 The deadline stops waiting for a stalled writer; it cannot interrupt an OS file
 operation already in progress. Such writes remain owned by the worker process.
 
+Each finalized capture execution writes `.log.json` links beside its selected
+images. A `.diagnostics.json` run marker distinguishes an expected-but-missing
+link from a legacy capture. Comparison pairs preserve separate reference/test
+log links and a comparison outcome; a later visual mismatch does not rewrite
+the successful capture's original execution outcome. Missing or corrupt log
+metadata is diagnostic availability information, not an image comparison error.
+
 ## Commands
 
 | Command    | Purpose                                                                                                                                                                                                                  |

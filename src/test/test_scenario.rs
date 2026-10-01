@@ -11,8 +11,8 @@ use crate::{
     test::{
         capture::{
             final_screenshot_order_key, final_screenshot_types, load_persisted_state,
-            save_screenshot, saved_screenshot_types, screenshot_type_description,
-            validate_cookie_value, validate_screenshot_types, write_error_screenshots,
+            save_screenshot, saved_screenshot_types, validate_cookie_value,
+            validate_screenshot_types, write_error_screenshots,
         },
         page_stability::{prepare_screenshot, stabilize_capture_animations, trigger_lazy_loading},
         test_action::{ActionExecutionContext, exec_test_action},
@@ -329,19 +329,6 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
 
     let log_prefix = make_log_prefix(index, total);
 
-    let label = scenario
-        .label
-        .as_deref()
-        .or(scenario.id.as_deref())
-        .unwrap_or(&scenario.url);
-
-    crate::progress::scenario_log!(
-        "{} Executing scenario: {} ({})",
-        log_prefix,
-        label.cyan(),
-        scenario.url
-    );
-
     // Resolve configuration cascade: scenario -> suite -> workspace -> defaults
     let resolved = config::resolve_config(workspace_config, test_suite, scenario);
 
@@ -357,16 +344,6 @@ pub async fn exec_test_scenario(browser: &Browser, req: ScenarioRequest<'_>) -> 
     // that size so layout and interactions reflect it; with no viewport we
     // capture once at the browser's default size. Each pair is an independent
     // task (own browser, own index), so a failure here only fails this pair.
-    if let Some(vp) = viewport {
-        crate::progress::scenario_log!(
-            "{} Capturing viewport '{}' ({}x{})...",
-            log_prefix,
-            vp.label.cyan(),
-            vp.width,
-            vp.height
-        );
-    }
-
     let capture_context = CaptureContext {
         is_reference: !should_apply_url_replacements,
         test_suite,
@@ -462,26 +439,27 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
     {
         Ok(()) => Ok(()),
         Err(e) => {
-            if let Err(write_err) = write_error_screenshots(
+            use crate::diagnostics::{record::*, runtime as diagnostics};
+            if let Some(context) = diagnostics::current() {
+                context.record(
+                    Stage::CaptureArtifacts,
+                    DiagnosticEvent::StageFinished,
+                    Severity::Error,
+                    [],
+                    diagnostics::Completion {
+                        outcome: Some(Outcome::Failure),
+                        error: Some(SanitizedError::capture(&e)),
+                        duration_ms: None,
+                    },
+                );
+            }
+            write_error_screenshots(
                 ctx.test_suite,
                 ctx.scenario,
                 &error_screenshot_types,
                 viewport_label,
-                &format!("{e:?}"),
-            ) {
-                crate::progress::scenario_log!(
-                    "{} {} Failed to write error placeholder screenshot: {:?}",
-                    ctx.log_prefix,
-                    "WARNING:".yellow(),
-                    write_err
-                );
-                return Err(write_err);
-            } else {
-                crate::progress::scenario_log!(
-                    "{} Wrote error placeholder screenshot for failed scenario.",
-                    ctx.log_prefix
-                );
-            }
+                &SanitizedError::capture(&e).summary(),
+            )?;
             Err(e)
         }
     }
@@ -688,12 +666,6 @@ async fn run_scenario_capture_inner(
         if let Some(authentication) = &authentication {
             authentication.check()?;
         }
-        crate::progress::scenario_log!(
-            "{} Capturing {} screenshot...",
-            log_prefix,
-            screenshot_type_description(screenshot_type)
-        );
-        let capture_start = std::time::Instant::now();
         save_screenshot(
             test_suite,
             scenario,
@@ -702,12 +674,6 @@ async fn run_scenario_capture_inner(
             viewport_label,
         )
         .await?;
-        crate::progress::scenario_log!(
-            "{} {} screenshot captured in {} ms.",
-            log_prefix,
-            screenshot_type_description(screenshot_type),
-            capture_start.elapsed().as_millis()
-        );
     }
 
     Ok(())

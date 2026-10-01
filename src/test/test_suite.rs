@@ -157,26 +157,12 @@ pub enum ScenarioOutcome {
 async fn wait_for_browser_handler(
     handle: &mut tokio::task::JoinHandle<()>,
     timeout: std::time::Duration,
-    log_prefix: &str,
+    _log_prefix: &str,
 ) -> bool {
     match tokio::time::timeout(timeout, &mut *handle).await {
-        Ok(Ok(())) => {
-            crate::progress::scenario_log!("{} Browser handler finished cleanly.", log_prefix);
-            true
-        }
-        Ok(Err(e)) => {
-            crate::progress::scenario_log!(
-                "{} Error waiting for browser handler task: {e}",
-                log_prefix
-            );
-            false
-        }
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
         Err(_) => {
-            crate::progress::scenario_log!(
-                "{} Browser handler did not finish within {} ms; aborting.",
-                log_prefix,
-                timeout.as_millis()
-            );
             handle.abort();
             let _ = handle.await;
             false
@@ -211,27 +197,21 @@ pub async fn exec_single_scenario(
     // a page-level failure that must not fail the command.
     let scenario_result = exec_test_scenario(&browser, req).await;
 
-    crate::progress::scenario_log!("{} Closing browser...", log_prefix);
+    use crate::diagnostics::{record::*, runtime as diagnostics};
+    diagnostics::result(Stage::CaptureArtifacts, &scenario_result, 0);
+    let cleanup_started = std::time::Instant::now();
+    diagnostics::event(
+        Stage::CompletionCleanup,
+        DiagnosticEvent::StageStarted,
+        Severity::Debug,
+        [],
+    );
     let browser_closed =
         match tokio::time::timeout(std::time::Duration::from_secs(10), browser.close()).await {
             Ok(Ok(_)) => true,
-            Ok(Err(e)) => {
-                crate::progress::scenario_log!(
-                    "{} Failed to close browser gracefully: {e}",
-                    log_prefix
-                );
-                false
-            }
-            Err(_) => {
-                crate::progress::scenario_log!(
-                    "{} Browser close did not finish within 10000 ms.",
-                    log_prefix
-                );
-                false
-            }
+            Ok(Err(_)) | Err(_) => false,
         };
 
-    crate::progress::scenario_log!("{} Waiting for handler to finish...", log_prefix);
     let mut handle = handle;
     let handler_finished =
         wait_for_browser_handler(&mut handle, std::time::Duration::from_secs(5), &log_prefix).await;
@@ -241,14 +221,18 @@ pub async fn exec_single_scenario(
     // still-running Chromium process.
     if browser_closed || handler_finished {
         let _ = std::fs::remove_dir_all(&user_data_dir);
-    } else {
-        crate::progress::scenario_log!(
-            "{} Keeping browser profile '{}' because shutdown was not confirmed.",
-            log_prefix,
-            user_data_dir.display()
-        );
     }
 
+    let cleanup = if browser_closed || handler_finished {
+        Ok(())
+    } else {
+        Err(anyhow!("Browser shutdown was not confirmed"))
+    };
+    diagnostics::result(
+        Stage::CompletionCleanup,
+        &cleanup,
+        cleanup_started.elapsed().as_millis() as u64,
+    );
     classify_scenario_completion(scenario_result, browser_closed || handler_finished)
 }
 

@@ -94,6 +94,12 @@ struct ReportPair {
     scenario_display_name: Option<String>,
     reference: String,
     test: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_log: Option<crate::test::capture::CaptureLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    test_log: Option<crate::test::capture::CaptureLog>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    comparison_outcome: Option<crate::diagnostics::record::Outcome>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reference_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -473,6 +479,9 @@ fn report_pair(
         scenario_display_name: page_urls.and_then(|urls| urls.scenario_display_name.clone()),
         reference: format!("../bitmaps_reference/{}", screenshot_name),
         test: relative_test,
+        reference_log: None,
+        test_log: None,
+        comparison_outcome: None,
         reference_url: page_urls.map(|urls| urls.reference_url.clone()),
         url: page_urls.map(|urls| urls.url.clone()),
         diff_image: None,
@@ -700,6 +709,10 @@ fn generate_selected_report(
             pair.engine_error_msg = None;
         }
 
+        let output_root = suite_dir.parent().unwrap_or(suite_dir);
+        pair.reference_log = crate::test::capture::read_capture_log(output_root, &reference_path);
+        pair.test_log = crate::test::capture::read_capture_log(output_root, &test_path);
+
         // If either side is flagged as a capture failure (via its JSON error
         // marker), the corresponding scenario never produced a real screenshot.
         // Skip the visual comparison and report the failure directly — comparing
@@ -841,6 +854,17 @@ fn generate_selected_report(
                 }
             },
         }
+    }
+
+    for test in &mut report_tests {
+        use crate::diagnostics::record::Outcome;
+        test.pair.comparison_outcome = Some(if test.status == "pass" {
+            Outcome::Success
+        } else if test.pair.engine_error_msg.is_some() {
+            Outcome::Failure
+        } else {
+            Outcome::Mismatch
+        });
     }
 
     // Generate report.json

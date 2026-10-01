@@ -23,7 +23,7 @@ use crate::{
         browsers::prepare_browser,
         capture,
         test_scenario::{
-            ScenarioRequest, capture_progress_keys, collect_url_replacements, make_log_prefix,
+            ScenarioRequest, capture_progress_keys, collect_url_replacements,
             scenario_capture_order_keys, scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
@@ -343,12 +343,6 @@ fn spawn_capture_jobs(
                         return TaskStatus::InfraFailed;
                     };
                     progress::emit(ProgressEvent::Started { id: index });
-                    let log_prefix = make_log_prefix(index, total);
-                    let label = suite.scenarios[scenario_idx]
-                        .label
-                        .as_deref()
-                        .or(suite.scenarios[scenario_idx].id.as_deref())
-                        .unwrap_or("unknown");
                     let outcome = exec_single_scenario(
                         &exe_path,
                         ScenarioRequest {
@@ -366,8 +360,12 @@ fn spawn_capture_jobs(
                     .await;
                     let (error, infrastructure) = match &outcome {
                         ScenarioOutcome::Passed => (None, false),
-                        ScenarioOutcome::PageFailed(error) => (Some(format!("{error:#}")), false),
-                        ScenarioOutcome::InfraFailed(error) => (Some(format!("{error:#}")), true),
+                        ScenarioOutcome::PageFailed(error) => {
+                            (Some(SanitizedError::capture(error).summary()), false)
+                        }
+                        ScenarioOutcome::InfraFailed(error) => {
+                            (Some(SanitizedError::capture(error).summary()), true)
+                        }
                     };
                     progress::emit(ProgressEvent::Captured {
                         id: index,
@@ -376,40 +374,35 @@ fn spawn_capture_jobs(
                     });
                     match outcome {
                         ScenarioOutcome::Passed => TaskStatus::Passed,
-                        ScenarioOutcome::PageFailed(e) => {
-                            // Page errors (timeout, not found, ...) are expected for a
-                            // visual regression tool — log and continue, the result is
-                            // reflected in the comparison report.
-                            eprintln!(
-                                "{} {} Capture '{}' failed: {:?}",
-                                log_prefix,
-                                "ERROR:".red(),
-                                label,
-                                e
-                            );
-                            TaskStatus::PageFailed
-                        }
-                        ScenarioOutcome::InfraFailed(e) => {
-                            eprintln!(
-                                "{} {} Capture '{}' failed (infrastructure): {:?}",
-                                log_prefix,
-                                "ERROR:".red(),
-                                label,
-                                e
-                            );
-                            TaskStatus::InfraFailed
-                        }
+                        ScenarioOutcome::PageFailed(_) => TaskStatus::PageFailed,
+                        ScenarioOutcome::InfraFailed(_) => TaskStatus::InfraFailed,
                     }
                 })
                 .await;
             if let Some(operation) = operation {
-                operation
+                let archive = operation
                     .finish(if status == TaskStatus::Passed {
                         Outcome::Success
                     } else {
                         Outcome::Failure
                     })
                     .await;
+                if capture::write_execution_logs(
+                    &suite,
+                    &suite.scenarios[scenario_idx],
+                    viewport.as_ref().map(|viewport| viewport.label.as_str()),
+                    &archive,
+                )
+                .is_err()
+                {
+                    crate::diagnostics::install::emergency_warning(
+                        "Capture log linkage could not be written; capture results are unchanged",
+                    );
+                    progress::emit(ProgressEvent::Log {
+                        id: index,
+                        message: "Capture log linkage unavailable".into(),
+                    });
+                }
             }
             status
         }));
@@ -1215,6 +1208,11 @@ fn write_capture_run_manifests(
                 error
             )
         })?;
+        if capture::mark_diagnostics_expected(suite).is_err() {
+            crate::diagnostics::install::emergency_warning(
+                "Diagnostic availability marker could not be written",
+            );
+        }
         crate::compare::report_gen::write_suite_metadata(
             &suite_output_dir(common::REGRESSIFY_DIR.get_required()?, suite)?,
             suite.display_name.as_deref(),
