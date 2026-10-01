@@ -107,8 +107,15 @@ impl RunPanel {
     }
 
     pub(super) fn refresh_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.manager.request.is_some()
-            && (self.tab == 3
+        let legacy_deployment_activity = self.tab != 3
+            && self.manager.request.as_ref().is_some_and(|request| {
+                request.command == RunCommand::Deploy
+                    && request.options.diagnostic_operation_id.is_none()
+            });
+        if !legacy_deployment_activity
+            && self.manager.request.is_some()
+            && (!self.running()
+                || self.tab == 3
                 || self
                     .manager
                     .request
@@ -352,7 +359,13 @@ impl RunPanel {
                             } else {
                                 "Copy log"
                             })
-                            .disabled(self.log_text.is_empty())
+                            .disabled(
+                                self.log_text.is_empty()
+                                    || self
+                                        .archive_page
+                                        .as_ref()
+                                        .is_some_and(|page| !page.state.can_export()),
+                            )
                             .on_click(cx.listener(|this, _, _, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(
                                     this.log_text.clone(),

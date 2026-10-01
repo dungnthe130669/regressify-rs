@@ -1608,6 +1608,11 @@ complete archive. A partial, missing, legacy, or unreadable log cannot be export
 as complete. Active Activity logs offer Follow to keep the latest bounded page
 visible; turning it off holds the current page while the worker keeps recording.
 
+Log-health warnings are separate from image results: a passed capture stays
+passed when its log is partial or unavailable. Activity's run summary and Results
+show the warning as well as the log view. Download and page-export controls remain
+disabled with an explicit reason until a complete archive is available.
+
 Results uses one left navigator with Test suites above Captures and one detail
 area on the right. Only the active suite's captures are shown. A suite without a
 report shows an empty capture list, never another suite's results. The report

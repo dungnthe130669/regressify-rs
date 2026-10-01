@@ -150,6 +150,27 @@ impl RunPanel {
                                         })
                                         .child(self.outcome_heading()),
                                 )
+                                .when_some(
+                                    self.archive_page
+                                        .as_ref()
+                                        .filter(|page| !page.state.can_export()),
+                                    |heading, page| {
+                                        let warning = format!(
+                                            "Log health: {}. Capture results are unchanged.",
+                                            page.state.label()
+                                        );
+                                        heading.child(
+                                            div()
+                                                .id("run-log-health-warning")
+                                                .role(Role::Status)
+                                                .aria_label(warning.clone())
+                                                .test_support()
+                                                .text_xs()
+                                                .text_color(cx.theme().warning)
+                                                .child(warning),
+                                        )
+                                    },
+                                )
                                 .child(
                                     div()
                                         .id("live-phase")

@@ -8,6 +8,219 @@ use super::Workbench;
 use crate::desktop::session::Selection;
 
 #[gpui_kit::test]
+async fn log_health_warning_partial_archive_keeps_pass_badge(cx: &mut TestAppContext) {
+    use crate::diagnostics::{
+        health::JournalOwner,
+        journal::{ArchiveState, JournalOptions, OperationMetadata},
+        record::*,
+        runtime::ArchiveReference,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let suite_id = cx.update(|cx| view.read(cx).session.suites[0].output_id.clone());
+    let output = directory.path().join(".regressify");
+    let suite = output.join(&suite_id);
+    let image = lodepng::encode32(&[10_u8, 20, 30, 255], 1, 1).unwrap();
+    std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+    std::fs::write(suite.join("bitmaps_reference/page__FINAL.png"), &image).unwrap();
+    for partial in [true, false] {
+        let run = if partial { "partial" } else { "complete" };
+        let metadata = OperationMetadata::new(OperationKind::Capture, None);
+        let options = if partial {
+            JournalOptions {
+                chunk_bytes: 4096,
+                disk_budget_bytes: 4096,
+            }
+        } else {
+            JournalOptions::default()
+        };
+        let owner = JournalOwner::start(&output, metadata.clone(), options, false, |_| {});
+        let record = DiagnosticRecordV1::new(
+            metadata.operation_id.clone(),
+            OperationKind::Capture,
+            Stage::QueueSetup,
+            DiagnosticEvent::Decision,
+        );
+        for _ in 0..32 {
+            owner.sink().record(&record);
+        }
+        let health = owner.finish(Outcome::Success);
+        assert_eq!(
+            health.state,
+            if partial {
+                ArchiveState::Partial
+            } else {
+                ArchiveState::Complete
+            }
+        );
+        let path = suite.join(format!("bitmaps_test/{run}/page__FINAL.png"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &image).unwrap();
+        crate::test::capture::write_capture_log(
+            &output,
+            &path,
+            &ArchiveReference {
+                operation_id: metadata.operation_id,
+                execution_id: None,
+                state: health.state,
+                missing_records: health.missing_records,
+            },
+        )
+        .unwrap();
+        crate::compare::report_gen::generate_comparison_report(&suite, &suite_id, run, 0.0, 1)
+            .unwrap();
+        let catalog = crate::desktop::results::Catalog::load_selected(
+            &output,
+            crate::desktop::results::ReportSelection::Run(run),
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.reports[0].report.tests[0].outcome(),
+            crate::desktop::results::Outcome::Passed
+        );
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 2;
+                let suites = this.session.suites.clone();
+                this.results.update(cx, |panel, cx| {
+                    panel.set_suites(suites);
+                    panel.set_visible(true, cx);
+                    panel.show_run(output.clone(), run.into(), window, cx);
+                });
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("results-show-capture-log")
+                .is_some_and(|element| element.visible())
+                || window
+                    .try_find("results-log-test")
+                    .is_some_and(|element| element.visible())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            if window.try_find("results-show-capture-log").is_some() {
+                window.click("results-show-capture-log", cx);
+            }
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+            view.read(cx)
+                .results
+                .read(cx)
+                .capture_log_text(cx)
+                .contains(if partial {
+                    "Partial / interrupted"
+                } else {
+                    "Loaded from archive"
+                })
+        })
+        .await;
+        let destination = directory.path().join(format!("{run}.txt"));
+        cx.update_window(handle.into(), |_, window, cx| {
+            let controls = view.read(cx).results.read(cx).log_controls_handle();
+            controls.update(cx, |controls, _| {
+                controls.export_destination(destination.clone())
+            });
+            window.render_frame(cx);
+            if partial {
+                assert!(window.find("log-health-warning").visible());
+                assert!(window.find("results-log-health-warning").visible());
+            }
+            window.click("log-download", cx);
+        })
+        .unwrap();
+        if partial {
+            assert!(!destination.exists());
+        } else {
+            cx.wait_for(handle.into(), Duration::from_secs(10), |window, _| {
+                window
+                    .try_find("log-export-status")
+                    .is_some_and(|status| status.label() == Some("Log exported"))
+            })
+            .await;
+            assert!(destination.is_file());
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            if window.try_find("results-log-back").is_some() {
+                window.click("results-log-back", cx);
+            }
+        })
+        .unwrap();
+        if partial {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.update(cx, |this, cx| {
+                    this.main_tab = 1;
+                    this.runs.update(cx, |panel, cx| {
+                        use crate::{
+                            desktop::runner::{RunCommand, RunOptions, RunOutcome, RunRequest},
+                            progress::{Event, Job, Record},
+                        };
+                        panel.manager.request = Some(RunRequest {
+                            root: directory.path().to_owned(),
+                            command: RunCommand::Test,
+                            options: RunOptions {
+                                run_id: run.into(),
+                                ..Default::default()
+                            },
+                        });
+                        panel.manager.outcome = Some(RunOutcome::Completed);
+                        panel.manager.progress.apply(Record {
+                            version: 1,
+                            elapsed_ms: 0,
+                            event: Event::Queued {
+                                job: Job {
+                                    id: 77,
+                                    suite_id: suite_id.clone(),
+                                    suite_name: "ui-test".into(),
+                                    scenario_id: "page".into(),
+                                    label: "Page".into(),
+                                    viewport: "desktop".into(),
+                                    captures: vec!["page__FINAL".into()],
+                                },
+                            },
+                        });
+                        panel.manager.progress.apply(Record {
+                            version: 1,
+                            elapsed_ms: 1,
+                            event: Event::Compared {
+                                suite_id: suite_id.clone(),
+                                capture: "page__FINAL".into(),
+                                label: "Page".into(),
+                                scenario_id: Some("page".into()),
+                                passed: true,
+                                error: None,
+                            },
+                        });
+                        panel.show_scenario_log("ui-test", "page", window, cx);
+                    });
+                });
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+                view.read(cx)
+                    .runs
+                    .read(cx)
+                    .rendered_log()
+                    .contains("Partial / interrupted")
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.click("log-activity", cx);
+                window.render_frame(cx);
+                assert_eq!(window.find("run-outcome-heading").label(), Some("1 passed"));
+                assert!(window.find("run-log-health-warning").visible());
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[gpui_kit::test]
 async fn run_log_filter_search_download(cx: &mut TestAppContext) {
     use crate::progress::{Event, Record};
     let directory = tempfile::tempdir().unwrap();

@@ -276,7 +276,7 @@ impl Render for LogControls {
                     .icon(IconName::Copy)
                     .tooltip("Copy displayed page")
                     .accessibility_label("Copy displayed page")
-                    .disabled(self.state.is_none())
+                    .disabled(self.state != Some(ArchiveState::Complete))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(LogControlEvent::Copy))),
             )
             .child(
@@ -292,6 +292,25 @@ impl Render for LogControls {
                     .accessibility_label("Download complete filtered log")
                     .disabled(self.busy || self.state != Some(ArchiveState::Complete))
                     .on_click(cx.listener(|this, _, _, cx| this.download(cx))),
+            )
+            .when(
+                self.state
+                    .is_some_and(|state| state != ArchiveState::Complete)
+                    && !self.live,
+                |bar| {
+                    let warning =
+                        format!("Log unavailable or incomplete: {reason}. Export disabled.");
+                    bar.child(
+                        div()
+                            .id("log-health-warning")
+                            .role(Role::Status)
+                            .aria_label(warning.clone())
+                            .test_support()
+                            .text_xs()
+                            .text_color(cx.theme().warning)
+                            .child(warning),
+                    )
+                },
             )
             .child(
                 div()

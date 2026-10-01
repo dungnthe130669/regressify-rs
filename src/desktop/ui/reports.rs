@@ -2258,6 +2258,18 @@ impl Render for ResultsPanel {
                 )
             })
             .unwrap_or_default();
+        let log_warning = self.selected_report().is_some_and(|report| {
+            report.report.tests.iter().any(|test| {
+                [&test.pair.reference_log, &test.pair.test_log]
+                    .into_iter()
+                    .flatten()
+                    .any(|log| !log.state.can_export())
+            })
+        }) || self
+            .capture_log
+            .page
+            .as_ref()
+            .is_some_and(|page| !page.state.can_export());
         div()
             .id("results-panel")
             .test_support()
@@ -2346,6 +2358,10 @@ impl Render for ResultsPanel {
                             })),
                     ),
             )
+            .when(log_warning, |panel| panel.child(div().id("results-log-health-warning").role(Role::Status)
+                .aria_label("Some capture logs are incomplete or unavailable; image results are unchanged").test_support()
+                .px_3().py_1().text_xs().text_color(cx.theme().warning)
+                .child("Some capture logs are incomplete or unavailable; image results are unchanged")))
             .child(div().flex_1().min_h_0().child(self.render_comparison(cx)))
             .children(self.catalog.warnings.first().map(|warning| {
                 div()
