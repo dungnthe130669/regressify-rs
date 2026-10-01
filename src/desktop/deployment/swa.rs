@@ -605,6 +605,10 @@ mod tests {
 
     #[tokio::test]
     async fn deployment_protocol_retries_upload_and_never_sends_token_to_blob() -> Result<()> {
+        azure_retry_fixture().await
+    }
+
+    async fn azure_retry_fixture() -> Result<()> {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = requests.clone();
         let upload_count = Arc::new(AtomicUsize::new(0));
@@ -710,6 +714,30 @@ mod tests {
             serde_json::from_slice::<Value>(&request.2)?["uploadInfo"]["status"],
             "Succeeded"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn mocked_deployment_produces_operation_kind_deployment_journal() -> Result<()> {
+        use crate::diagnostics::{
+            journal::{ArchiveState, JournalReader, tests::exercise_journal_round_trip},
+            record::{OperationId, OperationKind},
+        };
+        let logs = tempfile::tempdir()?;
+        super::super::with_deployment_journal(logs.path(), azure_retry_fixture()).await?;
+        let directory = std::fs::read_dir(logs.path().join("_diagnostics"))?
+            .next()
+            .unwrap()?;
+        let operation =
+            OperationId::try_from(directory.file_name().into_string().unwrap()).unwrap();
+        let reader = JournalReader::open(logs.path(), &operation)?;
+        assert_eq!(reader.metadata.operation_kind, OperationKind::Deployment);
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+        let mut records = Vec::new();
+        reader.visit(|record| records.push(record))?;
+        assert!(records.len() > 2);
+        records.pop();
+        exercise_journal_round_trip(reader.metadata, records);
         Ok(())
     }
 

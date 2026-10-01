@@ -807,8 +807,40 @@ fn validate_static_configuration(root: &Path, provider: DeploymentProvider) -> R
     Ok(())
 }
 
+pub(super) async fn with_deployment_journal<Output>(
+    output: &Path,
+    work: impl std::future::Future<Output = Result<Output>>,
+) -> Result<Output> {
+    use crate::diagnostics::{
+        record::{OperationKind, Outcome},
+        runtime,
+    };
+    let operation = runtime::Operation::start(output, OperationKind::Deployment, None, None, None);
+    let result = runtime::scope(Some(operation.context()), work).await;
+    operation
+        .finish(if result.is_ok() {
+            Outcome::Success
+        } else {
+            Outcome::Failure
+        })
+        .await;
+    result
+}
+
 fn phase(name: &str) {
-    eprintln!("{name}");
+    use crate::diagnostics::{record::*, runtime};
+    if runtime::current().is_none() {
+        eprintln!("{name}");
+    }
+    runtime::event(
+        Stage::ApiUploads,
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [(
+            Field::Artifact,
+            FieldValue::Identity(SafeIdentity::fingerprint(name)),
+        )],
+    );
     crate::progress::emit(crate::progress::Event::Phase { name: name.into() });
 }
 
@@ -817,7 +849,19 @@ pub(super) async fn with_heartbeat<Work: std::future::Future>(
     work: Work,
 ) -> Work::Output {
     monitor(work, std::time::Duration::from_secs(5), |elapsed| {
-        eprintln!("{label}: still working ({}s elapsed)", elapsed.as_secs());
+        use crate::diagnostics::{record::*, runtime};
+        if runtime::current().is_none() {
+            eprintln!("{label}: still working ({}s elapsed)", elapsed.as_secs());
+        }
+        runtime::event(
+            Stage::RetryPolling,
+            DiagnosticEvent::Heartbeat,
+            Severity::Info,
+            [(
+                Field::ElapsedMs,
+                FieldValue::Number(elapsed.as_millis() as u64),
+            )],
+        );
     })
     .await
 }
