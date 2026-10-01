@@ -53,6 +53,13 @@ operation-level settings, not scenario configuration.
 
 ### Diagnostic Storage Limits
 
+Startup/argument/configuration outcomes are recorded separately under the user's
+local application data directory at `regressify/diagnostics/startup/_diagnostics`.
+These safe operational journals are never included in public capture reports and
+are not automatically pruned. Entry points explicitly finalize them before exit;
+interrupted processes can leave a partial archive. The archive kill-switch below
+also disables startup journal creation.
+
 `--diagnostic-chunk-size-bytes` controls journal segment size (default `524288`,
 512 KiB; range 4096 bytes to 8 MiB). `--diagnostic-disk-budget-bytes` limits
 one operation's journal (default `134217728`, 128 MiB; maximum 16 GiB). The budget

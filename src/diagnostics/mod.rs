@@ -8,3 +8,4 @@ pub mod journal;
 pub mod record;
 pub(crate) mod redaction;
 pub mod runtime;
+pub mod startup;

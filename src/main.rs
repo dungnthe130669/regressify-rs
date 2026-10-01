@@ -8,17 +8,37 @@ use regressify::{application, cli::Cli};
 #[tokio::main]
 async fn main() -> Result<()> {
     regressify::diagnostics::install::install_subscriber();
-    let cli = Cli::parse();
-    regressify::diagnostics::install::configure_console(
-        cli.log_level,
-        cli.log_verbose || cli.verbose,
-        cli.no_print,
-    )?;
+    let startup = regressify::diagnostics::startup::StartupLog::begin();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            let code = error.exit_code();
+            let result = if code == 0 {
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!("Invalid command arguments"))
+            };
+            startup.finish(&result);
+            error.print()?;
+            regressify::diagnostics::install::flush();
+            exit(code);
+        }
+    };
     let pause = cli.pause;
     let pause_if_error = cli.pause_if_error;
     let mut exit_code = 1;
 
-    match application::execute(cli).await {
+    let result = async {
+        regressify::diagnostics::install::configure_console(
+            cli.log_level,
+            cli.log_verbose || cli.verbose,
+            cli.no_print,
+        )?;
+        application::execute(cli).await
+    }
+    .await;
+    startup.finish(&result);
+    match result {
         Ok(_) => {
             exit_code = 0;
 

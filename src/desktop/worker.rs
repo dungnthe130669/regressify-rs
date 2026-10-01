@@ -33,6 +33,14 @@ pub fn read_request(input: impl Read) -> Result<WorkerRequest> {
 
 pub fn run_stdio() -> Result<()> {
     crate::diagnostics::install::install_subscriber();
+    let startup = crate::diagnostics::startup::StartupLog::begin();
+    let result = run_request();
+    startup.finish(&result);
+    crate::diagnostics::install::flush();
+    result
+}
+
+fn run_request() -> Result<()> {
     let request = read_request(std::io::stdin().lock())?;
     if let Some(path) = &request.events_path {
         crate::progress::install(path)?;
