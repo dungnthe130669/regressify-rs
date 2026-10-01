@@ -9,6 +9,109 @@ use regressify::desktop::{
     worker::{WORKER_FLAG, WorkerRequest},
 };
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LogBenchmarkSample {
+    archive_enabled: bool,
+    repetition: usize,
+    seconds: f64,
+    journal_bytes: u64,
+    output_bytes: u64,
+    journal_files: usize,
+    records: u64,
+}
+
+#[test]
+#[ignore = "benchmark: cached managed Chromium, 4 suites x 2 viewports, 10 runs"]
+fn logging_overhead_benchmark() {
+    let site = LoggingSite::new();
+    let root = tempfile::tempdir().unwrap();
+    logging_workspace(root.path(), &site, 4, false);
+    let warmup = logging_cli(root.path(), "warmup", "test", true, true);
+    assert!(
+        warmup.status.success(),
+        "{}",
+        String::from_utf8_lossy(&warmup.stderr)
+    );
+    let mut samples = Vec::new();
+    for repetition in 0..5 {
+        for enabled in if repetition % 2 == 0 {
+            [false, true]
+        } else {
+            [true, false]
+        } {
+            let workspace = tempfile::tempdir().unwrap();
+            logging_workspace(workspace.path(), &site, 4, false);
+            let started = std::time::Instant::now();
+            let result = logging_cli(workspace.path(), "benchmark", "test", !enabled, true);
+            let seconds = started.elapsed().as_secs_f64();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            let output = workspace.path().join(".regressify");
+            let mut sample = LogBenchmarkSample {
+                archive_enabled: enabled,
+                repetition: repetition + 1,
+                seconds,
+                journal_bytes: 0,
+                output_bytes: 0,
+                journal_files: 0,
+                records: 0,
+            };
+            let mut images = 0;
+            for entry in walkdir::WalkDir::new(&output)
+                .into_iter()
+                .map(Result::unwrap)
+                .filter(|entry| entry.file_type().is_file())
+            {
+                let relative = entry.path().strip_prefix(&output).unwrap();
+                let bytes = entry.metadata().unwrap().len();
+                sample.output_bytes += bytes;
+                if relative.starts_with("_diagnostics") {
+                    sample.journal_bytes += bytes;
+                    sample.journal_files += 1;
+                    if entry.file_name() == "index.json" {
+                        let index: regressify::diagnostics::journal::ArchiveIndex =
+                            serde_json::from_slice(&std::fs::read(entry.path()).unwrap()).unwrap();
+                        assert_eq!(
+                            index.state,
+                            regressify::diagnostics::journal::ArchiveState::Complete
+                        );
+                        sample.records += index.records;
+                    }
+                }
+                if entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "png")
+                {
+                    assert!(
+                        regressify::test::capture::read_error_marker(entry.path()).is_none(),
+                        "Benchmark capture failed"
+                    );
+                    images += 1;
+                }
+            }
+            assert_eq!(images, 8);
+            assert_eq!(sample.journal_bytes == 0, !enabled);
+            println!(
+                "LOG_BENCHMARK_SAMPLE {}",
+                serde_json::to_string(&sample).unwrap()
+            );
+            samples.push(sample);
+        }
+    }
+    if let Some(path) = std::env::var_os("REGRESSIFY_LOG_BENCHMARK_OUTPUT") {
+        regressify::helpers::write_file_atomically(
+            Path::new(&path),
+            &serde_json::to_vec_pretty(&samples).unwrap(),
+        )
+        .unwrap();
+    }
+}
+
 struct LoggingSite {
     server: std::sync::Arc<tiny_http::Server>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -55,7 +158,7 @@ impl Drop for LoggingSite {
 fn logging_workspace(root: &Path, site: &LoggingSite, suites: usize, fail_first: bool) {
     std::fs::create_dir_all(root.join("visual_tests")).unwrap();
     std::fs::create_dir_all(root.join("common")).unwrap();
-    std::fs::write(root.join("regressify.yaml"), "delay: 0\npostInteractionWait: 0\nsettleTimeout: 0\nfreezeAnimations: false\nnoScrollTop: true\nelementTimeout: 2000\nactionabilityTimeout: 2000\nscenarioTimeout: 15000\nlogLevel: error\n").unwrap();
+    std::fs::write(root.join("regressify.yaml"), "delay: 0\npostInteractionWait: 0\nsettleTimeout: 0\nfreezeAnimations: false\nnoScrollTop: true\nelementTimeout: 5000\nactionabilityTimeout: 5000\nscenarioTimeout: 30000\nlogLevel: error\n").unwrap();
     std::fs::write(root.join("common/_viewports.yaml"), "- label: desktop\n  width: 800\n  height: 600\n- label: mobile\n  width: 375\n  height: 667\n").unwrap();
     for index in 0..suites {
         let target = if fail_first && index == 0 {
