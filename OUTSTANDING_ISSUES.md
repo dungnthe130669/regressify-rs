@@ -20,10 +20,10 @@ Issues identified during adversarial review that remain after the September 2026
 - The exact test fails identically with the new logging subscriber hooks removed
   from the worker. The other ten non-ignored worker integration cases passed.
   This is a pre-existing test gap, not a subscriber-induced asset change.
-- [Logging packaging Task 027](docs/plan/log-revamp-tasks/027-snapshot-log-packaging-inventory.md)
-  must assert the exact referenced dependency set, including previews and logs,
-  when extending staging inventory. Until then, report this full-gate failure
-  separately from the passing focused logging checks.
+- Resolved by [logging packaging Task 027](docs/plan/log-revamp-tasks/027-snapshot-log-packaging-inventory.md):
+  the assertion now compares the exact referenced original/preview image set
+  rather than assuming two files. A separate exact ZIP inventory test covers
+  selected-only log chunks and excludes raw journals and unselected captures.
 
 ## Large-Suite Preview Performance (2026-10-01)
 

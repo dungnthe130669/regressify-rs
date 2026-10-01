@@ -410,9 +410,10 @@ pub(crate) fn generate_site(
     })?;
     let mut summaries = Vec::new();
     let mut images = BTreeMap::new();
+    let mut logs = super::logs::LogCache::new();
     for id in suites {
         if let Some(report) =
-            super::capture_report::load_suite(&root, &staged_root, id, &mut images)
+            super::capture_report::load_suite(&root, &staged_root, id, &mut images, &mut logs)
                 .with_context(|| format!("Failed to process snapshot suite '{id}'"))?
         {
             let passed = report
@@ -633,7 +634,7 @@ fn prune_generated_files(root: &Path, active: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn versioned_path(path: &str, kind: &str) -> Result<PathBuf> {
+pub(super) fn versioned_path(path: &str, kind: &str) -> Result<PathBuf> {
     let extension = if kind == "data" { ".json" } else { ".png" };
     let (relative, version) = path
         .split_once("?v=")
@@ -782,6 +783,43 @@ pub(crate) fn artifact_paths(output: &Path, selected: &[String]) -> Result<Vec<P
                 }
                 if paths.insert(relative) {
                     read_versioned(&root, image, "images")?;
+                }
+            }
+            if let Some(logs) = &capture.logs {
+                for log in [&logs.reference, &logs.test].into_iter().flatten() {
+                    ensure!(
+                        log.chunks.len() <= 16_384,
+                        "Snapshot log has too many chunks"
+                    );
+                    ensure!(
+                        log.state != crate::diagnostics::journal::ArchiveState::Complete
+                            || log.missing_records == Some(0),
+                        "Complete snapshot log has missing records"
+                    );
+                    let mut records = 0;
+                    let mut chunks = BTreeSet::new();
+                    for chunk in &log.chunks {
+                        let relative = versioned_path(chunk, "data")?;
+                        let operation = log
+                            .operation_id
+                            .as_ref()
+                            .context("Log chunk has no operation identity")?;
+                        ensure!(
+                            relative.starts_with(
+                                Path::new("_snapshot/data/logs").join(operation.as_str())
+                            ) && chunks.insert(relative.clone()),
+                            "Snapshot log path does not belong to its operation"
+                        );
+                        if let Some(previous) =
+                            image_versions.insert(relative.clone(), chunk.clone())
+                        {
+                            ensure!(previous == *chunk, "Conflicting snapshot log versions");
+                        }
+                        let bytes = read_versioned(&root, chunk, "data")?;
+                        super::logs::validate_chunk(&bytes, log, &mut records)?;
+                        paths.insert(relative);
+                    }
+                    ensure!(records == log.records, "Snapshot log record count mismatch");
                 }
             }
         }

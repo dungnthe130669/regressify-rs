@@ -404,6 +404,22 @@ fn prepare_report_inner(
     deadline: Instant,
 ) -> Result<PreparedReport> {
     check_deadline(deadline)?;
+    let log_files = files
+        .iter()
+        .filter(|file| file.relative.starts_with("_snapshot/data/logs"))
+        .collect::<Vec<_>>();
+    let log_bytes = log_files.iter().map(|file| file.bytes).sum::<u64>();
+    ensure!(
+        log_bytes <= limit,
+        "Capture log assets require {} MiB, exceeding this provider's {} MiB storage budget (largest log: {}). Select fewer suites or use a larger provider allowance; logs are never truncated.",
+        log_bytes.div_ceil(MIB),
+        limit / MIB,
+        log_files
+            .iter()
+            .max_by_key(|file| file.bytes)
+            .map(|file| file.relative.display().to_string())
+            .unwrap_or_default()
+    );
     files.sort_by(|left, right| {
         right
             .bytes

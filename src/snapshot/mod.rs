@@ -1,6 +1,7 @@
 mod actions;
 mod capture_report;
 mod helpers;
+mod logs;
 mod site;
 
 pub use actions::snapshot;

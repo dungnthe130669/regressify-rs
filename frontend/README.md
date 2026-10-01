@@ -162,6 +162,13 @@ Messages render as text. Download verifies the full record sequence and exports
 all matching records, subject to an explicit 128 MiB browser export limit; it never
 offers a shortened file as complete. Non-complete logs disable export controls.
 
+Snapshot generation publishes at most 250 records and 256 KiB per JSON chunk under
+`_snapshot/data/logs/<operation-id>`. Selected captures share versioned chunks for
+their original execution. The deployment inventory verifies every chunk's version,
+identity, sequence, and record count; raw `_diagnostics` journals, deployment logs,
+unselected runs, and workspace state are excluded. Log bytes count against the
+provider's existing package/storage allowance and are never silently truncated.
+
 Resource filenames are stable; cache versions appear only in `?v=...`.
 The public aggregate endpoint `/_snapshot/status.json` is deliberately
 unversioned, uses `Cache-Control: no-cache`, and permits anonymous cross-origin

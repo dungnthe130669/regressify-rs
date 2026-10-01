@@ -83,6 +83,8 @@ struct RawPair {
     mis_match_threshold: f64,
     reference: Option<String>,
     test: Option<String>,
+    reference_log: Option<crate::test::capture::CaptureLog>,
+    test_log: Option<crate::test::capture::CaptureLog>,
     diff_image: Option<String>,
     reference_url: Option<String>,
     url: Option<String>,
@@ -261,6 +263,7 @@ pub(super) fn load_suite(
     output: &Path,
     id: &str,
     images: &mut BTreeMap<PathBuf, ImageAsset>,
+    logs: &mut super::logs::LogCache,
 ) -> Result<Option<SuiteReport>> {
     ensure!(
         valid_segment(id) && id != "_snapshot",
@@ -412,7 +415,14 @@ pub(super) fn load_suite(
             pair.label
         };
         tests.push(Capture {
-            logs: None,
+            logs: if pair.reference_log.is_some() || pair.test_log.is_some() {
+                Some(super::site::CaptureLogs {
+                    reference: super::logs::publish(root, output, pair.reference_log, logs)?,
+                    test: super::logs::publish(root, output, pair.test_log, logs)?,
+                })
+            } else {
+                None
+            },
             id: capture_id,
             label,
             scenario,
@@ -505,6 +515,7 @@ mod tests {
             &root.canonicalize()?,
             "suite",
             &mut BTreeMap::new(),
+            &mut super::super::logs::LogCache::new(),
         )
     }
 

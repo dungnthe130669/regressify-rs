@@ -805,14 +805,31 @@ fn filtered_snapshot_stages_only_selected_suites_and_their_public_dependencies()
     assert_ne!(capture["reference"], capture["test"]);
     assert_eq!(read_resource(capture["test"].as_str().unwrap()), image);
     assert_eq!(read_resource(capture["reference"].as_str().unwrap()), image);
-    assert_eq!(
-        walkdir::WalkDir::new(staging.join("_snapshot/images"))
-            .into_iter()
-            .map(Result::unwrap)
-            .filter(|entry| entry.file_type().is_file())
-            .count(),
-        2
-    );
+    let mut referenced = std::collections::BTreeSet::new();
+    for role in ["reference", "test", "diff"] {
+        if let Some(url) = capture[role].as_str() {
+            referenced.insert(url.split_once("?v=").unwrap().0.to_owned());
+        }
+    }
+    if let Some(previews) = capture["previews"].as_object() {
+        for url in previews.values().filter_map(serde_json::Value::as_str) {
+            referenced.insert(url.split_once("?v=").unwrap().0.to_owned());
+        }
+    }
+    let staged_images = walkdir::WalkDir::new(staging.join("_snapshot/images"))
+        .into_iter()
+        .map(Result::unwrap)
+        .filter(|entry| entry.file_type().is_file())
+        .map(|entry| {
+            entry
+                .path()
+                .strip_prefix(&staging)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(staged_images, referenced);
     assert!(!summary.contains("html_report"));
     for name in [
         "index.html",

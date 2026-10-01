@@ -1155,6 +1155,32 @@ fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn log_budget_exceeded_fails_actionably() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), "report").unwrap();
+        let log = root
+            .path()
+            .join("_snapshot/data/logs/selected-capture/chunk-000000.json");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        std::fs::File::create(&log)
+            .unwrap()
+            .set_len(260 * 1024 * 1024)
+            .unwrap();
+        let error = super::optimization::prepare(
+            root.path(),
+            250 * 1024 * 1024,
+            std::time::Instant::now() + std::time::Duration::from_secs(10),
+        )
+        .err()
+        .unwrap()
+        .to_string();
+        for detail in ["260 MiB", "250 MiB", "selected-capture", "never truncated"] {
+            assert!(error.contains(detail), "{error}");
+        }
+        assert_eq!(std::fs::metadata(log).unwrap().len(), 260 * 1024 * 1024);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_mid_upload_reports_unknown_remote_state() -> Result<()> {
         use crate::diagnostics::{

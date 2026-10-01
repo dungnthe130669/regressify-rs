@@ -138,6 +138,95 @@ mod tests {
     use super::Package;
 
     #[test]
+    fn package_manifest_includes_only_selected_logs() {
+        use crate::diagnostics::{
+            journal::{JournalOptions, JournalWriter, OperationMetadata},
+            record::*,
+            runtime::ArchiveReference,
+        };
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join("output");
+        let image = lodepng::encode32(&[12_u8, 24, 36, 255], 1, 1).unwrap();
+        let mut operations = Vec::new();
+        for id in ["chosen", "excluded"] {
+            let suite = output.join(id);
+            let capture = suite.join("bitmaps_test/run/page__FINAL.png");
+            std::fs::create_dir_all(capture.parent().unwrap()).unwrap();
+            std::fs::create_dir_all(suite.join("bitmaps_reference")).unwrap();
+            std::fs::write(&capture, &image).unwrap();
+            std::fs::write(suite.join("bitmaps_reference/page__FINAL.png"), &image).unwrap();
+            let metadata = OperationMetadata::new(OperationKind::Capture, None);
+            let mut writer =
+                JournalWriter::create(&output, metadata.clone(), JournalOptions::default())
+                    .unwrap();
+            writer
+                .write(&DiagnosticRecordV1::new(
+                    metadata.operation_id.clone(),
+                    OperationKind::Capture,
+                    Stage::QueueSetup,
+                    DiagnosticEvent::Started,
+                ))
+                .unwrap();
+            writer.finalize(Outcome::Success).unwrap();
+            let archive = ArchiveReference {
+                operation_id: metadata.operation_id.clone(),
+                execution_id: None,
+                state: crate::diagnostics::journal::ArchiveState::Complete,
+                missing_records: Some(0),
+            };
+            crate::test::capture::write_capture_log(&output, &capture, &archive).unwrap();
+            crate::compare::report_gen::generate_comparison_report(&suite, id, "run", 0.0, 1)
+                .unwrap();
+            operations.push(metadata.operation_id);
+        }
+        crate::snapshot::generate_site(
+            &output,
+            &["chosen".into()],
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+        let stage = root.path().join("stage");
+        super::super::stage_reports(&output, &["chosen".into()], &stage).unwrap();
+        let package = Package::create(&stage, 100_000).unwrap();
+        let archive = zip::ZipArchive::new(package.file.reopen().unwrap()).unwrap();
+        let names = archive
+            .file_names()
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        let inventory = crate::snapshot::artifact_paths(&output, &["chosen".into()])
+            .unwrap()
+            .into_iter()
+            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(names, inventory);
+        assert!(names.contains(&format!(
+            "_snapshot/data/logs/{}/chunk-000000.json",
+            operations[0]
+        )));
+        assert!(
+            !names
+                .iter()
+                .any(|name| name.contains(operations[1].as_str())
+                    || name.starts_with("_diagnostics"))
+        );
+        assert!(crate::diagnostics::journal::archive_directory(&output, &operations[1]).is_dir());
+        let report: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(stage.join("_snapshot/data/suites/chosen.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(report["tests"][0]["logs"]["test"]["state"], "complete");
+        assert_eq!(report["tests"][0]["logs"]["test"]["records"], 2);
+        crate::snapshot::refresh_site_versions(&stage).unwrap();
+        assert_eq!(
+            crate::snapshot::artifact_paths(&stage, &["chosen".into()])
+                .unwrap()
+                .len(),
+            names.len()
+        );
+    }
+
+    #[test]
     fn packaging_enforces_provider_file_limits_and_keeps_nested_paths() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("assets")).unwrap();
