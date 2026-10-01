@@ -339,28 +339,31 @@ impl CloudflareClient {
         let directory = root.to_path_buf();
         let exclude = target.exclude.clone();
         let html_handling = target.html_handling.clone();
+        let diagnostic_context = crate::diagnostics::runtime::current();
         // Keep optimized files alive until asset uploads and public verification have finished.
         let (manifest, headers, redirects, _prepared) = tokio::task::spawn_blocking(move || {
-            let (manifest, prepared) =
-                Manifest::prepare(&directory, deadline, MAX_CONTENT_BYTES, &exclude)?;
-            let directory = directory.canonicalize()?;
-            let patterns = exclude
-                .iter()
-                .map(|pattern| glob::Pattern::new(pattern))
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            let policy = |name: &str| {
-                if patterns
+            crate::diagnostics::runtime::in_scope(diagnostic_context, || {
+                let (manifest, prepared) =
+                    Manifest::prepare(&directory, deadline, MAX_CONTENT_BYTES, &exclude)?;
+                let directory = directory.canonicalize()?;
+                let patterns = exclude
                     .iter()
-                    .any(|pattern| pattern.matches_path(Path::new(name)))
-                {
-                    Ok(String::new())
-                } else {
-                    hosting_policy(&directory, name)
-                }
-            };
-            let headers = policy("_headers")?;
-            let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
-            Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
+                    .map(|pattern| glob::Pattern::new(pattern))
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let policy = |name: &str| {
+                    if patterns
+                        .iter()
+                        .any(|pattern| pattern.matches_path(Path::new(name)))
+                    {
+                        Ok(String::new())
+                    } else {
+                        hosting_policy(&directory, name)
+                    }
+                };
+                let headers = policy("_headers")?;
+                let redirects = cloudflare_redirects(&policy("_redirects")?, &html_handling);
+                Ok::<_, anyhow::Error>((manifest, headers, redirects, prepared))
+            })
         })
         .await
         .context("Cloudflare file preparation task failed")?

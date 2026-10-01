@@ -371,12 +371,13 @@ impl SwaClient {
             }
             phase("Packaging selected reports");
             let directory = root.to_path_buf();
-            let package = tokio::task::spawn_blocking(move || {
+            let diagnostic_context = crate::diagnostics::runtime::current();
+            let package = tokio::task::spawn_blocking(move || crate::diagnostics::runtime::in_scope(diagnostic_context, || {
                 let prepared = optimization::prepare(&directory, tier.limit(), deadline)?;
                 let package = Package::create(prepared.path(), 100_000)?;
                 ensure!(package.bytes <= tier.limit(), "Report size changed during packaging and exceeds the Azure {} storage limit; retry deployment", tier.label());
                 Ok::<_, anyhow::Error>(package)
-            }).await??;
+            })).await??;
             let mut request = json!({
                 "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
                     "pullRequestId": null, "pullRequestTitle": null, "headBranch": null, "baseBranch": null,

@@ -30,6 +30,15 @@ pub enum DeploymentProvider {
 }
 
 impl DeploymentProvider {
+    pub(crate) fn diagnostic_value(self) -> crate::diagnostics::record::SafeValue {
+        use crate::diagnostics::record::SafeValue;
+        match self {
+            Self::AzureSwa => SafeValue::Azure,
+            Self::Netlify => SafeValue::Netlify,
+            Self::CloudflareWorkers => SafeValue::Cloudflare,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::AzureSwa => "Azure Static Web Apps",
@@ -999,6 +1008,24 @@ fn report_image_relative(suite: &str, key: &str, image: &str) -> Result<PathBuf>
 }
 
 pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) -> Result<()> {
+    use crate::diagnostics::{record::*, runtime};
+    runtime::stage_sync(
+        Stage::SnapshotStaging,
+        [
+            (
+                Field::SelectedSuites,
+                FieldValue::Number(suite_ids.len() as u64),
+            ),
+            (
+                Field::Artifact,
+                FieldValue::Identity(SafeIdentity::fingerprint("index.html")),
+            ),
+        ],
+        || stage_reports_inner(output, suite_ids, destination),
+    )
+}
+
+fn stage_reports_inner(output: &Path, suite_ids: &[String], destination: &Path) -> Result<()> {
     ensure!(
         !suite_ids.is_empty(),
         "Select at least one test suite to deploy"
@@ -1011,6 +1038,7 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
         "Deployment staging directory must be new"
     );
     let dependencies = crate::snapshot::artifact_paths(&output, suite_ids)?;
+    let dependency_count = dependencies.len();
     fs::create_dir_all(destination).with_context(|| {
         format!(
             "Cannot create deployment staging directory '{}'",
@@ -1022,7 +1050,22 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
     let mut copied_bytes = 0_u64;
     let mut last_update = std::time::Instant::now();
     let mut copy = |relative: &Path, missing_reference: bool| -> Result<()> {
-        let Some(source) = artifact_source(&output, relative, missing_reference)? else {
+        let Some(source) =
+            artifact_source(&output, relative, missing_reference).inspect_err(|_| {
+                use crate::diagnostics::{record::*, runtime};
+                runtime::event(
+                    Stage::SnapshotStaging,
+                    DiagnosticEvent::StageFinished,
+                    Severity::Error,
+                    [(
+                        Field::Artifact,
+                        FieldValue::Identity(SafeIdentity::fingerprint(
+                            relative.to_string_lossy().as_bytes(),
+                        )),
+                    )],
+                );
+            })?
+        else {
             return Ok(());
         };
         if !copied.insert(relative.to_path_buf()) {
@@ -1050,6 +1093,18 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
             "Report changed during deployment staging"
         );
         copied_bytes += bytes;
+        if copied.len() == dependency_count {
+            use crate::diagnostics::{record::*, runtime};
+            runtime::event(
+                Stage::SnapshotStaging,
+                DiagnosticEvent::Decision,
+                Severity::Info,
+                [
+                    (Field::FileCount, FieldValue::Number(copied.len() as u64)),
+                    (Field::Bytes, FieldValue::Number(copied_bytes)),
+                ],
+            );
+        }
         if copied.len() == 1
             || copied.len().is_multiple_of(50)
             || last_update.elapsed().as_secs() >= 1
@@ -1084,6 +1139,54 @@ pub fn stage_reports(output: &Path, suite_ids: &[String], destination: &Path) ->
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn staging_failure_identifies_stage_and_artifact() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("synthetic-token-source");
+        fs::create_dir(&source).unwrap();
+        let operation =
+            runtime::Operation::start(root.path(), OperationKind::Deployment, None, None, None);
+        let result = runtime::scope(Some(operation.context()), async {
+            runtime::event(
+                Stage::Preflight,
+                DiagnosticEvent::Started,
+                Severity::Info,
+                [
+                    (Field::Provider, FieldValue::Kind(SafeValue::Azure)),
+                    (Field::CredentialPresent, FieldValue::Boolean(true)),
+                ],
+            );
+            super::stage_reports(&source, &["shop".into()], &root.path().join("staged"))
+        })
+        .await;
+        assert!(result.is_err());
+        let reference = operation.finish(Outcome::Failure).await;
+        let mut failed = false;
+        JournalReader::open(root.path(), &reference.operation_id)
+            .unwrap()
+            .visit(|record| {
+                assert!(
+                    !serde_json::to_string(&record)
+                        .unwrap()
+                        .contains("synthetic-token")
+                );
+                if record.stage == Stage::SnapshotStaging
+                    && record.outcome == Some(Outcome::Failure)
+                {
+                    failed = true;
+                    assert_eq!(
+                        record.fields.get(&Field::Artifact),
+                        Some(&FieldValue::Identity(SafeIdentity::fingerprint(
+                            "index.html"
+                        )))
+                    );
+                }
+            })
+            .unwrap();
+        assert!(failed);
+    }
+
     use super::*;
 
     #[tokio::test]

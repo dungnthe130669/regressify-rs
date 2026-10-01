@@ -375,6 +375,29 @@ pub(super) fn prepare_files(
 
 fn prepare_report(
     root: &Path,
+    files: Vec<ReportFile>,
+    original_bytes: u64,
+    limit: u64,
+    deadline: Instant,
+) -> Result<PreparedReport> {
+    use crate::diagnostics::{record::*, runtime};
+    runtime::stage_sync(
+        Stage::PackagingOptimization,
+        [
+            (Field::BytesBefore, FieldValue::Number(original_bytes)),
+            (Field::BudgetBytes, FieldValue::Number(limit)),
+            (Field::FileCount, FieldValue::Number(files.len() as u64)),
+            (
+                Field::Compression,
+                FieldValue::Boolean(original_bytes > limit),
+            ),
+        ],
+        || prepare_report_inner(root, files, original_bytes, limit, deadline),
+    )
+}
+
+fn prepare_report_inner(
+    root: &Path,
     mut files: Vec<ReportFile>,
     original_bytes: u64,
     limit: u64,
@@ -397,6 +420,16 @@ fn prepare_report(
         temporary: None,
     };
     if original_bytes <= limit {
+        use crate::diagnostics::{record::*, runtime};
+        runtime::event(
+            Stage::PackagingOptimization,
+            DiagnosticEvent::Decision,
+            Severity::Debug,
+            [
+                (Field::BytesAfter, FieldValue::Number(original_bytes)),
+                (Field::Compression, FieldValue::Boolean(false)),
+            ],
+        );
         return Ok(prepared);
     }
 
@@ -535,6 +568,16 @@ fn prepare_report(
         );
     }
     let reduced = files.iter().filter(|file| file.quality < 100).count();
+    use crate::diagnostics::{record::*, runtime};
+    runtime::event(
+        Stage::PackagingOptimization,
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [
+            (Field::BytesAfter, FieldValue::Number(total)),
+            (Field::Compression, FieldValue::Boolean(true)),
+        ],
+    );
     phase(&format!(
         "Temporary deployment report: {:.2} -> {:.2} MiB; {reduced} images quality-reduced; {skipped} skipped; original reports and baselines unchanged",
         original_bytes as f64 / MIB as f64,

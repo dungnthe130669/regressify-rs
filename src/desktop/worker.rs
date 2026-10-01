@@ -51,7 +51,25 @@ pub fn run_stdio() -> Result<()> {
                             .deployment
                             .as_ref()
                             .context("Deployment settings are missing")?;
-                        job.validate()?;
+                        use crate::diagnostics::{record::*, runtime};
+                        runtime::stage_sync(
+                            Stage::Preflight,
+                            [
+                                (
+                                    Field::Provider,
+                                    FieldValue::Kind(job.target.provider.diagnostic_value()),
+                                ),
+                                (
+                                    Field::Target,
+                                    FieldValue::Identity(SafeIdentity::fingerprint(&job.target.id)),
+                                ),
+                                (
+                                    Field::SelectedSuites,
+                                    FieldValue::Number(job.suite_ids.len() as u64),
+                                ),
+                            ],
+                            || job.validate(),
+                        )?;
                         let directory = request
                             .scratch_directory
                             .as_ref()
@@ -65,22 +83,35 @@ pub fn run_stdio() -> Result<()> {
                                 && std::fs::read_dir(directory)?.next().is_none(),
                             "Deployment staging directory must be a new empty directory"
                         );
+                        let token = job
+                            .target
+                            .token(&request.run.root)
+                            .context("Cannot load the deployment token")?;
+                        runtime::event(
+                            Stage::Preflight,
+                            DiagnosticEvent::Decision,
+                            Severity::Info,
+                            [(
+                                Field::CredentialPresent,
+                                FieldValue::Boolean(!token.is_empty()),
+                            )],
+                        );
                         Some((
                             job,
-                            super::deployment::DeploymentClient::new(
-                                &job.target,
-                                &job.target
-                                    .token(&request.run.root)
-                                    .context("Cannot load the deployment token")?,
-                            )?,
+                            super::deployment::DeploymentClient::new(&job.target, &token)?,
                         ))
                     } else {
                         None
                     };
                     if deployment.is_some() {
+                        use crate::diagnostics::{record::Stage, runtime};
                         super::deployment::with_heartbeat(
                             "Generating selected report snapshots",
-                            crate::application::execute(cli),
+                            runtime::stage(
+                                Stage::SnapshotStaging,
+                                [],
+                                crate::application::execute(cli),
+                            ),
                         )
                         .await
                         .context("Cannot generate report snapshots for deployment")?;
@@ -96,10 +127,13 @@ pub fn run_stdio() -> Result<()> {
                         let staging = directory.join("report");
                         let destination = staging.clone();
                         let suites = job.suite_ids.clone();
+                        let diagnostic_context = crate::diagnostics::runtime::current();
                         super::deployment::with_heartbeat(
                             "Staging selected reports",
                             tokio::task::spawn_blocking(move || {
-                                super::deployment::stage_reports(&output, &suites, &destination)
+                                crate::diagnostics::runtime::in_scope(diagnostic_context, || {
+                                    super::deployment::stage_reports(&output, &suites, &destination)
+                                })
                             }),
                         )
                         .await

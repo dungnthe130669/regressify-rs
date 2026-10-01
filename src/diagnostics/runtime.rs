@@ -136,11 +136,19 @@ impl Operation {
             crate::common::DIAGNOSTIC_OPTIONS
                 .get()
                 .copied()
-                .unwrap_or_default(),
+                .unwrap_or_else(|| {
+                    super::journal::JournalOptions::resolve(None, None, |name| {
+                        std::env::var(name).ok()
+                    })
+                    .unwrap_or_default()
+                }),
             crate::common::DISABLE_DIAGNOSTIC_ARCHIVE
                 .get()
                 .copied()
-                .unwrap_or(false),
+                .unwrap_or_else(|| {
+                    super::health::archives_disabled(|name| std::env::var(name).ok())
+                        .unwrap_or(true)
+                }),
             move |health| {
                 if let Some(warning) = health.warning {
                     install::emergency_warning(warning.message());

@@ -173,9 +173,37 @@ impl NetlifyClient {
             );
             phase("Hashing selected report files for Netlify");
             let directory = root.to_path_buf();
-            let manifest =
-                tokio::task::spawn_blocking(move || Manifest::create(&directory, deadline))
-                    .await??;
+            let diagnostic_context = crate::diagnostics::runtime::current();
+            let manifest = tokio::task::spawn_blocking(move || {
+                crate::diagnostics::runtime::in_scope(diagnostic_context, || {
+                    use crate::diagnostics::{record::*, runtime};
+                    runtime::stage_sync(
+                        Stage::PackagingOptimization,
+                        [
+                            (Field::Provider, FieldValue::Kind(SafeValue::Netlify)),
+                            (Field::Compression, FieldValue::Boolean(false)),
+                        ],
+                        || Manifest::create(&directory, deadline),
+                    )
+                })
+            })
+            .await??;
+            {
+                use crate::diagnostics::{record::*, runtime};
+                runtime::event(
+                    Stage::PackagingOptimization,
+                    DiagnosticEvent::Decision,
+                    Severity::Info,
+                    [
+                        (Field::Bytes, FieldValue::Number(manifest.bytes)),
+                        (
+                            Field::FileCount,
+                            FieldValue::Number(manifest.files.len() as u64),
+                        ),
+                        (Field::Compression, FieldValue::Boolean(false)),
+                    ],
+                );
+            }
             let body =
                 serde_json::to_vec(&serde_json::json!({"async":true, "files":&manifest.files}))?;
             ensure!(

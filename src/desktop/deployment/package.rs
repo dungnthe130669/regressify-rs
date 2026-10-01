@@ -16,6 +16,15 @@ pub(super) struct Package {
 
 impl Package {
     pub fn create(root: &Path, file_limit: u64) -> Result<Self> {
+        use crate::diagnostics::{record::*, runtime};
+        runtime::stage_sync(
+            Stage::PackagingOptimization,
+            [(Field::BudgetBytes, FieldValue::Number(MAX_PACKAGE_BYTES))],
+            || Self::create_inner(root, file_limit),
+        )
+    }
+
+    fn create_inner(root: &Path, file_limit: u64) -> Result<Self> {
         ensure!(
             root.join("index.html").is_file(),
             "Deployment requires index.html"
@@ -100,6 +109,21 @@ impl Package {
             file.as_file().metadata()?.len() as f64 / (1024.0 * 1024.0)
         ));
         file.as_file_mut().seek(SeekFrom::Start(0))?;
+        use crate::diagnostics::{record::*, runtime};
+        runtime::event(
+            Stage::PackagingOptimization,
+            DiagnosticEvent::Decision,
+            Severity::Info,
+            [
+                (Field::FileCount, FieldValue::Number(files)),
+                (Field::BytesBefore, FieldValue::Number(bytes)),
+                (
+                    Field::BytesAfter,
+                    FieldValue::Number(file.as_file().metadata()?.len()),
+                ),
+                (Field::Compression, FieldValue::Boolean(true)),
+            ],
+        );
         Ok(Self {
             file,
             bytes,
