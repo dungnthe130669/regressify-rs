@@ -7,6 +7,9 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, ensure};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use super::record::{DiagnosticEvent, Outcome, Stage};
 
 use super::record::{CaptureRunId, DiagnosticRecordV1, OperationId, OperationKind};
 
@@ -18,6 +21,81 @@ pub const MAX_SEGMENTS: usize = 16_384;
 pub const CHUNK_ENV: &str = "REGRESSIFY_DIAGNOSTIC_CHUNK_SIZE_BYTES";
 pub const BUDGET_ENV: &str = "REGRESSIFY_DIAGNOSTIC_DISK_BUDGET_BYTES";
 const JOURNAL_VERSION: u16 = 1;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ArchiveState {
+    Complete,
+    Partial,
+    Missing,
+    LegacyUnavailable,
+    LoadingError,
+}
+
+impl ArchiveState {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "Complete",
+            Self::Partial => "Partial / interrupted",
+            Self::Missing => "Expected log is missing",
+            Self::LegacyUnavailable => "Legacy capture: log not available",
+            Self::LoadingError => "Log could not be loaded",
+        }
+    }
+
+    pub fn can_export(self) -> bool {
+        self == Self::Complete
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SegmentInfo {
+    pub number: usize,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveIndex {
+    pub version: u16,
+    pub operation_id: OperationId,
+    pub state: ArchiveState,
+    pub records: u64,
+    pub bytes: u64,
+    pub segments: Vec<SegmentInfo>,
+    pub outcome: Outcome,
+    pub missing_records: Option<u64>,
+}
+
+fn segment_info(path: &Path, root: &Path, number: usize) -> Result<SegmentInfo> {
+    let mut file = checked_file(path, root)?;
+    ensure!(
+        file.metadata()?.len() <= 8 * 1024 * 1024,
+        "Diagnostic segment exceeds byte limit"
+    );
+    let mut digest = Sha256::new();
+    let mut buffer = [0; BUFFER_BYTES];
+    let mut bytes = 0;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        bytes += count as u64;
+        ensure!(
+            bytes <= 8 * 1024 * 1024,
+            "Diagnostic segment grew beyond byte limit"
+        );
+        digest.update(&buffer[..count]);
+    }
+    Ok(SegmentInfo {
+        number,
+        bytes,
+        sha256: format!("{:x}", digest.finalize()),
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct JournalOptions {
@@ -208,6 +286,7 @@ pub struct JournalWriter {
     peak_buffer_bytes: usize,
     last_flush: Instant,
     failed: bool,
+    finalized: bool,
 }
 
 impl JournalWriter {
@@ -258,6 +337,7 @@ impl JournalWriter {
             peak_buffer_bytes: 0,
             last_flush: Instant::now(),
             failed: false,
+            finalized: false,
         })
     }
 
@@ -281,7 +361,10 @@ impl JournalWriter {
     }
 
     pub fn write(&mut self, record: &DiagnosticRecordV1) -> Result<()> {
-        ensure!(!self.failed, "Diagnostic writer is degraded");
+        ensure!(
+            !self.failed && !self.finalized,
+            "Diagnostic writer is degraded or finalized"
+        );
         let result = self.append(record);
         if result.is_err() {
             self.failed = true;
@@ -334,6 +417,9 @@ impl JournalWriter {
 
     fn rollover(&mut self) -> Result<()> {
         self.flush()?;
+        if let Some(output) = &self.output {
+            output.get_ref().sync_all()?;
+        }
         self.output = None;
         ensure!(
             self.segment_count < MAX_SEGMENTS,
@@ -347,6 +433,69 @@ impl JournalWriter {
         self.segment_count += 1;
         self.segment_bytes = 0;
         Ok(())
+    }
+
+    pub fn finalize(&mut self, outcome: Outcome) -> Result<ArchiveIndex> {
+        ensure!(
+            !self.failed && !self.finalized,
+            "Cannot complete a degraded or finalized diagnostic archive"
+        );
+        let result = self.finalize_inner(outcome);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn finalize_inner(&mut self, outcome: Outcome) -> Result<ArchiveIndex> {
+        let mut terminal = DiagnosticRecordV1::new(
+            self.metadata.operation_id.clone(),
+            self.metadata.operation_kind,
+            Stage::Finish,
+            DiagnosticEvent::Finished,
+        );
+        terminal.outcome = Some(outcome);
+        self.write(&terminal)?;
+        self.flush()?;
+        if let Some(output) = &self.output {
+            output.get_ref().sync_all()?;
+        }
+        let root = self
+            .directory
+            .parent()
+            .and_then(Path::parent)
+            .context("Diagnostic output root unavailable")?;
+        let reader = JournalReader::open(root, &self.metadata.operation_id)?;
+        let summary = reader.visit(|_| {})?;
+        ensure!(
+            summary.records == self.records && !summary.interrupted_tail,
+            "Diagnostic journal is not fully written"
+        );
+        let segments = reader
+            .segments
+            .iter()
+            .enumerate()
+            .map(|(number, path)| segment_info(path, &self.directory, number))
+            .collect::<Result<Vec<_>>>()?;
+        let index = ArchiveIndex {
+            version: JOURNAL_VERSION,
+            operation_id: self.metadata.operation_id.clone(),
+            state: ArchiveState::Complete,
+            records: self.records,
+            bytes: self.bytes,
+            segments,
+            outcome,
+            missing_records: Some(0),
+        };
+        let bytes = serde_json::to_vec(&index)?;
+        ensure!(
+            self.bytes + bytes.len() as u64 <= self.options.disk_budget_bytes,
+            "Diagnostic index exceeds disk budget"
+        );
+        crate::helpers::write_file_atomically(&self.directory.join("index.json"), &bytes)?;
+        self.finalized = true;
+        self.output = None;
+        Ok(index)
     }
 
     pub fn flush(&mut self) -> Result<()> {
@@ -420,6 +569,60 @@ impl JournalReader {
             metadata,
             segments: segments.into_iter().map(|(_, path)| path).collect(),
         })
+    }
+
+    pub fn archive_state(&self) -> ArchiveState {
+        let path = self.directory.join("index.json");
+        match fs::symlink_metadata(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => ArchiveState::Partial,
+            Err(_) => ArchiveState::LoadingError,
+            Ok(_) => self
+                .verified_index()
+                .map(|index| index.state)
+                .unwrap_or(ArchiveState::LoadingError),
+        }
+    }
+
+    pub fn verified_index(&self) -> Result<ArchiveIndex> {
+        let index: ArchiveIndex = read_json(
+            &self.directory.join("index.json"),
+            &self.directory,
+            4 * 1024 * 1024,
+        )?;
+        ensure!(
+            index.version == JOURNAL_VERSION && index.operation_id == self.metadata.operation_id,
+            "Diagnostic index identity mismatch"
+        );
+        ensure!(
+            matches!(index.state, ArchiveState::Complete | ArchiveState::Partial),
+            "Invalid stored archive state"
+        );
+        ensure!(
+            index.segments.len() == self.segments.len(),
+            "Diagnostic index segment count mismatch"
+        );
+        for (number, (path, expected)) in self.segments.iter().zip(&index.segments).enumerate() {
+            ensure!(
+                segment_info(path, &self.directory, number)? == *expected,
+                "Diagnostic segment checksum mismatch"
+            );
+        }
+        let mut terminal = None;
+        let summary = self.visit(|record| {
+            terminal = Some((record.event_name, record.outcome));
+        })?;
+        ensure!(
+            summary.records == index.records && !summary.interrupted_tail,
+            "Diagnostic index record count mismatch"
+        );
+        if index.state == ArchiveState::Complete {
+            ensure!(
+                index.missing_records == Some(0)
+                    && terminal == Some((DiagnosticEvent::Finished, Some(index.outcome))),
+                "Complete archive lacks a verified terminal outcome"
+            );
+        }
+        Ok(index)
     }
 
     pub fn segment_count(&self) -> usize {
@@ -511,6 +714,41 @@ mod tests {
             .unwrap();
         assert_eq!(summary.records, 10_001);
         assert!(!summary.interrupted_tail);
+    }
+
+    #[test]
+    fn finalize_marks_interrupted_write_as_partial_not_complete() {
+        let root = tempfile::tempdir().unwrap();
+        let (writer, metadata) = write_records(root.path(), JournalOptions::default(), 500);
+        drop(writer);
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Partial);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 500);
+    }
+
+    #[test]
+    fn normal_finalization_verifies_every_record_and_terminal_outcome() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 999);
+        let index = writer.finalize(Outcome::Success).unwrap();
+        assert_eq!(index.records, 1000);
+        assert!(writer.finalize(Outcome::Success).is_err());
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_eq!(reader.archive_state(), ArchiveState::Complete);
+        assert_eq!(reader.verified_index().unwrap(), index);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 1000);
+    }
+
+    #[test]
+    fn failed_index_write_cannot_advertise_a_complete_archive() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 5);
+        fs::create_dir(writer.directory().join("index.json")).unwrap();
+        assert!(writer.finalize(Outcome::Success).is_err());
+        assert!(writer.finalize(Outcome::Success).is_err());
+        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+        assert_ne!(reader.archive_state(), ArchiveState::Complete);
+        assert_eq!(reader.visit(|_| {}).unwrap().records, 6);
     }
 
     #[test]
