@@ -4,10 +4,12 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Frontend Formatting Baseline (2026-10-01)
 
-- `bun run --cwd frontend lint` reports seven existing formatting errors during
-  logging schema work, including untouched UI, overview/suite pages, styles, and
-  browser tests. The modified report schema and schema tests pass scoped Biome
-  checks; frontend tests, typecheck, and production build pass.
+- `bun run --cwd frontend lint` initially reported seven existing formatting
+  errors during logging schema work. Five remain in untouched files:
+  [fixture generator](frontend/scripts/create-fixture.ts), [App](frontend/src/App.tsx),
+  [shared UI](frontend/src/components/ui.tsx), [overview](frontend/src/pages/OverviewPage.tsx),
+  and [suite page](frontend/src/pages/SuitePage.tsx). Logging source/test files pass
+  scoped Biome checks; frontend tests, typecheck, and production build pass.
 - Keep formatting fixes scoped to files changed by the logging tasks rather than
   reformatting unrelated frontend code. Report the full-lint failure separately
   until the remaining baseline files are intentionally normalized.

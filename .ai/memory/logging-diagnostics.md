@@ -5,6 +5,12 @@ Verified: 2026-10-01
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
   from live progress. Public capture records use templates, typed fields, opaque
   identities, and categorical errors; provider detail is deployment-only.
+- [Startup journals](../../src/diagnostics/startup.rs) are entry-point-owned in
+  local application data, finalized explicitly, and excluded from public reports.
+- The user confirmed a 10% mean wall-time budget for the documented five-pair
+  capture workload. Final measured archive overhead, including startup lifecycle,
+  was 7.48%; see the [benchmark](../../docs/logging-benchmark.md) for raw data and
+  the archive-kill-switch baseline and I/O-accounting limitations.
 - [Runtime stage wrappers](../../src/diagnostics/runtime.rs) box their work before
   constructing the wrapper future. Leaving nested action/hook futures inline
   overflowed a default Windows Tokio worker stack, even on the closed-semaphore

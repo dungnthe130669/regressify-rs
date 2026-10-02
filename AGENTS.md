@@ -50,6 +50,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 - A scenario failure stops that scenario, not its peers. Website/action/visual
   failures are report results with zero exit; config, infrastructure, and artifact
   write failures are process errors. Do not panic or swallow errors in these paths.
+- Diagnostic archive failures warn without changing capture/command outcomes; preserve original execution provenance and explicit completeness. See the [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md).
 - Promote only successful captures. Never replace a good reference with an error
   placeholder or delete it before a replacement capture succeeds.
 - Preserve `camelCase` config and untagged action deserialization precedence.
@@ -62,18 +63,19 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 
 ## Entry Points
 
-| Work                        | Start Here                                                                                                                |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| CLI commands and exit codes | [src/application.rs](src/application.rs), [docs/commands.md](docs/commands.md)                                            |
-| Browser actions and capture | [src/test](src/test), [docs/create-action.md](docs/create-action.md)                                                      |
-| Configuration and schemas   | [src/config](src/config), [src/types](src/types)                                                                          |
-| Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                                                  |
-| Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                |
-| Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                                                            |
-| Report deployment           | [src/desktop/deployment.rs](src/desktop/deployment.rs), [Cloudflare skill](.github/skills/deployment-cloudflare/SKILL.md) |
-| Landing apps and tokens     | [Landing skill](.github/skills/desktop-landing-apps/SKILL.md), [Token skill](.github/skills/deployment-targets/SKILL.md)  |
-| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)                                  |
-| AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                                                      |
+| Work                        | Start Here                                                                                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI commands and exit codes | [src/application.rs](src/application.rs), [docs/commands.md](docs/commands.md)                                                                              |
+| Browser actions and capture | [src/test](src/test), [docs/create-action.md](docs/create-action.md)                                                                                        |
+| Configuration and schemas   | [src/config](src/config), [src/types](src/types)                                                                                                            |
+| Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                                                                                    |
+| Logging and diagnostics     | [src/diagnostics](src/diagnostics), [logging docs](docs/commands.md#diagnostic-verbosity), [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md) |
+| Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                                                  |
+| Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                                                                                              |
+| Report deployment           | [src/desktop/deployment.rs](src/desktop/deployment.rs), [Cloudflare skill](.github/skills/deployment-cloudflare/SKILL.md)                                   |
+| Landing apps and tokens     | [Landing skill](.github/skills/desktop-landing-apps/SKILL.md), [Token skill](.github/skills/deployment-targets/SKILL.md)                                    |
+| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)                                                                    |
+| AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                                                                                        |
 
 ## Skills and Checks
 
@@ -81,10 +83,8 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
   with matching YAML `name` and specific `description`; read before changing or reviewing an area.
 - Keep one task per skill: concrete entry points, invariants, failure cases,
   focused checks, and docs to maintain. Verify links and commands against source.
-- Use `cargo test --lib <test_filter>` for the default CLI slice;
-  `cargo test --features desktop --lib <test_filter>` for desktop models.
+- Use `cargo test --lib <test_filter>` for CLI; `cargo test --features desktop --lib <test_filter>` for desktop models.
   GUI, worker integration, browser, and release checks have extra prerequisites;
   consult the matching skill before running them.
-- Run `cargo fmt --all -- --check` for Rust edits. Features are `local` (default),
-  `cloud`, `desktop`, `gui`, and `gui-tests`; do not assume default tests cover GUI.
+- Run `cargo fmt --all -- --check` for Rust edits. Features are `local` (default), `cloud`, `desktop`, `gui`, and `gui-tests`; default tests do not cover GUI.
 - For guidance edits, run the validator and self-tests in the maintenance skill.

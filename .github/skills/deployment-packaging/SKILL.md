@@ -37,4 +37,6 @@ Cover selected suites only, symlinks, malformed paths/hashes, missing index/imag
 
 ## Maintain
 
+See [logging docs](../../../docs/commands.md#diagnostic-storage-limits) for capture-log publication, warning-only source failures, and provider-budget behavior.
+
 Update [desktop docs](../../../docs/desktop.md) and this skill for content or compression changes. Explain artifact allowlists and provider-limit decisions.

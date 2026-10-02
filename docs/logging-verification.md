@@ -1,7 +1,8 @@
 # Logging Verification
 
-Verified on Windows, 2026-10-01. Fixtures use temporary workspaces, synthetic
-credentials, loopback providers, and cached managed Chromium. No remote deployment,
+Verified on Windows, 2026-10-01, with final CLI, worker and frontend gates rerun
+on 2026-10-02. Fixtures use temporary workspaces, synthetic credentials, loopback
+providers, and cached managed Chromium. No remote deployment,
 credential modification, personal browser profile, or reference mutation outside
 fixtures is required. Ignored tests are not counted as passing coverage.
 
@@ -16,6 +17,7 @@ fixtures is required. Ignored tests are not counted as passing coverage.
 | Queue saturation and stalled finalization                                 | `queue_exhaustion_is_nonblocking_and_retains_every_accepted_record` and `stalled_writer_has_bounded_finalization_and_unknown_missing_count`: bounded queue, independent warning, readable prefix, bounded wait, and no invented missing count.                                                               |
 | Oversized, Unicode, control-character and unreviewed data                 | `oversized_records_and_tampered_indexes_never_look_complete`, `capture_errors_never_export_arbitrary_payloads_or_provider_details`, and `known_secrets_urls_and_controls_are_removed_before_truncation`.                                                                                                     |
 | Bootstrap destination failure and repeated handoff                        | `bootstrap_handoff_retains_source_on_destination_failure` and `bootstrap_handoff_marks_source_consumed_only_after_verified_append_open`: byte-identical retained source, independent warning, no false success, verified destination and stable ordering.                                                    |
+| Startup/configuration failures and retained local history                 | `startup_failures_are_durable_sanitized_and_never_pruned_on_restart`: categorical failure records, independent local application-data ownership, retained history across starts, and warning-only unavailable storage.                                                                                       |
 | Span-only identity and quiet display                                      | `span_context_is_inherited_and_arbitrary_tracing_fields_are_not_forwarded`, `per_execution_console_levels_do_not_filter_archives`, and `log_level_precedence_matrix`.                                                                                                                                        |
 | Setup/navigation/action failures                                          | `queue_setup_stage_records_for_passed_and_timed_out_captures`, `navigation_timeout_identifies_stage_and_cause_without_credentials`, and `failing_action_records_index_type_and_last_unmet_condition_without_script_contents`. The last two live in `test::test_action::tests`, not the orchestration module. |
 | Zero-image and infrastructure/teardown failures                           | `capture_job_journal_opens_writes_and_finalizes_before_comparing`, `artifact_write_failure_is_infrastructure_failure`, and `unconfirmed_browser_shutdown_is_an_infrastructure_failure`.                                                                                                                      |
@@ -30,12 +32,14 @@ fixtures is required. Ignored tests are not counted as passing coverage.
 
 ## Focused Gates
 
-The Windows full gates passed: `cargo test --locked --all-targets` had 445
-passing tests and 18 ignored; `cargo test --locked --features gui-tests
---all-targets -- --test-threads=1` had 974 passing library tests and 27 ignored,
-plus 11 passing worker integration tests and three ignored. The standalone CLI
-browser regression was also run explicitly and passed. GUI build and GUI Clippy
-with warnings denied passed. The serialized GUI suite took about 42 minutes.
+The final Windows default gate, `cargo test --locked --all-targets`, passed 446
+tests with 18 ignored. The serialized `cargo test --locked --features gui-tests
+--all-targets -- --test-threads=1` gate passed 974 library tests with 27 ignored
+before the startup follow-up; that follow-up passed its focused regression and
+the final default/worker gates. The latest worker integration run passed 11 tests
+with four opt-in checks ignored. The standalone CLI browser regression and archive
+benchmark were also run explicitly and passed. GUI build and GUI Clippy with
+warnings denied passed. The serialized GUI suite took about 42 minutes.
 
 Run these before broader feature gates:
 
@@ -72,12 +76,42 @@ Client tests belong to their implementation units rather than the engine suite:
 - Playwright `capture log` tests passed on desktop and mobile: no eager fetch,
   one request on opening, reference/test deep links and refresh, plain-text markup,
   downloads, distinct availability states, layout and accessibility.
+- The complete frontend browser suite passed 109 tests with seven configuration
+  skips. Ten focused production-bundle checks also passed on desktop and mobile.
+  The initial full run caught suite-list state loss and an off-screen Info close
+  button; existing regressions now cover list/log/refresh round trips and full
+  dialog visibility, and fail before the repair.
+- Frontend unit tests passed 19 cases and 137 assertions; typecheck and production
+  build passed. Scoped Biome checks passed for changed sources. Full frontend lint
+  still reports five existing formatting failures in untouched files, listed in
+  [outstanding issues](../OUTSTANDING_ISSUES.md#frontend-formatting-baseline-2026-10-01).
 - The real CLI-generated report was independently opened in the production bundle:
   59 test records and 59 reference records, complete state, preserved reference
   selection after refresh, no injected diagnostic secrets, and no overflow at
   375 x 667. This was not a mocked report response.
 - The full worker integration inventory regression now passes with exact original
   and preview dependencies, rather than a stale two-image assumption.
+
+## Documentation Traceability
+
+Task 031 cross-checks these maintained entry points against the shipped behavior:
+
+| File                                                                 | Maintained Contract                                                                                          |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| [Command documentation](commands.md#diagnostic-verbosity)            | Exact display flags/precedence, startup and capture storage, warning-only health, provenance and privacy.    |
+| [Desktop documentation](desktop.md#reviewing-results)                | Paged Activity and Results Capture Log views, filters, complete-log export and independent health warnings.  |
+| [Frontend guide](../frontend/README.md#data-and-hosting)             | Capture-log deep links, suite-layout retention, lazy bounded chunks, version checks and export limits.       |
+| [Agent guide](../AGENTS.md)                                          | Diagnostic outcome/provenance rule and a direct logging entry point.                                         |
+| [Diagnostics skill](../.github/skills/logging-diagnostics/SKILL.md)  | Entry-point ownership, typed privacy, bounded writing/reading, five states, cancellation and focused checks. |
+| [Progress skill](../.github/skills/desktop-progress-events/SKILL.md) | Archive-backed completed logs, stale-load rejection and live omissions versus durable completeness.          |
+| [Results skill](../.github/skills/desktop-results-review/SKILL.md)   | Original reference/test execution selection and independent health/export availability.                      |
+| [Worker skill](../.github/skills/desktop-worker-lifecycle/SKILL.md)  | Startup/deployment ownership and exact-operation cancellation recovery.                                      |
+| [Snapshot skill](../.github/skills/snapshot-command/SKILL.md)        | Additive version-2 log fields, bounded public chunks, deep links and raw-journal exclusion.                  |
+| [Packaging skill](../.github/skills/deployment-packaging/SKILL.md)   | Selected-only log dependencies, integrity checks, deduplication and provider budgets without truncation.     |
+| [Logging memory](../.ai/memory/logging-diagnostics.md)               | Verified startup/capture lifecycle, bounded futures, provenance and measured overhead.                       |
+| [Frontend memory](../.ai/memory/snapshot-frontend.md)                | Mobile popup bounds and list/log navigation regressions.                                                     |
+| [Task index](plan/log-revamp-tasks/README.md)                        | Completed task groups, maintained contracts and explicit verification limits.                                |
+| [Outstanding issues](../OUTSTANDING_ISSUES.md)                       | Remaining formatting baseline and the resolved exact worker-inventory assertion.                             |
 
 ## Limits
 

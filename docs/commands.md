@@ -112,6 +112,13 @@ an upload accepted by the provider. Check the provider's deployment history befo
 retrying. The desktop uses the saved operation ID to mark an interrupted journal
 after reaping its worker, without attributing it to another concurrent run.
 
+The supported archive is Regressify's own execution timeline, not browser console
+or network-body collection. Capture messages use safe templates and typed values;
+URLs, selectors, and artifact names use opaque identities where needed. Provider
+detail stays in local deployment history. See [desktop Capture Log](desktop.md#reviewing-results),
+[web log contracts](../frontend/README.md#data-and-hosting),
+[verification](logging-verification.md), and [performance evidence](logging-benchmark.md).
+
 ## Commands
 
 | Command    | Purpose                                                                                                                                                                                                                  |

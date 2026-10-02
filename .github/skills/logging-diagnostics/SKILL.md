@@ -1,0 +1,76 @@
+---
+name: logging-diagnostics
+description: 'Use when changing structured diagnostics, tracing spans, capture/deployment journals, log health, bootstrap records, verbosity, archived log views, public log chunks, or log provenance.'
+---
+
+# Durable Diagnostics
+
+## Start Here
+
+[Records and runtime](../../../src/diagnostics), [capture ownership](../../../src/test/test_suites.rs),
+[archive reader/export](../../../src/desktop/logs.rs), [public chunks](../../../src/snapshot/logs.rs),
+[command contract](../../../docs/commands.md#diagnostic-verbosity), and
+[verification evidence](../../../docs/logging-verification.md).
+
+## Procedure And Invariants
+
+1. Keep diagnostic version 1 separate from progress version 1 and snapshot version 2.
+   Lifecycle events remain authoritative for counts/outcomes; do not infer them
+   from formatted log text or emit duplicate lifecycle transitions.
+1. Construct records from reviewed field/value enums, static messages, generated
+   operation/execution IDs, and opaque target identities. Capture errors are
+   categorical; provider detail uses the shared sanitizer and is deployment-only.
+   Never export raw journals, browser state, typed input, selectors, scripts, child
+   output, headers, response bodies, or arbitrary Debug fields.
+1. Install subscribers only at process entry points. Propagate operation context
+   into spawned/blocking work explicitly. Box nested stage futures to preserve
+   default Windows worker-stack limits; do not hold entered spans across awaits.
+1. One operation owns its journal and bounded nonblocking writer queue. Finalize
+   capture work after teardown and before comparison. Explicitly flush entry-point
+   output before process exit; abort recovery cannot rely on destructors.
+1. Writer create/write/flush/queue/deadline failures warn independently and preserve
+   capture results. A complete index requires synced segments, verified hashes,
+   counts and terminal outcome. Never turn unknown missing counts into zero.
+1. Use all five archive states consistently: complete, partial, missing, legacy
+   unavailable, loading error. Only verified complete logs can export as complete.
+   Missing referenced logs differ from reports that predate logging.
+1. Startup journals are local application data, not capture/public assets. Keep
+   their source on handoff failure and never announce a successful copy before
+   verification. No automatic age pruning of startup, deployment, or capture logs.
+1. Preserve original execution links through compare, approval, and suite changes.
+   Capture sidecars bind to image digests. Generated chunk cleanup follows selected
+   report dependencies and must not delete retained or active source journals.
+1. `logLevel`/CLI/environment settings filter display only. Chunk size, disk budget,
+   and `REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE` are operation settings, not part of
+   the scenario/suite/workspace cascade.
+1. Keep native reads/exports off the UI thread, pages bounded, and stale completions
+   rejected. Web chunks are lazy, version-verified, bounded and rendered as text.
+   Preserve reference/test and capture deep-link identity through refresh.
+1. Deployment cancellation after worker termination uses the exact saved operation
+   ID, never the latest directory. Local cancellation does not prove remote failure.
+   Publication success remains a separate provider-confirmed lifecycle event.
+
+## Checks
+
+```sh
+cargo test --lib diagnostics::
+cargo test --lib test::test_suites::tests
+cargo test --lib test::test_action::tests
+cargo test --lib snapshot::logs::tests
+cargo test --features desktop --lib desktop::logs::tests
+cargo test --features desktop --lib desktop::deployment::
+cargo test --features gui-tests --lib run_log_ -- --test-threads=1
+cargo test --features gui-tests --lib log_health_warning_ -- --test-threads=1
+```
+
+Run frontend `bun run test:e2e --grep 'capture log'` and the explicit cached-browser
+CLI regression from the [verification document](../../../docs/logging-verification.md).
+The [benchmark](../../../docs/logging-benchmark.md) documents the confirmed 10%
+mean wall-time budget, five-pair workload, and archive-off baseline limitations.
+
+## Maintain
+
+Update [command docs](../../../docs/commands.md), [desktop docs](../../../docs/desktop.md),
+[frontend guidance](../../../frontend/README.md), and the source-linked shared
+[logging note](../../../.ai/memory/logging-diagnostics.md). Keep schema, inventory,
+provider limits and exact-package tests synchronized; do not edit generated assets.

@@ -1613,6 +1613,11 @@ passed when its log is partial or unavailable. Activity's run summary and Result
 show the warning as well as the log view. Download and page-export controls remain
 disabled with an explicit reason until a complete archive is available.
 
+Display levels and storage limits are documented in [CLI diagnostics](commands.md#diagnostic-verbosity).
+Maintenance procedures live in the [Activity skill](../.github/skills/desktop-progress-events/SKILL.md),
+[Results skill](../.github/skills/desktop-results-review/SKILL.md), and
+[diagnostics skill](../.github/skills/logging-diagnostics/SKILL.md).
+
 Results uses one left navigator with Test suites above Captures and one detail
 area on the right. Only the active suite's captures are shown. A suite without a
 report shows an empty capture list, never another suite's results. The report

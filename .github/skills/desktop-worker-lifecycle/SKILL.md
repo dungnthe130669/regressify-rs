@@ -18,6 +18,7 @@ description: 'Use when changing desktop RunRequest arguments, bundled worker pro
 1. Cancellation must terminate and reap descendants. Check cleanup after launch, payload write, event decoding, child failure, and UI/window closure.
 1. Drain stdout/stderr even when retained logs are full. Surface omitted chunks. Parent exit is not pipe EOF: descendants may retain handles, so review reader joins and persistence completion for hangs beyond cancellation/deadlines.
 1. Exit zero means execution completed, not that visual tests passed. Restore saved activity without restarting work and validate workspace identity/version.
+1. Worker startup and deployment journals are operation-owned. Saved `diagnosticOperationId` identifies deployment cancellation recovery after the process group is reaped; never scan for the latest journal or infer remote failure. See [logging docs](../../../docs/commands.md#diagnostic-storage-limits).
 1. Internal report approval carries `reportCapture` through structured options and `--report-capture` through Clap. Require one suite/scenario and an explicit run; clear the capture restriction when constructing a subsequent Compare request.
 
 ## Checks

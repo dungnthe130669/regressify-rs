@@ -34,4 +34,6 @@ Cover partial/invalid events, unchanged polling, contended locks, overflow/omiss
 
 ## Maintain
 
+See [logging docs](../../../docs/commands.md#diagnostic-verbosity) and the [diagnostics skill](../logging-diagnostics/SKILL.md) for archive/display boundaries.
+
 Update [desktop docs](../../../docs/desktop.md) and this skill when status or persistence semantics change. Comment identity and nonblocking polling invariants.
