@@ -1071,6 +1071,27 @@ test("suite list compares reference, test, and available diff captures side by s
     "aria-pressed",
     "true",
   );
+  await capture.click();
+  await page.getByRole("button", { name: "Comparison", exact: true }).click();
+  await expect(page).toHaveURL(/\/images\/overview__desktop.png\?view=list$/);
+  await page.getByRole("button", { name: "Capture Log", exact: true }).click();
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Capture Log", exact: true })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+  await expect(page.locator(".back-link")).toHaveAttribute(
+    "href",
+    "/suites/workspace-overview?view=list",
+  );
+  await page.getByRole("button", { name: "Comparison", exact: true }).click();
+  await expect(page).toHaveURL(/\/images\/overview__desktop.png\?view=list$/);
+  await page.getByRole("button", { name: "Capture Log", exact: true }).click();
+  await page.locator(".back-link").click();
+  await expect(page.getByRole("button", { name: "List view" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await page.goto("/suites/customer-accounts?view=list");
   await expect(lanes).toHaveCount(2);
   await expect(lanes.locator("figcaption")).toHaveText(["Reference", "Test"]);
@@ -1440,6 +1461,7 @@ test("capture information opens on hover or tap and remains selectable", async (
   if (isMobile) await trigger.tap();
   else await trigger.hover();
   await expect(bubble).toBeVisible();
+  await expect(bubble).toBeInViewport({ ratio: 1 });
   await expect(bubble).toContainText("Difference");
   await expect(bubble).toContainText("Threshold");
   await expect(bubble).toContainText("overview__desktop.png");
@@ -1475,7 +1497,7 @@ test("capture information opens on hover or tap and remains selectable", async (
   await page.keyboard.press("Escape");
   await expect(bubble).toHaveCount(0);
   await trigger.click();
-  await page.getByRole("heading", { name: "Workspace overview / Desktop", exact: true }).hover();
+  await page.mouse.move(1, 1);
   await expect(bubble).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(bubble).toHaveCount(0);

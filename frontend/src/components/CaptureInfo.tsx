@@ -42,7 +42,7 @@ export function CaptureInfo({
     },
     placement: "bottom-end",
     strategy: "fixed",
-    middleware: [offset(8), flip({ padding: 12 }), shift({ padding: 12 })],
+    middleware: [offset(8), flip({ padding: 12 }), shift({ padding: 12, crossAxis: true })],
     whileElementsMounted: autoUpdate,
   });
   const hover = useHover(context, {

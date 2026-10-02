@@ -156,7 +156,9 @@ version remains 2.
 
 Capture Log uses the existing image route with `?view=log&logRole=test` (or
 `reference`). `logLevel`, `logStage`, `logSearch`, and `logChunk` preserve view
-selection through refresh. Opening the log lazily fetches bounded, content-version
+selection through refresh. `suiteView=list` retains the originating suite layout
+while Log is open; Comparison and Results restore `view=list`.
+Opening the log lazily fetches bounded, content-version
 verified JSON chunks; a four-chunk cache deduplicates requests and stays bounded.
 Messages render as text. Download verifies the full record sequence and exports
 all matching records, subject to an explicit 128 MiB browser export limit; it never

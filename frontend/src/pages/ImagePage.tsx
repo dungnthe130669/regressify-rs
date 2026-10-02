@@ -1,5 +1,5 @@
 import { ArrowLeft, ArrowRight, Image, List } from "lucide-react";
-import { Link, useLocation, useParams } from "react-router";
+import { Link, useLocation, useParams, useSearchParams } from "react-router";
 import { CaptureLog } from "../components/CaptureLog";
 import { ComparisonViewer } from "../components/ComparisonViewer";
 import { IconButton, StatePanel, StatusBadge, useFilters } from "../components/ui";
@@ -10,6 +10,7 @@ export default function ImagePage() {
   const { suiteId, imageId } = useParams();
   const { summary, data, error, retry } = useSuite(suiteId);
   const { query, status, params, set } = useFilters();
+  const [, setParams] = useSearchParams();
   const location = useLocation();
   if (!summary) return <StatePanel title="Suite not found" back />;
   if (error) return <StatePanel title="Comparison unavailable" detail={error} retry={retry} />;
@@ -29,9 +30,25 @@ export default function ImagePage() {
   const sequenceIndex = sequence.findIndex((test) => test.id === capture.id);
   const previous = sequence[sequenceIndex - 1];
   const next = sequence[sequenceIndex + 1];
+  const showingLog = params.get("view") === "log";
+  const suiteView =
+    (showingLog ? params.get("suiteView") : params.get("view")) === "list" ? "list" : "";
+  const setLogView = (showLog: boolean) => {
+    const nextParams = new URLSearchParams(params);
+    const nextView = showLog ? "log" : suiteView;
+    if (nextView) nextParams.set("view", nextView);
+    else nextParams.delete("view");
+    if (showLog && suiteView) nextParams.set("suiteView", suiteView);
+    else nextParams.delete("suiteView");
+    setParams(nextParams, { replace: true, preventScrollReset: true });
+  };
   const backParams = new URLSearchParams(params);
   backParams.delete("mode");
-  for (const key of ["view", "logRole", "logLevel", "logStage", "logSearch", "logChunk"])
+  if (showingLog) {
+    if (suiteView) backParams.set("view", suiteView);
+    else backParams.delete("view");
+  }
+  for (const key of ["suiteView", "logRole", "logLevel", "logStage", "logSearch", "logChunk"])
     backParams.delete(key);
   const backSearch = backParams.size ? `?${backParams}` : "";
   return (
@@ -80,24 +97,16 @@ export default function ImagePage() {
         </div>
       </header>
       <fieldset className="log-view-tabs segmented" aria-label="Capture review view">
-        <button
-          type="button"
-          aria-pressed={params.get("view") !== "log"}
-          onClick={() => set("view", "")}
-        >
+        <button type="button" aria-pressed={!showingLog} onClick={() => setLogView(false)}>
           <Image size={15} />
           Comparison
         </button>
-        <button
-          type="button"
-          aria-pressed={params.get("view") === "log"}
-          onClick={() => set("view", "log")}
-        >
+        <button type="button" aria-pressed={showingLog} onClick={() => setLogView(true)}>
           <List size={15} />
           Capture Log
         </button>
       </fieldset>
-      {params.get("view") === "log" ? (
+      {showingLog ? (
         <CaptureLog
           key={`${capture.id}-${params.get("logRole")}`}
           capture={capture}

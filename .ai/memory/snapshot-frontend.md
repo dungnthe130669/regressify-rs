@@ -88,10 +88,10 @@ Verified: 2026-10-01
   wide. The `side by side crosshairs|scrolling over images` browser checks cover
   alignment and cleanup on desktop/mobile. Image nodes have `pointer-events: none`;
   hover their wrappers to wait for stable layout before reading image bounds.
-- [Info dialog](../../frontend/src/components/CaptureInfo.tsx) uses Floating UI and
-  permits native selection/copy. Pinning must ignore both `hover` and `safe-polygon`
-  close reasons; focus opening uses `visibleOnly: false`. Native dialog semantics
-  and a non-banner heading avoid duplicate landmark diagnostics in the portal.
+- [Info dialog](../../frontend/src/components/CaptureInfo.tsx) uses Floating UI, native selection/copy, dialog semantics, and a non-banner heading.
+  Pinning ignores `hover` and `safe-polygon` close reasons; focus uses `visibleOnly: false`.
+  `shift({ crossAxis: true })` retains full viewport visibility; the Info test moves the pointer to an uncovered corner to check pinning on phones.
+- [Image review](../../frontend/src/pages/ImagePage.tsx) preserves `suiteView=list` during `view=log`; suite-list tests cover switching, refresh, and Results navigation.
 - Suite failure arrows navigate only filtered failed cards, retain the suite URL,
   focus/highlight the target, and disable at endpoints or when no failures remain.
 - [Shell](../../frontend/src/App.tsx) uses the shared [desktop SVG](../../assets/icon.svg)
