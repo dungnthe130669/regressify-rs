@@ -240,7 +240,12 @@ mod tests {
     fn public_capture_logs_are_bounded_shared_and_never_include_deployment_history() {
         let root = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
-        for kind in [OperationKind::Capture, OperationKind::Deployment] {
+        for kind in [
+            OperationKind::Capture,
+            OperationKind::Deployment,
+            OperationKind::Command,
+            OperationKind::Application,
+        ] {
             let metadata = OperationMetadata::new(kind, None);
             let mut writer =
                 JournalWriter::create(root.path(), metadata.clone(), JournalOptions::default())

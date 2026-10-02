@@ -875,15 +875,22 @@ fn duplicate_workspace_launches_activate_the_owner_without_starting_another_gui(
 
 #[test]
 fn standalone_desktop_runs_shared_engine_without_a_cli_binary() {
+    use regressify::{
+        desktop::logs::{LogQuery, load_run_page},
+        diagnostics::{journal::ArchiveState, record::*},
+    };
     let executable = Path::new(env!("CARGO_BIN_EXE_regressify-desktop"));
     let installation = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
     let standalone = installation.path().join(executable.file_name().unwrap());
     std::fs::hard_link(executable, &standalone).unwrap();
     let workspace = tempfile::tempdir().unwrap();
-    let request = RunRequest {
+    let mut request = RunRequest {
         root: workspace.path().into(),
         command: RunCommand::Init,
-        options: RunOptions::default(),
+        options: RunOptions {
+            diagnostic_operation_id: Some(OperationId::new()),
+            ..RunOptions::default()
+        },
     };
     let output = invoke(&standalone, &request);
     assert!(
@@ -892,8 +899,19 @@ fn standalone_desktop_runs_shared_engine_without_a_cli_binary() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(workspace.path().join("common").is_dir());
+    let page = load_run_page(&request, &[], &LogQuery::default());
+    assert_eq!(page.state, ArchiveState::Complete);
+    assert!(
+        page.records
+            .iter()
+            .all(|record| record.operation_kind == OperationKind::Command)
+    );
+    assert!(page.records.iter().any(
+        |record| record.fields.get(&Field::Command) == Some(&FieldValue::Kind(SafeValue::Init))
+    ));
     let sentinel = workspace.path().join("visual_tests/basic.tests.yaml");
     std::fs::write(&sentinel, "# keep QA content\nscenarios: []\n").unwrap();
+    request.options.diagnostic_operation_id = Some(OperationId::new());
     assert!(invoke(&standalone, &request).status.success());
     assert_eq!(
         std::fs::read_to_string(sentinel).unwrap(),

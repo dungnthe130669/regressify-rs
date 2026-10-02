@@ -163,11 +163,15 @@ verified JSON chunks; a four-chunk cache deduplicates requests and stays bounded
 Messages render as text. Download verifies the full record sequence and exports
 all matching records, subject to an explicit 128 MiB browser export limit; it never
 offers a shortened file as complete. Non-complete logs disable export controls.
+Out-of-range timestamps are rejected before rendering and produce a retryable
+loading error rather than crashing the report. Command and application operation
+kinds remain excluded from the frontend capture-log schema.
 
 Snapshot generation publishes at most 250 records and 256 KiB per JSON chunk under
 `_snapshot/data/logs/<operation-id>`. Selected captures share versioned chunks for
 their original execution. The deployment inventory verifies every chunk's version,
-identity, sequence, and record count; raw `_diagnostics` journals, deployment logs,
+identity, sequence, and record count; raw `_diagnostics` journals, deployment,
+command, and application logs,
 unselected runs, and workspace state are excluded. Log bytes count against the
 provider's existing package/storage allowance and are never silently truncated.
 

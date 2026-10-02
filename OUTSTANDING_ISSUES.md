@@ -2,6 +2,22 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Diagnostic Retention Follow-up (2026-10-02)
+
+- Resolved: command failures were retained at informational severity; non-capture
+  commands lacked operation journals and desktop saved-log selection. Startup,
+  command, and capture/deployment completion records now preserve outcome severity.
+- Resolved: optimizer results, approval decisions, and snapshot cleanup warnings
+  were console-only. Typed records now preserve safe details, including worker-thread
+  optimization results and Windows cleanup OS codes without changing command outcomes.
+- Resolved: the desktop GUI did not install a subscriber or retain startup/native
+  warnings. An entry-point-owned, nonblocking application journal now covers them.
+- Resolved: out-of-range log timestamps could crash the frontend timeline. The
+  schema rejects them and desktop/mobile tests verify a recoverable loading error.
+- The [follow-up audit](docs/logging-audit.md#follow-up-review-2026-10-02) records the
+  remaining print classifications and review boundaries. This change does not
+  resolve the separately tracked worker-pipe timeout or Git discard findings.
+
 ## Frontend Formatting Baseline (2026-10-01)
 
 - `bun run --cwd frontend lint` initially reported seven existing formatting

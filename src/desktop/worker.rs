@@ -33,7 +33,9 @@ pub fn read_request(input: impl Read) -> Result<WorkerRequest> {
 
 pub fn run_stdio() -> Result<()> {
     crate::diagnostics::install::install_subscriber();
-    let startup = crate::diagnostics::startup::StartupLog::begin();
+    let startup = crate::diagnostics::startup::StartupLog::begin_for(
+        crate::diagnostics::record::SafeValue::Worker,
+    );
     let result = run_request();
     startup.finish(&result);
     crate::diagnostics::install::flush();
@@ -129,7 +131,11 @@ fn run_request() -> Result<()> {
                         .await
                         .context("Cannot generate report snapshots for deployment")?;
                     } else {
-                        crate::application::execute(cli).await?;
+                        crate::application::execute_identified(
+                            cli,
+                            request.run.options.diagnostic_operation_id.clone(),
+                        )
+                        .await?;
                     }
                     if let Some((job, client)) = deployment {
                         let directory = request

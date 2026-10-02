@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use clap::Parser;
+use regressify::diagnostics::{install, record::SafeValue, startup};
 use std::process::ExitCode;
 
 #[derive(Parser)]
@@ -24,27 +25,66 @@ fn install_chromium() -> anyhow::Result<()> {
 }
 
 fn main() -> ExitCode {
+    install::install_subscriber();
+    let component = if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == regressify::desktop::worker::WORKER_FLAG)
+    {
+        SafeValue::Worker
+    } else {
+        SafeValue::Desktop
+    };
+    let startup = startup::StartupLog::begin_for(component);
+    let code = run();
+    startup.finish(&if code == ExitCode::SUCCESS {
+        Ok(())
+    } else {
+        Err(anyhow::anyhow!(
+            "Desktop startup or worker execution failed"
+        ))
+    });
+    install::flush();
+    code
+}
+
+fn run() -> ExitCode {
     if std::env::args_os()
         .nth(1)
         .is_some_and(|argument| argument == regressify::desktop::worker::WORKER_FLAG)
     {
         if let Err(error) = regressify::desktop::updates::protect_installation(false) {
+            startup::warning(SafeValue::Worker, &error);
             eprintln!("{error:#}");
             return ExitCode::FAILURE;
         }
         return match regressify::desktop::worker::run_stdio() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
+                startup::warning(SafeValue::Worker, &error);
                 eprintln!("{error:#}");
                 ExitCode::FAILURE
             }
         };
     }
-    let args = DesktopArgs::parse();
+    let args = match DesktopArgs::try_parse() {
+        Ok(args) => args,
+        Err(error) => {
+            let code = error.exit_code();
+            if code != 0 {
+                startup::warning(
+                    SafeValue::Desktop,
+                    &anyhow::anyhow!("Invalid desktop arguments"),
+                );
+            }
+            let _ = error.print();
+            return ExitCode::from(code as u8);
+        }
+    };
     if args.install_chromium {
         return match install_chromium() {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
+                startup::warning(SafeValue::Install, &error);
                 eprintln!("{error:#}");
                 ExitCode::FAILURE
             }
@@ -52,9 +92,10 @@ fn main() -> ExitCode {
     }
     #[cfg(target_os = "windows")]
     if let Err(error) = regressify::desktop::jump_list::initialize() {
-        eprintln!("Cannot initialize Windows shell integration: {error:#}");
+        startup::warning(SafeValue::Shell, &error);
     }
     if let Err(error) = regressify::desktop::updates::protect_installation(args.after_install) {
+        startup::warning(SafeValue::Desktop, &error);
         rfd::MessageDialog::new()
             .set_title("Regressify Desktop")
             .set_description(format!("{error:#}"))
@@ -78,6 +119,7 @@ fn main() -> ExitCode {
                     return ExitCode::SUCCESS;
                 }
                 Err(error) => {
+                    startup::warning(SafeValue::Window, &error);
                     rfd::MessageDialog::new()
                         .set_title("Regressify Desktop")
                         .set_description(format!("{error:#}"))

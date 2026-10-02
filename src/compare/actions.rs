@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::Result;
-use colored::Colorize;
 
 use crate::{
     cli::args::{ApproveArgs, CompareArgs, ScenarioFilter},
@@ -13,6 +12,7 @@ use crate::{
         approve_scenario_viewport, approve_screenshots_for_scenarios,
         generate_comparison_report_for_scenarios, select_capture_run, validate_scenario_captures,
     },
+    diagnostics::{record::*, runtime},
     helpers::OnceLockExtensions,
 };
 
@@ -129,26 +129,37 @@ pub fn compare(args: CompareArgs) -> Result<()> {
         &args.scenarios,
         common::RUN_ID.get().map(String::as_str),
     )?;
+    runtime::event(
+        Stage::Preflight,
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [(Field::SelectedSuites, FieldValue::Number(runs.len() as u64))],
+    );
     for run in &runs {
-        eprintln!(
-            "Comparing test suite: {} (run: {})",
-            run.suite_id.cyan(),
-            run.run_id
-        );
-        generate_comparison_report_for_scenarios(
-            &run.path,
-            &run.suite_id,
-            &run.run_id,
-            args.mis_match_threshold,
-            args.async_compare_limit,
-            &run.scenario_ids,
+        runtime::stage_sync(
+            Stage::CaptureArtifacts,
+            [
+                (Field::Command, FieldValue::Kind(SafeValue::Compare)),
+                (
+                    Field::Target,
+                    FieldValue::Identity(SafeIdentity::fingerprint(&run.suite_id)),
+                ),
+                (
+                    Field::Destination,
+                    FieldValue::Identity(SafeIdentity::fingerprint(&run.run_id)),
+                ),
+            ],
+            || {
+                generate_comparison_report_for_scenarios(
+                    &run.path,
+                    &run.suite_id,
+                    &run.run_id,
+                    args.mis_match_threshold,
+                    args.async_compare_limit,
+                    &run.scenario_ids,
+                )
+            },
         )?;
-    }
-    if runs.is_empty() {
-        eprintln!(
-            "{}",
-            "No test suites with screenshots found to compare.".yellow()
-        );
     }
 
     Ok(())
@@ -174,15 +185,28 @@ pub fn approve(args: ApproveArgs) -> Result<()> {
         let run = &runs[0];
         return approve_scenario_viewport(&run.path, &run.run_id, &run.scenario_ids[0], capture);
     }
+    runtime::event(
+        Stage::Preflight,
+        DiagnosticEvent::Decision,
+        Severity::Info,
+        [(Field::SelectedSuites, FieldValue::Number(runs.len() as u64))],
+    );
     for run in &runs {
-        eprintln!("Approving test suite: {}", run.suite_id.cyan());
-        approve_screenshots_for_scenarios(&run.path, Some(&run.run_id), &run.scenario_ids)?;
-    }
-    if runs.is_empty() {
-        eprintln!(
-            "{}",
-            "No test suites with test screenshots found to approve.".yellow()
-        );
+        runtime::stage_sync(
+            Stage::CaptureArtifacts,
+            [
+                (Field::Command, FieldValue::Kind(SafeValue::Approve)),
+                (
+                    Field::Target,
+                    FieldValue::Identity(SafeIdentity::fingerprint(&run.suite_id)),
+                ),
+                (
+                    Field::Destination,
+                    FieldValue::Identity(SafeIdentity::fingerprint(&run.run_id)),
+                ),
+            ],
+            || approve_screenshots_for_scenarios(&run.path, Some(&run.run_id), &run.scenario_ids),
+        )?;
     }
 
     Ok(())

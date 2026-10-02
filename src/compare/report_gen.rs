@@ -857,14 +857,46 @@ fn generate_selected_report(
     }
 
     for test in &mut report_tests {
-        use crate::diagnostics::record::Outcome;
-        test.pair.comparison_outcome = Some(if test.status == "pass" {
+        use crate::diagnostics::{record::*, runtime};
+        let outcome = if test.status == "pass" {
             Outcome::Success
         } else if test.pair.engine_error_msg.is_some() {
             Outcome::Failure
         } else {
             Outcome::Mismatch
-        });
+        };
+        test.pair.comparison_outcome = Some(outcome);
+        if let Some(context) = runtime::current() {
+            context.record(
+                Stage::CaptureArtifacts,
+                DiagnosticEvent::Compared,
+                outcome.severity(),
+                [
+                    (Field::Command, FieldValue::Kind(SafeValue::Compare)),
+                    (
+                        Field::Target,
+                        FieldValue::Identity(SafeIdentity::fingerprint(suite_id)),
+                    ),
+                    (
+                        Field::Destination,
+                        FieldValue::Identity(SafeIdentity::fingerprint(test_date)),
+                    ),
+                    (
+                        Field::Artifact,
+                        FieldValue::Identity(SafeIdentity::fingerprint(&test.pair.file_name)),
+                    ),
+                ],
+                runtime::Completion {
+                    outcome: Some(outcome),
+                    error: test
+                        .pair
+                        .engine_error_msg
+                        .as_ref()
+                        .map(|message| SanitizedError::capture(&anyhow!("{message}"))),
+                    duration_ms: None,
+                },
+            );
+        }
     }
 
     // Generate report.json
@@ -1041,16 +1073,27 @@ fn promote_screenshots(
     reference_dir: &Path,
     screenshots: &[String],
 ) -> Result<usize> {
+    use crate::diagnostics::{record::*, runtime};
     create_dir_all(reference_dir)?;
 
     let mut approved_count = 0;
     for file_name in screenshots {
         let src = tests_dir.join(file_name);
         if read_error_marker(&src).is_some() {
-            eprintln!(
-                "    {} Skipped failed capture: {}",
-                "SKIP:".yellow(),
-                file_name
+            runtime::event(
+                Stage::CaptureArtifacts,
+                DiagnosticEvent::Decision,
+                Severity::Warn,
+                [
+                    (Field::Command, FieldValue::Kind(SafeValue::Approve)),
+                    (Field::State, FieldValue::Kind(SafeValue::Failed)),
+                    (
+                        Field::Artifact,
+                        FieldValue::Identity(SafeIdentity::fingerprint(
+                            src.as_os_str().as_encoded_bytes(),
+                        )),
+                    ),
+                ],
             );
             continue;
         }
@@ -1071,9 +1114,36 @@ fn promote_screenshots(
         }
 
         approved_count += 1;
-        eprintln!("    Approved: {}", file_name.green());
+        runtime::event(
+            Stage::CaptureArtifacts,
+            DiagnosticEvent::Decision,
+            Severity::Debug,
+            [
+                (Field::Command, FieldValue::Kind(SafeValue::Approve)),
+                (Field::State, FieldValue::Kind(SafeValue::Complete)),
+                (
+                    Field::Artifact,
+                    FieldValue::Identity(SafeIdentity::fingerprint(
+                        src.as_os_str().as_encoded_bytes(),
+                    )),
+                ),
+            ],
+        );
     }
 
+    runtime::event(
+        Stage::CaptureArtifacts,
+        DiagnosticEvent::StageFinished,
+        Severity::Info,
+        [
+            (Field::Command, FieldValue::Kind(SafeValue::Approve)),
+            (Field::FileCount, FieldValue::Number(approved_count as u64)),
+            (
+                Field::SkippedFiles,
+                FieldValue::Number((screenshots.len() - approved_count) as u64),
+            ),
+        ],
+    );
     eprintln!(
         "  {} screenshot(s) approved as new reference.",
         approved_count.to_string().green()
@@ -1244,6 +1314,7 @@ mod tests {
 
     #[test]
     fn pixel_match_threshold_manifest_controls_each_capture() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
         let directory = tempfile::tempdir().unwrap();
         let suite = directory.path().join("shop");
         let run = suite.join("bitmaps_test/run");
@@ -1271,7 +1342,33 @@ mod tests {
         .unwrap();
 
         for workers in [1, 3] {
-            generate_comparison_report(&suite, "shop", "run", 0.0, workers).unwrap();
+            let operation = runtime::Operation::start(
+                directory.path(),
+                OperationKind::Command,
+                None,
+                None,
+                None,
+            );
+            runtime::in_scope(Some(operation.context()), || {
+                generate_comparison_report(&suite, "shop", "run", 0.0, workers)
+            })
+            .unwrap();
+            let reference = operation.finish_blocking(Outcome::Success);
+            let reader = JournalReader::open(directory.path(), &reference.operation_id).unwrap();
+            let mut compared = 0;
+            reader
+                .visit(|record| {
+                    if record.event_name == DiagnosticEvent::Compared {
+                        compared += 1;
+                        assert_eq!(record.severity, record.outcome.unwrap().severity());
+                        assert_eq!(
+                            record.fields.get(&Field::Command),
+                            Some(&FieldValue::Kind(SafeValue::Compare))
+                        );
+                    }
+                })
+                .unwrap();
+            assert_eq!(compared, 4);
             let report: ReportConfig =
                 serde_json::from_slice(&fs::read(run.join("report.json")).unwrap()).unwrap();
             assert_eq!(report.tests.len(), 4);
@@ -1983,6 +2080,69 @@ mod tests {
         approve_screenshots(&suite_dir, None).unwrap();
 
         assert!(!reference_dir.join(screenshot_name).exists());
+    }
+
+    #[test]
+    fn approval_journal_retains_skipped_and_promoted_captures() {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
+        let root = tempfile::tempdir().unwrap();
+        let test_dir = root.path().join("suite/bitmaps_test/run");
+        let reference_dir = root.path().join("suite/bitmaps_reference");
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::create_dir_all(&reference_dir).unwrap();
+        for name in ["passed.png", "failed.png"] {
+            fs::write(test_dir.join(name), png_bytes(200)).unwrap();
+            fs::write(reference_dir.join(name), png_bytes(10)).unwrap();
+        }
+        fs::write(
+            crate::test::capture::error_marker_path(&test_dir.join("failed.png")),
+            b"synthetic-private-marker",
+        )
+        .unwrap();
+        let operation =
+            runtime::Operation::start(root.path(), OperationKind::Command, None, None, None);
+        let count = runtime::in_scope(Some(operation.context()), || {
+            promote_screenshots(
+                &test_dir,
+                &reference_dir,
+                &["passed.png".into(), "failed.png".into()],
+            )
+        })
+        .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            fs::read(reference_dir.join("passed.png")).unwrap(),
+            png_bytes(200)
+        );
+        assert_eq!(
+            fs::read(reference_dir.join("failed.png")).unwrap(),
+            png_bytes(10)
+        );
+        let reference = operation.finish_blocking(Outcome::Success);
+        let reader = JournalReader::open(root.path(), &reference.operation_id).unwrap();
+        let mut decisions = Vec::new();
+        reader
+            .visit(|record| {
+                let encoded = serde_json::to_string(&record).unwrap();
+                for private in ["passed.png", "failed.png", "synthetic-private-marker"] {
+                    assert!(!encoded.contains(private));
+                }
+                if record.fields.contains_key(&Field::Artifact) {
+                    assert_eq!(
+                        record.fields.get(&Field::Command),
+                        Some(&FieldValue::Kind(SafeValue::Approve))
+                    );
+                    decisions.push((record.severity, record.fields.get(&Field::State).cloned()));
+                }
+            })
+            .unwrap();
+        assert_eq!(
+            decisions,
+            vec![
+                (Severity::Debug, Some(FieldValue::Kind(SafeValue::Complete))),
+                (Severity::Warn, Some(FieldValue::Kind(SafeValue::Failed))),
+            ]
+        );
     }
 
     #[test]

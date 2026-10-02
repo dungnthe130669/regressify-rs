@@ -5,7 +5,7 @@ import { expect, type Page, test } from "@playwright/test";
 import { PNG } from "pngjs";
 import { getAssetVersion } from "../scripts/version-assets";
 
-async function mockCaptureLogs(page: Page, state = "complete") {
+async function mockCaptureLogs(page: Page, state = "complete", timestampUtcMs = 1790812800000) {
   const records = (operationId: string, message: string) => [
     {
       schemaVersion: 1,
@@ -14,7 +14,7 @@ async function mockCaptureLogs(page: Page, state = "complete") {
       captureRunId: "run",
       execution: null,
       sequence: 0,
-      timestampUtcMs: 1790812800000,
+      timestampUtcMs,
       elapsedMs: 12,
       severity: "info",
       stage: "navigation",
@@ -170,6 +170,18 @@ test("capture log archive states remain distinct and incomplete exports are disa
     await expect(page.getByRole("button", { name: /Export unavailable:/ })).toBeDisabled();
     await expect(page.getByText("Passed", { exact: true })).toBeVisible();
   }
+});
+
+test("capture log rejects invalid timestamps without crashing the report", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await mockCaptureLogs(page, "complete", 8640000000000001);
+  await page.goto("/suites/log-suite/images/capture-0.png?view=log");
+  await expect(page.locator("[data-log-state]")).toHaveAttribute("data-log-state", "loadingError");
+  await expect(page.getByRole("button", { name: "Retry capture log" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Export unavailable:/ })).toBeDisabled();
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Capture 1");
+  expect(errors).toEqual([]);
 });
 
 const overviewSuites = [

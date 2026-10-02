@@ -603,6 +603,7 @@ impl JournalWriter {
             Stage::Finish,
             DiagnosticEvent::Finished,
         );
+        terminal.severity = outcome.severity();
         terminal.outcome = Some(outcome);
         self.write(&terminal)?;
         self.flush()?;
@@ -945,7 +946,7 @@ pub(crate) fn record_worker_cancellation(output: &Path, operation: &OperationId)
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::record::{DiagnosticEvent, Stage};
+    use super::super::record::{DiagnosticEvent, Severity, Stage};
     use super::*;
 
     fn write_records(
@@ -1338,14 +1339,29 @@ pub(crate) mod tests {
     #[test]
     fn normal_finalization_verifies_every_record_and_terminal_outcome() {
         let root = tempfile::tempdir().unwrap();
-        let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 999);
-        let index = writer.finalize(Outcome::Success).unwrap();
-        assert_eq!(index.records, 1000);
-        assert!(writer.finalize(Outcome::Success).is_err());
-        let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
-        assert_eq!(reader.archive_state(), ArchiveState::Complete);
-        assert_eq!(reader.verified_index().unwrap(), index);
-        assert_eq!(reader.visit(|_| {}).unwrap().records, 1000);
+        for (outcome, severity) in [
+            (Outcome::Success, Severity::Info),
+            (Outcome::Failure, Severity::Error),
+            (Outcome::Cancelled, Severity::Warn),
+            (Outcome::CancelledRemoteUnknown, Severity::Warn),
+            (Outcome::Mismatch, Severity::Warn),
+            (Outcome::Unknown, Severity::Warn),
+        ] {
+            let (mut writer, metadata) = write_records(root.path(), JournalOptions::default(), 999);
+            let index = writer.finalize(outcome).unwrap();
+            assert_eq!(index.records, 1000);
+            assert!(writer.finalize(outcome).is_err());
+            let reader = JournalReader::open(root.path(), &metadata.operation_id).unwrap();
+            assert_eq!(reader.archive_state(), ArchiveState::Complete);
+            assert_eq!(reader.verified_index().unwrap(), index);
+            let mut terminal = None;
+            let summary = reader.visit(|record| terminal = Some(record)).unwrap();
+            assert_eq!(summary.records, 1000);
+            let terminal = terminal.unwrap();
+            assert_eq!(terminal.event_name, DiagnosticEvent::Finished);
+            assert_eq!(terminal.outcome, Some(outcome));
+            assert_eq!(terminal.severity, severity);
+        }
     }
 
     #[test]

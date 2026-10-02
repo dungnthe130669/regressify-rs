@@ -51,6 +51,11 @@ Display filters never reduce the standard archived timeline. For example,
 for passed captures. Storage limits and the archive kill-switch below are separate
 operation-level settings, not scenario configuration.
 
+Failures retain `error` severity, cancellation and visual mismatches retain `warn`,
+and successful completion retains `info`. Version output, interactive prompts,
+human-readable result summaries, and emergency sink warnings remain console output;
+they are not forwarded wholesale into archives.
+
 ### Diagnostic Storage Limits
 
 Startup/argument/configuration outcomes are recorded separately under the user's
@@ -59,6 +64,20 @@ These safe operational journals are never included in public capture reports and
 are not automatically pruned. Entry points explicitly finalize them before exit;
 interrupted processes can leave a partial archive. The archive kill-switch below
 also disables startup journal creation.
+
+The desktop starts its application journal before argument parsing, installation
+checks, worker dispatch, and window creation. Native shell/window warnings are
+queued into that local journal, including warnings from background threads.
+These records are categorized and do not retain arbitrary exception text.
+
+Engine commands other than `version` also retain a separate command journal under
+the active output root. It records command identity, completion, comparison
+selection/outcomes, approval promotions/skips, optimization sizes/decisions, and
+snapshot cleanup warnings with available numeric OS error codes. Desktop View Log
+reopens the saved command operation ID; capture logs retain their original IDs.
+Deployment staging remains in its deployment journal. Command and application
+journals are local-only and never become public capture chunks. Failures before
+engine configuration completes are recorded in the application journal instead.
 
 `--diagnostic-chunk-size-bytes` controls journal segment size (default `524288`,
 512 KiB; range 4096 bytes to 8 MiB). `--diagnostic-disk-budget-bytes` limits

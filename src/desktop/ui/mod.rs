@@ -2871,7 +2871,10 @@ pub fn launch(instance: Option<DesktopInstance>) {
                         #[cfg(target_os = "windows")]
                         match super::jump_list::initialize_window(window) {
                             Ok(taskbar) => view.update(cx, |this, _| this.taskbar = Some(taskbar)),
-                            Err(error) => eprintln!("Cannot set Windows taskbar icon: {error:#}"),
+                            Err(error) => crate::diagnostics::startup::warning(
+                                crate::diagnostics::record::SafeValue::Shell,
+                                &error,
+                            ),
                         }
                         let weak = view.downgrade();
                         window.on_window_should_close(cx, move |window, cx| {
@@ -2916,7 +2919,10 @@ pub fn launch(instance: Option<DesktopInstance>) {
                     },
                 );
                 if let Err(error) = result {
-                    eprintln!("Unable to open Regressify Desktop: {error:#}");
+                    crate::diagnostics::startup::warning(
+                        crate::diagnostics::record::SafeValue::Window,
+                        &error,
+                    );
                 }
             })
             .detach();

@@ -245,12 +245,12 @@ impl Operation {
         }
     }
 
-    pub async fn finish(mut self, outcome: Outcome) -> ArchiveReference {
+    fn record_finish(&self, outcome: Outcome) {
         in_scope(Some(self.context.clone()), || {
             self.context.record(
                 Stage::Finish,
                 DiagnosticEvent::Finished,
-                Severity::Info,
+                outcome.severity(),
                 [],
                 Completion {
                     outcome: Some(outcome),
@@ -259,6 +259,20 @@ impl Operation {
                 },
             )
         });
+    }
+
+    pub fn finish_blocking(mut self, outcome: Outcome) -> ArchiveReference {
+        self.record_finish(outcome);
+        let owner = self
+            .owner
+            .take()
+            .expect("operation owns its journal until finalization");
+        let health = owner.finish(outcome);
+        self.finalized_reference(health)
+    }
+
+    pub async fn finish(mut self, outcome: Outcome) -> ArchiveReference {
+        self.record_finish(outcome);
         let owner = self
             .owner
             .take()
@@ -271,6 +285,10 @@ impl Operation {
                 records_written: 0,
                 missing_records: None,
             });
+        self.finalized_reference(health)
+    }
+
+    fn finalized_reference(&self, health: HealthSnapshot) -> ArchiveReference {
         ArchiveReference {
             operation_id: self.context.identity.operation_id.clone(),
             execution_id: self

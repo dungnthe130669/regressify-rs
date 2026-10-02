@@ -1,5 +1,57 @@
 # Logging Migration Inventory
 
+## Follow-up Review: 2026-10-02
+
+The baseline inventory below is historical. This follow-up verified the subscriber,
+engine and desktop entry points, command producers, saved archive selection,
+snapshot publication, and frontend loading/export boundaries.
+
+Confirmed gaps repaired with regression coverage:
+
+- Failed startup/runtime/journal completions used informational severity. Final
+  records now retain severity consistent with their outcome.
+- Non-capture commands had no operation owner. Command journals now retain typed
+  identity, selected work, results, and warnings without changing capture history.
+- Desktop activity only retained deployment operation IDs. Command IDs now survive
+  save/reload and select the exact journal, with explicit missing/legacy states.
+- Optimizer details and approval decisions existed only in console output. Typed
+  records retain every completed file result/skip, including Rayon work, without
+  exposing paths, failed-capture marker contents, or arbitrary error strings.
+- The desktop GUI had no entry-point subscriber or application journal. Startup,
+  shell, and window warnings now use a local, nonblocking application journal.
+- Snapshot empty-directory cleanup warnings disappeared after completion. The
+  successful command now retains warning severity and the available OS error code.
+- The frontend accepted timestamps that could throw during rendering. Rust and
+  frontend validation now enforce JavaScript's supported date range; browser tests
+  verify the report remains usable with a retryable loading error.
+
+### Remaining Print Calls
+
+- Keep version/result stdout, prompts, and initialization file-operation output as
+  presentation. Preserve local error fallbacks and snapshot output-location text.
+- Comparison rows and command summaries remain human-readable presentation; their
+  outcomes are also retained as typed command records and comparison reports.
+- Capture-orchestration prints supplement per-job journals and lifecycle events;
+  do not infer duplicate progress transitions from their formatted text.
+- Deployment phase/heartbeat and browser setup prints are fallback paths when no
+  operation context exists. Their normal execution paths already emit diagnostics.
+- Keep subprocess pipe/overflow fixtures and ignored live-test output unchanged.
+  Raw child output is not a safe public diagnostic payload.
+- The legacy command-formatting print method and Unix permission print helper have
+  no active call sites in the current tree. Do not migrate them as if they were
+  reachable capture instrumentation; review their payloads before future reuse.
+- Ordinary `tracing::info!`/`error!` is not enough: the subscriber deliberately
+  accepts only reviewed diagnostic records. Producers must use the typed runtime,
+  with explicit context propagation and a journal owner.
+
+This is a risk-focused review, not a claim that every UI status message, browser
+console entry, panic, or third-party event is archived. Browser console/network
+bodies, typed input, credentials, raw scripts, and arbitrary child output remain
+excluded. Abrupt termination can leave partial archives; disk/queue failures must
+remain visible rather than being mislabeled as complete.
+
+## Historical Baseline
+
 Verified: 2026-10-01, before logging implementation. This is the baseline for
 [the logging tasks](plan/log-revamp-tasks/README.md), not a claim that the listed
 messages are safe to publish. Locations refer to the pre-migration source;

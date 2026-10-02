@@ -1,16 +1,29 @@
 # Logging Diagnostics
 
-Verified: 2026-10-01
+Verified: 2026-10-02
 
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
   from live progress. Public capture records use templates, typed fields, opaque
   identities, and categorical errors; provider detail is deployment-only.
 - [Startup journals](../../src/diagnostics/startup.rs) are entry-point-owned in
-  local application data, finalized explicitly, and excluded from public reports.
+  local application data, use the bounded operation queue for native warnings,
+  finalize explicitly, and are excluded from public reports. The desktop installs
+  its subscriber before parsing/worker dispatch; a nested worker reuses ownership.
+- [Engine commands](../../src/application.rs) own separate local journals except
+  version output; deployment staging retains its enclosing deployment context.
+  [Desktop Activity](../../src/desktop/logs.rs) reopens saved command operation IDs,
+  while image Capture Log preserves original capture provenance. Quiet-mode engine
+  subprocess tests cover success/failure; desktop tests cover exact reload/export.
+- Outcome severity is shared by runtime/startup and journal finalization. Rust and
+  frontend schemas reject timestamps outside JavaScript's date range; the browser
+  regression verifies loading-error recovery on desktop/mobile. Raw ordinary
+  tracing events remain intentionally excluded from the reviewed-record adapter.
 - The user confirmed a 10% mean wall-time budget for the documented five-pair
   capture workload. Final measured archive overhead, including startup lifecycle,
   was 7.48%; see the [benchmark](../../docs/logging-benchmark.md) for raw data and
-  the archive-kill-switch baseline and I/O-accounting limitations.
+  the archive-kill-switch baseline and I/O-accounting limitations. That measurement
+  predates the October 2 command/application ownership follow-up; it is not a
+  remeasurement of the newer code.
 - [Runtime stage wrappers](../../src/diagnostics/runtime.rs) box their work before
   constructing the wrapper future. Leaving nested action/hook futures inline
   overflowed a default Windows Tokio worker stack, even on the closed-semaphore

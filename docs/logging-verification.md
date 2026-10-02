@@ -32,14 +32,22 @@ fixtures is required. Ignored tests are not counted as passing coverage.
 
 ## Focused Gates
 
-The final Windows default gate, `cargo test --locked --all-targets`, passed 446
-tests with 18 ignored. The serialized `cargo test --locked --features gui-tests
---all-targets -- --test-threads=1` gate passed 974 library tests with 27 ignored
-before the startup follow-up; that follow-up passed its focused regression and
-the final default/worker gates. The latest worker integration run passed 11 tests
-with four opt-in checks ignored. The standalone CLI browser regression and archive
-benchmark were also run explicitly and passed. GUI build and GUI Clippy with
-warnings denied passed. The serialized GUI suite took about 42 minutes.
+The retention follow-up on 2026-10-02 passed these Windows gates:
+
+- `cargo test --locked --all-targets`: 449 passed, 18 ignored.
+- `cargo test --locked --features desktop --lib`: 771 passed, 26 ignored.
+- `cargo test --locked --features gui-tests --all-targets -- --test-threads=1`:
+  979 library tests passed, 27 ignored; 11 worker tests passed, four ignored.
+- The standalone CLI browser regression below passed explicitly with cached
+  Chromium, including mixed outcomes, secret checks, and the archive kill-switch.
+- Production GUI build and GUI Clippy with warnings denied passed.
+- Frontend unit tests passed 19 cases and 145 assertions; the six capture-log
+  Playwright checks passed against both source and production bundles on desktop
+  and mobile, including the invalid-timestamp regression.
+
+The serialized GUI library tests took about 26 minutes. The earlier full frontend
+browser suite and overhead benchmark were not rerun for this follow-up; their
+historical results below do not measure the new command/application ownership.
 
 Run these before broader feature gates:
 
@@ -76,12 +84,12 @@ Client tests belong to their implementation units rather than the engine suite:
 - Playwright `capture log` tests passed on desktop and mobile: no eager fetch,
   one request on opening, reference/test deep links and refresh, plain-text markup,
   downloads, distinct availability states, layout and accessibility.
-- The complete frontend browser suite passed 109 tests with seven configuration
+- The original complete frontend browser suite passed 109 tests with seven configuration
   skips. Ten focused production-bundle checks also passed on desktop and mobile.
   The initial full run caught suite-list state loss and an off-screen Info close
   button; existing regressions now cover list/log/refresh round trips and full
   dialog visibility, and fail before the repair.
-- Frontend unit tests passed 19 cases and 137 assertions; typecheck and production
+- Frontend unit tests passed 19 cases and 145 assertions; typecheck and production
   build passed. Scoped Biome checks passed for changed sources. Full frontend lint
   still reports five existing formatting failures in untouched files, listed in
   [outstanding issues](../OUTSTANDING_ISSUES.md#frontend-formatting-baseline-2026-10-01).

@@ -124,6 +124,8 @@ impl From<SafeIdentity> for String {
 pub enum OperationKind {
     Capture,
     Deployment,
+    Command,
+    Application,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,6 +200,18 @@ pub enum Outcome {
     Unknown,
 }
 
+impl Outcome {
+    pub fn severity(self) -> Severity {
+        match self {
+            Self::Success => Severity::Info,
+            Self::Failure => Severity::Error,
+            Self::Cancelled | Self::CancelledRemoteUnknown | Self::Mismatch | Self::Unknown => {
+                Severity::Warn
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum DiagnosticEvent {
@@ -242,6 +256,7 @@ impl DiagnosticEvent {
 #[serde(rename_all = "camelCase")]
 pub enum Field {
     PublicationUrl,
+    Command,
     ActionIndex,
     ActionType,
     Target,
@@ -269,9 +284,11 @@ pub enum Field {
     BytesAfter,
     BudgetBytes,
     FileCount,
+    SkippedFiles,
     BatchCount,
     SelectedSuites,
     StatusCode,
+    OsErrorCode,
     RequestId,
     Provider,
     Endpoint,
@@ -342,6 +359,23 @@ pub enum SafeValue {
     Complete,
     Failed,
     Cancelled,
+    Init,
+    Install,
+    Version,
+    Test,
+    Reference,
+    Compare,
+    Approve,
+    Snapshot,
+    Optimize,
+    Empty,
+    BelowMinimum,
+    Unchanged,
+    Cli,
+    Desktop,
+    Worker,
+    Shell,
+    Window,
     Unknown,
 }
 
@@ -363,7 +397,8 @@ impl Field {
             Self::Target | Self::Destination | Self::Artifact | Self::Capture | Self::RequestId => {
                 matches!(value, FieldValue::Identity(_))
             }
-            Self::ActionType
+            Self::Command
+            | Self::ActionType
             | Self::Provider
             | Self::Endpoint
             | Self::Condition
@@ -611,6 +646,10 @@ impl DiagnosticRecordV1 {
                     .is_none_or(|duration| duration <= MAX_JSON_INTEGER),
             "Diagnostic integer exceeds JSON precision"
         );
+        ensure!(
+            (-8_640_000_000_000_000..=8_640_000_000_000_000).contains(&self.timestamp_utc_ms),
+            "Diagnostic timestamp exceeds the supported date range"
+        );
         for (field, value) in &self.fields {
             ensure!(
                 *field != Field::PublicationUrl || self.operation_kind == OperationKind::Deployment,
@@ -621,7 +660,7 @@ impl DiagnosticRecordV1 {
         if let Some(execution) = &self.execution {
             ensure!(
                 self.operation_kind == OperationKind::Capture,
-                "Deployment cannot own capture execution"
+                "Only captures can own execution identities"
             );
             ensure!(
                 execution.attempt > 0
@@ -739,6 +778,19 @@ mod tests {
             Stage::QueueSetup,
             DiagnosticEvent::Started,
         );
+        for timestamp in [
+            i64::MIN,
+            -8_640_000_000_000_001,
+            8_640_000_000_000_001,
+            i64::MAX,
+        ] {
+            record.timestamp_utc_ms = timestamp;
+            assert!(record.validate().is_err());
+        }
+        for timestamp in [-8_640_000_000_000_000, 8_640_000_000_000_000, 0] {
+            record.timestamp_utc_ms = timestamp;
+            record.validate().unwrap();
+        }
         let mut value = serde_json::to_value(&record).unwrap();
         value["schemaVersion"] = 2.into();
         assert!(serde_json::from_value::<DiagnosticRecordV1>(value.clone()).is_err());

@@ -1,17 +1,18 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 
-use anyhow::{Context, Result, anyhow};
-use colored::Colorize;
+use anyhow::{Context, Result};
 use rayon::prelude::*;
 use walkdir::WalkDir;
 
 use crate::{
     cli::args::OptimizeArgs,
     common,
+    diagnostics::{record::*, runtime},
     helpers::{
-        OnceLockExtensions, format_bytes,
+        OnceLockExtensions,
         png::{MAX_VISUAL_IMAGE_DECOMPRESSED_BYTES, read_bounded_png_dimensions},
         write_file_atomically,
     },
@@ -24,153 +25,109 @@ enum OptimizeResult {
 }
 
 pub fn optimize_images(args: OptimizeArgs) -> Result<()> {
-    eprintln!("Starting image optimization...");
     let output_dir = common::REGRESSIFY_DIR.get_required()?;
-
-    if !output_dir.exists() {
-        eprintln!(
-            "No Regressify output directory found: {}",
-            output_dir.display()
-        );
-        return Ok(());
-    }
-
-    eprintln!("Searching for PNGs in: {}", output_dir.display());
-    let png_files = collect_png_files(output_dir)?;
-
-    if png_files.is_empty() {
-        eprintln!("No PNG files found.");
-        return Ok(());
-    }
-
-    eprintln!(
-        "Found {} PNG files. Starting optimization...",
-        png_files.len()
+    let png_files = if output_dir.exists() {
+        collect_png_files(output_dir)?
+    } else {
+        Vec::new()
+    };
+    runtime::event(
+        Stage::PackagingOptimization,
+        DiagnosticEvent::Started,
+        Severity::Info,
+        [(Field::FileCount, FieldValue::Number(png_files.len() as u64))],
     );
 
     let total_files = png_files.len();
-    let counter = AtomicUsize::new(0);
     let total_original_size = AtomicU64::new(0);
     let total_optimized_size = AtomicU64::new(0);
     let total_skipped_files = AtomicUsize::new(0);
-
-    let to_be_print_nth = match png_files.len() {
-        n if n < 50 => 1,
-        n if n < 200 => 2,
-        n if n < 500 => 5,
-        n if n < 2000 => 10,
-        _ => 20,
-    };
-    let nth_width = png_files.len().to_string().len();
+    let context = runtime::current();
     png_files.par_iter().try_for_each(|path| -> Result<()> {
-        let file_name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("unknown.png");
-
-        let result = optimize_png(path, &args);
-
-        let idx = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        let should_print = idx.is_multiple_of(to_be_print_nth) || idx == total_files;
-
-        match result {
-            Ok(OptimizeResult::Pair(original_size, optimized_size)) => {
-                total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                total_optimized_size.fetch_add(optimized_size, Ordering::Relaxed);
-
-                if should_print {
-                    eprintln!(
-                        "{:>width$} of {}: {}: {} --> {}",
-                        idx,
-                        total_files,
-                        file_name,
-                        format_bytes(original_size).yellow(),
-                        format_bytes(optimized_size).green(),
-                        width = nth_width
-                    );
-                }
+        runtime::in_scope(context.clone(), || {
+            let started = Instant::now();
+            let result = optimize_png(path, &args);
+            let mut fields = vec![(
+                Field::Artifact,
+                FieldValue::Identity(SafeIdentity::fingerprint(
+                    path.as_os_str().as_encoded_bytes(),
+                )),
+            )];
+            if let Ok(optimized) = &result {
+                let (before, after, reason) = match optimized {
+                    OptimizeResult::Pair(before, after) => (*before, *after, SafeValue::Complete),
+                    OptimizeResult::AlreadyOptimized(before) => {
+                        total_skipped_files.fetch_add(1, Ordering::Relaxed);
+                        (*before, *before, SafeValue::Unchanged)
+                    }
+                    OptimizeResult::TooSmall(before) => {
+                        total_skipped_files.fetch_add(1, Ordering::Relaxed);
+                        (*before, *before, SafeValue::BelowMinimum)
+                    }
+                };
+                total_original_size.fetch_add(before, Ordering::Relaxed);
+                total_optimized_size.fetch_add(after, Ordering::Relaxed);
+                fields.extend([
+                    (Field::BytesBefore, FieldValue::Number(before)),
+                    (Field::BytesAfter, FieldValue::Number(after)),
+                    (Field::Reason, FieldValue::Kind(reason)),
+                ]);
             }
-            Ok(OptimizeResult::AlreadyOptimized(original_size)) => {
-                total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                total_skipped_files.fetch_add(1, Ordering::Relaxed);
-
-                if should_print {
-                    eprintln!(
-                        "{:>width$} of {}: {}: Already optimized: {}.",
-                        idx,
-                        total_files,
-                        file_name,
-                        format_bytes(original_size).yellow(),
-                        width = nth_width
-                    );
-                }
+            if let Some(context) = runtime::current() {
+                context.record(
+                    Stage::PackagingOptimization,
+                    DiagnosticEvent::StageFinished,
+                    if result.is_ok() {
+                        Severity::Debug
+                    } else {
+                        Severity::Error
+                    },
+                    fields,
+                    runtime::Completion {
+                        outcome: Some(if result.is_ok() {
+                            Outcome::Success
+                        } else {
+                            Outcome::Failure
+                        }),
+                        error: result.as_ref().err().map(SanitizedError::capture),
+                        duration_ms: Some(started.elapsed().as_millis() as u64),
+                    },
+                );
             }
-            Ok(OptimizeResult::TooSmall(original_size)) => {
-                total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-                total_skipped_files.fetch_add(1, Ordering::Relaxed);
-
-                if should_print {
-                    eprintln!(
-                        "{:>width$} of {}: {}: {} ({}).",
-                        idx,
-                        total_files,
-                        file_name,
-                        "Too Small".cyan(),
-                        format_bytes(original_size),
-                        width = nth_width
-                    );
-                }
-            }
-            Err(e) => {
-                let original_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-
-                total_original_size.fetch_add(original_size, Ordering::Relaxed);
-                total_optimized_size.fetch_add(original_size, Ordering::Relaxed);
-
-                if should_print {
-                    eprintln!(
-                        "{:>width$} of {}: {}: {}: {}",
-                        idx,
-                        total_files,
-                        file_name,
-                        "Error".red(),
-                        e,
-                        width = nth_width
-                    );
-                }
-
-                return Err(anyhow!("Failed to optimize '{}': {}", path.display(), e));
-            }
-        };
-
-        Ok(())
+            result
+                .map(|_| ())
+                .with_context(|| format!("Failed to optimize '{}'", path.display()))
+        })
     })?;
 
-    // Report summary
-    let final_original_size = total_original_size.load(Ordering::Relaxed);
-    let final_optimized_size = total_optimized_size.load(Ordering::Relaxed);
-    let final_skipped_files = total_skipped_files.load(Ordering::Relaxed);
-
-    eprintln!("\nOptimization Summary:");
-    eprintln!("Total files processed: {}", total_files);
-    eprintln!(
-        "Total files optimized: {}",
-        total_files - final_skipped_files
+    runtime::event(
+        Stage::PackagingOptimization,
+        DiagnosticEvent::StageFinished,
+        Severity::Info,
+        [
+            (Field::FileCount, FieldValue::Number(total_files as u64)),
+            (
+                Field::SkippedFiles,
+                FieldValue::Number(total_skipped_files.load(Ordering::Relaxed) as u64),
+            ),
+            (
+                Field::BytesBefore,
+                FieldValue::Number(total_original_size.load(Ordering::Relaxed)),
+            ),
+            (
+                Field::BytesAfter,
+                FieldValue::Number(total_optimized_size.load(Ordering::Relaxed)),
+            ),
+            (
+                Field::State,
+                FieldValue::Kind(if total_files == 0 {
+                    SafeValue::Empty
+                } else {
+                    SafeValue::Complete
+                }),
+            ),
+        ],
     );
-    eprintln!("Total files skipped: {}", final_skipped_files);
-    eprintln!(
-        "Total original size: {}",
-        format_bytes(final_original_size).yellow()
-    );
-    eprintln!(
-        "Total optimized size: {}",
-        format_bytes(final_optimized_size).green()
-    );
-    let savings = final_original_size.saturating_sub(final_optimized_size);
-    eprintln!("Total savings: {}", format_bytes(savings).green());
-
     Ok(())
 }
 

@@ -131,7 +131,10 @@ impl Drop for WindowTaskbar {
     fn drop(&mut self) {
         for key in TASKBAR_PROPERTIES {
             if let Err(error) = unsafe { self.properties.SetValue(&key, &PROPVARIANT::default()) } {
-                eprintln!("Cannot release Windows taskbar properties: {error:#}");
+                crate::diagnostics::startup::warning(
+                    crate::diagnostics::record::SafeValue::Shell,
+                    &error.into(),
+                );
             }
         }
     }
@@ -173,7 +176,7 @@ pub fn refresh(reopened: Option<&Path>) {
     let result = super::workspace::Preferences::path()
         .and_then(|path| refresh_for(&path, reopened, &std::env::current_exe()?, app_id));
     if let Err(error) = result {
-        eprintln!("Cannot update recent workspaces in the Windows Jump List: {error:#}");
+        crate::diagnostics::startup::warning(crate::diagnostics::record::SafeValue::Shell, &error);
     }
 }
 

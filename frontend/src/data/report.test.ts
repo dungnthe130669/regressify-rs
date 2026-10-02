@@ -57,6 +57,13 @@ describe("snapshot contract", () => {
     expect(formatLogRecord(parsed)).toContain("statusCode=200");
     expect(matchesLog(parsed, "error", "all", "")).toBe(false);
     expect(matchesLog(parsed, "debug", "navigation", "STATUSCODE")).toBe(true);
+    for (const timestampUtcMs of [-8640000000000001, 8640000000000001, Number.MAX_SAFE_INTEGER]) {
+      expect(logRecordSchema.safeParse({ ...record, timestampUtcMs }).success).toBe(false);
+    }
+    for (const timestampUtcMs of [-8640000000000000, 0, 8640000000000000]) {
+      const valid = logRecordSchema.parse({ ...record, timestampUtcMs });
+      expect(() => new Date(valid.timestampUtcMs).toISOString()).not.toThrow();
+    }
     expect(
       logRecordSchema.safeParse({
         ...record,
@@ -66,6 +73,9 @@ describe("snapshot contract", () => {
     expect(logRecordSchema.safeParse({ ...record, operationKind: "deployment" }).success).toBe(
       false,
     );
+    for (const operationKind of ["command", "application"]) {
+      expect(logRecordSchema.safeParse({ ...record, operationKind }).success).toBe(false);
+    }
     expect(
       logRecordSchema.safeParse({
         ...record,

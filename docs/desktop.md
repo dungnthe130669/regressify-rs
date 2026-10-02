@@ -1388,6 +1388,18 @@ navigation is preserved. Archives load in the background in 500-record pages;
 previous/next controls navigate the full history, and Copy copies the displayed
 page. Shared execution history is not repeated for each image.
 
+Compare, Approve, Build Report, Optimize, Install, and Initialize retain their own
+command journals. View Log uses the operation ID saved with Activity, not the
+latest directory or a guessed capture run. Test/Reference activity includes the
+command journal alongside original capture journals; per-image Capture Log still
+shows only that image's execution. A failed operation retains error severity.
+
+Application startup and native shell/window warnings are retained separately in
+`regressify/diagnostics/startup/_diagnostics` under the user's local application
+data directory. Those local JSON-line journals are available for support review,
+including failures before a workspace window opens. They are not public report
+assets and are not automatically deleted. See [diagnostic storage](commands.md#diagnostic-storage-limits).
+
 The view distinguishes loaded, partial/interrupted, expected-but-missing, legacy,
 and loading-error states. Live runs still show omitted-retained-history notices;
 those notices are not evidence that the durable archive lost records. Missing log

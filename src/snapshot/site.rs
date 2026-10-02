@@ -538,6 +538,25 @@ pub(crate) fn generate_site(
     ] {
         remove_legacy(&root, name)?;
     }
+    {
+        use crate::diagnostics::{record::*, runtime};
+        runtime::event(
+            Stage::SnapshotStaging,
+            DiagnosticEvent::StageFinished,
+            Severity::Info,
+            [
+                (Field::Command, FieldValue::Kind(SafeValue::Snapshot)),
+                (
+                    Field::SelectedSuites,
+                    FieldValue::Number(manifest.suites.len() as u64),
+                ),
+                (
+                    Field::FileCount,
+                    FieldValue::Number(dependencies.len() as u64),
+                ),
+            ],
+        );
+    }
     eprintln!(
         "Snapshot generated at: {}",
         root.join("index.html").display()
@@ -628,6 +647,35 @@ fn prune_generated_files(root: &Path, active: &[PathBuf]) -> Result<()> {
                     "Warning: Could not remove empty snapshot directory '{}'; leaving it in place: {error}",
                     entry.path().display()
                 );
+                use crate::diagnostics::{record::*, runtime};
+                if let Some(context) = runtime::current() {
+                    let mut fields = vec![
+                        (Field::CleanupFailed, FieldValue::Boolean(true)),
+                        (
+                            Field::Artifact,
+                            FieldValue::Identity(SafeIdentity::fingerprint(
+                                entry.path().as_os_str().as_encoded_bytes(),
+                            )),
+                        ),
+                    ];
+                    if let Some(code) = error
+                        .raw_os_error()
+                        .and_then(|code| u64::try_from(code).ok())
+                    {
+                        fields.push((Field::OsErrorCode, FieldValue::Number(code)));
+                    }
+                    context.record(
+                        Stage::CompletionCleanup,
+                        DiagnosticEvent::StageFinished,
+                        Severity::Warn,
+                        fields,
+                        runtime::Completion {
+                            outcome: Some(Outcome::Failure),
+                            error: Some(SanitizedError::capture(&error.into())),
+                            duration_ms: None,
+                        },
+                    );
+                }
             }
         }
     }
@@ -1405,6 +1453,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn snapshot_cleanup_keeps_blocked_empty_directories_without_failing() -> Result<()> {
+        use crate::diagnostics::{journal::JournalReader, record::*, runtime};
         use std::os::windows::fs::OpenOptionsExt;
 
         const FILE_SHARE_READ: u32 = 1;
@@ -1431,10 +1480,36 @@ mod tests {
             .open(&directory)?;
         let removal = fs::remove_dir(&directory).expect_err("Directory deletion must be blocked");
         assert!(matches!(removal.raw_os_error(), Some(5 | 32)), "{removal}");
-        let result = generate_site(&root, &[], &args(), &WorkspaceConfig::default());
+        let operation = runtime::Operation::start(&root, OperationKind::Command, None, None, None);
+        let result = runtime::in_scope(Some(operation.context()), || {
+            generate_site(&root, &[], &args(), &WorkspaceConfig::default())
+        });
         drop(locked);
 
         result?;
+        let reference = operation.finish_blocking(Outcome::Success);
+        let reader = JournalReader::open(&root, &reference.operation_id)?;
+        let mut warnings = 0;
+        reader.visit(|record| {
+            if record.fields.get(&Field::CleanupFailed) == Some(&FieldValue::Boolean(true)) {
+                warnings += 1;
+                assert_eq!(record.severity, Severity::Warn);
+                assert!(record.error_cause.is_some());
+                assert!(matches!(
+                    record.fields.get(&Field::OsErrorCode),
+                    Some(FieldValue::Number(5 | 32))
+                ));
+                assert!(
+                    !serde_json::to_string(&record)
+                        .unwrap()
+                        .contains("_snapshot/images")
+                );
+            }
+        })?;
+        assert!(
+            warnings > 0,
+            "Cleanup warnings must survive command completion"
+        );
         assert!(directory.is_dir());
         assert!(fs::read_dir(&directory)?.next().is_none());
         assert!(!removable.exists());

@@ -178,39 +178,38 @@ fn valid_component(value: &str) -> bool {
 
 pub fn run_sources(request: &RunRequest, jobs: &[Job]) -> Vec<CaptureLog> {
     let output = request.options.output_directory(&request.root);
-    if request.command == RunCommand::Deploy {
-        return vec![match &request.options.diagnostic_operation_id {
-            Some(operation) => {
-                let state = inspect_archive(&output, Some(operation), true);
-                CaptureLog {
-                    state,
-                    archive: Some(ArchiveReference {
-                        operation_id: operation.clone(),
-                        execution_id: None,
-                        state,
-                        missing_records: None,
-                    }),
-                }
-            }
-            None => CaptureLog {
+    let mut sources = Vec::new();
+    if let Some(operation) = &request.options.diagnostic_operation_id {
+        let state = inspect_archive(&output, Some(operation), true);
+        sources.push(CaptureLog {
+            state,
+            archive: Some(ArchiveReference {
+                operation_id: operation.clone(),
+                execution_id: None,
+                state,
+                missing_records: None,
+            }),
+        });
+    }
+    if !request.command.captures() && !sources.is_empty() {
+        return sources;
+    }
+    if request.command == RunCommand::Deploy || request.options.run_id.is_empty() {
+        if sources.is_empty() {
+            sources.push(CaptureLog {
                 state: ArchiveState::LegacyUnavailable,
                 archive: None,
-            },
-        }];
-    }
-    if request.options.run_id.is_empty() {
-        return vec![CaptureLog {
-            state: ArchiveState::LegacyUnavailable,
-            archive: None,
-        }];
+            });
+        }
+        return sources;
     }
     if crate::cli::args::run_id_parser(&request.options.run_id).is_err() {
-        return vec![CaptureLog {
+        sources.push(CaptureLog {
             state: ArchiveState::LoadingError,
             archive: None,
-        }];
+        });
+        return sources;
     }
-    let mut sources = Vec::new();
     for job in jobs {
         if !valid_component(&job.suite_id)
             || job.captures.iter().any(|capture| !valid_component(capture))
@@ -452,6 +451,73 @@ pub(crate) mod tests {
             query.offset = count;
         }
         assert_eq!(count, 5002);
+    }
+
+    #[test]
+    fn run_log_non_capture_command_uses_saved_operation_identity() {
+        let root = tempfile::tempdir().unwrap();
+        let output = root.path().join(".regressify");
+        let mut operation = None;
+        for _ in 0..2 {
+            let metadata = OperationMetadata::new(OperationKind::Command, None);
+            let mut writer =
+                JournalWriter::create(&output, metadata.clone(), JournalOptions::default())
+                    .unwrap();
+            let mut record = DiagnosticRecordV1::new(
+                metadata.operation_id.clone(),
+                OperationKind::Command,
+                Stage::Preflight,
+                DiagnosticEvent::Started,
+            );
+            record
+                .fields
+                .insert(Field::Command, FieldValue::Kind(SafeValue::Optimize));
+            writer.write(&record).unwrap();
+            writer.finalize(Outcome::Success).unwrap();
+            operation.get_or_insert(metadata.operation_id);
+        }
+        for command in [
+            RunCommand::Optimize,
+            RunCommand::Compare,
+            RunCommand::Approve,
+            RunCommand::Snapshot,
+        ] {
+            let mut request = RunRequest {
+                root: root.path().to_owned(),
+                command,
+                options: super::super::runner::RunOptions {
+                    diagnostic_operation_id: operation.clone(),
+                    ..Default::default()
+                },
+            };
+            let saved: RunRequest =
+                serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+            let page = load_run_page(&saved, &[], &LogQuery::default());
+            assert_eq!(page.state, ArchiveState::Complete);
+            assert_eq!(page.records.len(), 2);
+            assert!(
+                page.records
+                    .iter()
+                    .all(|record| Some(&record.operation_id) == operation.as_ref())
+            );
+            let destination = root.path().join("command-log.txt");
+            export_complete(&output, &page.sources, &LogQuery::default(), &destination).unwrap();
+            assert!(
+                std::fs::read_to_string(destination)
+                    .unwrap()
+                    .contains("Command=Optimize")
+            );
+            request.options.diagnostic_operation_id = Some(OperationId::new());
+            assert_eq!(
+                load_run_page(&request, &[], &LogQuery::default()).state,
+                ArchiveState::Missing
+            );
+            request.options.diagnostic_operation_id = None;
+            assert_eq!(
+                load_run_page(&request, &[], &LogQuery::default()).state,
+                ArchiveState::LegacyUnavailable
+            );
+        }
     }
 
     #[test]

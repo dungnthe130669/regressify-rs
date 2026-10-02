@@ -679,6 +679,7 @@ impl RunHandle {
         let diagnostic_operation = payload
             .as_deref()
             .and_then(|bytes| serde_json::from_slice::<super::worker::WorkerRequest>(bytes).ok())
+            .filter(|request| request.run.command == RunCommand::Deploy)
             .and_then(|request| {
                 request
                     .run
@@ -1027,7 +1028,7 @@ impl RunManager {
         if request.command.captures() && request.options.run_id.is_empty() {
             request.options.run_id = format!("desktop-{}", uuid::Uuid::new_v4().simple());
         }
-        request.options.diagnostic_operation_id = (request.command == RunCommand::Deploy)
+        request.options.diagnostic_operation_id = (request.command != RunCommand::Version)
             .then(crate::diagnostics::record::OperationId::new);
         let command = request.process()?;
         let events = tempfile::NamedTempFile::new()?;
