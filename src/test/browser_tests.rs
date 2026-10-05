@@ -157,7 +157,7 @@ target.onclick = async () => {
         "id": "products-submenu", "url": site.origin, "viewportNames": ["desktop", "mobile"],
         "delay": 0, "noScrollTop": true, "selectors": ["viewport"],
         "actions": [
-            { "click": "#menu-toggle", "viewportNames": ["mobile"] },
+            { "click": "#menu-toggle", "viewportNames": "mobile" },
             { "save": "menu-open", "viewportNames": ["mobile"] },
             { "click": "#products-menu" },
             { "click": "#target" }

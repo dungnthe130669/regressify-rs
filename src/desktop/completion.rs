@@ -339,14 +339,25 @@ impl CompletionCatalog {
         };
         if kind == DocumentKind::Suite && workspace.is_some() {
             let index = SourceIndex::new(format, source);
-            if let Some((_, range)) = index.ranges.iter().find(|(pointer, range)| {
+            let range = index.ranges.iter().find(|(pointer, range)| {
                 let path = pointer.split('/').collect::<Vec<_>>();
                 matches!(
                     path.as_slice(),
                     ["", "scenarios", _, "actions", _, "viewportNames", _]
                 ) && range.start <= cursor
                     && cursor <= range.end
-            }) {
+            }).map(|(_, range)| range).or_else(|| {
+                index.fields.iter().find_map(|field| {
+                    if field.key != "viewportNames" || !matches!(field.path.as_slice(),
+                        [Segment::Property(scenarios), Segment::Item, Segment::Property(actions), Segment::Item]
+                        if scenarios == "scenarios" && actions == "actions"
+                    ) {
+                        return None;
+                    }
+                    field.value_range.as_ref().filter(|range| range.start <= cursor && cursor <= range.end)
+                })
+            });
+            if let Some(range) = range {
                 let mut value_parser = Parser::new();
                 let language = match format {
                     Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
@@ -514,18 +525,12 @@ impl CompletionCatalog {
                     .collect();
             }
             if action_viewport && let Some(workspace) = workspace {
-                let item = matches!(location.path.last(), Some(Segment::Item));
                 return action_viewport_values(workspace, format, &probe, &marker)
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|viewport| viewport.label.to_ascii_lowercase().starts_with(&prefix))
                     .map(|viewport| Suggestion {
-                        text: if item {
-                            serde_json::json!(viewport.label)
-                        } else {
-                            serde_json::json!([viewport.label])
-                        }
-                        .to_string(),
+                        text: serde_json::json!(viewport.label).to_string(),
                         label: viewport.label,
                         detail: format!("{} x {}", viewport.width, viewport.height),
                         description: "Effective scenario viewport".into(),
@@ -804,6 +809,30 @@ mod tests {
         for (format, source, expected, token) in [
             (
                 Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: 'mo|' # retained\n",
+                "mobile",
+                "'mo'",
+            ),
+            (
+                Format::Json,
+                "{\"scenarios\":[{\"url\":\"/\",\"viewportNames\":[\"mobile\"],\"actions\":[{\"click\":\"#toggle\",\"viewportNames\":\"mo|\"}]}]}",
+                "mobile",
+                "\"mo\"",
+            ),
+            (
+                Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [phone-wide]\n  actions:\n  - click: '#toggle'\n    viewportNames: 'phone-w|' # retained\n",
+                "phone-wide",
+                "'phone-w'",
+            ),
+            (
+                Format::Json,
+                "{\"scenarios\":[{\"url\":\"/\",\"viewportNames\":[\"phone narrow\"],\"actions\":[{\"click\":\"#toggle\",\"viewportNames\":\"phone n|\"}]}]}",
+                "phone narrow",
+                "\"phone n\"",
+            ),
+            (
+                Format::Yaml,
                 "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: [\"mo|\"] # retained\n",
                 "mobile",
                 "\"mo\"",
@@ -847,9 +876,17 @@ mod tests {
             assert_eq!(&source[items[0].replacement.clone()], token);
             let mut edited = source.clone();
             edited.replace_range(items[0].replacement.clone(), &items[0].text);
+            let expected_value =
+                if format.parse(&source).unwrap()["scenarios"][0]["actions"][0]["viewportNames"]
+                    .is_string()
+                {
+                    serde_json::json!(expected)
+                } else {
+                    serde_json::json!([expected])
+                };
             assert_eq!(
                 format.parse(&edited).unwrap()["scenarios"][0]["actions"][0]["viewportNames"],
-                serde_json::json!([expected])
+                expected_value
             );
             assert!(edited.contains("#toggle"));
             if format == Format::Yaml {

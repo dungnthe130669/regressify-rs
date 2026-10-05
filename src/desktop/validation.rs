@@ -528,11 +528,26 @@ mod tests {
         let branches = root["$defs"]["TestAction"]["anyOf"].as_array().unwrap();
         assert_eq!(branches.len(), 16);
         let expected = &root["$defs"]["ClickAction"]["properties"]["viewportNames"];
-        assert_eq!(expected["type"], json!(["array", "null"]));
-        assert_eq!(expected["items"]["type"], "string");
+        let mut field_schema = expected.clone();
+        field_schema["$defs"] = root["$defs"].clone();
+        let validator = jsonschema::options()
+            .offline()
+            .build(&field_schema)
+            .unwrap();
+        for value in [
+            json!("mobile"),
+            json!(["desktop", "mobile"]),
+            json!([]),
+            json!(null),
+        ] {
+            assert!(validator.is_valid(&value), "{value}");
+        }
+        for value in [json!(1), json!(false), json!([1]), json!([null]), json!({})] {
+            assert!(!validator.is_valid(&value), "{value}");
+        }
         assert_eq!(
             expected["description"],
-            "Restrict this action to these scenario viewport labels (case-insensitive).\nOmitted, null, or empty means all scenario viewports."
+            "Restrict this action to one viewport label or a list of labels (case-insensitive).\nOmitted, null, or an empty list means all scenario viewports."
         );
         assert!(expected.get("default").is_none() || expected["default"].is_null());
         for action in ACTIONS {
@@ -582,6 +597,16 @@ mod tests {
             ),
             (
                 json!({"click": "#target", "viewportNames": "mobile"}),
+                true,
+                false,
+            ),
+            (
+                json!({"switchTab": "new", "viewportNames": "mobile"}),
+                true,
+                false,
+            ),
+            (
+                json!({"click": "#target", "viewportNames": 1}),
                 false,
                 false,
             ),
@@ -592,6 +617,11 @@ mod tests {
             ),
             (
                 json!({"click": "#target", "wait": 0, "viewportNames": ["mobile"]}),
+                false,
+                true,
+            ),
+            (
+                json!({"click": "#target", "wait": 0, "viewportNames": "mobile"}),
                 false,
                 true,
             ),

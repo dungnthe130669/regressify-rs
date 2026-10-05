@@ -5,8 +5,10 @@ Verified: 2026-10-05
 - [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
   across the executor, tab-tracker guard, and save inventory. Strict-subset
   [preflight](../../src/test/test_suites.rs) validates full consumer/prerequisite
-  contexts, while legacy actions stay unset. Case variants are membership only;
-  unnamed captures accept only unset/null/empty filters.
+  contexts, while legacy actions stay unset. String and array filters share
+  `Selectors` with scenarios and normalize through a borrowed-slice accessor;
+  serialization preserves either form. Case variants are membership only;
+  blank strings fail validation and unnamed captures accept only unset/null/empty lists.
 - The ignored scenario `filtered_reference_and_test_manifests_preserve_baselines`
   runs real `ref`/`test`/failing `ref` against loopback pages and cached Chromium.
   It verifies ordered manifests and pixels, all-skipped final captures, scoped

@@ -1187,10 +1187,11 @@ use IDs from the current unsaved suite and exclude the current scenario and
 ambiguous duplicate IDs. Missing or invalid explicit viewport files display a
 recoverable warning beside the field.
 
-Every action has an optional `viewportNames` list in Fields. Its choice menu and
-YAML/JSON Source value completion offer only the consuming scenario's effective
-viewport labels; the action never adds capture jobs. Unset, `null`, and empty
-filters apply to all those jobs and do not add fields to new action templates.
+Every action has an optional `viewportNames` string or list in Fields. Its choice
+menu and YAML/JSON Source value completion offer only the consuming scenario's
+effective viewport labels and preserve scalar or array values. The action never
+adds capture jobs. Unset, `null`, and empty lists apply to all those jobs and do
+not add fields to new action templates. Empty strings are invalid.
 Unknown or out-of-scope values stay in the draft with a diagnostic, including
 inherited `needs` actions. Source/Fields transitions and undo/redo preserve them;
 Save and Save As require correction. Contextual validation runs off the UI thread

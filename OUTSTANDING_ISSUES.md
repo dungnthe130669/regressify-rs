@@ -9,6 +9,10 @@ Issues identified during adversarial review that remain after the September 2026
   filtered checkpoints, and desktop authoring that preserves invalid drafts.
   Cached-Chromium regressions verify skipped side effects, real reference/test
   manifests, scoped placeholders, and preserved historical baselines.
+- Resolved: action `viewportNames` now accepts a single string as well as an
+  array, matching scenario syntax. YAML/JSON round trips, generated schema,
+  scalar/list Source completion, Fields saves, strict validation, and the local
+  responsive browser fixture cover both forms; blank strings remain invalid.
 - Accepted limitation: named `persist` output is shared across concurrent jobs;
   narrowing its writers does not order another scenario's `state`/`restore` load
   or guarantee freshness. No cross-scenario writer/reader analysis is performed.

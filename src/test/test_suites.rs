@@ -2048,6 +2048,13 @@ mod tests {
         for (filter, labels, valid) in [
             (json!(null), vec!["desktop", "mobile"], true),
             (json!([]), vec!["desktop", "mobile"], true),
+            (json!("DESKTOP"), vec!["desktop"], true),
+            (json!("missing"), vec!["desktop", "mobile"], false),
+            (json!(""), vec!["desktop", "mobile"], false),
+            (json!(" \t"), vec!["desktop", "mobile"], false),
+            (json!(" desktop"), vec!["desktop", "mobile"], false),
+            (json!("mobile"), vec!["desktop"], false),
+            (json!("desktop"), vec![], false),
             (json!(["DESKTOP", "desktop"]), vec!["desktop"], true),
             (
                 json!(["mobile", "desktop"]),
@@ -2096,7 +2103,7 @@ mod tests {
     fn action_viewport_names_keep_nested_and_shared_prerequisite_origins() {
         let mut base = scenario("base", None);
         base.actions = Some(
-            serde_yaml::from_str("- wait: 0\n- click: '#mobile'\n  viewportNames: [mobile]\n")
+            serde_yaml::from_str("- wait: 0\n- click: '#mobile'\n  viewportNames: mobile\n")
                 .unwrap(),
         );
         let left = scenario("left", Some(Needs::String("base".into())));

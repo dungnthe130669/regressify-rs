@@ -44,18 +44,20 @@ include project-provided data, so review logs before sharing them.
 ### Viewport Selection
 
 Every action type, including `save`, `persist`, and `switchTab`, accepts an
-optional `viewportNames` array. Scenario selection determines capture jobs;
+optional `viewportNames` string or array, matching scenario syntax.
+`viewportNames: mobile` and `viewportNames: [mobile]` are equivalent.
+Scenario selection determines capture jobs;
 action selection only determines which steps run inside each existing job.
 It does not resize the browser or add viewports.
 
 - Omitted, `null`, or `[]` means every effective scenario viewport.
-- Nonempty lists match labels case-insensitively. Duplicate names never repeat
+- A string or nonempty list matches labels case-insensitively. Duplicate names never repeat
   an action within one job. Remaining actions keep their original order.
-- Unknown names, blank entries, non-string items, and names excluded by the
+- Unknown names, empty or whitespace-only strings, non-string items, and names excluded by the
   consuming scenario are configuration errors before browser startup. A filter
   may equal the whole scenario selection; it need not be strictly smaller.
 - With no named viewport file, capture uses the unnamed browser default. Only
-  omitted, `null`, or empty action filters are valid in that case.
+  omitted, `null`, or empty-list action filters are valid in that case.
 
 Assume the viewport file defines `desktop` and `mobile`:
 
@@ -67,7 +69,7 @@ scenarios:
     selectors: [viewport]
     actions:
       - click: "#menu-toggle"
-        viewportNames: [mobile]
+        viewportNames: mobile
       - click: "#products-menu"
       - click: "#products-submenu a[href='/products/widget']"
 ```

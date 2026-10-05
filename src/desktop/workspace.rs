@@ -494,7 +494,6 @@ impl Workspace {
             .any(|action| {
                 action
                     .viewport_names()
-                    .as_ref()
                     .is_some_and(|names| !names.is_empty())
             })
         {
@@ -1553,12 +1552,22 @@ mod tests {
                     .is_empty()
             );
             workspace.save(&mut open).unwrap();
+            let scalar = field.parse("mobile").unwrap();
+            assert_eq!(scalar, json!("mobile"));
+            open.document
+                .apply(Edit::Set {
+                    parent: "/scenarios/0/actions/0".into(),
+                    key: field.key.clone(),
+                    value: Some(scalar),
+                })
+                .unwrap();
+            workspace.save(&mut open).unwrap();
             let saved = fs::read(directory.path().join(&path)).unwrap();
             open.document
                 .apply(Edit::Set {
                     parent: "/scenarios/0/actions/0".into(),
                     key: field.key.clone(),
-                    value: Some(field.parse("[tablet]").unwrap()),
+                    value: Some(field.parse("tablet").unwrap()),
                 })
                 .unwrap();
             let issues = workspace
@@ -1582,7 +1591,7 @@ mod tests {
                     .value()
                     .unwrap()
                     .pointer("/scenarios/0/actions/0/viewportNames"),
-                Some(&json!(["tablet"]))
+                Some(&json!("tablet"))
             );
             assert!(open.document.source().contains("tablet"));
             open.document.undo();
@@ -1591,7 +1600,7 @@ mod tests {
                     .value()
                     .unwrap()
                     .pointer("/scenarios/0/actions/0/viewportNames"),
-                Some(&json!(["mobile"]))
+                Some(&json!("mobile"))
             );
             open.document.redo();
             assert!(open.document.source().contains("tablet"));

@@ -142,7 +142,7 @@ pub(crate) fn make_log_prefix(index: usize, total: usize) -> String {
 
 /// Shared by execution, tab setup, and capture inventory; do not fork selection semantics.
 pub(crate) fn action_applies_to_viewport(action: &TestAction, viewport: Option<&str>) -> bool {
-    match action.viewport_names().as_deref() {
+    match action.viewport_names() {
         Some(names) if !names.is_empty() => {
             viewport.is_some_and(|label| names.iter().any(|name| name.eq_ignore_ascii_case(label)))
         }
@@ -1057,6 +1057,9 @@ mod tests {
         for (filter, expected) in [
             (json!(null), [true, true, true]),
             (json!([]), [true, true, true]),
+            (json!("Desktop"), [false, true, false]),
+            (json!("mobile"), [false, false, true]),
+            (json!(""), [false, false, false]),
             (json!(["Desktop"]), [false, true, false]),
             (json!(["mobile", "MOBILE", "mobile"]), [false, false, true]),
             (json!(["desktop", "mobile"]), [false, true, true]),
