@@ -3,7 +3,7 @@ title: Create an action
 description: Reference for creating Optimizely CMS test actions such as click, input, select, wait, scroll, upload files, and frame handling.
 guid: ba348ca1-eb67-4c0f-8461-8f36979aea18
 date: 2023-07-03T17:00:00+00:00
-updated: 2026-10-05T00:00:00+00:00
+updated: 2026-10-06T00:00:00+00:00
 draft: false
 hidden: false
 weight: 40000
@@ -26,6 +26,9 @@ Action selectors support CSS, `text=`, `xpath=`, Playwright CSS extensions such
 as `:has-text()`, and `>>` selector chaining. CSS/text selectors traverse open
 Shadow DOM. The bundled selector helper runs inside Chromium; Node is not
 required for these actions. Closed shadow roots cannot be selected.
+
+Screenshot selectors (`save.selector` and scenario `selector`/`selectors`) use
+standard CSS to capture the first matching element in the selected tab's page.
 
 `frame` selectors use the same selector syntax. Same-origin, cross-origin,
 and nested frames are resolved through CDP execution contexts. `goto` and URL
@@ -86,6 +89,9 @@ double-check the labels against the intended responsive path.
 Skipped actions do not resolve selectors or frames, wait, navigate, switch tabs,
 apply per-action document hooks, upload files, persist state, or write screenshots.
 Scenario setup and final captures still run, even when every action skips.
+When the last applicable scenario action is `save`, its checkpoint replaces the
+automatic final screenshot for that viewport. Explicit scenario `selectors`
+are always captured after actions, including after a terminal `save`.
 `--log-level debug` shows the skipped action kind and viewport in console/live
 logs without its selector, input, URL, file, or state values. These skip messages
 do not count as executed actions or skipped scenarios.
@@ -383,17 +389,31 @@ save
 
 :::::
 
-Capture an intermediate full-page screenshot before the scenario's final
-capture. Names must be non-empty portable filename components no longer than
+Capture a named screenshot. Optional `selector` clips this screenshot to the
+first matching CSS element; omit it or use `null` to capture the whole page.
+The selector must be nonblank and match a visible element with positive
+dimensions. Invalid, missing, or hidden targets fail the action rather than
+falling back to a full-page screenshot. The scenario's own `selector` does not
+affect save actions. Selector captures restore the prior page scroll position.
+
+Names must be non-empty portable filename components no longer than
 100 bytes; path separators, reserved Windows filename characters, and the
 `_diff` suffix are rejected. Reports list saved screenshots in action order
-before that scenario's final capture targets.
+before any final capture targets. Adding a selector does not change the
+`$<save-name>` filename suffix.
+
+If the last applicable action in the scenario is `save`, Regressify skips its
+automatic `FINAL` screenshot, including a singular scenario `selector` capture.
+This is evaluated per viewport after action filtering. Explicit scenario
+`selectors` still run. Saves inherited through `needs` do not suppress the
+consuming scenario's final capture.
 
 Each checkpoint uses the same resolved `delay`, animation freezing, and bounded
 font/image/layout settling as the final capture. This does not repeat lazy-load
 scrolling or move the pointer. `freezeAnimations: false` and `settleTimeout: 0`
 disable their respective checks; `delay: 0` skips the explicit delay.
-`postInteractionWait` still runs only after actions, before the final captures.
+`postInteractionWait` runs only before final captures and is skipped when there
+are none.
 Text carets are hidden before each checkpoint even when animation freezing or
 settling is disabled; input focus, selection, and values are preserved.
 
@@ -402,7 +422,12 @@ Example:
 ```yml
 actions:
   - save: after-login
+  - save: order-summary
+    selector: '#order-summary'
 ```
+
+This captures the full page, then the order summary, without an automatic final
+screenshot unless the scenario explicitly sets `selectors`.
 
 {% end %}
 

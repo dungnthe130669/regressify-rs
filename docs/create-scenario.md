@@ -3,7 +3,7 @@ title: Create a Test Scenario
 description: Learn how to define Regressify test scenarios, set target URLs, add actions, and tune per-scenario options for reliable runs.
 guid: 620b9098-627b-4db5-bb0b-cd43b9949e35
 date: 2023-06-29T17:00:00+00:00
-updated: 2026-10-05T00:00:00+00:00
+updated: 2026-10-06T00:00:00+00:00
 draft: false
 hidden: false
 weight: 30000
@@ -22,8 +22,9 @@ Scenario `viewportNames` resolves through the existing scenario, suite, workspac
 and default settings to choose capture jobs. Individual actions may also declare
 `viewportNames`, restricting only that step within those jobs. Omitted, `null`,
 and empty action filters run everywhere; nonempty filters must name only effective
-scenario viewports, including when the action comes from `needs`. Final captures
-are unchanged. See [action viewport selection](create-action.md#viewport-selection)
+scenario viewports, including when the action comes from `needs`. An automatic
+final screenshot is skipped when the last applicable scenario action is `save`;
+explicit `selectors` are still captured. See [action viewport selection](create-action.md#viewport-selection)
 for the responsive-menu example, conditional saves, and shared-state caveat.
 
 The optional `logLevel` setting accepts `trace`, `debug`, `info`, `warn`, or
@@ -74,7 +75,7 @@ Provide the list of actions that the test browser should execute in sequence. Av
 | persist   | Save cookies and local storage for later scenarios       |
 | press     | Press a key (or key combination) on an element           |
 | remove    | Remove an element - set `display: none !important`       |
-| save      | Capture an intermediate screenshot                       |
+| save      | Capture a named full-page or selector screenshot         |
 | scroll    | Scroll to an element                                     |
 | select    | Select an option inside a `select` element               |
 | switchTab | Select a new, previous, or original browser tab          |
@@ -524,6 +525,35 @@ scenarios:
 
 {% spoiler() %}
 
+selector
+
+:::::
+
+Type: `string`.
+
+Capture only the first matching CSS element for the scenario's `FINAL`
+screenshot. This does not affect any `save` actions, which have their own
+optional `selector`. The `FINAL` filename suffix stays unchanged.
+
+Omit `selector` or use `null` for a full-page final capture, unless using
+`selectors` below. A selector must be nonblank and match a visible element with
+positive dimensions; invalid or missing targets fail the capture. Do not set
+both `selector` and `selectors`.
+
+The final screenshot is skipped if the last applicable scenario action is
+`save`. Scenarios with no actions, no applicable actions, or a later non-save
+action still capture it. Saves inherited through `needs` do not suppress it.
+
+```yaml
+scenarios:
+  - url: https://www.domain.com/dashboard
+    selector: '#activity-feed'
+```
+
+{% end %}
+
+{% spoiler() %}
+
 selectors
 
 :::::
@@ -532,7 +562,10 @@ Type: `string | string[]`.
 
 Capture one or more CSS selectors instead of the full page. Each target writes a
 separate screenshot. Use the special value `viewport` to capture the currently
-visible viewport. Omit `selectors` to retain the default full-page capture.
+visible viewport. Explicit `selectors` are always captured after actions, even
+when the last applicable action is `save`. Do not combine this property with
+`selector`. Omit both properties for a full-page final capture, unless a terminal
+`save` replaces it.
 
 Targets are captured in declaration order, must be non-empty and unique, and
 must resolve to a visible element when captured. Regressify restores the prior

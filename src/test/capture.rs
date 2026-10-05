@@ -116,9 +116,13 @@ fn strip_png_metadata(png: &[u8]) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Resolve final capture targets for one scenario. Without `selectors`, a
-/// scenario continues to produce one full-page screenshot.
+/// Resolve declared final targets. A singular `selector` clips the usual FINAL
+/// capture without changing its filename; `selectors` retains separate targets.
 pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotType>> {
+    validate_screenshot_selector(scenario.selector.as_deref())?;
+    if scenario.selector.is_some() && scenario.selectors.is_some() {
+        anyhow::bail!("Scenario must use either selector or selectors, not both");
+    }
     let Some(selectors) = scenario.selectors.as_ref() else {
         return Ok(vec![ScreenshotType::Final]);
     };
@@ -161,6 +165,7 @@ pub fn validate_scenario_capture_names(scenario: &TestScenario) -> Result<()> {
     for action in actions {
         if let TestAction::Save(save) = action {
             validate_screenshot_step_name(&save.save)?;
+            validate_screenshot_selector(save.selector.as_deref())?;
         }
     }
     let mut screenshot_types = saved_screenshot_types(
@@ -208,6 +213,13 @@ pub fn validate_screenshot_step_name(name: &str) -> Result<()> {
             name,
             MAX_STEP_NAME_BYTES
         );
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_screenshot_selector(selector: Option<&str>) -> Result<()> {
+    if selector.is_some_and(|selector| selector.trim().is_empty()) {
+        anyhow::bail!("Screenshot selector must not be empty");
     }
     Ok(())
 }
@@ -882,6 +894,7 @@ pub async fn save_screenshot(
     page: &Page,
     screenshot_type: ScreenshotType,
     viewport_label: Option<&str>,
+    selector: Option<&str>,
 ) -> Result<()> {
     use crate::diagnostics::{record::*, runtime as diagnostics};
     let key = final_screenshot_order_key(
@@ -895,7 +908,14 @@ pub async fn save_screenshot(
             Field::Capture,
             FieldValue::Identity(SafeIdentity::fingerprint(key)),
         )],
-        save_screenshot_inner(test_suite, scenario, page, screenshot_type, viewport_label),
+        save_screenshot_inner(
+            test_suite,
+            scenario,
+            page,
+            screenshot_type,
+            viewport_label,
+            selector,
+        ),
     )
     .await
 }
@@ -906,12 +926,13 @@ async fn save_screenshot_inner(
     page: &Page,
     screenshot_type: ScreenshotType,
     viewport_label: Option<&str>,
+    selector: Option<&str>,
 ) -> Result<()> {
     use crate::diagnostics::{record::*, runtime as diagnostics};
     let path = screenshot_path(test_suite, scenario, &screenshot_type, viewport_label)
         .map_err(|error| artifact_write_error("Failed to create screenshot output path", error))?;
 
-    let png_bytes = capture_png(page, &screenshot_type).await?;
+    let png_bytes = capture_png(page, &screenshot_type, selector).await?;
     let clean_bytes = strip_png_metadata(&png_bytes)?;
     let (width, height) = crate::helpers::png::read_bounded_png_dimensions_from_reader(
         std::io::Cursor::new(&clean_bytes),
@@ -939,7 +960,14 @@ async fn save_screenshot_inner(
     Ok(())
 }
 
-async fn capture_png(page: &Page, screenshot_type: &ScreenshotType) -> Result<Vec<u8>> {
+async fn capture_png(
+    page: &Page,
+    screenshot_type: &ScreenshotType,
+    selector: Option<&str>,
+) -> Result<Vec<u8>> {
+    if let Some(selector) = selector {
+        return capture_selector_png(page, selector).await;
+    }
     if let ScreenshotType::Selector(selector) = screenshot_type {
         return capture_selector_png(page, selector).await;
     }
@@ -1679,16 +1707,73 @@ mod tests {
     }
 
     #[test]
+    fn singular_capture_selectors_keep_final_names_and_validate_configuration() {
+        let mut scenario: TestScenario = serde_json::from_value(serde_json::json!({
+            "url": "https://example.com",
+            "selector": "#content"
+        }))
+        .unwrap();
+        assert_eq!(
+            final_screenshot_types(&scenario).unwrap(),
+            vec![ScreenshotType::Final]
+        );
+        assert!(validate_scenario_capture_names(&scenario).is_ok());
+
+        scenario.selectors = Some(Selectors::String("viewport".into()));
+        assert!(
+            final_screenshot_types(&scenario)
+                .unwrap_err()
+                .to_string()
+                .contains("either selector or selectors")
+        );
+        scenario.selectors = None;
+        for selector in ["", " \t\n"] {
+            scenario.selector = Some(selector.into());
+            assert!(
+                validate_scenario_capture_names(&scenario)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("selector must not be empty")
+            );
+        }
+    }
+
+    #[test]
+    fn save_capture_selectors_validate_even_for_filtered_actions() {
+        for selector in [
+            serde_json::Value::Null,
+            serde_json::json!("#content"),
+            serde_json::json!(""),
+            serde_json::json!(" \t\n"),
+        ] {
+            let scenario: TestScenario = serde_json::from_value(serde_json::json!({
+                "url": "https://example.com",
+                "actions": [{"save": "ready", "selector": selector, "viewportNames": "mobile"}]
+            }))
+            .unwrap();
+            assert_eq!(
+                validate_scenario_capture_names(&scenario).is_ok(),
+                selector
+                    .as_str()
+                    .is_none_or(|selector| !selector.trim().is_empty()),
+                "{selector}"
+            );
+        }
+    }
+
+    #[test]
     fn scenario_capture_names_reject_duplicate_or_unsafe_step_screenshots() {
         let mut scenario = test_scenario();
         scenario.actions = Some(vec![
             TestAction::Save(crate::types::SaveAction {
                 save: "progress".to_string(),
+                selector: None,
                 frame: None,
                 viewport_names: None,
             }),
             TestAction::Save(crate::types::SaveAction {
                 save: "Progress".to_string(),
+                selector: None,
                 frame: None,
                 viewport_names: None,
             }),
@@ -1702,6 +1787,7 @@ mod tests {
 
         scenario.actions = Some(vec![TestAction::Save(crate::types::SaveAction {
             save: "result_diff".to_string(),
+            selector: None,
             frame: None,
             viewport_names: None,
         })]);

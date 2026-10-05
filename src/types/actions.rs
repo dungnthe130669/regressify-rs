@@ -258,9 +258,13 @@ pub struct PressAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct SaveAction {
-    /// Name of an intermediate screenshot checkpoint. The scenario continues after capture.
+    /// Screenshot checkpoint name. A last applicable save replaces the automatic final screenshot, but explicit scenario selectors are still captured.
     #[schemars(example = "after-login")]
     pub save: String,
+    /// CSS selector to capture instead of the whole page. Independent of the scenario's final selector.
+    #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#confirmation")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
     /// Omitted, null, or an empty list means all scenario viewports.
@@ -383,13 +387,54 @@ mod tests {
             json!({ "persist": "signed-in" }),
             json!({ "press": "#search", "key": "Enter" }),
             json!({ "remove": ".advertisement" }),
-            json!({ "save": "after-login" }),
+            json!({ "save": "after-login", "selector": "#confirmation" }),
             json!({ "select": "#country", "value": "se" }),
             json!({ "scroll": "#footer" }),
             json!({ "switchTab": "new", "url": "**/quote" }),
             json!({ "uncheck": "#newsletter" }),
             json!({ "wait": 100 }),
         ]
+    }
+
+    #[test]
+    fn save_screenshot_selectors_round_trip_yaml_and_json() {
+        use serde_json::{Value, json};
+
+        for selector in [
+            None,
+            Some(Value::Null),
+            Some(json!("[data-name=\"it's a card\"]")),
+        ] {
+            let mut source = json!({ "save": "detail" });
+            if let Some(selector) = &selector {
+                source["selector"] = selector.clone();
+            }
+            let yaml = serde_yaml::to_string(&source).unwrap();
+            for action in [
+                serde_json::from_value::<TestAction>(source.clone()).unwrap(),
+                serde_yaml::from_str::<TestAction>(&yaml).unwrap(),
+            ] {
+                let TestAction::Save(save) = &action else {
+                    panic!("Expected a save action");
+                };
+                assert_eq!(save.selector.as_deref(), source["selector"].as_str());
+                let serialized = serde_json::to_value(&action).unwrap();
+                assert_eq!(serialized["save"], "detail");
+                assert_eq!(serialized["selector"], source["selector"]);
+                assert_eq!(
+                    serialized.get("selector").is_some(),
+                    save.selector.is_some()
+                );
+            }
+        }
+        for selector in [json!(12), json!(false), json!(["#content"]), json!({})] {
+            let source = json!({ "save": "detail", "selector": selector });
+            assert!(serde_json::from_value::<TestAction>(source.clone()).is_err());
+            assert!(
+                serde_yaml::from_str::<TestAction>(&serde_yaml::to_string(&source).unwrap())
+                    .is_err()
+            );
+        }
     }
 
     #[test]

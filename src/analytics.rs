@@ -7,7 +7,7 @@ use tracing::{instrument::WithSubscriber, subscriber::NoSubscriber};
 
 const HOST: &str = "https://us.i.posthog.com";
 const PROJECT_TOKEN: &str = "phc_rFcdnV8w5LESQjpYoi2Psy7npbXMicUtNt32CnUpg4yk";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 static CLIENT: OnceCell<Option<Client>> = OnceCell::const_new();
 

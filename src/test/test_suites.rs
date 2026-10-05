@@ -1990,13 +1990,16 @@ mod tests {
                     &candidate.scenarios,
                 )
                 .unwrap();
-                assert_eq!(keys.len(), 4);
+                assert_eq!(
+                    keys,
+                    vec!["page_desktop__$after-login", "page_mobile__$After-Login"]
+                );
                 assert_eq!(
                     keys.iter()
                         .map(|key| key.to_ascii_lowercase())
                         .collect::<HashSet<_>>()
                         .len(),
-                    4
+                    2
                 );
             } else {
                 assert!(

@@ -451,6 +451,7 @@ it was risk-focused, not an exhaustive security certification.
 - Netlify site validation and status reads now retry interrupted or timed-out response bodies after successful headers instead of exiting with `Cannot read Netlify response`. Loopback tests verify recovery, six-attempt exhaustion, and redacted timeout/interruption diagnostics; malformed or oversized responses still fail immediately.
 - Results approval confirms inline for the current scenario/viewport, refreshes suite failure counts from the recalculated report, and stays in Results; whole-run approval remains in Runs.
 - Scenario `selectors` supports full-page defaults, `viewport`, and visible CSS selector clips with stable target-specific filenames and report ordering.
+- Optional `save.selector` and scenario `selector` clip their own screenshots while preserving save and `FINAL` filenames. A last applicable scenario save skips the automatic final capture, but explicit `selectors` still run. Unit, desktop schema, and local Chromium tests cover independent selectors, viewport filtering, pixels, error placeholders, and scroll restoration.
 - `asyncCompareLimit` is now a validated bounded worker limit for parallel pixel comparison.
 - Report regeneration ignores generated diffs and clears stale diff artifacts when a pair becomes a pass.
 - Screenshot output writes atomically, preserves color-management PNG chunks, and uses collision-resistant run IDs.

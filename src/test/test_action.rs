@@ -17,8 +17,8 @@ use crate::{
             focus_element, get_frame_selectors, scroll_into_view, wait_for_selector,
         },
         capture::{
-            artifact_write_error, save_screenshot, state_path, validate_screenshot_step_name,
-            validate_state_name,
+            artifact_write_error, save_screenshot, state_path, validate_screenshot_selector,
+            validate_screenshot_step_name, validate_state_name,
         },
     },
     types::{
@@ -644,8 +644,9 @@ async fn exec_test_action_inner(
             }
         }
 
-        TestAction::Save(SaveAction { save, .. }) => {
+        TestAction::Save(SaveAction { save, selector, .. }) => {
             validate_screenshot_step_name(save)?;
+            validate_screenshot_selector(selector.as_deref())?;
             super::page_stability::prepare_screenshot(main_page, config, log_prefix).await?;
 
             save_screenshot(
@@ -654,6 +655,7 @@ async fn exec_test_action_inner(
                 main_page,
                 ScreenshotType::Step(save.to_string()),
                 viewport_label,
+                selector.as_deref(),
             )
             .await?
         }
@@ -1090,6 +1092,7 @@ mod tests {
                     .await?;
                     let action = TestAction::Save(SaveAction {
                         save: name.into(),
+                        selector: None,
                         frame: None,
                         viewport_names: None,
                     });
@@ -1133,6 +1136,7 @@ mod tests {
                 }
                 let invalid = TestAction::Save(SaveAction {
                     save: "../invalid".into(),
+                    selector: None,
                     frame: None,
                     viewport_names: None,
                 });

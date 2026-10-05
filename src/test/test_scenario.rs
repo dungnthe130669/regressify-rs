@@ -232,6 +232,23 @@ pub(crate) fn capture_progress_keys(
     )
 }
 
+fn scenario_final_screenshot_types(
+    scenario: &TestScenario,
+    viewport: Option<&str>,
+) -> Result<Vec<ScreenshotType>> {
+    let screenshot_types = final_screenshot_types(scenario)?;
+    let last_action = scenario
+        .actions
+        .iter()
+        .flatten()
+        .rfind(|action| action_applies_to_viewport(action, viewport));
+    if scenario.selectors.is_none() && matches!(last_action, Some(TestAction::Save(_))) {
+        Ok(Vec::new())
+    } else {
+        Ok(screenshot_types)
+    }
+}
+
 fn scenario_screenshot_types(
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
@@ -245,7 +262,7 @@ fn scenario_screenshot_types(
             .chain(scenario.actions.iter().flatten())
             .filter(|action| action_applies_to_viewport(action, viewport)),
     );
-    screenshot_types.extend(final_screenshot_types(scenario)?);
+    screenshot_types.extend(scenario_final_screenshot_types(scenario, viewport)?);
     validate_screenshot_types(&screenshot_types)?;
     Ok(screenshot_types)
 }
@@ -507,7 +524,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
         .or(ctx.scenario.id.as_deref())
         .unwrap_or(&ctx.scenario.url);
     let timeout = std::time::Duration::from_millis(ctx.resolved.scenario_timeout_ms);
-    let final_screenshot_types = final_screenshot_types(ctx.scenario)?;
+    let final_screenshot_types = scenario_final_screenshot_types(ctx.scenario, viewport_label)?;
     let error_screenshot_types =
         scenario_screenshot_types(ctx.scenario, ctx.all_scenarios, viewport_label)?;
 
@@ -736,6 +753,13 @@ async fn run_scenario_capture_inner(
     run_hook(scenario.on_ready_script.as_deref(), &active.page).await?;
     hooks.apply(&active.page).await?;
 
+    if screenshot_types.is_empty() {
+        if let Some(authentication) = &authentication {
+            authentication.check()?;
+        }
+        return Ok(());
+    }
+
     // Apply postInteractionWait from resolved config
     if let Some(wait_ms) = resolved.post_interaction_wait
         && wait_ms > 0.0
@@ -764,6 +788,7 @@ async fn run_scenario_capture_inner(
             &active.page,
             screenshot_type.clone(),
             viewport_label,
+            scenario.selector.as_deref(),
         )
         .await?;
     }
@@ -1174,6 +1199,184 @@ mod tests {
 
     fn scenario(id: &str, yaml: &str) -> TestScenario {
         serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn selector_saves_and_final_captures_match_pixels_and_inventory() -> Result<()> {
+        use crate::test::{browser_tests, capture};
+        use serde_json::json;
+
+        let root = match std::env::var_os("REGRESSIFY_SELECTOR_CAPTURE_FIXTURE") {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let workspace = tempfile::tempdir()?;
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args([
+                        "--exact",
+                        "test::test_scenario::tests::selector_saves_and_final_captures_match_pixels_and_inventory",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("REGRESSIFY_SELECTOR_CAPTURE_FIXTURE", workspace.path())
+                    .output()?;
+                anyhow::ensure!(
+                    output.status.success(),
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return Ok(());
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        let output_dir = root.join(".regressify");
+        common::REGRESSIFY_DIR.set(output_dir.clone()).unwrap();
+        let site = browser_tests::Site::new(|request| {
+            let _ = request.respond(tiny_http::Response::from_string(r#"<!doctype html>
+                <style>
+                body { margin: 0; height: 900px; background: rgb(14, 160, 80); }
+                #final { position: absolute; left: 20px; top: 30px; width: 120px; height: 60px; background: rgb(200, 30, 30); }
+                #checkpoint { position: absolute; left: 40px; top: 700px; width: 80px; height: 40px; background: rgb(40, 90, 200); }
+                </style><div id="final"></div><div id="checkpoint" data-name="it's a card"></div><div id="hidden" hidden></div>"#)
+                .with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap()));
+        })?;
+        let (mut browser, handler, directory) =
+            browser_tests::launch_browser("selector-capture", Default::default()).await?;
+        let result: Result<()> = async {
+            let suite = TestSuite {
+                id: Some("selectors".into()),
+                test_date: Some("run".into()),
+                ..Default::default()
+            };
+            let viewport = config::viewports::ViewportDef {
+                label: "desktop".into(),
+                width: 640,
+                height: 240,
+            };
+            let full_page = Some((640, 900, [14, 160, 80]));
+            let final_clip = Some((120, 60, [200, 30, 30]));
+            let checkpoint = Some((80, 40, [40, 90, 200]));
+            let step = |name: &str| ScreenshotType::Step(name.into());
+            for (id, mut source, expected) in [
+                ("default", json!({}), vec![(ScreenshotType::Final, full_page)]),
+                ("final-selector", json!({ "selector": "#final" }), vec![(ScreenshotType::Final, final_clip)]),
+                (
+                    "independent-selectors",
+                    json!({ "selector": "#final", "actions": [
+                        { "save": "whole" },
+                        { "save": "detail", "selector": "[data-name=\"it's a card\"]" },
+                        { "wait": 0 }
+                    ] }),
+                    vec![(step("whole"), full_page), (step("detail"), checkpoint), (ScreenshotType::Final, final_clip)],
+                ),
+                (
+                    "default-final-after-save",
+                    json!({ "actions": [{ "save": "detail", "selector": "#checkpoint" }, { "wait": 0 }] }),
+                    vec![(step("detail"), checkpoint), (ScreenshotType::Final, full_page)],
+                ),
+                (
+                    "last-save",
+                    json!({ "selector": "#missing", "actions": [{ "save": "detail", "selector": "#checkpoint" }] }),
+                    vec![(step("detail"), checkpoint)],
+                ),
+                (
+                    "explicit-finals",
+                    json!({ "selectors": ["viewport", "#final"], "actions": [{ "save": "detail", "selector": "#checkpoint" }] }),
+                    vec![(step("detail"), checkpoint), (ScreenshotType::Viewport, Some((640, 240, [14, 160, 80]))), (ScreenshotType::Selector("#final".into()), final_clip)],
+                ),
+                (
+                    "excluded-save",
+                    json!({ "actions": [{ "save": "detail", "selector": "#missing", "viewportNames": "mobile" }] }),
+                    vec![(ScreenshotType::Final, full_page)],
+                ),
+                (
+                    "last-applicable-save",
+                    json!({ "actions": [{ "save": "detail", "selector": "#checkpoint" }, { "wait": 0, "viewportNames": "mobile" }] }),
+                    vec![(step("detail"), checkpoint)],
+                ),
+                (
+                    "missing-final",
+                    json!({ "selector": "#missing", "actions": [{ "save": "whole" }, { "wait": 0 }] }),
+                    vec![(step("whole"), full_page), (ScreenshotType::Final, None)],
+                ),
+                (
+                    "invalid-save",
+                    json!({ "actions": [{ "save": "whole" }, { "save": "detail", "selector": "div[" }] }),
+                    vec![(step("whole"), full_page), (step("detail"), None)],
+                ),
+                ("hidden-final", json!({ "selector": "#hidden" }), vec![(ScreenshotType::Final, None)]),
+                (
+                    "missing-save",
+                    json!({ "actions": [{ "save": "detail", "selector": "#missing" }] }),
+                    vec![(step("detail"), None)],
+                ),
+                ("peer-after-failures", json!({}), vec![(ScreenshotType::Final, full_page)]),
+            ] {
+                source["id"] = json!(id);
+                source["url"] = json!(site.origin);
+                let current: TestScenario = serde_json::from_value(source)?;
+                let final_types = scenario_final_screenshot_types(&current, Some(&viewport.label))?;
+                let resolved = ResolvedConfig {
+                    no_scroll_top: true,
+                    delay: Some(0.0),
+                    post_interaction_wait: Some(if final_types.is_empty() { 60_000.0 } else { 0.0 }),
+                    settle_timeout_ms: 0,
+                    freeze_animations: false,
+                    scenario_timeout_ms: 15_000,
+                    ..Default::default()
+                };
+                let all_scenarios = std::slice::from_ref(&current);
+                let outcome = run_scenario_capture(&browser, CaptureContext {
+                    is_reference: false,
+                    test_suite: &suite,
+                    scenario: &current,
+                    all_scenarios,
+                    resolved: &resolved,
+                    url: &current.url,
+                    url_replacements: &[],
+                    viewport: Some(&viewport),
+                    log_prefix: id,
+                }).await;
+                assert_eq!(outcome.is_ok(), expected.iter().all(|(_, image)| image.is_some()), "{id}: {outcome:?}");
+                if let Err(error) = outcome {
+                    assert!(error.to_string().contains("selector"), "{id}: {error}");
+                }
+                let expected_keys = expected.iter().map(|(kind, _)| {
+                    final_screenshot_order_key(id, Some(&viewport.label), kind)
+                }).collect::<Vec<_>>();
+                assert_eq!(capture_progress_keys(&current, all_scenarios, Some(&viewport.label))?, expected_keys, "{id}");
+                let run_dir = output_dir.join("selectors/bitmaps_test/run");
+                for (key, (_, pixels)) in expected_keys.iter().zip(&expected) {
+                    let path = run_dir.join(format!("{key}.png"));
+                    assert_eq!(capture::error_marker_path(&path).exists(), pixels.is_none(), "{key}");
+                    let image = lodepng::decode32(std::fs::read(&path)?)?;
+                    if let Some((width, height, color)) = pixels {
+                        assert_eq!((image.width, image.height), (*width, *height), "{key}");
+                        let pixel = image.buffer.first().unwrap();
+                        assert_eq!([pixel.r, pixel.g, pixel.b], *color, "{key}");
+                    }
+                }
+                let files = std::fs::read_dir(&run_dir)?
+                    .collect::<std::io::Result<Vec<_>>>()?
+                    .into_iter()
+                    .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                    .filter(|name| name.starts_with(&format!("{id}_desktop__")))
+                    .collect::<Vec<_>>();
+                assert_eq!(files.iter().filter(|name| name.ends_with(".png")).count(), expected.len(), "{id}: {files:?}");
+                assert_eq!(files.iter().filter(|name| name.ends_with(".error.json")).count(), expected.iter().filter(|(_, pixels)| pixels.is_none()).count(), "{id}: {files:?}");
+                for page in browser.pages().await? {
+                    let offsets: serde_json::Value = page.evaluate("[scrollX, scrollY]").await?.into_value()?;
+                    assert_eq!(offsets, json!([0, 0]), "{id}");
+                    page.close().await?;
+                }
+            }
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
     }
 
     #[tokio::test]
@@ -2023,6 +2226,114 @@ mod tests {
     }
 
     #[test]
+    fn final_capture_depends_on_last_applicable_own_action() {
+        let setup = scenario("setup", "actions:\n  - save: prepared\n");
+        for (yaml, viewport, expect_final) in [
+            ("", None, true),
+            ("actions: []\n", None, true),
+            ("clickSelector: '#button'\n", None, true),
+            ("actions:\n  - save: ready\n", None, false),
+            ("actions:\n  - save: ready\n  - wait: 0\n", None, true),
+            (
+                "actions:\n  - save: ready\n    viewportNames: mobile\n",
+                None,
+                true,
+            ),
+            (
+                "actions:\n  - save: ready\n    viewportNames: mobile\n",
+                Some("desktop"),
+                true,
+            ),
+            (
+                "actions:\n  - save: ready\n    viewportNames: mobile\n",
+                Some("MOBILE"),
+                false,
+            ),
+            (
+                "actions:\n  - save: ready\n  - wait: 0\n    viewportNames: mobile\n",
+                Some("desktop"),
+                false,
+            ),
+            (
+                "actions:\n  - save: ready\n  - wait: 0\n    viewportNames: mobile\n",
+                Some("mobile"),
+                true,
+            ),
+            (
+                "selector: '#content'\nactions:\n  - save: ready\n",
+                None,
+                false,
+            ),
+        ] {
+            let current = scenario("page", &format!("needs: setup\n{yaml}"));
+            let all_scenarios = [setup.clone(), current.clone()];
+            assert_eq!(
+                scenario_final_screenshot_types(&current, viewport).unwrap(),
+                if expect_final {
+                    vec![ScreenshotType::Final]
+                } else {
+                    Vec::new()
+                },
+                "{yaml} at {viewport:?}"
+            );
+            let types = scenario_screenshot_types(&current, &all_scenarios, viewport).unwrap();
+            assert_eq!(
+                types.first(),
+                Some(&ScreenshotType::Step("prepared".into()))
+            );
+            assert_eq!(types.contains(&ScreenshotType::Final), expect_final);
+        }
+    }
+
+    #[test]
+    fn save_as_last_action_preserves_explicit_final_targets() {
+        for (selectors, expected) in [
+            ("viewport", vec![ScreenshotType::Viewport]),
+            (
+                "'#content'",
+                vec![ScreenshotType::Selector("#content".into())],
+            ),
+            (
+                "[viewport, '#content']",
+                vec![
+                    ScreenshotType::Viewport,
+                    ScreenshotType::Selector("#content".into()),
+                ],
+            ),
+        ] {
+            let current = scenario(
+                "page",
+                &format!("selectors: {selectors}\nactions:\n  - save: ready\n"),
+            );
+            assert_eq!(
+                scenario_final_screenshot_types(&current, None).unwrap(),
+                expected
+            );
+            let mut inventory = vec![ScreenshotType::Step("ready".into())];
+            inventory.extend(expected);
+            assert_eq!(
+                scenario_screenshot_types(&current, std::slice::from_ref(&current), None).unwrap(),
+                inventory
+            );
+        }
+    }
+
+    #[test]
+    fn save_as_last_action_omits_final_capture() {
+        let current = scenario("page", "actions:\n  - save: ready\n");
+        let all_scenarios = std::slice::from_ref(&current);
+
+        assert_eq!(
+            scenario_screenshot_types(&current, all_scenarios, None).unwrap(),
+            vec![ScreenshotType::Step("ready".into())]
+        );
+        assert_eq!(
+            capture_progress_keys(&current, all_scenarios, None).unwrap(),
+            vec!["page__$ready"]
+        );
+    }
+
+    #[test]
     fn capture_order_includes_prerequisite_and_current_save_steps() {
         let setup = scenario("setup", "actions:\n  - save: prepared\n");
         let page = scenario(
@@ -2033,9 +2344,14 @@ mod tests {
 
         let types = scenario_screenshot_types(&all[1], &all, None).unwrap();
 
-        assert!(matches!(&types[0], ScreenshotType::Step(name) if name == "prepared"));
-        assert!(matches!(&types[1], ScreenshotType::Step(name) if name == "ready"));
-        assert!(matches!(types[2], ScreenshotType::Viewport));
+        assert_eq!(
+            types,
+            vec![
+                ScreenshotType::Step("prepared".into()),
+                ScreenshotType::Step("ready".into()),
+                ScreenshotType::Viewport,
+            ]
+        );
     }
 
     #[test]

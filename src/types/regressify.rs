@@ -130,6 +130,13 @@ pub enum Browser {
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
+#[schemars(extend("not" = serde_json::json!({
+    "required": ["selector", "selectors"],
+    "properties": {
+        "selector": {"type": "string"},
+        "selectors": {"type": ["string", "array"]}
+    }
+})))]
 pub struct TestScenario {
     /// Diagnostic display level. Inherits suite/workspace logLevel; does not filter archived records.
     pub log_level: Option<crate::diagnostics::record::Severity>,
@@ -231,8 +238,14 @@ pub struct TestScenario {
     #[schemars(example = "signed-in")]
     pub restore: Option<Needs>,
 
+    /// CSS selector for the FINAL screenshot only. Omit to capture the whole page; cannot be combined with selectors. A last applicable save skips this capture.
+    #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#content")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selector: Option<String>,
+
     /// CSS selectors to capture instead of the full page. Use "viewport" for
-    /// the visible viewport; each selector produces an independent screenshot.
+    /// the visible viewport; each selector produces an independent screenshot,
+    /// even when the last applicable action is save. Cannot be combined with selector.
     #[schemars(example = &"viewport", example = vec!["main", ".summary"])]
     pub selectors: Option<Selectors>,
 

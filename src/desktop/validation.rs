@@ -572,6 +572,69 @@ mod tests {
     }
 
     #[test]
+    fn screenshot_selector_schema_feedback_handles_yaml_and_json() {
+        for (selector, valid) in [
+            (json!(null), true),
+            (json!("#content"), true),
+            (json!(""), false),
+            (json!(" \t\n"), false),
+            (json!(["#content"]), false),
+            (json!(1), false),
+            (json!(false), false),
+            (json!({}), false),
+        ] {
+            for (scenario, pointer) in [
+                (
+                    json!({ "url": "/", "selector": selector }),
+                    "/scenarios/0/selector",
+                ),
+                (
+                    json!({ "url": "/", "actions": [{ "save": "detail", "selector": selector }] }),
+                    "/scenarios/0/actions/0/selector",
+                ),
+            ] {
+                let value = json!({ "scenarios": [scenario] });
+                for value in [
+                    serde_json::from_str::<Value>(&serde_json::to_string(&value).unwrap()).unwrap(),
+                    serde_yaml::from_str::<Value>(&serde_yaml::to_string(&value).unwrap()).unwrap(),
+                ] {
+                    let issues = diagnostics(DocumentKind::Suite, &value).unwrap();
+                    assert_eq!(issues.is_empty(), valid, "{value}: {issues:?}");
+                    if !valid {
+                        assert!(
+                            issues.iter().all(|issue| issue.pointer == pointer),
+                            "{issues:?}"
+                        );
+                    } else {
+                        let suite: TestSuite = serde_json::from_value(value).unwrap();
+                        crate::test::capture::validate_scenario_capture_names(&suite.scenarios[0])
+                            .unwrap();
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn screenshot_selector_schema_rejects_mixed_final_target_settings() {
+        for (selector, selectors, valid) in [
+            (json!(null), json!(["viewport"]), true),
+            (json!("#content"), json!(null), true),
+            (json!("#content"), json!(["viewport"]), false),
+            (json!("#content"), json!("viewport"), false),
+        ] {
+            let value = json!({ "scenarios": [{ "url": "/", "selector": selector, "selectors": selectors }] });
+            let issues = diagnostics(DocumentKind::Suite, &value).unwrap();
+            assert_eq!(issues.is_empty(), valid, "{value}: {issues:?}");
+            let suite: TestSuite = serde_json::from_value(value).unwrap();
+            assert_eq!(
+                crate::test::capture::validate_scenario_capture_names(&suite.scenarios[0]).is_ok(),
+                valid
+            );
+        }
+    }
+
+    #[test]
     fn action_viewport_names_schema_feedback_handles_yaml_and_json() {
         for (action, valid, mixed) in [
             (json!({"click": "#target"}), true, false),

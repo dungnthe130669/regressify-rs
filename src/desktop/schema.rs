@@ -743,7 +743,8 @@ mod tests {
         let suite: TestSuite =
             serde_json::from_value(json!({"scenarios": [], "displayName": "Suite label"})).unwrap();
         let scenario: TestScenario =
-            serde_json::from_value(json!({"url": "https://example.com"})).unwrap();
+            serde_json::from_value(json!({"url": "https://example.com", "selector": "#content"}))
+                .unwrap();
         for (scope, serialized) in [
             (
                 Scope::Workspace,
@@ -783,6 +784,18 @@ mod tests {
         assert!(scenarios.iter().any(|field| field.key == "restore"
             && matches!(field.kind, FieldKind::List { single: true })));
         assert_eq!(fields(&Scope::Viewport).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn screenshot_selector_fields_are_optional_text() {
+        for scope in [Scope::Scenario, Scope::Action("save".into())] {
+            let fields = fields(&scope).unwrap();
+            let selector = fields.iter().find(|field| field.key == "selector").unwrap();
+            assert_eq!(selector.kind, FieldKind::Text, "{scope:?}");
+            assert!(!selector.required, "{scope:?}");
+            assert!(selector.description.contains("CSS selector"), "{scope:?}");
+            assert_eq!(selector.parse("#content").unwrap(), json!("#content"));
+        }
     }
 
     #[test]

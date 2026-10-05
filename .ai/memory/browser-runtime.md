@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-05
+Verified: 2026-10-06
 
 - [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
   across the executor, tab-tracker guard, and save inventory. Strict-subset
@@ -13,6 +13,13 @@ Verified: 2026-10-05
   runs real `ref`/`test`/failing `ref` against loopback pages and cached Chromium.
   It verifies ordered manifests and pixels, all-skipped final captures, scoped
   placeholders, peer isolation, and unchanged historical references.
+- [Capture selectors](../../src/test/capture.rs) keep `save.selector` independent
+  from scenario `selector` and retain save/`FINAL` filenames. The last applicable
+  own save suppresses the automatic final and its wait/preparation, not explicit
+  plural `selectors` or a consumer's final after prerequisite saves. The ignored
+  `selector_saves_and_final_captures_match_pixels_and_inventory` regression in
+  [scenario tests](../../src/test/test_scenario.rs) verifies 13 local-browser cases,
+  including pixels, filtering, invalid targets, scoped placeholders, and scroll.
 - The [responsive browser fixture](../../src/test/browser_tests.rs)
   `responsive_hamburger_menu_mobile_only_click_and_save` verifies observed
   interaction order, a mobile-only DOM menu/checkpoint, both final images, and
