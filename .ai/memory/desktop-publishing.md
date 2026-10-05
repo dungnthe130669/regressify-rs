@@ -1,6 +1,6 @@
 # Desktop Publishing
 
-Verified: 2026-10-01
+Verified: 2026-10-05
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
@@ -32,6 +32,14 @@ Verified: 2026-10-01
   saved results retain compatibility with existing strings; confirmed private
   results clear stale URLs. Asset-option edits preserve URLs, routing edits clear
   them. The native target test covers production defaults and advanced settings.
+- [Shared analytics](../../src/analytics.rs) emits `regressify_site_deployed` from
+  provider-confirmed public completion. Stats reuse final Azure package and
+  Netlify/Cloudflare manifest counts and bytes, without rescanning files. The
+  digest fixture counts three paths/15 bytes although only one blob uploads;
+  the cached Cloudflare fixture excludes hosting-policy files. Analytics tests
+  cover silent failures and client reuse across concurrent calls and new runtimes.
+  HTTP timeout cleanup must stay inside the silent tracing scope because request
+  futures log on drop; see the [analytics skill](../../.github/skills/product-analytics/SKILL.md).
 - [Status summaries](../../src/snapshot/site.rs) use `/_snapshot/status.json`
   with aggregate counts and generation time. They revalidate and permit anonymous
   CORS reads; exact ZIP/Netlify inventories include this extra file.

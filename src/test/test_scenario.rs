@@ -1589,7 +1589,7 @@ mod tests {
                 let clicked: bool = active.page.evaluate("window.hookCalls === 1 && window.clicks === 1").await?.into_value()?;
                 anyhow::ensure!(clicked, "{label}: matching action or document hook did not run");
                 let failing: TestAction = serde_json::from_value(json!({ "switchTab": "new", "viewportNames": [label] }))?;
-                let error = active.exec(&browser, context, &hooks, &failing).await.err().expect("a matching tab action must retain its failure");
+                let error = active.exec(&browser, context, &hooks, &failing).await.expect_err("a matching tab action must retain its failure");
                 anyhow::ensure!(error.to_string().contains("Tab tracking was not initialized"));
                 active.page.clone().close().await?;
                 for action in &skipped {

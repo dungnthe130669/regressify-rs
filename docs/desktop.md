@@ -448,6 +448,25 @@ public URL; it still appears as a completed deployment without an Open Site butt
 Azure tokens identify the destination app as well as authorize it. If saving a
 successful deployment's URL fails, the app reports the local persistence error.
 
+Successful public report and landing deployments send `regressify_site_deployed`
+to PostHog US Cloud. Event properties include `url`, `provider`, `file_count`,
+`total_bytes`, `duration_ms`, and `app_version`, plus SDK/runtime metadata.
+Counts describe the final provider manifest or package after any optimization,
+including cached files and duplicate paths, not just newly uploaded blobs.
+Bytes measure file content, excluding ZIP and transport overhead. Duration covers
+provider preparation, uploads, and publication confirmation, excluding snapshot
+generation, staging, and analytics delivery. Failed deployments, private sites,
+and unsafe URLs do not create this event.
+
+Tracking is anonymous, with person profiles and GeoIP enrichment disabled.
+Deployment tokens, workspace paths, target names, and report contents are not
+event properties. Delivery is silent and best effort, with one attempt and a
+two-second deadline; tracking failures do not change the deployment result or
+appear in the UI. Set `DO_NOT_TRACK=1` in the application's environment before
+launch to disable tracking. The [shared analytics API](../src/analytics.rs) also
+serves future CLI and desktop events, automatically naming them
+`regressify_[object]_[verb]`.
+
 In **Runs**, **Open Site** appears beside **Open Report** in the toolbar and on
 each published suite's row. It opens the most recently deployed site containing
 that suite at `/suites/<suite-id>`. With multiple suites selected, the toolbar

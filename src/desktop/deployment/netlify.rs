@@ -165,6 +165,16 @@ impl NetlifyClient {
     }
 
     pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+        self.deploy_with_stats(root, target, &mut super::DeploymentStats::default())
+            .await
+    }
+
+    pub(super) async fn deploy_with_stats(
+        &self,
+        root: &Path,
+        target: &DeployTarget,
+        stats: &mut super::DeploymentStats,
+    ) -> Result<String> {
         target.validate()?;
         ensure!(
             target.provider == DeploymentProvider::Netlify,
@@ -207,6 +217,10 @@ impl NetlifyClient {
                 })
             })
             .await??;
+            *stats = super::DeploymentStats {
+                file_count: manifest.files.len() as u64,
+                total_bytes: manifest.bytes,
+            };
             {
                 use crate::diagnostics::{record::*, runtime};
                 runtime::event(
@@ -1078,10 +1092,15 @@ mod tests {
         std::fs::write(root.path().join("index.html"), "hello")?;
         std::fs::write(root.path().join("assets/first.png"), "world")?;
         std::fs::write(root.path().join("assets/second.png"), "world")?;
+        let mut stats = super::super::DeploymentStats::default();
         assert_eq!(
-            client(&site.origin).deploy(root.path(), &target()).await?,
+            client(&site.origin)
+                .deploy_with_stats(root.path(), &target(), &mut stats)
+                .await?,
             "https://qa-reports.netlify.app/"
         );
+        assert_eq!(stats.file_count, 3);
+        assert_eq!(stats.total_bytes, 15);
         let records = requests.lock().unwrap();
         let posts = records
             .iter()

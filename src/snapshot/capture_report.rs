@@ -541,7 +541,7 @@ mod tests {
     #[test]
     fn preview_images_are_byte_identical_for_repeated_inputs() {
         let mut pixels = vec![0u8; 800 * 1600 * 4];
-        for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(&[
                 (index % 251) as u8,
                 (index / 800 % 251) as u8,
@@ -611,7 +611,7 @@ mod tests {
         let (temp, _) = fixture();
         let root = temp.path().canonicalize().unwrap();
         let mut pixels = vec![0u8; 320 * 6000 * 4];
-        for (index, pixel) in pixels.chunks_exact_mut(4).enumerate() {
+        for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             pixel.copy_from_slice(if index < 320 * 200 {
                 &[240, 20, 20, 255]
             } else {

@@ -343,8 +343,18 @@ impl CloudflareClient {
     }
 
     pub async fn deploy(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
+        self.deploy_with_stats(root, target, &mut super::DeploymentStats::default())
+            .await
+    }
+
+    pub(super) async fn deploy_with_stats(
+        &self,
+        root: &Path,
+        target: &CloudflareTarget,
+        stats: &mut super::DeploymentStats,
+    ) -> Result<Option<String>> {
         target.validate()?;
-        let result = tokio::time::timeout(self.deadline, self.deploy_inner(root, target))
+        let result = tokio::time::timeout(self.deadline, self.deploy_inner(root, target, stats))
             .await
             .map_err(|_| anyhow!("Cloudflare deployment exceeded its deadline; check the Worker's deployment history before retrying"))?;
         if let Ok(url) = &result {
@@ -356,7 +366,12 @@ impl CloudflareClient {
         result
     }
 
-    async fn deploy_inner(&self, root: &Path, target: &CloudflareTarget) -> Result<Option<String>> {
+    async fn deploy_inner(
+        &self,
+        root: &Path,
+        target: &CloudflareTarget,
+        stats: &mut super::DeploymentStats,
+    ) -> Result<Option<String>> {
         super::validate_static_configuration(root, super::DeploymentProvider::CloudflareWorkers)
             .map_err(|error| {
                 if error.downcast_ref::<std::io::Error>().is_some() {
@@ -409,6 +424,10 @@ impl CloudflareClient {
                 root.display()
             )
         })?;
+        *stats = super::DeploymentStats {
+            file_count: manifest.files.len() as u64,
+            total_bytes: manifest.bytes,
+        };
         let body = serde_json::to_vec(&serde_json::json!({"manifest": &manifest.files}))?;
         ensure!(
             body.len() <= MAX_MANIFEST_BYTES,
@@ -2166,10 +2185,15 @@ mod tests {
                 json!({"success":true,"result":value}).to_string(),
             ));
         })?;
+        let mut stats = super::super::DeploymentStats::default();
         assert_eq!(
-            client(&site.origin).deploy(root.path(), &target()).await?,
+            client(&site.origin)
+                .deploy_with_stats(root.path(), &target(), &mut stats)
+                .await?,
             Some(format!("{}/", site.origin))
         );
+        assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.total_bytes, 6);
         let methods = methods.lock().unwrap();
         assert_eq!(
             methods

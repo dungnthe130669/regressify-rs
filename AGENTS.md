@@ -63,19 +63,19 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 
 ## Entry Points
 
-| Work                        | Start Here                                                                                                                                                  |
-| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CLI commands and exit codes | [src/application.rs](src/application.rs), [docs/commands.md](docs/commands.md)                                                                              |
-| Browser actions and capture | [src/test](src/test), [docs/create-action.md](docs/create-action.md)                                                                                        |
-| Configuration and schemas   | [src/config](src/config), [src/types](src/types)                                                                                                            |
-| Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                                                                                    |
-| Logging and diagnostics     | [src/diagnostics](src/diagnostics), [logging docs](docs/commands.md#diagnostic-verbosity), [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md) |
-| Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                                                  |
-| Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                                                                                              |
-| Report deployment           | [src/desktop/deployment.rs](src/desktop/deployment.rs), [Cloudflare skill](.github/skills/deployment-cloudflare/SKILL.md)                                   |
-| Landing apps and tokens     | [Landing skill](.github/skills/desktop-landing-apps/SKILL.md), [Token skill](.github/skills/deployment-targets/SKILL.md)                                    |
-| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)                                                                    |
-| AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                                                                                        |
+| Work                        | Start Here                                                                                                                                                                                                                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI commands and exit codes | [src/application.rs](src/application.rs), [docs/commands.md](docs/commands.md)                                                                                                                                            |
+| Browser actions and capture | [src/test](src/test), [docs/create-action.md](docs/create-action.md)                                                                                                                                                      |
+| Configuration and schemas   | [src/config](src/config), [src/types](src/types)                                                                                                                                                                          |
+| Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                                                                                                                                                  |
+| Logging and analytics       | [src/diagnostics](src/diagnostics), [logging docs](docs/commands.md#diagnostic-verbosity), [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md), [analytics skill](.github/skills/product-analytics/SKILL.md) |
+| Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                                                                                                                |
+| Desktop models and UI       | [src/desktop](src/desktop), [docs/desktop.md](docs/desktop.md)                                                                                                                                                            |
+| Report deployment           | [src/desktop/deployment.rs](src/desktop/deployment.rs), [Cloudflare skill](.github/skills/deployment-cloudflare/SKILL.md)                                                                                                 |
+| Landing apps and tokens     | [Landing skill](.github/skills/desktop-landing-apps/SKILL.md), [Token skill](.github/skills/deployment-targets/SKILL.md)                                                                                                  |
+| Build and release           | [Cargo.toml](Cargo.toml), [ci](ci), [GitHub](.github/workflows), [Azure](.ado/workflows)                                                                                                                                  |
+| AI guidance                 | [Maintenance skill](.github/skills/maintain-agent-guidance/SKILL.md)                                                                                                                                                      |
 
 ## Skills and Checks
 

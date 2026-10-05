@@ -374,6 +374,16 @@ impl SwaClient {
     }
 
     pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<String> {
+        self.deploy_with_stats(root, target, &mut super::DeploymentStats::default())
+            .await
+    }
+
+    pub(super) async fn deploy_with_stats(
+        &self,
+        root: &Path,
+        target: &DeployTarget,
+        stats: &mut super::DeploymentStats,
+    ) -> Result<String> {
         target.validate()?;
         ensure!(
             target.provider == DeploymentProvider::AzureSwa,
@@ -407,6 +417,10 @@ impl SwaClient {
                 ensure!(package.bytes <= tier.limit(), "Report size changed during packaging and exceeds the Azure {} storage limit; retry deployment", tier.label());
                 Ok::<_, anyhow::Error>(package)
             })).await??;
+            *stats = super::DeploymentStats {
+                file_count: package.files,
+                total_bytes: package.bytes,
+            };
             let mut request = json!({
                 "eventInfo": {"repoUrl": null, "isPullRequest": false, "isNamedEnvironment": !target.environment.is_empty(),
                     "pullRequestId": null, "pullRequestTitle": null, "headBranch": null, "baseBranch": null,
@@ -718,10 +732,15 @@ mod tests {
             site_id: String::new(),
             cloudflare: None,
         };
+        let mut stats = super::super::DeploymentStats::default();
         assert_eq!(
-            client.deploy(root.path(), &target).await?,
+            client
+                .deploy_with_stats(root.path(), &target, &mut stats)
+                .await?,
             "https://reports.azurestaticapps.net/"
         );
+        assert_eq!(stats.file_count, 1);
+        assert_eq!(stats.total_bytes, 6);
         let records = requests.lock().unwrap();
         assert_eq!(upload_count.load(Ordering::Relaxed), 2);
         assert!(

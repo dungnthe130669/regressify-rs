@@ -5426,7 +5426,7 @@ async fn pixel_match_threshold_controls_inherit_edit_and_reset(cx: &mut TestAppC
                         cx,
                     );
                 }
-                this.select(selection.clone(), window, cx);
+                this.select(selection, window, cx);
                 this.select_editor_tab(0, window, cx);
             });
             window.render_frame(cx);

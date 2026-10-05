@@ -739,6 +739,12 @@ impl DeployTargets {
     }
 }
 
+#[derive(Clone, Copy, Default)]
+struct DeploymentStats {
+    file_count: u64,
+    total_bytes: u64,
+}
+
 pub enum DeploymentClient {
     Azure(swa::SwaClient),
     Netlify(netlify::NetlifyClient),
@@ -759,26 +765,60 @@ impl DeploymentClient {
 
     pub async fn deploy(&self, root: &Path, target: &DeployTarget) -> Result<Option<String>> {
         target.validate()?;
-        match self {
-            Self::Azure(client) => client.deploy(root, target).await.map(Some),
-            Self::Netlify(client) => client.deploy(root, target).await.map(Some),
+        let started = std::time::Instant::now();
+        let mut stats = DeploymentStats::default();
+        let result = match self {
+            Self::Azure(client) => client
+                .deploy_with_stats(root, target, &mut stats)
+                .await
+                .map(Some),
+            Self::Netlify(client) => client
+                .deploy_with_stats(root, target, &mut stats)
+                .await
+                .map(Some),
             Self::Cloudflare(client) => {
                 ensure!(
                     target.provider == DeploymentProvider::CloudflareWorkers,
                     "Cloudflare client requires a Cloudflare target"
                 );
                 client
-                    .deploy(
+                    .deploy_with_stats(
                         root,
                         target
                             .cloudflare
                             .as_ref()
                             .context("Cloudflare target settings are missing")?,
+                        &mut stats,
                     )
                     .await
             }
+        };
+        if let Some(properties) =
+            site_deployed_properties(target.provider, &result, stats, started.elapsed())
+        {
+            crate::analytics::capture("site", "deployed", properties).await;
         }
+        result
     }
+}
+
+fn site_deployed_properties(
+    provider: DeploymentProvider,
+    result: &Result<Option<String>>,
+    stats: DeploymentStats,
+    duration: std::time::Duration,
+) -> Option<serde_json::Value> {
+    let url = result.as_ref().ok()?.as_deref()?;
+    validate_published_url(url).ok()?;
+    let duration_ms = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
+    Some(serde_json::json!({
+        "url": url,
+        "current_url": url,
+        "provider": provider,
+        "file_count": stats.file_count,
+        "total_bytes": stats.total_bytes,
+        "duration_ms": duration_ms,
+    }))
 }
 
 fn validate_static_configuration(root: &Path, provider: DeploymentProvider) -> Result<()> {
@@ -1302,6 +1342,70 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn site_deployed_properties_describe_confirmed_publication() {
+        for (provider, label) in [
+            (DeploymentProvider::AzureSwa, "azureSwa"),
+            (DeploymentProvider::Netlify, "netlify"),
+            (DeploymentProvider::CloudflareWorkers, "cloudflareWorkers"),
+        ] {
+            let result = Ok(Some("https://reports.example.com/".into()));
+            let properties = site_deployed_properties(
+                provider,
+                &result,
+                DeploymentStats {
+                    file_count: 3,
+                    total_bytes: 4096,
+                },
+                std::time::Duration::from_millis(1234),
+            )
+            .unwrap();
+            assert_eq!(
+                properties,
+                serde_json::json!({
+                    "url": "https://reports.example.com/",
+                    "current_url": "https://reports.example.com/",
+                    "provider": label,
+                    "file_count": 3,
+                    "total_bytes": 4096,
+                    "duration_ms": 1234,
+                })
+            );
+            assert!(matches!(
+                result,
+                Ok(Some(url)) if url == "https://reports.example.com/"
+            ));
+        }
+    }
+
+    #[test]
+    fn site_deployed_properties_skip_failures_private_sites_and_unsafe_urls() {
+        let mut results = vec![Err(anyhow::anyhow!("synthetic failure")), Ok(None)];
+        results.extend(
+            [
+                "",
+                "not a URL",
+                "http://reports.example.com/",
+                "https://user:synthetic-secret@reports.example.com/",
+                "https://reports.example.com/?token=synthetic-secret",
+                "https://reports.example.com/#synthetic-secret",
+            ]
+            .into_iter()
+            .map(|url| Ok(Some(url.into()))),
+        );
+        for result in results {
+            assert!(
+                site_deployed_properties(
+                    DeploymentProvider::CloudflareWorkers,
+                    &result,
+                    DeploymentStats::default(),
+                    std::time::Duration::ZERO,
+                )
+                .is_none()
+            );
+        }
+    }
 
     #[tokio::test]
     async fn heartbeat_reports_waiting_and_preserves_results() {
