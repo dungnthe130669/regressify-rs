@@ -2046,6 +2046,125 @@ async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppCo
 }
 
 #[gpui_kit::test]
+async fn action_viewport_picker_filters_choices_and_preserves_invalid_source(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(directory.path().join("common/_viewports.yaml"), "- label: desktop\n  width: 1280\n  height: 720\n- label: mobile\n  width: 375\n  height: 667\n- label: tablet\n  width: 768\n  height: 1024\n").unwrap();
+    std::fs::write(
+        directory.path().join("regressify.yaml"),
+        "viewportNames: [desktop, mobile]\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.edit(|session| session.add_action("click"), window, cx);
+        });
+        window.render_frame(cx);
+        window.press("ctrl-shift-f", cx);
+        window.input("viewportNames", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-viewportNames").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choices-viewportNames", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.within("popup-menu").try_find(0_usize).is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("desktop (1280 x 720)")
+        );
+        assert_eq!(
+            window.within("popup-menu").find(1_usize).label(),
+            Some("mobile (375 x 667)")
+        );
+        assert!(window.within("popup-menu").try_find(2_usize).is_none());
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["viewportNames"]
+            == serde_json::json!(["mobile"])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let mut value = view.read(cx).session.value().unwrap();
+        value["scenarios"][0]["actions"][0]["viewportNames"] = serde_json::json!(["tablet"]);
+        let invalid = serde_yaml::to_string(&value).unwrap();
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            let focus = this.source.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        window.press("ctrl-a", cx);
+        window.input(&invalid, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx)
+            .source_issues
+            .iter()
+            .any(|issue| issue.message.contains("Invalid viewportNames"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert_eq!(
+                this.session.value().unwrap()["scenarios"][0]["actions"][0]["viewportNames"],
+                serde_json::json!(["tablet"])
+            );
+            let issue = this
+                .source_issues
+                .iter()
+                .find(|issue| issue.message.contains("Invalid viewportNames"))
+                .unwrap();
+            assert!(
+                this.session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source()
+                    .lines()
+                    .nth(issue.range.start.line as usize)
+                    .unwrap()
+                    .contains("viewportNames")
+            );
+            assert!(this.select_editor_tab(0, window, cx));
+            assert!(this.select_editor_tab(1, window, cx));
+            let focus = this.source.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        let mut value = view.read(cx).session.value().unwrap();
+        value["scenarios"][0]["actions"][0]["viewportNames"] = serde_json::json!(["mobile"]);
+        window.press("ctrl-a", cx);
+        window.input(&serde_yaml::to_string(&value).unwrap(), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).diagnostic.is_none()
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["viewportNames"],
+            serde_json::json!(["mobile"])
+        );
+        assert!(view.read(cx).session.dirty());
+    });
+}
+
+#[gpui_kit::test]
 async fn guided_viewport_menu_opens_after_filtering_and_accepts_pointer_selection(
     cx: &mut TestAppContext,
 ) {

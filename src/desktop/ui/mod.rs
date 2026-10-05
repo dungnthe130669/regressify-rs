@@ -191,24 +191,26 @@ impl Workbench {
         });
         let search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Search suites and scenarios"));
-        let source_subscription = cx.subscribe_in(&source, window, |this, state, event, _, cx| {
-            if matches!(event, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
-                if let Some(open) = &mut this.session.open
-                    && open.document.source() != text
-                {
-                    match open.document.set_source(text) {
-                        Ok(()) => {
-                            this.field_errors.clear();
-                            this.refresh_value();
-                            this.update_source_diagnostics(cx);
+        let source_subscription =
+            cx.subscribe_in(&source, window, |this, state, event, window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = state.read(cx).value().to_string();
+                    if let Some(open) = &mut this.session.open
+                        && open.document.source() != text
+                    {
+                        match open.document.set_source(text) {
+                            Ok(()) => {
+                                this.field_errors.clear();
+                                this.refresh_value();
+                                this.update_source_diagnostics(cx);
+                                this.load_action_viewport_diagnostics(window, cx);
+                            }
+                            Err(error) => this.status = format!("{error:#}"),
                         }
-                        Err(error) => this.status = format!("{error:#}"),
+                        cx.notify();
                     }
-                    cx.notify();
                 }
-            }
-        });
+            });
         let search_subscription = cx.subscribe(&search, |_, _, _: &InputEvent, cx| cx.notify());
         let scenario_search =
             cx.new(|cx| InputState::new(window, cx).placeholder("Find a scenario"));
@@ -1279,6 +1281,13 @@ impl Workbench {
             .as_ref()
             .map(|open| source::inspect_document(&open.document))
             .unwrap_or_default();
+        if let (Some(workspace), Some(open)) = (&self.session.workspace, &self.session.open) {
+            source::append_action_viewport_diagnostics(
+                &open.document,
+                self.viewport_choices.action_issues(&workspace.root, open),
+                &mut self.source_issues,
+            );
+        }
         self.diagnostic = (!self.source_issues.is_empty()).then(|| {
             self.source_issues
                 .iter()
@@ -1700,6 +1709,7 @@ impl Workbench {
         self.resolved
             .update(cx, |state, cx| state.set_value(text, window, cx));
         self.load_viewport_choices(window, cx);
+        self.load_action_viewport_diagnostics(window, cx);
     }
 
     fn field_hint(&self, field: &Field, explicit: bool) -> String {

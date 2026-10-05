@@ -1,7 +1,20 @@
 # Browser Runtime
 
-Verified: 2026-10-01
+Verified: 2026-10-05
 
+- [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
+  across the executor, tab-tracker guard, and save inventory. Strict-subset
+  [preflight](../../src/test/test_suites.rs) validates full consumer/prerequisite
+  contexts, while legacy actions stay unset. Case variants are membership only;
+  unnamed captures accept only unset/null/empty filters.
+- The ignored scenario `filtered_reference_and_test_manifests_preserve_baselines`
+  runs real `ref`/`test`/failing `ref` against loopback pages and cached Chromium.
+  It verifies ordered manifests and pixels, all-skipped final captures, scoped
+  placeholders, peer isolation, and unchanged historical references.
+- The [responsive browser fixture](../../src/test/browser_tests.rs)
+  `responsive_hamburger_menu_mobile_only_click_and_save` verifies observed
+  interaction order, a mobile-only DOM menu/checkpoint, both final images, and
+  no desktop dispatch of the menu selector in its completed action journal.
 - [Initial navigation](../../src/test/runtime.rs) uses a bounded 60000 ms default,
   matching the legacy Node/VS Code runner. Omitted or zero
   `engineOptions.gotoParameters.timeout` uses that default; positive values

@@ -17,6 +17,7 @@ description: 'Use when changing screenshot settling, lazy loading, animation fre
 1. Stabilize initial animations after readiness hooks and before lazy loading/actions when enabled. Share `prepare_screenshot` for `save` and final captures: resolved delay, animation freeze, bounded settling, then another freeze for late animations. Honor opt-outs and do not scroll or move the pointer during this preparation. `delay` resolves scenario -> workspace -> default; `postInteractionWait` remains final-only.
 1. Hide text carets independently of animation freezing and settling. Preserve focus, selection, and values; do not blur controls or weaken comparison thresholds to hide cursor noise.
 1. Support full-page, viewport, CSS target, and intermediate save captures without collisions. Validate save names and keep stable target-specific ordering.
+1. Plan `save` checkpoints per viewport with the same applicability predicate as execution, including `needs`. Validate portable save names unconditionally, but check conditional collisions against actual per-viewport inventory; disjoint same-name saves are valid. Progress, manifests, errors, and comparison must use that inventory. Never filter final targets or delete historical baselines.
 1. Write complete PNGs/manifests atomically; preserve required color metadata and resource bounds. Failed capture placeholders need error markers, not promotion.
 1. Keep labels, scenario IDs, target names, thresholds, and raw/replaced URLs in sync across capture manifests and report consumers.
 1. Persist `scenarioDisplayName` from the [shared resolver](../../../src/helpers/scenario_names.rs) against the complete suite before selection or URL replacements. Preserve the source label separately; generated names never feed IDs, capture keys, or filenames. Comparison regeneration must retain recorded names.
@@ -43,6 +44,8 @@ cargo test --lib test::test_action::tests::save_actions_wait_for_the_resolved_sc
 Cover absent/empty actions with capture settling disabled, smooth scrolling, delayed or interrupted returns, non-scrolling pages, and blocked-scroll timeouts. Checkpoint coverage must verify saved pixels, inherited/overridden delay, repeated saves, invalid-name rejection before waiting, animation opt-outs, and animations started during settling. Caret coverage must check inputs, textareas, and editable content with animation freezing both on and off, unchanged focus/selection/values, and identical screenshot pixels across a blink interval.
 
 Inspect ignored Chromium fixtures for live behavior; unit tests alone do not prove rendering stability. Cover delayed resources, motion, clipped targets, multiple saves, invalid names, timeouts, and write failures.
+
+Run `cargo test --lib test::test_scenario::tests::filtered_reference_and_test_manifests_preserve_baselines -- --ignored --exact` for real reference/test manifests, ordered pixels, all-actions-skipped final captures, scoped failure placeholders, peer isolation, and unchanged historical references. It uses loopback pages and cached Chromium only.
 
 ## Maintain
 

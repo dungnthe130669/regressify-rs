@@ -471,6 +471,74 @@ impl Workspace {
         Ok(serde_json::from_value(document.value()?)?)
     }
 
+    pub(crate) fn action_viewport_diagnostics(
+        &self,
+        document: &Document,
+        suite_name: &str,
+    ) -> Result<Vec<super::validation::Diagnostic>> {
+        if document.kind != DocumentKind::Suite || document.format == Format::Text {
+            return Ok(Vec::new());
+        }
+        // Source inspection owns syntax errors; contextual checks must not duplicate them.
+        let Ok(value) = document.value() else {
+            return Ok(Vec::new());
+        };
+        if !super::validation::diagnostics(document.kind, &value)?.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut suite: crate::types::TestSuite = serde_json::from_value(value)?;
+        if !suite
+            .scenarios
+            .iter()
+            .flat_map(|scenario| scenario.actions.iter().flatten())
+            .any(|action| {
+                action
+                    .viewport_names()
+                    .as_ref()
+                    .is_some_and(|names| !names.is_empty())
+            })
+        {
+            return Ok(Vec::new());
+        }
+        crate::test::assign_scenario_ids(&mut suite.scenarios);
+        let input = crate::types::TestSuiteInput {
+            name: suite_name.into(),
+            path: PathBuf::from(suite_name),
+            format: match document.format {
+                Format::Json => crate::types::TestSuiteFormat::Json,
+                _ => crate::types::TestSuiteFormat::Yaml,
+            },
+        };
+        crate::test::validate_scenario_dependencies(&input, &suite)?;
+        let workspace = crate::config::load_workspace_config(&self.root)?;
+        let mut files = BTreeMap::new();
+        let mut issues = Vec::new();
+        for (index, scenario) in suite.scenarios.iter().enumerate() {
+            let resolved = crate::config::resolve_config(&workspace, &suite, scenario);
+            let key = (
+                resolved.viewports_path.clone(),
+                resolved.viewports_path_is_explicit,
+            );
+            if !files.contains_key(&key) {
+                files.insert(
+                    key.clone(),
+                    self.viewport_choices(Path::new(&key.0), key.1)?,
+                );
+            }
+            let effective = super::schema::action_viewport_choices(
+                &serde_json::to_value(&resolved)?,
+                &files[&key],
+            )?;
+            issues.extend(super::validation::action_viewport_diagnostics(
+                suite_name, &suite, index, &effective,
+            ));
+            if issues.len() >= super::validation::MAX_DIAGNOSTICS {
+                break;
+            }
+        }
+        Ok(issues)
+    }
+
     pub fn suite_catalog(&self) -> Result<Vec<SuiteSummary>> {
         let directory = self.resolve(Path::new("visual_tests"))?;
         if !directory.exists() {
@@ -580,6 +648,16 @@ impl Workspace {
     pub fn save_in_outputs(&self, open: &mut OpenDocument, outputs: &[PathBuf]) -> Result<()> {
         open.document.validate()?;
         validate_typed_source(&open.document)?;
+        let suite_name = open
+            .entry
+            .suite_name()
+            .unwrap_or_else(|| open.entry.label());
+        if let Some(issue) = self
+            .action_viewport_diagnostics(&open.document, &suite_name)?
+            .first()
+        {
+            anyhow::bail!("{}", issue.message);
+        }
         let path = self.check_unchanged(open)?;
         let value = open.document.value()?;
         // Invalid saved source must remain repairable; it has no reliable metadata to migrate.
@@ -636,6 +714,12 @@ impl Workspace {
         let document = Document::new(kind, Format::for_path(relative), source.to_string())?;
         document.validate()?;
         validate_typed_source(&document)?;
+        if let Some(issue) = self
+            .action_viewport_diagnostics(&document, &display_path(relative))?
+            .first()
+        {
+            anyhow::bail!("{}", issue.message);
+        }
         let path = self.resolve(relative)?;
         ensure!(
             !path.exists(),
@@ -1399,6 +1483,175 @@ mod tests {
             assert_eq!(display_path(&path), expected);
             assert_eq!(path, PathBuf::from(source));
         }
+    }
+
+    #[test]
+    fn action_viewport_names_round_trips_fields_and_source() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        fs::create_dir_all(directory.path().join("common")).unwrap();
+        fs::write(directory.path().join("common/_viewports.yaml"), "- label: desktop\n  width: 1280\n  height: 720\n- label: mobile\n  width: 375\n  height: 667\n- label: tablet\n  width: 768\n  height: 1024\n").unwrap();
+        let viewports = workspace
+            .viewport_choices(Path::new("common/_viewports.yaml"), false)
+            .unwrap();
+        for (format, suffix) in [(Format::Yaml, "yaml"), (Format::Json, "json")] {
+            let value = json!({ "scenarios": [{ "id": "page", "url": "/", "viewportNames": ["desktop", "mobile"], "actions": [{ "click": "#toggle" }] }] });
+            let source = format.serialize(&value).unwrap();
+            let path = PathBuf::from(format!("visual_tests/viewport.{suffix}.tests.{suffix}"));
+            let mut open = workspace
+                .create_document(&path, DocumentKind::Suite, &source)
+                .unwrap();
+            let field =
+                super::super::schema::fields(&super::super::schema::Scope::Action("click".into()))
+                    .unwrap()
+                    .into_iter()
+                    .find(|field| field.key == "viewportNames")
+                    .unwrap();
+            assert!(
+                open.document.value().unwrap()["scenarios"][0]["actions"][0]
+                    .get("viewportNames")
+                    .is_none()
+            );
+            let effective = super::super::schema::effective(None, Some(&value), Some(0)).unwrap();
+            let choices = super::super::schema::action_viewport_choices(&effective, &viewports)
+                .unwrap()
+                .into_iter()
+                .map(|viewport| viewport.label)
+                .collect::<Vec<_>>();
+            assert_eq!(choices, ["desktop", "mobile"]);
+            let selected = field
+                .toggle_list_choice(
+                    &serde_json::Value::Null,
+                    &effective["viewportNames"],
+                    "desktop",
+                    &choices,
+                )
+                .unwrap();
+            assert_eq!(selected, json!(["mobile"]));
+            open.document
+                .apply(Edit::Set {
+                    parent: "/scenarios/0/actions/0".into(),
+                    key: field.key.clone(),
+                    value: Some(selected),
+                })
+                .unwrap();
+            assert_eq!(
+                open.document
+                    .value()
+                    .unwrap()
+                    .pointer("/scenarios/0/actions/0/viewportNames"),
+                Some(&json!(["mobile"]))
+            );
+            assert!(
+                open.document.source().contains("viewportNames")
+                    && open.document.source().contains("mobile")
+            );
+            assert!(
+                workspace
+                    .action_viewport_diagnostics(&open.document, "viewport")
+                    .unwrap()
+                    .is_empty()
+            );
+            workspace.save(&mut open).unwrap();
+            let saved = fs::read(directory.path().join(&path)).unwrap();
+            open.document
+                .apply(Edit::Set {
+                    parent: "/scenarios/0/actions/0".into(),
+                    key: field.key.clone(),
+                    value: Some(field.parse("[tablet]").unwrap()),
+                })
+                .unwrap();
+            let issues = workspace
+                .action_viewport_diagnostics(&open.document, "viewport")
+                .unwrap();
+            assert_eq!(issues.len(), 1);
+            assert_eq!(issues[0].pointer, "/scenarios/0/actions/0/viewportNames");
+            assert!(issues[0].message.contains("tablet"));
+            assert!(workspace.save(&mut open).is_err());
+            assert!(
+                workspace
+                    .save_as(
+                        &open,
+                        &PathBuf::from(format!("visual_tests/invalid.tests.{suffix}"))
+                    )
+                    .is_err()
+            );
+            assert_eq!(fs::read(directory.path().join(&path)).unwrap(), saved);
+            assert_eq!(
+                open.document
+                    .value()
+                    .unwrap()
+                    .pointer("/scenarios/0/actions/0/viewportNames"),
+                Some(&json!(["tablet"]))
+            );
+            assert!(open.document.source().contains("tablet"));
+            open.document.undo();
+            assert_eq!(
+                open.document
+                    .value()
+                    .unwrap()
+                    .pointer("/scenarios/0/actions/0/viewportNames"),
+                Some(&json!(["mobile"]))
+            );
+            open.document.redo();
+            assert!(open.document.source().contains("tablet"));
+        }
+    }
+
+    #[test]
+    fn action_viewport_diagnostics_bound_errors_and_reuse_cli_dependencies() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = Workspace::open(directory.path()).unwrap();
+        let malformed =
+            Document::new(DocumentKind::Suite, Format::Yaml, "scenarios: [}".into()).unwrap();
+        assert!(
+            workspace
+                .action_viewport_diagnostics(&malformed, "fixture")
+                .unwrap()
+                .is_empty()
+        );
+        let document = |value: serde_json::Value| {
+            Document::new(DocumentKind::Suite, Format::Json, value.to_string()).unwrap()
+        };
+        let unnamed = document(
+            json!({ "scenarios": [{ "url": "/", "actions": [{ "wait": 0, "viewportNames": ["mobile"] }] }] }),
+        );
+        let issues = workspace
+            .action_viewport_diagnostics(&unnamed, "fixture")
+            .unwrap();
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].message.contains("<unnamed browser default>"));
+        let inherited = document(json!({ "scenarios": [
+            { "label": "Setup", "url": "/setup", "actions": [{ "wait": 0, "viewportNames": ["mobile"] }] },
+            { "id": "consumer", "url": "/consumer", "needs": "setup" }
+        ] }));
+        let issues = workspace
+            .action_viewport_diagnostics(&inherited, "fixture")
+            .unwrap();
+        assert_eq!(issues.len(), 2);
+        assert!(issues[1].message.contains("prerequisite"));
+        assert_eq!(issues[1].pointer, "/scenarios/0/actions/0/viewportNames");
+        let cyclic = document(json!({ "scenarios": [
+            { "id": "first", "url": "/", "needs": "second", "actions": [{ "wait": 0, "viewportNames": ["mobile"] }] },
+            { "id": "second", "url": "/", "needs": "first" }
+        ] }));
+        assert!(
+            workspace
+                .action_viewport_diagnostics(&cyclic, "fixture")
+                .unwrap_err()
+                .to_string()
+                .contains("Circular scenario dependency")
+        );
+        let many = document(json!({ "scenarios": (0..60).map(|index| json!({
+            "id": format!("page-{index}"), "url": "/", "actions": [{ "wait": 0, "viewportNames": ["missing"] }]
+        })).collect::<Vec<_>>() }));
+        assert_eq!(
+            workspace
+                .action_viewport_diagnostics(&many, "fixture")
+                .unwrap()
+                .len(),
+            super::super::validation::MAX_DIAGNOSTICS
+        );
     }
 
     #[test]

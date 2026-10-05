@@ -1179,12 +1179,28 @@ run reuses that run's threshold.
 
 Viewport and dependency lists retain free-form input and also offer checked
 choice menus. Viewports load asynchronously from the effective viewport file,
-including custom names and dimensions. Inherited or empty viewport lists mean
-all viewports, as in the CLI; the picker keeps at least one selected. Unknown
+including custom names and dimensions. Missing scenario selections inherit their
+configuration; an empty resolved selection means all configured viewports. The
+picker keeps at least one selected. Unknown
 existing values remain editable instead of being silently removed. Dependencies
 use IDs from the current unsaved suite and exclude the current scenario and
 ambiguous duplicate IDs. Missing or invalid explicit viewport files display a
 recoverable warning beside the field.
+
+Every action has an optional `viewportNames` list in Fields. Its choice menu and
+YAML/JSON Source value completion offer only the consuming scenario's effective
+viewport labels; the action never adds capture jobs. Unset, `null`, and empty
+filters apply to all those jobs and do not add fields to new action templates.
+Unknown or out-of-scope values stay in the draft with a diagnostic, including
+inherited `needs` actions. Source/Fields transitions and undo/redo preserve them;
+Save and Save As require correction. Contextual validation runs off the UI thread
+and discards results for older drafts or documents. The same CLI validator
+determines accepted names, rather than a separate desktop interpretation.
+
+Conditional `save` checkpoints appear only for their matching viewports; final
+captures still run when all actions skip. See [action viewport selection](create-action.md#viewport-selection)
+for the responsive-menu example, strict prerequisite rule, and the caveat for
+scoped `persist` writes consumed through another scenario's `state` or `restore`.
 
 Scenario fields include an action sequence with step icons and target summaries.
 Open a step directly, move it earlier/later, duplicate it, or remove it with

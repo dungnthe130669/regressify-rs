@@ -65,6 +65,191 @@ impl Drop for Site {
     }
 }
 
+#[tokio::test]
+#[ignore = "requires managed Chromium; run regressify install"]
+async fn responsive_hamburger_menu_mobile_only_click_and_save() -> Result<()> {
+    use crate::{
+        diagnostics::{
+            journal::{ArchiveState, JournalReader},
+            record::{Field, FieldValue, SafeIdentity},
+        },
+        test::capture,
+        types::ScreenshotType,
+    };
+    use clap::Parser;
+    use serde_json::{Value, json};
+    use std::{collections::BTreeMap, sync::Mutex};
+
+    if let Some(root) = std::env::var_os("REGRESSIFY_RESPONSIVE_VIEWPORT_FIXTURE") {
+        let arguments: Vec<std::ffi::OsString> = vec![
+            "regressify".into(),
+            "--root".into(),
+            root,
+            "--run-id".into(),
+            "responsive".into(),
+            "--async-capture-limit".into(),
+            "2".into(),
+            "--async-capture-ramp-ms".into(),
+            "0".into(),
+            "test".into(),
+            "--fetch-browser".into(),
+            "false".into(),
+            "--skip-compare".into(),
+        ];
+        return crate::application::execute(crate::cli::Cli::try_parse_from(arguments)?).await;
+    }
+    let observed = Arc::new(Mutex::new(BTreeMap::<String, Value>::new()));
+    let received = observed.clone();
+    let site = Site::new(move |request| {
+        let url = reqwest::Url::parse(&format!("http://fixture{}", request.url())).unwrap();
+        if url.path() == "/observed" {
+            let values = url.query_pairs().into_owned().collect::<BTreeMap<_, _>>();
+            received.lock().unwrap().insert(
+                values["viewport"].clone(),
+                serde_json::from_str(&values["state"]).unwrap(),
+            );
+            let _ = request.respond(Response::empty(204));
+            return;
+        }
+        let _ = request.respond(Response::from_string(r#"<!doctype html>
+<html><head><style>
+body { margin: 0; min-height: 100vh; background: rgb(200, 30, 30); }
+button { position: absolute; left: 24px; top: 24px; }
+#products-menu { top: 64px; } #target { top: 104px; }
+</style></head><body>
+<button id="products-menu">Products</button><button id="target" hidden>Widget</button>
+<script>
+const mobile = innerWidth < 600;
+const path = [];
+const products = document.getElementById('products-menu');
+const target = document.getElementById('target');
+products.hidden = mobile;
+if (mobile) {
+    const menu = document.createElement('button');
+    menu.id = 'menu-toggle';
+    menu.textContent = 'Menu';
+    menu.onclick = () => {
+        path.push('menu');
+        products.hidden = false;
+        document.body.style.background = 'rgb(40, 90, 200)';
+    };
+    document.body.appendChild(menu);
+}
+products.onclick = () => { path.push('products'); target.hidden = false; };
+target.onclick = async () => {
+    path.push('target');
+    const state = { path, menuExists: !!document.getElementById('menu-toggle') };
+    await fetch('/observed?viewport=' + (mobile ? 'mobile' : 'desktop') + '&state=' + encodeURIComponent(JSON.stringify(state)));
+    document.body.style.background = 'rgb(14, 160, 80)';
+};
+</script></body></html>"#).with_header(Header::from_bytes("Content-Type", "text/html").unwrap()));
+    })?;
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path();
+    std::fs::create_dir_all(root.join("visual_tests"))?;
+    std::fs::create_dir_all(root.join("common"))?;
+    std::fs::write(
+        root.join("common/_viewports.yaml"),
+        "- label: desktop\n  width: 960\n  height: 300\n- label: mobile\n  width: 390\n  height: 300\n",
+    )?;
+    std::fs::write(root.join("regressify.yaml"), "elementTimeout: 1500\n")?;
+    let suite = json!({ "scenarios": [{
+        "id": "products-submenu", "url": site.origin, "viewportNames": ["desktop", "mobile"],
+        "delay": 0, "noScrollTop": true, "selectors": ["viewport"],
+        "actions": [
+            { "click": "#menu-toggle", "viewportNames": ["mobile"] },
+            { "save": "menu-open", "viewportNames": ["mobile"] },
+            { "click": "#products-menu" },
+            { "click": "#target" }
+        ]
+    }] });
+    std::fs::write(
+        root.join("visual_tests/responsive.tests.json"),
+        serde_json::to_vec_pretty(&suite)?,
+    )?;
+    let output = std::process::Command::new(std::env::current_exe()?)
+        .args([
+            "--ignored",
+            "--exact",
+            "test::browser_tests::responsive_hamburger_menu_mobile_only_click_and_save",
+            "--nocapture",
+        ])
+        .env("REGRESSIFY_RESPONSIVE_VIEWPORT_FIXTURE", root)
+        .env_remove("REPLACEMENT_PROFILE")
+        .env_remove("REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE")
+        .env_remove("REGRESSIFY_DIAGNOSTIC_DISK_BUDGET_BYTES")
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        observed.lock().unwrap().get("desktop"),
+        Some(&json!({ "path": ["products", "target"], "menuExists": false }))
+    );
+    assert_eq!(
+        observed.lock().unwrap().get("mobile"),
+        Some(&json!({ "path": ["menu", "products", "target"], "menuExists": true }))
+    );
+    let output_dir = root.join(".regressify");
+    let run = output_dir.join("responsive/bitmaps_test/responsive");
+    let mut expected = Vec::new();
+    for (label, width) in [("desktop", 960), ("mobile", 390)] {
+        let checkpoint_key = capture::final_screenshot_order_key(
+            "products-submenu",
+            Some(label),
+            &ScreenshotType::Step("menu-open".into()),
+        );
+        let checkpoint = run.join(format!("{checkpoint_key}.png"));
+        if label == "mobile" {
+            expected.push(checkpoint_key);
+            let image = lodepng::decode32(std::fs::read(&checkpoint)?)?;
+            let pixel = image.buffer.first().unwrap();
+            assert_eq!((pixel.r, pixel.g, pixel.b), (40, 90, 200));
+            assert!(!capture::error_marker_path(&checkpoint).exists());
+        } else {
+            assert!(!checkpoint.exists());
+            assert!(!capture::error_marker_path(&checkpoint).exists());
+        }
+        let final_key = capture::final_screenshot_order_key(
+            "products-submenu",
+            Some(label),
+            &ScreenshotType::Viewport,
+        );
+        let final_image = run.join(format!("{final_key}.png"));
+        expected.push(final_key);
+        let image = lodepng::decode32(std::fs::read(&final_image)?)?;
+        assert_eq!((image.width, image.height), (width, 300));
+        let pixel = image.buffer.first().unwrap();
+        assert_eq!((pixel.r, pixel.g, pixel.b), (14, 160, 80), "{label}");
+        assert!(!capture::error_marker_path(&final_image).exists());
+        let log = capture::read_capture_log(&output_dir, &final_image).unwrap();
+        assert_eq!(log.state, ArchiveState::Complete);
+        let archive = log.archive.unwrap();
+        let reader = JournalReader::open(&output_dir, &archive.operation_id)?;
+        let menu_target = FieldValue::Identity(SafeIdentity::fingerprint("#menu-toggle"));
+        let mut menu_dispatched = false;
+        reader.visit(|record| {
+            menu_dispatched |= record.fields.get(&Field::Target) == Some(&menu_target);
+        })?;
+        assert_eq!(
+            menu_dispatched,
+            label == "mobile",
+            "{label}: unexpected menu dispatch"
+        );
+    }
+    let manifest: Value =
+        serde_json::from_slice(&std::fs::read(run.join(capture::REPORT_ORDER_FILE))?)?;
+    assert_eq!(manifest["captures"], json!(expected));
+    assert_eq!(
+        crate::compare::report_gen::validate_capture_run_inventory(&run)?.len(),
+        3
+    );
+    Ok(())
+}
+
 fn auth_site(
     expected: &'static str,
     credentials_seen: Arc<AtomicBool>,

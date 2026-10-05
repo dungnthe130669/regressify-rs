@@ -3,7 +3,7 @@ title: Create a Test Scenario
 description: Learn how to define Regressify test scenarios, set target URLs, add actions, and tune per-scenario options for reliable runs.
 guid: 620b9098-627b-4db5-bb0b-cd43b9949e35
 date: 2023-06-29T17:00:00+00:00
-updated: 2026-09-25T00:00:00+00:00
+updated: 2026-10-05T00:00:00+00:00
 draft: false
 hidden: false
 weight: 30000
@@ -17,6 +17,14 @@ extra:
 ---
 
 Each scenario describes one path through a page, from the first URL load to any clicks, waits, or overrides needed before the screenshot is captured.
+
+Scenario `viewportNames` resolves through the existing scenario, suite, workspace,
+and default settings to choose capture jobs. Individual actions may also declare
+`viewportNames`, restricting only that step within those jobs. Omitted, `null`,
+and empty action filters run everywhere; nonempty filters must name only effective
+scenario viewports, including when the action comes from `needs`. Final captures
+are unchanged. See [action viewport selection](create-action.md#viewport-selection)
+for the responsive-menu example, conditional saves, and shared-state caveat.
 
 The optional `logLevel` setting accepts `trace`, `debug`, `info`, `warn`, or
 `error`. It overrides suite/workspace diagnostic display settings, but CLI flags
@@ -54,23 +62,24 @@ Default value: `[]`.
 
 Provide the list of actions that the test browser should execute in sequence. Available options are:
 
-| Action  | Use for                                                  |
-| ------- | -------------------------------------------------------- |
-| check   | Check a radio or checkbox                                |
-| click   | Click an element                                         |
-| focus   | Focus an element                                         |
-| goto    | Navigate to a URL                                        |
-| hide    | Hide an element - set `visibility: hidden !important`    |
-| hover   | Hover an element                                         |
-| input   | Type text in an element or upload files                  |
-| persist | Save cookies and local storage for later scenarios       |
-| press   | Press a key (or key combination) on an element           |
-| remove  | Remove an element - set `display: none !important`       |
-| save    | Capture an intermediate screenshot                       |
-| scroll  | Scroll to an element                                     |
-| select  | Select an option inside a `select` element               |
-| uncheck | Uncheck a radio or checkbox                              |
-| wait    | Wait for X milliseconds or wait for an element to appear |
+| Action    | Use for                                                  |
+| --------- | -------------------------------------------------------- |
+| check     | Check a radio or checkbox                                |
+| click     | Click an element                                         |
+| focus     | Focus an element                                         |
+| goto      | Navigate to a URL                                        |
+| hide      | Hide an element - set `visibility: hidden !important`    |
+| hover     | Hover an element                                         |
+| input     | Type text in an element or upload files                  |
+| persist   | Save cookies and local storage for later scenarios       |
+| press     | Press a key (or key combination) on an element           |
+| remove    | Remove an element - set `display: none !important`       |
+| save      | Capture an intermediate screenshot                       |
+| scroll    | Scroll to an element                                     |
+| select    | Select an option inside a `select` element               |
+| switchTab | Select a new, previous, or original browser tab          |
+| uncheck   | Uncheck a radio or checkbox                              |
+| wait      | Wait for X milliseconds or wait for an element to appear |
 
 For more information, please refer to [Create an action][create-an-action].
 
@@ -124,14 +133,19 @@ actions:
   - wait: .popup
 ```
 
-Actions are executed in the order listed. If `clickSelector` is also set, it runs after the action list; prefer the explicit `click` action for new suites. `postInteractionWait` still applies after actions.
+Applicable actions execute in the order listed. An explicit `actions` list,
+including `[]`, takes precedence over legacy selector shortcuts.
+`postInteractionWait` still applies after actions.
 
 When a click opens a new tab, use `switchTab: new` before waiting for or capturing
 that destination. `_blank` links and JavaScript popups keep their normal browser
 behavior. Subsequent actions and screenshots use the selected tab; `previous`
 and `original` return to earlier tabs. See [tab actions](create-action.md).
 
-Legacy properties such as `clickSelectors`, `hoverSelector`, `hoverSelectors`, `keyPressSelector`, `keyPressSelectors`, and `scrollToSelector` are not implemented by the Rust CLI.
+When `actions` is omitted, legacy `clickSelector`/`clickSelectors`,
+`hoverSelector`/`hoverSelectors`, `keyPressSelector`/`keyPressSelectors`, and
+`scrollToSelector` are converted into unfiltered actions. Prefer explicit actions
+for new suites, especially when interactions differ by viewport.
 
 {% end %}
 

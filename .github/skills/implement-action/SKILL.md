@@ -16,6 +16,7 @@ description: 'Use when adding or fixing click, hover, check, uncheck, focus, inp
 ## Procedure and Invariants
 
 1. Add or update the type and dispatcher together. Preserve `camelCase`, unknown field rejection, and untagged variant precedence; test ambiguous action shapes.
+1. Every action has optional `viewportNames`; unset/null/empty means all effective scenario jobs. Gate at `ScenarioPage::exec` before tabs, hooks, diagnostics indices, frames, or dispatch. Reuse `action_applies_to_viewport` for execution, tab installation, and capture planning; never filter inside individual handlers. Legacy conversions remain unset.
 1. `switchTab` is dispatched by the scenario page owner before page-scoped actions. Keep waits, frames, saves, persistence, final captures, and Node hooks on the selected page. Update the desktop action template/menu and schema tests too.
 1. Reuse pre-action helpers for interactive actions: wait for existence, visibility, stable geometry across at least two observations, centered scrolling, unobscured targeting, and enabled controls. Preserve configured deadlines and poll bounds.
 1. Use CDP pointer movement/press/release for click and hover, and CDP key events with key/code/modifiers/virtual codes for press. JS event dispatch alone does not reproduce browser interaction or CSS hover.
@@ -34,6 +35,10 @@ cargo test --lib test::actionability::tests
 ```
 
 With managed Chromium, run `cargo test --lib test::tabs::tests -- --include-ignored` and `cargo test --lib test::test_scenario::tests::popup_actions_and_captures_follow_the_selected_tab -- --ignored --exact` for `_blank`/`noopener`, JavaScript and iframe popups, selection errors, and capture pixels.
+
+For action filters, explicitly run the ignored `skipped_viewport_actions_do_not_touch_documents_or_dispatch` and `tab_tracking_uses_only_applicable_own_and_inherited_actions` scenario tests. They use cached Chromium, both viewport labels, all action kinds, and closed documents. Debug skip messages are console/live-only, exclude action values, and must not increment executed-action indices.
+
+Run `cargo test --lib test::browser_tests::responsive_hamburger_menu_mobile_only_click_and_save -- --ignored --exact` for the responsive-menu contract. It verifies mobile-only DOM state, ordered shared interactions, capture pixels, filtered inventory, and absence of desktop menu dispatch in the job journal.
 
 Add a local-browser regression for changed event behavior: missing, delayed, hidden, moving, disabled, covered, nested-frame, quoted-selector, and success cases as relevant. Browser tests are ignored by default; inspect their `#[ignore]` prerequisites before explicitly running the selected test with `--ignored`.
 

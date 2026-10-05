@@ -45,6 +45,27 @@ impl TestAction {
             Self::Wait(action) => &action.frame,
         }
     }
+
+    pub(crate) fn viewport_names(&self) -> &Option<Vec<String>> {
+        match self {
+            Self::Check(action) => &action.viewport_names,
+            Self::Click(action) => &action.viewport_names,
+            Self::Focus(action) => &action.viewport_names,
+            Self::Goto(action) => &action.viewport_names,
+            Self::Hide(action) => &action.viewport_names,
+            Self::Hover(action) => &action.viewport_names,
+            Self::Input(action) => &action.viewport_names,
+            Self::Persist(action) => &action.viewport_names,
+            Self::Press(action) => &action.viewport_names,
+            Self::Remove(action) => &action.viewport_names,
+            Self::Save(action) => &action.viewport_names,
+            Self::Select(action) => &action.viewport_names,
+            Self::Scroll(action) => &action.viewport_names,
+            Self::SwitchTab(action) => &action.viewport_names,
+            Self::Uncheck(action) => &action.viewport_names,
+            Self::Wait(action) => &action.viewport_names,
+        }
+    }
 }
 
 /// Optional iframe CSS selector, or a list of selectors from outermost to innermost frame.
@@ -86,6 +107,10 @@ pub struct CheckAction {
     #[schemars(example = "#accept-terms")]
     pub check: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -96,6 +121,10 @@ pub struct ClickAction {
     #[schemars(example = "#submit")]
     pub click: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -106,6 +135,10 @@ pub struct FocusAction {
     #[schemars(example = "#email")]
     pub focus: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -116,6 +149,10 @@ pub struct GotoAction {
     #[schemars(example = "https://example.com")]
     pub goto: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -126,6 +163,10 @@ pub struct HideAction {
     #[schemars(example = ".timestamp")]
     pub hide: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -136,6 +177,10 @@ pub struct HoverAction {
     #[schemars(example = "#navigation-menu")]
     pub hover: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -146,6 +191,10 @@ pub struct RemoveAction {
     #[schemars(example = ".advertisement")]
     pub remove: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -165,6 +214,10 @@ pub struct InputAction {
     /// Open a file chooser by clicking the target, then supply file (default: false).
     pub use_file_chooser: Option<bool>,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -175,6 +228,10 @@ pub struct PersistAction {
     #[schemars(example = "signed-in")]
     pub persist: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -188,6 +245,10 @@ pub struct PressAction {
     #[schemars(example = &"Enter", example = &"Tab", example = "Ctrl+A", example = "Shift+Tab")]
     pub key: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -198,6 +259,10 @@ pub struct SaveAction {
     #[schemars(example = "after-login")]
     pub save: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -208,6 +273,10 @@ pub struct ScrollAction {
     #[schemars(example = "#footer")]
     pub scroll: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -223,6 +292,10 @@ pub struct SelectAction {
     #[schemars(example = &"Sweden")]
     pub label: Option<String>,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -233,6 +306,10 @@ pub struct UncheckAction {
     #[schemars(example = "#newsletter")]
     pub uncheck: String,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -244,6 +321,10 @@ pub struct SwitchTabAction {
     /// Optional URL or glob for a new tab. Waits for its navigation to match; * stays within one path segment and ** matches across segments. Only valid with switchTab: new.
     #[schemars(example = "**/quote")]
     pub url: Option<String>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -266,6 +347,10 @@ pub struct WaitAction {
     #[schemars(example = "**/dashboard")]
     pub url: Option<String>,
     pub frame: Option<Frame>,
+    /// Restrict this action to these scenario viewport labels (case-insensitive).
+    /// Omitted, null, or empty means all scenario viewports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub viewport_names: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -280,6 +365,104 @@ pub enum Wait {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn action_shapes() -> [serde_json::Value; 16] {
+        use serde_json::json;
+
+        [
+            json!({ "check": "#accept" }),
+            json!({ "click": "#submit" }),
+            json!({ "focus": "#email" }),
+            json!({ "goto": "https://example.com" }),
+            json!({ "hide": ".timestamp" }),
+            json!({ "hover": "#menu" }),
+            json!({ "input": "#email", "value": "test" }),
+            json!({ "persist": "signed-in" }),
+            json!({ "press": "#search", "key": "Enter" }),
+            json!({ "remove": ".advertisement" }),
+            json!({ "save": "after-login" }),
+            json!({ "select": "#country", "value": "se" }),
+            json!({ "scroll": "#footer" }),
+            json!({ "switchTab": "new", "url": "**/quote" }),
+            json!({ "uncheck": "#newsletter" }),
+            json!({ "wait": 100 }),
+        ]
+    }
+
+    #[test]
+    fn all_action_viewport_names_round_trip_yaml_and_json() {
+        use serde_json::{Value, json};
+
+        for shape in action_shapes() {
+            for filter in [
+                None,
+                Some(Value::Null),
+                Some(json!([])),
+                Some(json!(["Desktop", "mobile", "mobile"])),
+            ] {
+                let mut source = shape.clone();
+                let unfiltered: TestAction = serde_json::from_value(shape.clone()).unwrap();
+                let mut expected = serde_json::to_value(unfiltered).unwrap();
+                if let Some(filter) = &filter {
+                    source["viewportNames"] = filter.clone();
+                    if !filter.is_null() {
+                        expected["viewportNames"] = filter.clone();
+                    }
+                }
+                let expected_filter: Option<Vec<String>> =
+                    serde_json::from_value(filter.unwrap_or(Value::Null)).unwrap();
+                let yaml = serde_yaml::to_string(&source).unwrap();
+                for action in [
+                    serde_json::from_value::<TestAction>(source.clone()).unwrap(),
+                    serde_yaml::from_str::<TestAction>(&yaml).unwrap(),
+                ] {
+                    assert_eq!(action.viewport_names(), &expected_filter, "{source}");
+                    assert_eq!(serde_json::to_value(&action).unwrap(), expected, "{source}");
+                    let round_trip: TestAction =
+                        serde_yaml::from_str(&serde_yaml::to_string(&action).unwrap()).unwrap();
+                    assert_eq!(serde_json::to_value(round_trip).unwrap(), expected);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_action_viewport_names_reject_malformed_and_mixed_shapes() {
+        use serde_json::json;
+
+        for shape in action_shapes() {
+            for filter in [
+                json!("mobile"),
+                json!(12),
+                json!(false),
+                json!([12]),
+                json!([null]),
+                json!([false]),
+                json!({ "mobile": true }),
+            ] {
+                let mut source = shape.clone();
+                source["viewportNames"] = filter;
+                assert!(serde_json::from_value::<TestAction>(source.clone()).is_err());
+                let yaml = serde_yaml::to_string(&source).unwrap();
+                assert!(serde_yaml::from_str::<TestAction>(&yaml).is_err(), "{yaml}");
+            }
+            for property in [
+                "unknownProperty",
+                if shape.get("click").is_some() {
+                    "hide"
+                } else {
+                    "click"
+                },
+            ] {
+                let mut source = shape.clone();
+                source["viewportNames"] = json!(["mobile"]);
+                source[property] = json!("#target");
+                assert!(serde_json::from_value::<TestAction>(source.clone()).is_err());
+                let yaml = serde_yaml::to_string(&source).unwrap();
+                assert!(serde_yaml::from_str::<TestAction>(&yaml).is_err(), "{yaml}");
+            }
+        }
+    }
 
     #[test]
     fn switch_tab_actions_use_explicit_camel_case_targets() {

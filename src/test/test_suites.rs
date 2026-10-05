@@ -23,8 +23,8 @@ use crate::{
         browsers::prepare_browser,
         capture,
         test_scenario::{
-            ScenarioRequest, capture_progress_keys, collect_url_replacements,
-            scenario_capture_order_keys, scenario_capture_viewports,
+            ScenarioRequest, capture_progress_keys, collect_needs_scenarios,
+            collect_url_replacements, scenario_capture_order_keys, scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
@@ -892,7 +892,10 @@ fn validate_dependency_chain(
     Ok(())
 }
 
-fn validate_scenario_dependencies(input: &TestSuiteInput, suite: &TestSuite) -> Result<()> {
+pub(crate) fn validate_scenario_dependencies(
+    input: &TestSuiteInput,
+    suite: &TestSuite,
+) -> Result<()> {
     let mut id_map: HashMap<String, Vec<usize>> = HashMap::new();
     for (index, scenario) in suite.scenarios.iter().enumerate() {
         if let Some(id) = scenario.id.as_deref() {
@@ -1106,6 +1109,87 @@ fn validate_unique_capture_keys(
     Ok(())
 }
 
+#[derive(Debug)]
+pub(crate) struct ActionViewportNameError {
+    #[cfg(feature = "desktop")]
+    pub source_scenario_index: Option<usize>,
+    #[cfg(feature = "desktop")]
+    pub action_index: usize,
+    message: String,
+}
+
+impl std::fmt::Display for ActionViewportNameError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ActionViewportNameError {}
+
+pub(crate) fn validate_action_viewport_names(
+    suite_name: &str,
+    scenario: &TestScenario,
+    all_scenarios: &[TestScenario],
+    effective_viewports: &[config::viewports::ViewportDef],
+) -> Result<()> {
+    let available = effective_viewports
+        .iter()
+        .map(|viewport| viewport.label.as_str())
+        .collect::<Vec<_>>();
+    let sources = collect_needs_scenarios(scenario, all_scenarios, &mut Vec::new());
+    for source in sources.into_iter().chain(std::iter::once(scenario)) {
+        for (index, action) in source.actions.iter().flatten().enumerate() {
+            let Some(names) = action.viewport_names() else {
+                continue;
+            };
+            let invalid = names
+                .iter()
+                .filter(|name| {
+                    name.trim().is_empty()
+                        || !available
+                            .iter()
+                            .any(|label| name.eq_ignore_ascii_case(label))
+                })
+                .collect::<Vec<_>>();
+            if invalid.is_empty() {
+                continue;
+            }
+            let origin = if std::ptr::eq(source, scenario) {
+                format!("action #{}", index + 1)
+            } else {
+                format!(
+                    "prerequisite '{}' action #{}",
+                    scenario_identifier(source, "<unnamed>"),
+                    index + 1
+                )
+            };
+            let message = format!(
+                "Invalid viewportNames in test suite '{}' scenario '{}', {}: invalid name(s) {:?}. Available scenario viewport(s): {}",
+                suite_name,
+                scenario_identifier(scenario, "<unnamed>"),
+                origin,
+                invalid,
+                if available.is_empty() {
+                    "<unnamed browser default>".to_string()
+                } else {
+                    format!("{available:?}")
+                }
+            );
+            return Err(ActionViewportNameError {
+                #[cfg(feature = "desktop")]
+                source_scenario_index: all_scenarios
+                    .iter()
+                    .position(|candidate| std::ptr::eq(candidate, source)),
+                #[cfg(feature = "desktop")]
+                action_index: index,
+                message,
+            }
+            .into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_suite_capture_keys(
     workspace_config: &config::WorkspaceConfig,
     suites: &[(TestSuiteInput, Arc<TestSuite>)],
@@ -1114,6 +1198,11 @@ fn validate_suite_capture_keys(
         let mut capture_keys = Vec::new();
         for (index, scenario) in suite.scenarios.iter().enumerate() {
             let scenario_name = scenario_identifier(scenario, &format!("<scenario:{}>", index + 1));
+            let viewports = scenario_capture_viewports(workspace_config, suite, scenario)?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            validate_action_viewport_names(&input.name, scenario, &suite.scenarios, &viewports)?;
             for capture_key in
                 scenario_capture_order_keys(workspace_config, suite, scenario, &suite.scenarios)?
             {
@@ -1832,6 +1921,266 @@ mod tests {
             use_css_override: None,
             viewport_names: None,
             ..Default::default()
+        }
+    }
+
+    fn named_viewports(labels: &[&str]) -> Vec<config::viewports::ViewportDef> {
+        labels
+            .iter()
+            .map(|label| config::viewports::ViewportDef {
+                label: (*label).to_string(),
+                width: 800,
+                height: 600,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn viewport_save_names_allow_disjoint_branches_but_reject_overlaps() {
+        use serde_json::json;
+
+        let root = match std::env::var_os("REGRESSIFY_VIEWPORT_COLLISION_FIXTURE") {
+            Some(root) => PathBuf::from(root),
+            None => {
+                let workspace = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test::test_suites::tests::viewport_save_names_allow_disjoint_branches_but_reject_overlaps", "--nocapture"])
+                    .env("REGRESSIFY_VIEWPORT_COLLISION_FIXTURE", workspace.path())
+                    .output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        std::fs::create_dir_all(root.join("common")).unwrap();
+        std::fs::write(root.join("common/_viewports.yaml"), "- label: desktop\n  width: 1280\n  height: 720\n- label: mobile\n  width: 375\n  height: 667\n").unwrap();
+        let workspace = config::WorkspaceConfig::default();
+        for (first, second, valid) in [
+            (json!(["desktop"]), json!(["mobile"]), true),
+            (json!(["DESKTOP", "desktop"]), json!(["Mobile"]), true),
+            (json!(["desktop"]), json!(["desktop"]), false),
+            (json!(["desktop", "mobile"]), json!(["mobile"]), false),
+            (json!(null), json!(null), false),
+            (json!([]), json!(["mobile"]), false),
+            (json!(["desktop"]), json!(null), false),
+        ] {
+            let mut page = scenario("page", None);
+            page.actions = Some(
+                serde_json::from_value(json!([
+                    { "save": "after-login", "viewportNames": first },
+                    { "save": "After-Login", "viewportNames": second },
+                ]))
+                .unwrap(),
+            );
+            let parsed = [(input(), Arc::new(suite(vec![page])))];
+            let candidate = &parsed[0].1;
+            let result = validate_test_suite_config(&parsed[0].0, candidate)
+                .and_then(|()| validate_suite_capture_keys(&workspace, &parsed));
+            assert_eq!(result.is_ok(), valid, "{first} {second}: {result:?}");
+            if valid {
+                let keys = scenario_capture_order_keys(
+                    &workspace,
+                    candidate,
+                    &candidate.scenarios[0],
+                    &candidate.scenarios,
+                )
+                .unwrap();
+                assert_eq!(keys.len(), 4);
+                assert_eq!(
+                    keys.iter()
+                        .map(|key| key.to_ascii_lowercase())
+                        .collect::<HashSet<_>>()
+                        .len(),
+                    4
+                );
+            } else {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("duplicate filename")
+                );
+            }
+        }
+        let mut page = scenario("page", None);
+        page.actions = Some(
+            serde_json::from_value(json!([{ "save": "../outside", "viewportNames": ["mobile"] }]))
+                .unwrap(),
+        );
+        let invalid = suite(vec![page]);
+        assert!(
+            capture_progress_keys(&invalid.scenarios[0], &invalid.scenarios, Some("desktop"))
+                .is_ok()
+        );
+        assert!(
+            validate_test_suite_config(&input(), &invalid)
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid save name")
+        );
+
+        let mut base = scenario("base", None);
+        base.actions = Some(
+            serde_json::from_value(json!([{ "save": "after-login", "viewportNames": ["mobile"] }]))
+                .unwrap(),
+        );
+        let mut consumer = scenario("consumer", Some(Needs::String("base".into())));
+        consumer.actions = Some(
+            serde_json::from_value(
+                json!([{ "save": "after-login", "viewportNames": ["desktop"] }]),
+            )
+            .unwrap(),
+        );
+        let parsed = [(input(), Arc::new(suite(vec![base, consumer])))];
+        validate_test_suite_config(&parsed[0].0, &parsed[0].1).unwrap();
+        validate_suite_capture_keys(&workspace, &parsed).unwrap();
+    }
+
+    #[test]
+    fn action_viewport_names_validate_the_consuming_set_before_browser_startup() {
+        use serde_json::json;
+
+        for (filter, labels, valid) in [
+            (json!(null), vec!["desktop", "mobile"], true),
+            (json!([]), vec!["desktop", "mobile"], true),
+            (json!(["DESKTOP", "desktop"]), vec!["desktop"], true),
+            (
+                json!(["mobile", "desktop"]),
+                vec!["desktop", "mobile"],
+                true,
+            ),
+            (json!(["missing"]), vec!["desktop", "mobile"], false),
+            (json!([""]), vec!["desktop", "mobile"], false),
+            (json!([" \t"]), vec!["desktop", "mobile"], false),
+            (json!([" desktop"]), vec!["desktop", "mobile"], false),
+            (json!(["mobile"]), vec!["desktop"], false),
+            (json!(null), vec![], true),
+            (json!([]), vec![], true),
+            (json!(["desktop"]), vec![], false),
+        ] {
+            let mut consumer = scenario("consumer", None);
+            consumer.actions = Some(serde_json::from_value(json!([
+                { "wait": 0 },
+                { "input": "#private-selector", "value": "private-value", "viewportNames": filter }
+            ])).unwrap());
+            let viewports = named_viewports(&labels);
+            let result =
+                validate_action_viewport_names("viewport-fixture", &consumer, &[], &viewports);
+            if valid {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err().to_string();
+                for expected in [
+                    "viewport-fixture",
+                    "consumer",
+                    "action #2",
+                    "invalid name(s)",
+                    "Available scenario viewport(s)",
+                ] {
+                    assert!(error.contains(expected), "{error}");
+                }
+                assert!(!error.contains("private-value") && !error.contains("private-selector"));
+                if labels.is_empty() {
+                    assert!(error.contains("<unnamed browser default>"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn action_viewport_names_keep_nested_and_shared_prerequisite_origins() {
+        let mut base = scenario("base", None);
+        base.actions = Some(
+            serde_yaml::from_str("- wait: 0\n- click: '#mobile'\n  viewportNames: [mobile]\n")
+                .unwrap(),
+        );
+        let left = scenario("left", Some(Needs::String("base".into())));
+        let right = scenario("right", Some(Needs::String("base".into())));
+        let consumer = scenario(
+            "consumer",
+            Some(Needs::StringArray(vec!["left".into(), "right".into()])),
+        );
+        let suite = suite(vec![base, left, right, consumer]);
+        validate_scenario_dependencies(&input(), &suite).unwrap();
+        let consumer = &suite.scenarios[3];
+        let sources = collect_needs_scenarios(consumer, &suite.scenarios, &mut Vec::new());
+        assert_eq!(
+            sources
+                .iter()
+                .map(|source| source.id.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            ["base", "left", "right"]
+        );
+        let before = serde_json::to_value(&suite).unwrap();
+        let error = validate_action_viewport_names(
+            "viewport-fixture",
+            consumer,
+            &suite.scenarios,
+            &named_viewports(&["desktop"]),
+        )
+        .unwrap_err()
+        .to_string();
+        for expected in [
+            "viewport-fixture",
+            "consumer",
+            "prerequisite 'base' action #2",
+            "mobile",
+            "desktop",
+        ] {
+            assert!(error.contains(expected), "{error}");
+        }
+        validate_action_viewport_names(
+            "viewport-fixture",
+            consumer,
+            &suite.scenarios,
+            &named_viewports(&["desktop", "mobile"]),
+        )
+        .unwrap();
+        assert_eq!(serde_json::to_value(&suite).unwrap(), before);
+    }
+
+    #[test]
+    fn action_viewport_names_follow_the_existing_configuration_cascade() {
+        use serde_json::json;
+
+        let all = named_viewports(&["desktop", "mobile"]);
+        for (workspace_names, suite_names, scenario_names, valid) in [
+            (None, None, None, true),
+            (Some(vec!["desktop"]), None, None, false),
+            (Some(vec!["desktop"]), Some(vec!["mobile"]), None, true),
+            (
+                Some(vec!["mobile"]),
+                Some(vec!["desktop"]),
+                Some(vec!["mobile"]),
+                true,
+            ),
+            (Some(vec!["mobile"]), None, Some(vec!["desktop"]), false),
+            (Some(vec!["desktop"]), None, Some(vec![]), true),
+        ] {
+            let workspace: config::WorkspaceConfig =
+                serde_json::from_value(json!({ "viewportNames": workspace_names })).unwrap();
+            let mut suite = suite(vec![]);
+            suite.viewport_names = serde_json::from_value(json!(suite_names)).unwrap();
+            let mut consumer = scenario("consumer", None);
+            consumer.viewport_names = serde_json::from_value(json!(scenario_names)).unwrap();
+            consumer.actions = Some(
+                serde_json::from_value(json!([{ "wait": 0, "viewportNames": ["mobile"] }]))
+                    .unwrap(),
+            );
+            let resolved = config::resolve_config(&workspace, &suite, &consumer);
+            let effective =
+                config::viewports::resolve_viewports(resolved.viewport_names.as_deref(), &all)
+                    .unwrap();
+            assert_eq!(
+                validate_action_viewport_names("viewport-fixture", &consumer, &[], &effective)
+                    .is_ok(),
+                valid
+            );
         }
     }
 

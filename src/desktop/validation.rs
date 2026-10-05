@@ -10,7 +10,7 @@ use super::{
 };
 use crate::{config::WorkspaceConfig, config::viewports::ViewportDef, types::TestSuite};
 
-const MAX_DIAGNOSTICS: usize = 50;
+pub(crate) const MAX_DIAGNOSTICS: usize = 50;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diagnostic {
@@ -71,6 +71,39 @@ pub fn diagnostics(kind: DocumentKind, value: &Value) -> Result<Vec<Diagnostic>>
     check_integer_representation(value, &schema.root, &schema.root, "", &mut diagnostics, 0);
     diagnostics.truncate(MAX_DIAGNOSTICS);
     Ok(diagnostics)
+}
+
+pub(crate) fn action_viewport_diagnostics(
+    suite_name: &str,
+    suite: &TestSuite,
+    scenario_index: usize,
+    viewports: &[ViewportDef],
+) -> Vec<Diagnostic> {
+    let Some(scenario) = suite.scenarios.get(scenario_index) else {
+        return Vec::new();
+    };
+    match crate::test::validate_action_viewport_names(
+        suite_name,
+        scenario,
+        &suite.scenarios,
+        viewports,
+    ) {
+        Ok(()) => Vec::new(),
+        Err(error) => {
+            let pointer = match error.downcast_ref::<crate::test::ActionViewportNameError>() {
+                Some(source) => format!(
+                    "/scenarios/{}/actions/{}/viewportNames",
+                    source.source_scenario_index.unwrap_or(scenario_index),
+                    source.action_index,
+                ),
+                None => format!("/scenarios/{scenario_index}/actions"),
+            };
+            vec![Diagnostic {
+                pointer,
+                message: error.to_string(),
+            }]
+        }
+    }
 }
 
 fn check_integer_representation(
@@ -456,6 +489,138 @@ fn example(schema: &Value, root: &Value) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn action_viewport_names_diagnostics_share_preflight_errors() {
+        let suite: TestSuite = serde_json::from_value(json!({ "scenarios": [
+            { "id": "setup", "url": "/", "actions": [{ "click": "#target", "viewportNames": ["mobile"] }] },
+            { "id": "consumer", "url": "/", "needs": "setup" },
+        ] })).unwrap();
+        let desktop = ViewportDef {
+            label: "desktop".into(),
+            width: 1280,
+            height: 720,
+        };
+        let mobile = ViewportDef {
+            label: "mobile".into(),
+            width: 375,
+            height: 667,
+        };
+        let viewports = vec![desktop.clone()];
+        let error = crate::test::validate_action_viewport_names(
+            "fixture",
+            &suite.scenarios[1],
+            &suite.scenarios,
+            &viewports,
+        )
+        .unwrap_err();
+        let issues = action_viewport_diagnostics("fixture", &suite, 1, &viewports);
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].message, error.to_string());
+        assert_eq!(issues[0].pointer, "/scenarios/0/actions/0/viewportNames");
+        assert!(issues[0].message.contains("prerequisite 'setup' action #1"));
+        assert!(action_viewport_diagnostics("fixture", &suite, 1, &[desktop, mobile]).is_empty());
+    }
+
+    #[test]
+    fn generated_action_viewport_names_are_consistent_and_optional() {
+        let root = schema(DocumentKind::Suite).unwrap().unwrap();
+        let branches = root["$defs"]["TestAction"]["anyOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 16);
+        let expected = &root["$defs"]["ClickAction"]["properties"]["viewportNames"];
+        assert_eq!(expected["type"], json!(["array", "null"]));
+        assert_eq!(expected["items"]["type"], "string");
+        assert_eq!(
+            expected["description"],
+            "Restrict this action to these scenario viewport labels (case-insensitive).\nOmitted, null, or empty means all scenario viewports."
+        );
+        assert!(expected.get("default").is_none() || expected["default"].is_null());
+        for action in ACTIONS {
+            let definition = branches
+                .iter()
+                .map(|branch| resolve(branch, root))
+                .find(|branch| branch["properties"].get(*action).is_some())
+                .unwrap();
+            assert_eq!(
+                &definition["properties"]["viewportNames"], expected,
+                "{action}"
+            );
+            assert_eq!(definition["additionalProperties"], false, "{action}");
+            assert!(
+                !definition["required"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("viewportNames")),
+                "{action}"
+            );
+        }
+    }
+
+    #[test]
+    fn action_viewport_names_schema_feedback_handles_yaml_and_json() {
+        for (action, valid, mixed) in [
+            (json!({"click": "#target"}), true, false),
+            (
+                json!({"click": "#target", "viewportNames": null}),
+                true,
+                false,
+            ),
+            (
+                json!({"click": "#target", "viewportNames": []}),
+                true,
+                false,
+            ),
+            (
+                json!({"click": "#target", "viewportNames": ["desktop", "mobile"]}),
+                true,
+                false,
+            ),
+            (
+                json!({"switchTab": "new", "viewportNames": ["mobile"]}),
+                true,
+                false,
+            ),
+            (
+                json!({"click": "#target", "viewportNames": "mobile"}),
+                false,
+                false,
+            ),
+            (
+                json!({"click": "#target", "viewportNames": [1]}),
+                false,
+                false,
+            ),
+            (
+                json!({"click": "#target", "wait": 0, "viewportNames": ["mobile"]}),
+                false,
+                true,
+            ),
+        ] {
+            let value = json!({"scenarios": [{"url": "/", "actions": [action]}]});
+            let json = serde_json::to_string(&value).unwrap();
+            let yaml = serde_yaml::to_string(&value).unwrap();
+            for value in [
+                serde_json::from_str::<Value>(&json).unwrap(),
+                serde_yaml::from_str::<Value>(&yaml).unwrap(),
+            ] {
+                let issues = diagnostics(DocumentKind::Suite, &value).unwrap();
+                assert_eq!(issues.is_empty(), valid, "{value}: {issues:?}");
+                assert_eq!(serde_json::from_value::<TestSuite>(value).is_ok(), valid);
+                if !valid {
+                    assert_eq!(issues.len(), 1, "{issues:?}");
+                    if mixed {
+                        assert!(issues[0].message.contains("one action per list item"));
+                    } else {
+                        assert!(
+                            issues[0]
+                                .pointer
+                                .starts_with("/scenarios/0/actions/0/viewportNames")
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn pixel_match_threshold_diagnostics_cover_every_configuration_level() {

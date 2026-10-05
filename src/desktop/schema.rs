@@ -515,6 +515,17 @@ pub fn effective(
     ))?)
 }
 
+pub(crate) fn action_viewport_choices(
+    effective: &Value,
+    all: &[ViewportDef],
+) -> Result<Vec<ViewportDef>> {
+    if all.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: Option<Vec<String>> = serde_json::from_value(effective["viewportNames"].clone())?;
+    crate::config::viewports::resolve_viewports(names.as_deref(), all)
+}
+
 pub fn effective_key(key: &str) -> String {
     if matches!(
         key,

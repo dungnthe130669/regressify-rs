@@ -2,6 +2,24 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Action Viewport Selection (2026-10-05)
+
+- Implemented: all 16 actions accept `viewportNames`, with strict validation
+  against each consumer's effective viewports, shared execution/inventory gates,
+  filtered checkpoints, and desktop authoring that preserves invalid drafts.
+  Cached-Chromium regressions verify skipped side effects, real reference/test
+  manifests, scoped placeholders, and preserved historical baselines.
+- Accepted limitation: named `persist` output is shared across concurrent jobs;
+  narrowing its writers does not order another scenario's `state`/`restore` load
+  or guarantee freshness. No cross-scenario writer/reader analysis is performed.
+  See [action guidance](docs/create-action.md#viewport-selection). Revisit this
+  boundary if real incidents require static validation or scheduling changes.
+- Resolved during native verification: contextual action validation initially
+  duplicated Source syntax errors. A model regression and the unchanged Windows
+  schema smoke now pass; invalid draft preservation remains enforced. A final
+  regression also preserves the combined 50-issue limit when an existing semantic
+  issue precedes contextual viewport errors.
+
 ## Diagnostic Retention Follow-up (2026-10-02)
 
 - Resolved: command failures were retained at informational severity; non-capture

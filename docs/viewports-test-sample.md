@@ -1,9 +1,9 @@
 ---
 title: 'Sample: Viewport-Specific Testing'
 guid: 5fb24910-6e86-4eae-ba0c-28a8d8a239b3
-description: Use this sample to test viewport-specific behavior in Regressify, with separate scenarios for phone, tablet, and desktop states.
+description: Use shared scenarios and viewport-scoped actions to test responsive phone, tablet, and desktop behavior in Regressify.
 date: 2023-08-08T17:00:00+00:00
-updated: 2026-04-17T17:00:00+00:00
+updated: 2026-10-05T00:00:00+00:00
 draft: false
 hidden: false
 weight: 84000
@@ -41,7 +41,31 @@ Responsive interfaces rarely behave like one page in three jackets. This sample 
 
 ## Use case
 
-Frequently, certain sections of the website exhibit variations across mobile, tablet, and desktop interfaces. For instance, the Header block may be entirely visible on desktop, whereas on mobile, it remains hidden until the user interacts with the ![Hamburger][hamburger] icon. When assessing the functionality of such a Header, distinct test scenarios tailored to each viewport are essential.
+Frequently, certain sections of the website exhibit variations across mobile, tablet, and desktop interfaces. For instance, the Header block may be entirely visible on desktop, whereas on mobile, it remains hidden until the user interacts with the ![Hamburger][hamburger] icon. Scope that interaction with action-level `viewportNames` to share the rest of the scenario. Separate scenarios remain useful when the expected end states differ.
+
+## Shared Responsive Actions
+
+With `phone`, `tablet`, and `desktop` defined in `common/_viewports.yaml`, one
+scenario can open the menu only on the phone before all jobs toggle the theme:
+
+```yaml
+scenarios:
+  - id: toggle-theme
+    url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
+    viewportNames: [phone, tablet, desktop]
+    actions:
+      - click: '#menu-btn'
+        viewportNames: [phone]
+      - click: '#theme-toggle'
+      - save: phone-menu
+        viewportNames: [phone]
+```
+
+Only the phone job expects `phone-menu`; every job still takes its final capture.
+Unset, `null`, and `[]` action filters mean all selected viewports. Names must
+belong to the scenario's effective selection, including inherited `needs` actions.
+See [action viewport selection](create-action.md#viewport-selection) for validation,
+disjoint save names, and the persist/state limitation.
 
 ## Test case
 
@@ -87,7 +111,7 @@ To create the test suite, follow these steps:
 
      # The page under test in below test case should have light theme
      - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
-      label: Click theme toggle a second time on tablet and desktop
+        label: Click theme toggle a second time on tablet and desktop
        viewportNames:
          - tablet
          - desktop
@@ -112,7 +136,7 @@ To create the test suite, follow these steps:
 
      # The page under test in below scenario should have light theme
      - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
-      label: Click theme toggle a second time on mobile
+        label: Click theme toggle a second time on mobile
        viewportNames:
          - phone
        actions:
@@ -139,19 +163,29 @@ Try removing the `viewportNames` property from some of the scenarios and compare
 
 The `phone`, `tablet`, and `desktop` labels used in the test suite are defined in the **common/_viewports.yaml** file. You can adjust their names, dimensions, and inclusion rules to match the project.
 
-If a scenario needs a viewport that is not predefined there, you can test it with the `viewports` property, as shown below:
+Add custom definitions to a viewport file. To use another file, set the suite's
+`viewportsPath` (or the workspace default); inline scenario `viewports` is not
+supported. For example, define `common/custom-viewports.yaml` as:
 
 ```yaml
+- label: special-desktop
+  width: 1366
+  height: 768
+- label: special-mobile
+  width: 600
+  height: 1200
+```
+
+Then select those labels in the suite:
+
+```yaml
+viewportsPath: common/custom-viewports.yaml
 scenarios:
   - url: https://tuyen.blog/optimizely-cms/testing/viewports-test-sample/
-    viewports:
-      - label: My special device # Use any name you find meaningful
-        width: 1366
-        height: 768
-
-      - label: My other special device
-        width: 600
-        height: 1200
+    viewportNames: [special-desktop, special-mobile]
+    actions:
+      - click: '#menu-btn'
+        viewportNames: [special-mobile]
 ```
 
 [moon]: /icons/moon.svg

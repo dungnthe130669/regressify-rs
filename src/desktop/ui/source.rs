@@ -280,12 +280,19 @@ struct SourceCompletions {
     catalog: Arc<CompletionCatalog>,
     kind: DocumentKind,
     format: Format,
+    workspace: Option<crate::desktop::workspace::Workspace>,
 }
 
 impl SourceCompletions {
     fn items(&self, text: &str, cursor: usize) -> Vec<CompletionItem> {
         self.catalog
-            .complete(self.kind, self.format, text, cursor)
+            .complete_with_workspace(
+                self.kind,
+                self.format,
+                text,
+                cursor,
+                self.workspace.as_ref(),
+            )
             .into_iter()
             .map(|item| CompletionItem {
                 label: item.label,
@@ -438,6 +445,27 @@ pub(super) fn inspect_document(document: &Document) -> (Value, Vec<lsp_types::Di
         }
     };
     (value.unwrap_or(Value::Null), issues)
+}
+
+pub(super) fn append_action_viewport_diagnostics(
+    document: &Document,
+    issues: &[crate::desktop::validation::Diagnostic],
+    diagnostics: &mut Vec<lsp_types::Diagnostic>,
+) {
+    if issues.is_empty() {
+        return;
+    }
+    let text = document.source();
+    let index = SourceIndex::new(document.format, text);
+    let remaining = validation::MAX_DIAGNOSTICS.saturating_sub(diagnostics.len());
+    for issue in issues.iter().take(remaining) {
+        let range = index.range(&issue.pointer);
+        diagnostics.push(source_diagnostic(
+            lsp_types::Range::new(position(text, range.start), position(text, range.end)),
+            issue.message.clone(),
+        ));
+    }
+    diagnostics.sort_by_key(|issue| (issue.range.start, issue.range.end));
 }
 
 fn source_diagnostic(range: lsp_types::Range, message: String) -> lsp_types::Diagnostic {
@@ -742,6 +770,7 @@ impl Workbench {
             catalog,
             kind: open.entry.kind,
             format: open.document.format,
+            workspace: self.session.workspace.clone(),
         });
         self.source.update(cx, |state, cx| {
             if state.language_name().as_ref() != language {
@@ -1289,6 +1318,31 @@ mod tests {
         document::{DocumentKind, Format},
     };
 
+    #[test]
+    fn action_viewport_diagnostics_preserve_the_combined_issue_bound() {
+        let document = crate::desktop::document::Document::new(
+            DocumentKind::Suite,
+            Format::Json,
+            serde_json::json!({"scenarios": [{"url": ""}]}).to_string(),
+        )
+        .unwrap();
+        let (_, mut diagnostics) = super::inspect_document(&document);
+        assert_eq!(diagnostics.len(), 1);
+        let original = diagnostics[0].message.clone();
+        let limit = crate::desktop::validation::MAX_DIAGNOSTICS;
+        let contextual = (0..limit)
+            .map(|_| crate::desktop::validation::Diagnostic {
+                pointer: "/scenarios/0/url".into(),
+                message: "Invalid viewportNames".into(),
+            })
+            .collect::<Vec<_>>();
+        super::append_action_viewport_diagnostics(&document, &contextual, &mut diagnostics);
+        assert_eq!(diagnostics.len(), limit);
+        assert!(diagnostics.iter().any(|issue| issue.message == original));
+        super::append_action_viewport_diagnostics(&document, &contextual, &mut diagnostics);
+        assert_eq!(diagnostics.len(), limit);
+    }
+
     fn edited_lines(
         text: &str,
         selection: std::ops::Range<usize>,
@@ -1468,6 +1522,7 @@ mod tests {
     #[test]
     fn compact_completion_documentation_keeps_the_example_and_full_explanation() {
         let provider = SourceCompletions {
+            workspace: None,
             catalog: Arc::new(CompletionCatalog::new().unwrap()),
             kind: DocumentKind::Suite,
             format: Format::Yaml,

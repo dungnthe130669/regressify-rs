@@ -434,6 +434,7 @@ mod tests {
                 let action = SwitchTabAction {
                     switch_tab: TabTarget::New,
                     url: Some(format!("**/quote?via={kind}")),
+                    viewport_names: None,
                 };
                 let (popup, _, first_visit) = tabs.switch(&browser, &action, &[]).await?;
                 ensure!(
@@ -461,6 +462,7 @@ mod tests {
                         &SwitchTabAction {
                             switch_tab: TabTarget::Previous,
                             url: None,
+                            viewport_names: None,
                         },
                         &[],
                     )
@@ -553,6 +555,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::New,
                         url: None,
+                        viewport_names: None,
                     },
                     &[],
                 )
@@ -576,6 +579,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::New,
                         url: Some("https://reference.invalid/quote?tab=first#ready".into()),
+                        viewport_names: None,
                     },
                     &replacements,
                 )
@@ -597,6 +601,7 @@ mod tests {
                 &crate::types::TestAction::Click(crate::types::ClickAction {
                     click: "#nested".into(),
                     frame: Some(crate::types::Frame::Single("#child-frame".into())),
+                    viewport_names: None,
                 }),
             )
             .await?;
@@ -606,6 +611,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::New,
                         url: Some(format!("{frame_origin}/nested")),
+                        viewport_names: None,
                     },
                     &[],
                 )
@@ -621,6 +627,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::Previous,
                         url: None,
+                        viewport_names: None,
                     },
                     &[],
                 )
@@ -635,6 +642,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::Original,
                         url: None,
+                        viewport_names: None,
                     },
                     &[],
                 )
@@ -649,6 +657,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::Previous,
                         url: None,
+                        viewport_names: None,
                     },
                     &[],
                 )
@@ -688,18 +697,22 @@ mod tests {
                 SwitchTabAction {
                     switch_tab: TabTarget::New,
                     url: None,
+                    viewport_names: None,
                 },
                 SwitchTabAction {
                     switch_tab: TabTarget::Previous,
                     url: None,
+                    viewport_names: None,
                 },
                 SwitchTabAction {
                     switch_tab: TabTarget::Original,
                     url: Some("**/quote".into()),
+                    viewport_names: None,
                 },
                 SwitchTabAction {
                     switch_tab: TabTarget::New,
                     url: Some("{".into()),
+                    viewport_names: None,
                 },
             ] {
                 ensure!(
@@ -718,6 +731,7 @@ mod tests {
                     &SwitchTabAction {
                         switch_tab: TabTarget::Original,
                         url: None,
+                        viewport_names: None,
                     },
                     &[],
                 )

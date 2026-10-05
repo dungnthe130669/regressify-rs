@@ -261,15 +261,11 @@ pub async fn exec_test_action(ctx: ActionExecutionContext<'_>, action: &TestActi
     .await
 }
 
-pub(crate) fn action_diagnostic_fields(
+pub(crate) fn action_diagnostic_identity(
     action: &TestAction,
-    index: u64,
-) -> Vec<(
-    crate::diagnostics::record::Field,
-    crate::diagnostics::record::FieldValue,
-)> {
-    use crate::diagnostics::record::*;
-    let (kind, target): (SafeValue, Option<&str>) = match action {
+) -> (crate::diagnostics::record::SafeValue, Option<&str>) {
+    use crate::diagnostics::record::SafeValue;
+    match action {
         TestAction::Check(action) => (SafeValue::Check, Some(&action.check)),
         TestAction::Click(action) => (SafeValue::Click, Some(&action.click)),
         TestAction::Focus(action) => (SafeValue::Focus, Some(&action.focus)),
@@ -292,7 +288,18 @@ pub(crate) fn action_diagnostic_fields(
                 Wait::Number(_) => None,
             },
         ),
-    };
+    }
+}
+
+pub(crate) fn action_diagnostic_fields(
+    action: &TestAction,
+    index: u64,
+) -> Vec<(
+    crate::diagnostics::record::Field,
+    crate::diagnostics::record::FieldValue,
+)> {
+    use crate::diagnostics::record::*;
+    let (kind, target) = action_diagnostic_identity(action);
     let depth = match action.frame() {
         Some(crate::types::Frame::Single(_)) => 1,
         Some(crate::types::Frame::Multiple(frames)) => frames.len(),
@@ -1084,6 +1091,7 @@ mod tests {
                     let action = TestAction::Save(SaveAction {
                         save: name.into(),
                         frame: None,
+                        viewport_names: None,
                     });
                     let start = std::time::Instant::now();
                     exec_test_action(context(), &action).await?;
@@ -1126,6 +1134,7 @@ mod tests {
                 let invalid = TestAction::Save(SaveAction {
                     save: "../invalid".into(),
                     frame: None,
+                    viewport_names: None,
                 });
                 let invalid_result = tokio::time::timeout(
                     Duration::from_millis(500),

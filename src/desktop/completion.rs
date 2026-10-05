@@ -164,6 +164,46 @@ impl SourceIndex {
     }
 }
 
+fn action_viewport_values(
+    workspace: &super::workspace::Workspace,
+    format: Format,
+    probe: &str,
+    marker: &str,
+) -> Result<Vec<crate::config::viewports::ViewportDef>> {
+    let mut value = format.parse(probe)?;
+    let mut selected = None;
+    if let Some(scenarios) = value["scenarios"].as_array_mut() {
+        for (index, scenario) in scenarios.iter_mut().enumerate() {
+            if let Some(actions) = scenario["actions"].as_array_mut() {
+                for action in actions {
+                    let filter = &action["viewportNames"];
+                    if filter.as_str() == Some(marker)
+                        || filter.as_array().is_some_and(|names| {
+                            names.iter().any(|name| name.as_str() == Some(marker))
+                        })
+                    {
+                        selected = Some(index);
+                    }
+                }
+            }
+            scenario
+                .as_object_mut()
+                .map(|scenario| scenario.remove("actions"));
+        }
+    }
+    let Some(index) = selected else {
+        return Ok(Vec::new());
+    };
+    let suite: crate::types::TestSuite = serde_json::from_value(value)?;
+    let config = crate::config::load_workspace_config(&workspace.root)?;
+    let resolved = crate::config::resolve_config(&config, &suite, &suite.scenarios[index]);
+    let all = workspace.viewport_choices(
+        std::path::Path::new(&resolved.viewports_path),
+        resolved.viewports_path_is_explicit,
+    )?;
+    schema::action_viewport_choices(&serde_json::to_value(resolved)?, &all)
+}
+
 pub struct CompletionCatalog {
     schemas: Vec<(DocumentKind, &'static Value)>,
 }
@@ -261,6 +301,17 @@ impl CompletionCatalog {
         source: &str,
         cursor: usize,
     ) -> Vec<Suggestion> {
+        self.complete_with_workspace(kind, format, source, cursor, None)
+    }
+
+    pub(crate) fn complete_with_workspace(
+        &self,
+        kind: DocumentKind,
+        format: Format,
+        source: &str,
+        cursor: usize,
+        workspace: Option<&super::workspace::Workspace>,
+    ) -> Vec<Suggestion> {
         if kind == DocumentKind::Data
             || source.len() > MAX_DOCUMENT_BYTES
             || !source.is_char_boundary(cursor)
@@ -275,17 +326,63 @@ impl CompletionCatalog {
         let end = source[cursor..]
             .find(|character: char| !character.is_ascii_alphanumeric() && character != '_')
             .map_or(source.len(), |offset| cursor + offset);
-        let prefix = source[start..cursor].to_ascii_lowercase();
+        let mut prefix = source[start..cursor].to_ascii_lowercase();
         let quoted = start
             .checked_sub(1)
             .and_then(|offset| source.as_bytes().get(offset))
             .copied()
             .filter(|quote| matches!(quote, b'\'' | b'"'));
-        let replacement = if let Some(quote) = quoted {
+        let mut replacement = if let Some(quote) = quoted {
             start - 1..end + usize::from(source.as_bytes().get(end) == Some(&quote))
         } else {
             start..end
         };
+        if kind == DocumentKind::Suite && workspace.is_some() {
+            let index = SourceIndex::new(format, source);
+            if let Some((_, range)) = index.ranges.iter().find(|(pointer, range)| {
+                let path = pointer.split('/').collect::<Vec<_>>();
+                matches!(
+                    path.as_slice(),
+                    ["", "scenarios", _, "actions", _, "viewportNames", _]
+                ) && range.start <= cursor
+                    && cursor <= range.end
+            }) {
+                let mut value_parser = Parser::new();
+                let language = match format {
+                    Format::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+                    Format::Json => tree_sitter_json::LANGUAGE.into(),
+                    Format::Text => return Vec::new(),
+                };
+                if value_parser.set_language(&language).is_ok()
+                    && let Some(tree) = value_parser.parse(source, None)
+                    && let Some(mut node) = tree
+                        .root_node()
+                        .descendant_for_byte_range(range.start, range.end)
+                {
+                    if node.kind() == "block_sequence_item"
+                        && let Some(value) = node.named_child(0)
+                    {
+                        node = value;
+                    }
+                    let range = node.byte_range();
+                    if range.start <= cursor && cursor <= range.end {
+                        let fragment = &source[range.start..cursor];
+                        let value = format.parse(fragment).or_else(|error| {
+                            match fragment.as_bytes().first() {
+                                Some(quote @ (b'\'' | b'"')) => {
+                                    format.parse(&format!("{fragment}{}", *quote as char))
+                                }
+                                _ => Err(error),
+                            }
+                        });
+                        if let Ok(Value::String(value)) = value {
+                            prefix = value.to_ascii_lowercase();
+                            replacement = range;
+                        }
+                    }
+                }
+            }
+        }
         let colon = source[replacement.end..]
             .trim_start_matches([' ', '\t'])
             .starts_with(':');
@@ -342,6 +439,14 @@ impl CompletionCatalog {
             else {
                 return Vec::new();
             };
+            let action_viewport = matches!(location.path.as_slice(),
+                [Segment::Property(scenarios), Segment::Item, Segment::Property(actions), Segment::Item, Segment::Property(field)]
+                | [Segment::Property(scenarios), Segment::Item, Segment::Property(actions), Segment::Item, Segment::Property(field), Segment::Item]
+                if scenarios == "scenarios" && actions == "actions" && field == "viewportNames"
+            );
+            if property && action_viewport {
+                continue;
+            }
             let nodes = nodes_at(root, &location.path, &location.properties, property);
             if property {
                 let mut fields = BTreeMap::new();
@@ -406,6 +511,27 @@ impl CompletionCatalog {
                 return suggestions
                     .into_iter()
                     .map(|(_, suggestion)| suggestion)
+                    .collect();
+            }
+            if action_viewport && let Some(workspace) = workspace {
+                let item = matches!(location.path.last(), Some(Segment::Item));
+                return action_viewport_values(workspace, format, &probe, &marker)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|viewport| viewport.label.to_ascii_lowercase().starts_with(&prefix))
+                    .map(|viewport| Suggestion {
+                        text: if item {
+                            serde_json::json!(viewport.label)
+                        } else {
+                            serde_json::json!([viewport.label])
+                        }
+                        .to_string(),
+                        label: viewport.label,
+                        detail: format!("{} x {}", viewport.width, viewport.height),
+                        description: "Effective scenario viewport".into(),
+                        replacement: replacement.clone(),
+                        property: false,
+                    })
                     .collect();
             }
             let mut suggestions = Vec::new();
@@ -666,6 +792,70 @@ mod tests {
                 .iter()
                 .any(|item| item.label == "frame" || item.label == "click")
         );
+    }
+
+    #[test]
+    fn action_viewport_names_complete_only_effective_labels_without_replacing_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(directory.path().join("common")).unwrap();
+        std::fs::write(directory.path().join("common/_viewports.yaml"), "- label: desktop\n  width: 1280\n  height: 720\n- label: mobile\n  width: 375\n  height: 667\n- label: tablet\n  width: 768\n  height: 1024\n- label: phone-wide\n  width: 500\n  height: 700\n- label: phone narrow\n  width: 300\n  height: 700\n").unwrap();
+        let workspace = super::super::workspace::Workspace::open(directory.path()).unwrap();
+        let catalog = CompletionCatalog::new().unwrap();
+        for (format, source, expected, token) in [
+            (
+                Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [mobile]\n  actions:\n  - click: '#toggle'\n    viewportNames: [\"mo|\"] # retained\n",
+                "mobile",
+                "\"mo\"",
+            ),
+            (
+                Format::Json,
+                "{\"scenarios\":[{\"url\":\"/\",\"viewportNames\":[\"mobile\"],\"actions\":[{\"click\":\"#toggle\",\"viewportNames\":[\"mo|\"]}]}]}",
+                "mobile",
+                "\"mo\"",
+            ),
+            (
+                Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [phone-wide]\n  actions:\n  - click: '#toggle'\n    viewportNames: [\"phone-w|\"] # retained\n",
+                "phone-wide",
+                "\"phone-w\"",
+            ),
+            (
+                Format::Json,
+                "{\"scenarios\":[{\"url\":\"/\",\"viewportNames\":[\"phone narrow\"],\"actions\":[{\"click\":\"#toggle\",\"viewportNames\":[\"phone n|\"]}]}]}",
+                "phone narrow",
+                "\"phone n\"",
+            ),
+            (
+                Format::Yaml,
+                "scenarios:\n- url: /\n  viewportNames: [phone-wide]\n  actions:\n  - click: '#toggle'\n    viewportNames:\n    - phone-w| # retained\n",
+                "phone-wide",
+                "phone-w",
+            ),
+        ] {
+            let cursor = source.find('|').unwrap();
+            let source = source.replace('|', "");
+            let items = catalog.complete_with_workspace(
+                DocumentKind::Suite,
+                format,
+                &source,
+                cursor,
+                Some(&workspace),
+            );
+            assert_eq!(items.len(), 1, "{items:?}");
+            assert_eq!(items[0].label, expected);
+            assert_eq!(&source[items[0].replacement.clone()], token);
+            let mut edited = source.clone();
+            edited.replace_range(items[0].replacement.clone(), &items[0].text);
+            assert_eq!(
+                format.parse(&edited).unwrap()["scenarios"][0]["actions"][0]["viewportNames"],
+                serde_json::json!([expected])
+            );
+            assert!(edited.contains("#toggle"));
+            if format == Format::Yaml {
+                assert!(edited.ends_with("# retained\n"));
+            }
+        }
     }
 
     #[test]

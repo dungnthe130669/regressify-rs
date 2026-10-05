@@ -3,7 +3,7 @@ title: Change Log
 description: Track changes to the Optimizely CMS testing guides, actions, scenarios, and suite options so you can spot new capabilities quickly.
 guid: 1679e8d7-c710-4a1f-9640-224277efcd7e
 date: 2023-09-06T17:00:00+00:00
-updated: 2026-04-17T17:00:00+00:00
+updated: 2026-10-05T00:00:00+00:00
 draft: false
 hidden: false
 weight: 41000
@@ -16,6 +16,21 @@ extra:
 ---
 
 This page records notable updates to the testing docs, which is much faster than reading Git history with unnecessary archaeology.
+
+## 2026-10-05 (0.75.0, Unreleased)
+
+- Added: [Per-action viewport selection](create-action.md#viewport-selection)
+  for all 16 actions, including inherited prerequisites and filtered screenshot
+  checkpoints. The minimum supporting CLI and desktop version is **0.75.0**.
+- Runtime support and the derived JSON Schema are part of the same release.
+  Upgrade CLI, desktop, and generated authoring schemas together; older binaries
+  must not be assumed to ignore action-level `viewportNames` safely.
+- Downgrade compatibility: pre-feature builds with strict action parsing fail
+  before browser startup when reading this property. A 0.72.0 bundled engine
+  reports `data did not match any variant of untagged enum TestAction`, with
+  suite and source-location context. The concrete action's `deny_unknown_fields`
+  rejection is wrapped by the untagged enum, so a literal `unknown field` message
+  is not guaranteed. There is no automatic downgrade migration.
 
 ## 2025-01-13
 

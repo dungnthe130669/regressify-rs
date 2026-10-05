@@ -11,7 +11,7 @@ use crate::{
         capture::is_artifact_write_error,
         test_scenario::{ScenarioRequest, exec_test_scenario, make_log_prefix},
     },
-    types::{TestSuite, TestSuiteInput},
+    types::{TestScenario, TestSuite, TestSuiteInput},
 };
 
 /// Parse a test suite file (YAML or JSON) and assign IDs to scenarios.
@@ -59,17 +59,7 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
     }
 
     // Loop through scenarios and assign IDs if missing
-    for scenario in test_suite.scenarios.iter_mut() {
-        match (scenario.id.as_ref(), scenario.label.as_ref()) {
-            (None, Some(label)) => {
-                scenario.id = Some(slugify(label));
-            }
-            (None, None) => {
-                scenario.id = Some(get_asset_version(scenario.url.as_bytes(), 20));
-            }
-            (Some(_), _) => {}
-        }
-    }
+    assign_scenario_ids(&mut test_suite.scenarios);
 
     // Screenshot names must remain unique on case-insensitive filesystems.
     let mut scenario_ids = std::collections::HashMap::new();
@@ -104,6 +94,16 @@ pub fn parse_test_suite(visual_tests_dir: &Path, input: &TestSuiteInput) -> Resu
     }
 
     Ok(test_suite)
+}
+
+pub(crate) fn assign_scenario_ids(scenarios: &mut [TestScenario]) {
+    for scenario in scenarios {
+        match (scenario.id.as_ref(), scenario.label.as_ref()) {
+            (None, Some(label)) => scenario.id = Some(slugify(label)),
+            (None, None) => scenario.id = Some(get_asset_version(scenario.url.as_bytes(), 20)),
+            (Some(_), _) => {}
+        }
+    }
 }
 
 fn scenario_diagnostic_url(value: &str) -> String {

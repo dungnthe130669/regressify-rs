@@ -44,6 +44,7 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             file: None,
             use_file_chooser: None,
             frame: None,
+            viewport_names: None,
         }));
     }
     let selectors = |multiple: &Option<crate::types::Selectors>, single: &Option<String>| {
@@ -53,33 +54,41 @@ fn legacy_actions(scenario: &TestScenario) -> Vec<TestAction> {
             .unwrap_or_else(|| single.iter().cloned().collect())
     };
     for hover in selectors(&scenario.hover_selectors, &scenario.hover_selector) {
-        actions.push(TestAction::Hover(HoverAction { hover, frame: None }));
+        actions.push(TestAction::Hover(HoverAction {
+            hover,
+            frame: None,
+            viewport_names: None,
+        }));
     }
     for click in selectors(&scenario.click_selectors, &scenario.click_selector) {
-        actions.push(TestAction::Click(ClickAction { click, frame: None }));
+        actions.push(TestAction::Click(ClickAction {
+            click,
+            frame: None,
+            viewport_names: None,
+        }));
     }
     if let Some(scroll) = &scenario.scroll_to_selector {
         actions.push(TestAction::Scroll(ScrollAction {
             scroll: scroll.clone(),
             frame: None,
+            viewport_names: None,
         }));
     }
     actions
 }
 
-/// Collect all prerequisite actions from `needs` dependencies recursively.
-/// Walks the dependency graph depth-first and returns actions in execution order.
-fn collect_needs_actions<'a>(
+/// Retain prerequisite origins while preserving the runtime's depth-first replay order.
+pub(crate) fn collect_needs_scenarios<'a>(
     scenario: &'a TestScenario,
     all_scenarios: &'a [TestScenario],
     visited: &mut Vec<String>,
-) -> Vec<&'a TestAction> {
-    let mut actions = Vec::new();
+) -> Vec<&'a TestScenario> {
+    let mut sources = Vec::new();
 
     let needed_ids = match &scenario.needs {
         Some(Needs::String(id)) => vec![id.as_str()],
         Some(Needs::StringArray(ids)) => ids.iter().map(|s| s.as_str()).collect(),
-        None => return actions,
+        None => return sources,
     };
 
     for needed_id in needed_ids {
@@ -94,12 +103,12 @@ fn collect_needs_actions<'a>(
         }) {
             visited.push(needed_id.to_string());
             // Recursively collect dependencies of this dependency first
-            let dep_actions = collect_needs_actions(dep_scenario, all_scenarios, visited);
-            actions.extend(dep_actions);
-            // Then add this dependency's own actions
-            if let Some(ref dep_acts) = dep_scenario.actions {
-                actions.extend(dep_acts.iter());
-            }
+            sources.extend(collect_needs_scenarios(
+                dep_scenario,
+                all_scenarios,
+                visited,
+            ));
+            sources.push(dep_scenario);
         } else {
             crate::progress::scenario_log!(
                 "    {} Dependency scenario '{}' not found",
@@ -109,7 +118,18 @@ fn collect_needs_actions<'a>(
         }
     }
 
-    actions
+    sources
+}
+
+fn collect_needs_actions<'a>(
+    scenario: &'a TestScenario,
+    all_scenarios: &'a [TestScenario],
+    visited: &mut Vec<String>,
+) -> Vec<&'a TestAction> {
+    collect_needs_scenarios(scenario, all_scenarios, visited)
+        .into_iter()
+        .flat_map(|source| source.actions.iter().flatten())
+        .collect()
 }
 
 /// Build a yellow `[index of total]` log prefix, padding the index to the width
@@ -118,6 +138,38 @@ fn collect_needs_actions<'a>(
 pub(crate) fn make_log_prefix(index: usize, total: usize) -> String {
     let width = total.to_string().len();
     format!("[{index:>width$} of {total}]").yellow().to_string()
+}
+
+/// Shared by execution, tab setup, and capture inventory; do not fork selection semantics.
+pub(crate) fn action_applies_to_viewport(action: &TestAction, viewport: Option<&str>) -> bool {
+    match action.viewport_names().as_deref() {
+        Some(names) if !names.is_empty() => {
+            viewport.is_some_and(|label| names.iter().any(|name| name.eq_ignore_ascii_case(label)))
+        }
+        _ => true,
+    }
+}
+
+fn log_skipped_viewport_action(
+    action: &TestAction,
+    viewport: Option<&str>,
+    log_prefix: &str,
+    fallback_level: crate::diagnostics::record::Severity,
+) {
+    use crate::diagnostics::{record::Severity, runtime as diagnostics};
+    let level = diagnostics::current()
+        .and_then(|context| context.display_level())
+        .unwrap_or(fallback_level);
+    if level > Severity::Debug {
+        return;
+    }
+    let (kind, _) = super::test_action::action_diagnostic_identity(action);
+    crate::progress::scenario_log!(
+        "{} Skipping {:?} action for viewport {:?}: excluded by viewportNames",
+        log_prefix,
+        kind,
+        viewport.unwrap_or("<unnamed>"),
+    );
 }
 
 /// Resolve the viewports a scenario captures, as a flat list of capture targets.
@@ -151,24 +203,15 @@ pub(crate) fn scenario_capture_order_keys(
     let Some(scenario_id) = scenario.id.as_deref() else {
         return Ok(Vec::new());
     };
-    let resolved = config::resolve_config(workspace_config, test_suite, scenario);
-    let viewports = resolve_scenario_viewports(&resolved)?;
-    let screenshot_types = scenario_screenshot_types(scenario, all_scenarios)?;
-    if viewports.is_empty() {
-        Ok(screenshot_types
-            .iter()
-            .map(|screenshot_type| final_screenshot_order_key(scenario_id, None, screenshot_type))
-            .collect())
-    } else {
-        Ok(viewports
-            .iter()
-            .flat_map(|viewport| {
-                screenshot_types.iter().map(|screenshot_type| {
-                    final_screenshot_order_key(scenario_id, Some(&viewport.label), screenshot_type)
-                })
-            })
-            .collect())
+    let mut keys = Vec::new();
+    for viewport in scenario_capture_viewports(workspace_config, test_suite, scenario)? {
+        let label = viewport.as_ref().map(|viewport| viewport.label.as_str());
+        let screenshot_types = scenario_screenshot_types(scenario, all_scenarios, label)?;
+        keys.extend(screenshot_types.iter().map(|screenshot_type| {
+            final_screenshot_order_key(scenario_id, label, screenshot_type)
+        }));
     }
+    Ok(keys)
 }
 
 pub(crate) fn capture_progress_keys(
@@ -179,22 +222,29 @@ pub(crate) fn capture_progress_keys(
     let Some(scenario_id) = scenario.id.as_deref() else {
         return Ok(Vec::new());
     };
-    Ok(scenario_screenshot_types(scenario, all_scenarios)?
-        .iter()
-        .map(|screenshot_type| final_screenshot_order_key(scenario_id, viewport, screenshot_type))
-        .collect())
+    Ok(
+        scenario_screenshot_types(scenario, all_scenarios, viewport)?
+            .iter()
+            .map(|screenshot_type| {
+                final_screenshot_order_key(scenario_id, viewport, screenshot_type)
+            })
+            .collect(),
+    )
 }
 
 fn scenario_screenshot_types(
     scenario: &TestScenario,
     all_scenarios: &[TestScenario],
+    viewport: Option<&str>,
 ) -> Result<Vec<ScreenshotType>> {
     let mut visited = Vec::new();
     let prerequisite_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
-    let mut screenshot_types = saved_screenshot_types(prerequisite_actions);
-    screenshot_types.extend(saved_screenshot_types(
-        scenario.actions.as_deref().unwrap_or_default().iter(),
-    ));
+    let mut screenshot_types = saved_screenshot_types(
+        prerequisite_actions
+            .into_iter()
+            .chain(scenario.actions.iter().flatten())
+            .filter(|action| action_applies_to_viewport(action, viewport)),
+    );
     screenshot_types.extend(final_screenshot_types(scenario)?);
     validate_screenshot_types(&screenshot_types)?;
     Ok(screenshot_types)
@@ -241,6 +291,25 @@ struct ScenarioPage {
     tabs: Option<super::tabs::Tabs>,
 }
 
+async fn install_tab_tracker_for_actions<'a>(
+    page: &chromiumoxide::Page,
+    storage: Arc<super::storage_state::StorageState>,
+    resolved: &ResolvedConfig,
+    viewport: Option<&config::viewports::ViewportDef>,
+    mut actions: impl Iterator<Item = &'a TestAction>,
+) -> Result<Option<super::tabs::Tabs>> {
+    let label = viewport.map(|viewport| viewport.label.as_str());
+    if actions.any(|action| {
+        matches!(action, TestAction::SwitchTab(_)) && action_applies_to_viewport(action, label)
+    }) {
+        Ok(Some(
+            super::tabs::Tabs::install(page, storage, resolved, viewport).await?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
 impl ScenarioPage {
     async fn exec(
         &mut self,
@@ -249,6 +318,17 @@ impl ScenarioPage {
         hooks: &super::hooks::DocumentHooks,
         action: &TestAction,
     ) -> Result<()> {
+        // A skipped action must not touch even a closed document or tab tracker.
+        if !action_applies_to_viewport(action, ctx.viewport.map(|viewport| viewport.label.as_str()))
+        {
+            log_skipped_viewport_action(
+                action,
+                ctx.viewport.map(|viewport| viewport.label.as_str()),
+                ctx.log_prefix,
+                ctx.resolved.log_level,
+            );
+            return Ok(());
+        }
         // A popup can close itself. Handle switching before touching the old
         // document so returning to a surviving tab does not depend on that page.
         if let TestAction::SwitchTab(selection) = action {
@@ -428,7 +508,8 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
         .unwrap_or(&ctx.scenario.url);
     let timeout = std::time::Duration::from_millis(ctx.resolved.scenario_timeout_ms);
     let final_screenshot_types = final_screenshot_types(ctx.scenario)?;
-    let error_screenshot_types = scenario_screenshot_types(ctx.scenario, ctx.all_scenarios)?;
+    let error_screenshot_types =
+        scenario_screenshot_types(ctx.scenario, ctx.all_scenarios, viewport_label)?;
 
     match run_with_scenario_timeout(
         timeout,
@@ -541,16 +622,17 @@ async fn run_scenario_capture_inner(
     let mut visited = Vec::new();
     let needs_actions = collect_needs_actions(scenario, all_scenarios, &mut visited);
     let storage = Arc::new(storage);
-    let tabs = if needs_actions
-        .iter()
-        .copied()
-        .chain(scenario.actions.iter().flatten())
-        .any(|action| matches!(action, TestAction::SwitchTab(_)))
-    {
-        Some(super::tabs::Tabs::install(&page, storage.clone(), resolved, viewport).await?)
-    } else {
-        None
-    };
+    let tabs = install_tab_tracker_for_actions(
+        &page,
+        storage.clone(),
+        resolved,
+        viewport,
+        needs_actions
+            .iter()
+            .copied()
+            .chain(scenario.actions.iter().flatten()),
+    )
+    .await?;
     let mut active = ScenarioPage {
         page,
         runtime,
@@ -620,7 +702,10 @@ async fn run_scenario_capture_inner(
         crate::progress::scenario_log!(
             "{} Executing {} prerequisite actions from dependencies...",
             log_prefix,
-            needs_actions.len()
+            needs_actions
+                .iter()
+                .filter(|action| action_applies_to_viewport(action, viewport_label))
+                .count()
         );
         for action in &needs_actions {
             active.exec(browser, ctx, &hooks, action).await?;
@@ -629,7 +714,14 @@ async fn run_scenario_capture_inner(
 
     // Execute this scenario's own actions
     if let Some(actions) = &scenario.actions {
-        crate::progress::scenario_log!("{} Executing {} actions...", log_prefix, actions.len());
+        crate::progress::scenario_log!(
+            "{} Executing {} actions...",
+            log_prefix,
+            actions
+                .iter()
+                .filter(|action| action_applies_to_viewport(action, viewport_label))
+                .count()
+        );
         for action in actions {
             active.exec(browser, ctx, &hooks, action).await?;
         }
@@ -886,6 +978,144 @@ fn parse_same_site(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn skipped_action_debug_logs_are_redacted_and_do_not_count_as_execution() -> Result<()> {
+        use crate::diagnostics::{
+            record::{OperationKind, Outcome, Severity},
+            runtime as diagnostics,
+        };
+        use serde_json::json;
+
+        let Some(level) = std::env::var_os("REGRESSIFY_ACTION_SKIP_LOG_FIXTURE") else {
+            for level in ["debug", "info"] {
+                let output = std::process::Command::new(std::env::current_exe()?)
+                    .args(["--exact", "test::test_scenario::tests::skipped_action_debug_logs_are_redacted_and_do_not_count_as_execution", "--nocapture"])
+                    .env("REGRESSIFY_ACTION_SKIP_LOG_FIXTURE", level)
+                    .output()?;
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                anyhow::ensure!(output.status.success(), "{text}");
+                assert_eq!(
+                    text.contains("Skipping Input action for viewport \"desktop\""),
+                    level == "debug",
+                    "{text}"
+                );
+                for sensitive in [
+                    "super-secret-value",
+                    "selector-fixture",
+                    "private-file",
+                    "private-frame",
+                    "credential-fixture",
+                    "password-fixture",
+                    "state-fixture",
+                    "token-fixture",
+                    "capture-fixture",
+                ] {
+                    assert!(!text.contains(sensitive), "diagnostic leaked {sensitive}");
+                }
+            }
+            return Ok(());
+        };
+        let level: Severity = level.to_string_lossy().parse().unwrap();
+        let workspace = tempfile::tempdir()?;
+        let operation = diagnostics::Operation::start(
+            workspace.path(),
+            OperationKind::Capture,
+            None,
+            None,
+            None,
+        );
+        let context = operation.context();
+        context.set_display_level(level);
+        diagnostics::scope(Some(context), async {
+            assert_eq!(diagnostics::next_action_index(), 1);
+            for mut shape in [
+                json!({ "input": "#selector-fixture", "value": "super-secret-value", "file": "private-file", "frame": "#private-frame" }),
+                json!({ "goto": "https://credential-fixture:password-fixture@example.invalid/path" }),
+                json!({ "persist": "state-fixture" }),
+                json!({ "switchTab": "new", "url": "https://token-fixture.example.invalid" }),
+                json!({ "save": "capture-fixture" }),
+            ] {
+                shape["viewportNames"] = json!(["mobile"]);
+                let action: TestAction = serde_json::from_value(shape).unwrap();
+                assert!(!action_applies_to_viewport(&action, Some("desktop")));
+                log_skipped_viewport_action(&action, Some("desktop"), "[fixture]", Severity::Trace);
+            }
+            assert_eq!(diagnostics::next_action_index(), 2);
+        }).await;
+        operation.finish(Outcome::Success).await;
+        Ok(())
+    }
+
+    #[test]
+    fn action_viewport_applicability_matches_selection_semantics() {
+        use serde_json::json;
+
+        for (filter, expected) in [
+            (json!(null), [true, true, true]),
+            (json!([]), [true, true, true]),
+            (json!(["Desktop"]), [false, true, false]),
+            (json!(["mobile", "MOBILE", "mobile"]), [false, false, true]),
+            (json!(["desktop", "mobile"]), [false, true, true]),
+            (json!([" desktop"]), [false, false, false]),
+        ] {
+            let action: TestAction = serde_json::from_value(json!({
+                "wait": 0,
+                "viewportNames": filter
+            }))
+            .unwrap();
+            let execution: fn(&TestAction, Option<&str>) -> bool = action_applies_to_viewport;
+            let capture_planning: fn(&TestAction, Option<&str>) -> bool =
+                action_applies_to_viewport;
+            assert!(std::ptr::fn_addr_eq(execution, capture_planning));
+            for (viewport, expected) in [None, Some("desktop"), Some("mobile")]
+                .into_iter()
+                .zip(expected)
+            {
+                assert_eq!(
+                    execution(&action, viewport),
+                    expected,
+                    "{filter} {viewport:?}"
+                );
+                assert_eq!(
+                    capture_planning(&action, viewport),
+                    expected,
+                    "{filter} {viewport:?}"
+                );
+            }
+        }
+        let unset: TestAction = serde_yaml::from_str("wait: 0\n").unwrap();
+        assert!(action_applies_to_viewport(&unset, None));
+        assert!(action_applies_to_viewport(&unset, Some("desktop")));
+    }
+
+    #[test]
+    fn action_viewport_applicability_preserves_order_and_shared_input() {
+        let actions: Vec<TestAction> = serde_yaml::from_str("- wait: 1\n  viewportNames: [mobile, MOBILE]\n- wait: 2\n- wait: 3\n  viewportNames: [desktop]\n").unwrap();
+        let before = serde_json::to_value(&actions).unwrap();
+        std::thread::scope(|scope| {
+            for (viewport, expected) in [("desktop", vec![2, 3]), ("mobile", vec![1, 2])] {
+                let actions = &actions;
+                scope.spawn(move || {
+                    let selected = actions
+                        .iter()
+                        .filter(|action| action_applies_to_viewport(action, Some(viewport)))
+                        .map(|action| {
+                            serde_json::to_value(action).unwrap()["wait"]
+                                .as_u64()
+                                .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    assert_eq!(selected, expected);
+                });
+            }
+        });
+        assert_eq!(serde_json::to_value(actions).unwrap(), before);
+    }
+
     #[test]
     fn legacy_shortcuts_preserve_order_and_yield_to_actions() {
         let mut scenario: TestScenario = serde_yaml::from_str("url: https://example.com\nkeyPressSelector: {selector: '#input', keyPress: hello}\nhoverSelectors: ['#one', '#two']\nclickSelectors: ['#first', '#second']\nscrollToSelector: '#last'\n").unwrap();
@@ -895,6 +1125,11 @@ mod tests {
         assert!(matches!(actions[1], TestAction::Hover(_)));
         assert!(matches!(actions[3], TestAction::Click(_)));
         assert!(matches!(actions[5], TestAction::Scroll(_)));
+        assert!(
+            actions
+                .iter()
+                .all(|action| action.viewport_names().is_none())
+        );
         scenario.actions = Some(Vec::new());
         assert!(legacy_actions(&scenario).is_empty());
     }
@@ -936,6 +1171,436 @@ mod tests {
 
     fn scenario(id: &str, yaml: &str) -> TestScenario {
         serde_yaml::from_str(&format!("id: {id}\nurl: https://example.com/{id}\n{yaml}")).unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn filtered_reference_and_test_manifests_preserve_baselines() -> Result<()> {
+        use crate::test::capture;
+        use clap::Parser;
+        use serde_json::{Value, json};
+
+        if let Some(root) = std::env::var_os("REGRESSIFY_FILTERED_RUN_FIXTURE") {
+            let mode = std::env::var("REGRESSIFY_FILTERED_RUN_MODE")?;
+            let command = if mode == "test" { "test" } else { "ref" };
+            let arguments: Vec<std::ffi::OsString> = vec![
+                "regressify".into(),
+                "--root".into(),
+                root,
+                "--run-id".into(),
+                mode.clone().into(),
+                "--async-capture-limit".into(),
+                "2".into(),
+                "--async-capture-ramp-ms".into(),
+                "0".into(),
+                "--log-level".into(),
+                "debug".into(),
+                command.into(),
+                "--fetch-browser".into(),
+                "false".into(),
+            ];
+            return crate::application::execute(crate::cli::Cli::try_parse_from(arguments)?).await;
+        }
+        let site = super::super::browser_tests::Site::new(|request| {
+            let _ = request.respond(
+                tiny_http::Response::from_string(
+                    "<body style='margin:0;min-height:100vh;background:rgb(14,160,80)'></body>",
+                )
+                .with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap()),
+            );
+        })?;
+        let workspace = tempfile::tempdir()?;
+        let root = workspace.path();
+        std::fs::create_dir_all(root.join("visual_tests"))?;
+        std::fs::create_dir_all(root.join("common"))?;
+        std::fs::write(
+            root.join("common/_viewports.yaml"),
+            "- label: desktop\n  width: 640\n  height: 240\n- label: mobile\n  width: 320\n  height: 240\n",
+        )?;
+        let suite_path = root.join("visual_tests/fixture.tests.json");
+        let mut suite = json!({
+            "id": "fixture",
+            "scenarios": [
+                { "id": "filtered", "url": site.origin, "delay": 0, "noScrollTop": true,
+                  "selectors": ["viewport"], "actions": [
+                    { "save": "checkpoint", "viewportNames": ["desktop"] },
+                    { "save": "checkpoint", "viewportNames": ["mobile"] },
+                    { "save": "mobile-only", "viewportNames": ["mobile"] },
+                    { "save": "shared" }
+                  ] },
+                { "id": "peer", "url": site.origin, "delay": 0, "noScrollTop": true,
+                                    "selectors": ["viewport"] },
+                                { "id": "all-skipped", "url": site.origin, "delay": 0, "noScrollTop": true,
+                                    "selectors": ["viewport"], "actions": [
+                                        { "wait": 0, "viewportNames": ["mobile"] },
+                                        { "save": "mobile-only", "viewportNames": ["mobile"] }
+                                    ] }
+            ]
+        });
+        std::fs::write(&suite_path, serde_json::to_vec_pretty(&suite)?)?;
+        let suite_dir = root.join(".regressify/fixture");
+        let references = suite_dir.join("bitmaps_reference");
+        std::fs::create_dir_all(&references)?;
+        let historical_key = final_screenshot_order_key(
+            "filtered",
+            Some("desktop"),
+            &ScreenshotType::Step("mobile-only".into()),
+        );
+        let historical = references.join(format!("{historical_key}.png"));
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([7, 8, 9, 255])).save(&historical)?;
+        let historical_bytes = std::fs::read(&historical)?;
+        let run = |mode: &str| -> Result<()> {
+            let output = std::process::Command::new(std::env::current_exe()?)
+                .args(["--ignored", "--exact", "test::test_scenario::tests::filtered_reference_and_test_manifests_preserve_baselines", "--nocapture"])
+                .env("REGRESSIFY_FILTERED_RUN_FIXTURE", root)
+                .env("REGRESSIFY_FILTERED_RUN_MODE", mode)
+                .env_remove("REPLACEMENT_PROFILE")
+                .output()?;
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            anyhow::ensure!(output.status.success(), "{mode}: {text}");
+            anyhow::ensure!(
+                text.contains("Skipping Save action for viewport \"desktop\""),
+                "missing real-command skip diagnostic: {text}"
+            );
+            Ok(())
+        };
+        run("reference")?;
+        run("test")?;
+        let read_json = |run: &str, name: &str| -> Result<Value> {
+            Ok(serde_json::from_slice(&std::fs::read(
+                suite_dir.join("bitmaps_test").join(run).join(name),
+            )?)?)
+        };
+        let mut expected = Vec::new();
+        for (scenario_id, label, steps) in [
+            ("filtered", "desktop", vec!["checkpoint", "shared"]),
+            (
+                "filtered",
+                "mobile",
+                vec!["checkpoint", "mobile-only", "shared"],
+            ),
+            ("peer", "desktop", vec![]),
+            ("peer", "mobile", vec![]),
+            ("all-skipped", "desktop", vec![]),
+            ("all-skipped", "mobile", vec!["mobile-only"]),
+        ] {
+            for step in steps {
+                expected.push(final_screenshot_order_key(
+                    scenario_id,
+                    Some(label),
+                    &ScreenshotType::Step(step.into()),
+                ));
+            }
+            expected.push(final_screenshot_order_key(
+                scenario_id,
+                Some(label),
+                &ScreenshotType::Viewport,
+            ));
+        }
+        for name in [
+            capture::REPORT_ORDER_FILE,
+            capture::REPORT_THRESHOLDS_FILE,
+            capture::REPORT_PIXEL_THRESHOLDS_FILE,
+            capture::REPORT_URLS_FILE,
+        ] {
+            assert_eq!(
+                read_json("reference", name)?,
+                read_json("test", name)?,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            read_json("test", capture::REPORT_ORDER_FILE)?["captures"],
+            json!(expected)
+        );
+        for run in ["reference", "test"] {
+            let report = read_json(run, "report.json")?;
+            let tests = report["tests"].as_array().unwrap();
+            assert_eq!(tests.len(), expected.len());
+            assert!(tests.iter().all(|test| test["status"] == "pass"));
+            let order = tests
+                .iter()
+                .map(|test| {
+                    test["pair"]["fileName"]
+                        .as_str()
+                        .unwrap()
+                        .trim_end_matches(".png")
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(order, expected);
+            let run_dir = suite_dir.join("bitmaps_test").join(run);
+            assert_eq!(
+                crate::compare::report_gen::validate_capture_run_inventory(&run_dir)?.len(),
+                expected.len()
+            );
+            for key in &expected {
+                let path = run_dir.join(format!("{key}.png"));
+                let image = lodepng::decode32(std::fs::read(&path)?)?;
+                let pixel = image.buffer.first().unwrap();
+                assert_eq!((pixel.r, pixel.g, pixel.b), (14, 160, 80), "{key}");
+                assert!(!capture::error_marker_path(&path).exists());
+            }
+        }
+        assert_eq!(std::fs::read(&historical)?, historical_bytes);
+        let baseline_bytes = expected
+            .iter()
+            .map(|key| {
+                let path = references.join(format!("{key}.png"));
+                Ok((path.clone(), std::fs::read(path)?))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        suite["scenarios"][0]["actions"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                0,
+                json!({
+                    "wait": 100, "url": "**/never-reached", "viewportNames": ["mobile"]
+                }),
+            );
+        // A pre-action failure must still omit saves when every desktop action is excluded.
+        suite["scenarios"][2]["readySelector"] = json!("#never-ready");
+        suite["scenarios"][2]["readyTimeout"] = json!(100);
+        std::fs::write(&suite_path, serde_json::to_vec_pretty(&suite)?)?;
+        run("failed-reference")?;
+        assert_eq!(
+            read_json("failed-reference", capture::REPORT_ORDER_FILE)?["captures"],
+            json!(expected)
+        );
+        let failed_report = read_json("failed-reference", "report.json")?;
+        let tests = failed_report["tests"].as_array().unwrap();
+        assert_eq!(
+            tests.iter().filter(|test| test["status"] == "fail").count(),
+            7
+        );
+        assert_eq!(
+            tests.iter().filter(|test| test["status"] == "pass").count(),
+            5
+        );
+        for key in &expected {
+            let path = suite_dir
+                .join("bitmaps_test/failed-reference")
+                .join(format!("{key}.png"));
+            assert_eq!(
+                capture::error_marker_path(&path).exists(),
+                key.starts_with("filtered_mobile") || key.starts_with("all-skipped_")
+            );
+        }
+        let excluded_key = final_screenshot_order_key(
+            "all-skipped",
+            Some("desktop"),
+            &ScreenshotType::Step("mobile-only".into()),
+        );
+        for run in ["reference", "test", "failed-reference"] {
+            let excluded = suite_dir
+                .join("bitmaps_test")
+                .join(run)
+                .join(format!("{excluded_key}.png"));
+            assert!(!excluded.exists(), "excluded save returned in {run}");
+            assert!(!capture::error_marker_path(&excluded).exists());
+        }
+        for (path, bytes) in baseline_bytes {
+            assert_eq!(std::fs::read(&path)?, bytes, "{}", path.display());
+            assert!(!capture::error_marker_path(&path).exists());
+        }
+        assert_eq!(std::fs::read(historical)?, historical_bytes);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn tab_tracking_uses_only_applicable_own_and_inherited_actions() -> Result<()> {
+        let scenarios = [
+            scenario(
+                "base",
+                "actions:\n  - switchTab: new\n    viewportNames: [MOBILE, mobile]\n",
+            ),
+            scenario("nested", "needs: base\n"),
+            scenario("consumer", "needs: nested\n"),
+            scenario("unscoped", "actions:\n  - switchTab: new\n"),
+            scenario(
+                "empty",
+                "actions:\n  - switchTab: new\n    viewportNames: []\n",
+            ),
+            scenario(
+                "ordinary",
+                "actions:\n  - wait: 0\n    viewportNames: [mobile]\n",
+            ),
+        ];
+        let resolved = ResolvedConfig::default();
+        let (mut browser, handler, directory) =
+            super::super::browser_tests::launch_browser("viewport-tabs", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            for (source, expected) in [
+                (&scenarios[0], [false, true, false]),
+                (&scenarios[1], [false, true, false]),
+                (&scenarios[2], [false, true, false]),
+                (&scenarios[3], [true, true, true]),
+                (&scenarios[4], [true, true, true]),
+                (&scenarios[5], [false, false, false]),
+            ] {
+                for (label, expected) in [Some("desktop"), Some("mobile"), None]
+                    .into_iter()
+                    .zip(expected)
+                {
+                    let viewport = label.map(|label| config::viewports::ViewportDef {
+                        label: label.into(),
+                        width: 800,
+                        height: 600,
+                    });
+                    let page = browser.new_page("about:blank").await?;
+                    let storage = Arc::new(
+                        super::super::storage_state::StorageState::install(
+                            &browser,
+                            &page,
+                            None,
+                            "http://127.0.0.1",
+                        )
+                        .await?,
+                    );
+                    let inherited = collect_needs_actions(source, &scenarios, &mut Vec::new());
+                    let tabs = install_tab_tracker_for_actions(
+                        &page,
+                        storage,
+                        &resolved,
+                        viewport.as_ref(),
+                        inherited
+                            .iter()
+                            .copied()
+                            .chain(source.actions.iter().flatten()),
+                    )
+                    .await?;
+                    anyhow::ensure!(
+                        tabs.is_some() == expected,
+                        "{} {label:?}: expected tracker={expected}",
+                        source.id.as_deref().unwrap()
+                    );
+                    let before_navigation: bool = page
+                        .evaluate("location.href === 'about:blank'")
+                        .await?
+                        .into_value()?;
+                    anyhow::ensure!(before_navigation, "tab setup must precede navigation");
+                    if let Some(tabs) = tabs {
+                        tabs.check().await?;
+                    }
+                    page.close().await?;
+                }
+            }
+            Ok(())
+        }
+        .await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn skipped_viewport_actions_do_not_touch_documents_or_dispatch() -> Result<()> {
+        use serde_json::json;
+        use std::{
+            sync::atomic::{AtomicUsize, Ordering},
+            time::Duration,
+        };
+
+        let navigation_count = Arc::new(AtomicUsize::new(0));
+        let observed_navigation = navigation_count.clone();
+        let site = super::super::browser_tests::Site::new(move |request| {
+            if request.url() == "/excluded" {
+                observed_navigation.fetch_add(1, Ordering::SeqCst);
+            }
+            let _ = request.respond(tiny_http::Response::from_string(
+                "<body><button id='shared' onclick='window.clicks = (window.clicks || 0) + 1'>Continue</button></body>"
+            ).with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap()));
+        })?;
+        let workspace = tempfile::tempdir()?;
+        std::fs::create_dir(workspace.path().join("common"))?;
+        std::fs::write(
+            workspace.path().join("common/_on-ready.js"),
+            "window.hookCalls = (window.hookCalls || 0) + 1;",
+        )?;
+        let scenario = TestScenario::default();
+        let suite = TestSuite::default();
+        let resolved = ResolvedConfig {
+            element_timeout_ms: 250,
+            ..Default::default()
+        };
+        let hooks =
+            super::super::hooks::DocumentHooks::load(workspace.path(), &scenario, &resolved)?;
+        let (mut browser, handler, directory) =
+            super::super::browser_tests::launch_browser("viewport-gate", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            for (label, excluded) in [("desktop", "mobile"), ("mobile", "desktop")] {
+                let page = browser.new_page(site.origin.as_str()).await?;
+                let runtime = super::super::runtime::Runtime::new(&browser, &page).await?;
+                let storage = Arc::new(super::super::storage_state::StorageState::install(&browser, &page, None, &site.origin).await?);
+                let mut active = ScenarioPage { page, runtime, storage, tabs: None };
+                let viewport = config::viewports::ViewportDef { label: label.into(), width: 800, height: 600 };
+                let context = CaptureContext {
+                    is_reference: false,
+                    test_suite: &suite,
+                    scenario: &scenario,
+                    all_scenarios: &[],
+                    resolved: &resolved,
+                    url: &site.origin,
+                    url_replacements: &[],
+                    viewport: Some(&viewport),
+                    log_prefix: "viewport-gate",
+                };
+                let mut skipped = Vec::new();
+                for mut shape in [
+                    json!({ "switchTab": "new" }),
+                    json!({ "check": "#never" }),
+                    json!({ "click": "#never", "frame": ["#absent-frame", "#nested"] }),
+                    json!({ "focus": "#never" }),
+                    json!({ "goto": format!("{}/excluded", site.origin) }),
+                    json!({ "hide": "#shared" }),
+                    json!({ "hover": "#never" }),
+                    json!({ "input": "#never", "file": "missing-upload.txt", "useFileChooser": true }),
+                    json!({ "persist": "excluded-state" }),
+                    json!({ "press": "#never", "key": "Enter" }),
+                    json!({ "remove": "#shared" }),
+                    json!({ "save": "excluded-checkpoint" }),
+                    json!({ "select": "#never", "value": "missing" }),
+                    json!({ "scroll": "#never" }),
+                    json!({ "uncheck": "#never" }),
+                    json!({ "wait": 60000 }),
+                ] {
+                    shape["viewportNames"] = json!([excluded]);
+                    skipped.push(serde_json::from_value::<TestAction>(shape)?);
+                }
+                for action in &skipped {
+                    tokio::time::timeout(Duration::from_millis(200), active.exec(&browser, context, &hooks, action)).await??;
+                }
+                let untouched: bool = active.page.evaluate("window.hookCalls === undefined && window.clicks === undefined && !!document.querySelector('#shared')").await?.into_value()?;
+                anyhow::ensure!(untouched, "{label}: an excluded action touched the document");
+                let click: TestAction = serde_json::from_value(json!({ "click": "#shared", "viewportNames": [label] }))?;
+                active.exec(&browser, context, &hooks, &click).await?;
+                let clicked: bool = active.page.evaluate("window.hookCalls === 1 && window.clicks === 1").await?.into_value()?;
+                anyhow::ensure!(clicked, "{label}: matching action or document hook did not run");
+                let failing: TestAction = serde_json::from_value(json!({ "switchTab": "new", "viewportNames": [label] }))?;
+                let error = active.exec(&browser, context, &hooks, &failing).await.err().expect("a matching tab action must retain its failure");
+                anyhow::ensure!(error.to_string().contains("Tab tracking was not initialized"));
+                active.page.clone().close().await?;
+                for action in &skipped {
+                    tokio::time::timeout(Duration::from_millis(200), active.exec(&browser, context, &hooks, action)).await??;
+                }
+            }
+            anyhow::ensure!(navigation_count.load(Ordering::SeqCst) == 0, "excluded navigation ran");
+            anyhow::ensure!(std::fs::read_dir(workspace.path())?.count() == 1, "excluded action created output");
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
     }
 
     #[tokio::test]
@@ -1276,6 +1941,85 @@ mod tests {
     }
 
     #[test]
+    fn viewport_capture_inventories_match_order_and_progress() {
+        let root = match std::env::var_os("REGRESSIFY_ACTION_VIEWPORT_INVENTORY_FIXTURE") {
+            Some(root) => PathBuf::from(root),
+            None => {
+                let workspace = tempfile::tempdir().unwrap();
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args(["--exact", "test::test_scenario::tests::viewport_capture_inventories_match_order_and_progress", "--nocapture"])
+                    .env("REGRESSIFY_ACTION_VIEWPORT_INVENTORY_FIXTURE", workspace.path())
+                    .output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+        };
+        common::ROOT_DIR.set(root.clone()).unwrap();
+        std::fs::create_dir_all(root.join("common")).unwrap();
+        std::fs::write(root.join("common/_viewports.yaml"), "- label: desktop\n  width: 1280\n  height: 720\n- label: mobile\n  width: 375\n  height: 667\n").unwrap();
+        let suite = TestSuite {
+            scenarios: vec![
+                scenario(
+                    "base",
+                    "actions:\n  - save: base-mobile\n    viewportNames: [mobile]\n  - save: base-all\n",
+                ),
+                scenario("left", "needs: base\n"),
+                scenario("right", "needs: base\n"),
+                scenario(
+                    "consumer",
+                    "needs: [left, right]\nactions:\n  - save: shared\n    viewportNames: []\n  - save: mobile-only\n    viewportNames: [MOBILE, mobile]\nselectors: [viewport]\n",
+                ),
+            ],
+            ..Default::default()
+        };
+        let consumer = &suite.scenarios[3];
+        let before = serde_json::to_value(&suite).unwrap();
+        let actual_order = scenario_capture_order_keys(
+            &WorkspaceConfig::default(),
+            &suite,
+            consumer,
+            &suite.scenarios,
+        )
+        .unwrap();
+        let mut expected_order = Vec::new();
+        for (label, names) in [
+            ("desktop", vec!["base-all", "shared"]),
+            (
+                "mobile",
+                vec!["base-mobile", "base-all", "shared", "mobile-only"],
+            ),
+        ] {
+            let mut types = names
+                .into_iter()
+                .map(|name| ScreenshotType::Step(name.into()))
+                .collect::<Vec<_>>();
+            types.push(ScreenshotType::Viewport);
+            assert_eq!(
+                scenario_screenshot_types(consumer, &suite.scenarios, Some(label)).unwrap(),
+                types,
+                "{label}"
+            );
+            let keys = types
+                .iter()
+                .map(|kind| final_screenshot_order_key("consumer", Some(label), kind))
+                .collect::<Vec<_>>();
+            assert_eq!(
+                capture_progress_keys(consumer, &suite.scenarios, Some(label)).unwrap(),
+                keys,
+                "{label}"
+            );
+            expected_order.extend(keys);
+        }
+        assert_eq!(actual_order, expected_order);
+        assert_eq!(serde_json::to_value(&suite).unwrap(), before);
+    }
+
+    #[test]
     fn capture_order_includes_prerequisite_and_current_save_steps() {
         let setup = scenario("setup", "actions:\n  - save: prepared\n");
         let page = scenario(
@@ -1284,7 +2028,7 @@ mod tests {
         );
         let all = vec![setup, page];
 
-        let types = scenario_screenshot_types(&all[1], &all).unwrap();
+        let types = scenario_screenshot_types(&all[1], &all, None).unwrap();
 
         assert!(matches!(&types[0], ScreenshotType::Step(name) if name == "prepared"));
         assert!(matches!(&types[1], ScreenshotType::Step(name) if name == "ready"));
@@ -1297,7 +2041,7 @@ mod tests {
         let page = scenario("page", "needs: setup\nactions:\n  - save: current\n");
         let all = vec![setup, page];
 
-        let error = scenario_screenshot_types(&all[1], &all).unwrap_err();
+        let error = scenario_screenshot_types(&all[1], &all, None).unwrap_err();
 
         assert!(error.to_string().contains("duplicate filename"));
     }

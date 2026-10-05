@@ -1,7 +1,19 @@
 # Desktop Source Editing
 
-Verified: 2026-09-29
+Verified: 2026-10-05
 
+- [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
+  list picker and effective consumer labels. Workspace diagnostics call the
+  shared CLI validator, point to own/inherited action fields, and retain invalid
+  drafts. Background results are keyed to workspace, file, and exact source.
+- Source typing must schedule contextual validation as well as schema inspection;
+  the native `action_viewport_picker_filters_choices_and_preserves_invalid_source`
+  regression caught the missing callback. Syntax errors remain owned by Source:
+  duplicating them in contextual validation broke the Windows smoke's `1 issue`
+  assertion. The repaired `-SchemaFlows` smoke passed with preferences restored.
+- [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
+  spans for spaces/hyphens and forces YAML block-list probes into value mode.
+  The `action_viewport` desktop tests cover source preservation and these cases.
 - [Source commands](../../src/desktop/ui/source.rs) bind inside
   `RegressifySource > Input` and additionally check the source focus handle and
   busy/editable state. The Edit menu uses the same actions with `action_context`.

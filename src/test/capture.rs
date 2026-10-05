@@ -154,12 +154,20 @@ pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotT
     Ok(captures)
 }
 
-/// Validate all artifact names a scenario can write before browser launch.
-/// This prevents overwrites on case-insensitive filesystems and keeps generated
-/// diff files distinct from intermediate step screenshots.
+/// Validate portable names and unconditional collisions before viewport resolution.
+/// Suite preflight checks conditional collisions against each resolved capture inventory.
 pub fn validate_scenario_capture_names(scenario: &TestScenario) -> Result<()> {
-    let mut screenshot_types =
-        saved_screenshot_types(scenario.actions.as_deref().unwrap_or_default().iter());
+    let actions = scenario.actions.as_deref().unwrap_or_default();
+    for action in actions {
+        if let TestAction::Save(save) = action {
+            validate_screenshot_step_name(&save.save)?;
+        }
+    }
+    let mut screenshot_types = saved_screenshot_types(
+        actions
+            .iter()
+            .filter(|action| super::test_scenario::action_applies_to_viewport(action, None)),
+    );
     screenshot_types.extend(final_screenshot_types(scenario)?);
     validate_screenshot_types(&screenshot_types)
 }
@@ -1677,10 +1685,12 @@ mod tests {
             TestAction::Save(crate::types::SaveAction {
                 save: "progress".to_string(),
                 frame: None,
+                viewport_names: None,
             }),
             TestAction::Save(crate::types::SaveAction {
                 save: "Progress".to_string(),
                 frame: None,
+                viewport_names: None,
             }),
         ]);
         assert!(
@@ -1693,6 +1703,7 @@ mod tests {
         scenario.actions = Some(vec![TestAction::Save(crate::types::SaveAction {
             save: "result_diff".to_string(),
             frame: None,
+            viewport_names: None,
         })]);
         assert!(
             validate_scenario_capture_names(&scenario)

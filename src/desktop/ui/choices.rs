@@ -9,12 +9,36 @@ pub(super) struct ViewportChoices {
     values: Vec<crate::config::viewports::ViewportDef>,
     error: Option<String>,
     loading: bool,
+    validation_key: Option<(PathBuf, PathBuf, String)>,
+    validation_generation: u64,
+    validation_issues: Vec<crate::desktop::validation::Diagnostic>,
 }
 
 impl ViewportChoices {
     pub(super) fn invalidate(&mut self) {
         self.key = None;
         self.generation += 1;
+        self.validation_key = None;
+        self.validation_generation += 1;
+        self.validation_issues.clear();
+    }
+
+    pub(super) fn action_issues(
+        &self,
+        root: &std::path::Path,
+        open: &crate::desktop::workspace::OpenDocument,
+    ) -> &[crate::desktop::validation::Diagnostic] {
+        if self
+            .validation_key
+            .as_ref()
+            .is_some_and(|(workspace, path, source)| {
+                workspace == root && path == &open.entry.path && source == open.document.source()
+            })
+        {
+            &self.validation_issues
+        } else {
+            &[]
+        }
     }
 }
 
@@ -72,22 +96,91 @@ impl Workbench {
         .detach();
     }
 
+    pub(super) fn load_action_viewport_diagnostics(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (Some(workspace), Some(open)) =
+            (self.session.workspace.clone(), self.session.open.as_ref())
+        else {
+            self.viewport_choices.validation_key = None;
+            self.viewport_choices.validation_generation += 1;
+            self.viewport_choices.validation_issues.clear();
+            return;
+        };
+        if open.entry.kind != DocumentKind::Suite {
+            self.viewport_choices.validation_key = None;
+            self.viewport_choices.validation_generation += 1;
+            self.viewport_choices.validation_issues.clear();
+            return;
+        }
+        let key = (
+            workspace.root.clone(),
+            open.entry.path.clone(),
+            open.document.source().to_string(),
+        );
+        if self.viewport_choices.validation_key.as_ref() == Some(&key) {
+            return;
+        }
+        self.viewport_choices.validation_key = Some(key.clone());
+        self.viewport_choices.validation_generation += 1;
+        self.viewport_choices.validation_issues.clear();
+        let generation = self.viewport_choices.validation_generation;
+        let format = open.document.format;
+        let source = key.2.clone();
+        let suite_name = open
+            .entry
+            .suite_name()
+            .unwrap_or_else(|| open.entry.label());
+        let task = cx.background_executor().spawn(async move {
+            let document = Document::new(DocumentKind::Suite, format, source)?;
+            workspace.action_viewport_diagnostics(&document, &suite_name)
+        });
+        cx.spawn_in(window, async move |view, cx| {
+            let result = task.await;
+            let _ = view.update(cx, |this, cx| {
+                if this.viewport_choices.validation_generation != generation
+                    || this.viewport_choices.validation_key.as_ref() != Some(&key)
+                {
+                    return;
+                }
+                this.viewport_choices.validation_issues = result.unwrap_or_else(|error| {
+                    vec![crate::desktop::validation::Diagnostic {
+                        pointer: String::new(),
+                        message: format!("{error:#}"),
+                    }]
+                });
+                this.refresh_value();
+                this.update_source_diagnostics(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn list_choices(&self, key: &str) -> Vec<(String, String)> {
         match key {
-            "viewportNames" => self
-                .viewport_choices
-                .values
-                .iter()
-                .map(|viewport| {
-                    (
-                        viewport.label.clone(),
-                        format!(
-                            "{} ({} x {})",
-                            viewport.label, viewport.width, viewport.height
-                        ),
-                    )
-                })
-                .collect(),
+            "viewportNames" => {
+                let viewports = if matches!(self.session.selection, Selection::Action { .. }) {
+                    schema::action_viewport_choices(&self.effective, &self.viewport_choices.values)
+                        .unwrap_or_default()
+                } else {
+                    self.viewport_choices.values.clone()
+                };
+                viewports
+                    .into_iter()
+                    .map(|viewport| {
+                        (
+                            viewport.label.clone(),
+                            format!(
+                                "{} ({} x {})",
+                                viewport.label, viewport.width, viewport.height
+                            ),
+                        )
+                    })
+                    .collect()
+            }
             "needs" => schema::dependency_choices(&self.value, self.session.selection.scenario())
                 .into_iter()
                 .map(|scenario| {

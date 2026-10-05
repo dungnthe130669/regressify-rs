@@ -3,7 +3,7 @@ title: Create an action
 description: Reference for creating Optimizely CMS test actions such as click, input, select, wait, scroll, upload files, and frame handling.
 guid: ba348ca1-eb67-4c0f-8461-8f36979aea18
 date: 2023-07-03T17:00:00+00:00
-updated: 2026-09-13T00:00:00+00:00
+updated: 2026-10-05T00:00:00+00:00
 draft: false
 hidden: false
 weight: 40000
@@ -40,6 +40,73 @@ Desktop scenario logs record action targets and outcomes separately for each
 concurrent scenario/viewport job. Text supplied through `input.value` is omitted
 from action logs. Selectors, URLs, custom script messages, and errors may still
 include project-provided data, so review logs before sharing them.
+
+### Viewport Selection
+
+Every action type, including `save`, `persist`, and `switchTab`, accepts an
+optional `viewportNames` array. Scenario selection determines capture jobs;
+action selection only determines which steps run inside each existing job.
+It does not resize the browser or add viewports.
+
+- Omitted, `null`, or `[]` means every effective scenario viewport.
+- Nonempty lists match labels case-insensitively. Duplicate names never repeat
+  an action within one job. Remaining actions keep their original order.
+- Unknown names, blank entries, non-string items, and names excluded by the
+  consuming scenario are configuration errors before browser startup. A filter
+  may equal the whole scenario selection; it need not be strictly smaller.
+- With no named viewport file, capture uses the unnamed browser default. Only
+  omitted, `null`, or empty action filters are valid in that case.
+
+Assume the viewport file defines `desktop` and `mobile`:
+
+```yaml
+scenarios:
+  - id: products-submenu
+    url: https://example.com
+    viewportNames: [desktop, mobile]
+    selectors: [viewport]
+    actions:
+      - click: "#menu-toggle"
+        viewportNames: [mobile]
+      - click: "#products-menu"
+      - click: "#products-submenu a[href='/products/widget']"
+```
+
+Desktop skips the hamburger action; mobile opens it before both jobs follow the
+shared menu path. When the top-level selectors also differ, use adjacent
+desktop-only and mobile-only actions before the shared steps.
+
+A valid but unintended label can **silently exclude** an action from the
+intended nonmatching jobs, without an error. Matching jobs still execute it.
+Validation catches names outside the scenario set, not the author's intent;
+double-check the labels against the intended responsive path.
+
+Skipped actions do not resolve selectors or frames, wait, navigate, switch tabs,
+apply per-action document hooks, upload files, persist state, or write screenshots.
+Scenario setup and final captures still run, even when every action skips.
+`--log-level debug` shows the skipped action kind and viewport in console/live
+logs without its selector, input, URL, file, or state values. These skip messages
+do not count as executed actions or skipped scenarios.
+
+`needs` replays prerequisite actions with their filters against the **consumer's**
+effective viewport set, including nested prerequisites. Every named filter must
+belong to that set. A mobile-only consumer cannot inherit a desktop-only action;
+split the prerequisite into a common base and viewport-specific branches instead.
+Legacy selector shortcuts remain unfiltered when no explicit `actions` list is set.
+
+A filtered `save` contributes a checkpoint only on its selected viewports.
+Manifests, progress, comparison ordering, and failure placeholders use that same
+inventory. Identical save names on disjoint viewport branches are allowed;
+overlapping branches still fail collision validation. Save names must remain
+valid even when a particular job skips them. Historical baselines are not deleted.
+
+**Persist/state limitation:** a scoped `persist` writes only from its included
+viewports. Other scenarios' `state` or `restore` loads can observe older or
+viewport-dependent content because jobs run concurrently. Leave `persist`
+unscoped when another scenario consumes its name, and finish the producing run
+before a consuming run when freshness matters. Unscoped writes alone do not
+order jobs. There is no cross-scenario writer/reader analysis or new scheduling
+guarantee; `needs` replays actions within a job, not between jobs.
 
 {% spoiler() %}
 
