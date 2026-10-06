@@ -18,6 +18,7 @@ description: 'Use when changing desktop YAML/JSON or plain-text document edits, 
 1. Apply multi-field operations as one undo entry. Keep history byte/count limits, no-op edits, redo invalidation, and dirty-state behavior consistent.
 1. Source line commands use one native text replacement, not `set_value`, so undo retains the edit. Cover UTF-8 selections, CRLF, reversed ranges, exclusive column-zero ends, empty/final lines, and JSON comment rejection. Native change events are deferred; settle them before checking the session's document text.
 1. An asynchronous save acknowledges the exact bytes written, not the latest source that may have changed while I/O ran. Newer edits must remain dirty.
+1. External reload checks actual native Source and active Fields inputs before replacing a clean document; queued change events must not lose text. Ignore hidden Fields controls after Source edits/saves. Same-byte observations leave both histories intact; stale reads cannot replace a newer saved version.
 1. Guard document/workspace switches and destructive actions with existing session transitions; do not silently discard source when a derived view cannot parse it.
 1. `Format::Text` is raw UTF-8 source, not a YAML scalar or a structured data mapping. Preserve bytes and history; accept empty text, reject binary controls, and do not expose Fields, Effective, schema diagnostics, or YAML/JSON conversion through Save As.
 
@@ -27,6 +28,7 @@ description: 'Use when changing desktop YAML/JSON or plain-text document edits, 
 cargo test --features desktop --lib desktop::document::tests
 cargo test --features desktop --lib desktop::session::tests
 cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
+cargo test --features gui-tests --lib external_reload -- --test-threads=1
 ```
 
 Cover invalid drafts, Unicode/comments/line endings, plain selectors, anchors, empty collections, list bounds, undo/redo, all shipped suites, and late save results. Use native UI tests when changing tab/navigation behavior.

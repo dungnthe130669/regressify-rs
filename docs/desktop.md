@@ -66,13 +66,18 @@ window icons and rendered title-bar/taskbar pixels with:
 ## Windows Installation and Updates
 
 Windows x86_64 releases include `Regressify-Desktop-Setup-N.N.N.N-x64.exe`.
-Run the installer normally, without administrator elevation. It installs per user
-in `%LOCALAPPDATA%\Programs\Regressify Desktop`, creates desktop and Start-menu
+Run the installer normally, without administrator elevation. It installs
+`regressify-desktop.exe` and `regressify.exe` together in the per-user folder
+`%LOCALAPPDATA%\Programs\Regressify Desktop`, creates desktop and Start-menu
 shortcuts, and adds **Open with Regressify Desktop** to folder and folder-background
 context menus. On Windows 11, the command is under **Show more options**.
-Uninstall removes these shortcuts and context-menu entries. Workspaces and desktop
-preferences are preserved by updates and uninstall. The release executable links
-the MSVC runtime statically.
+Setup adds this shared install folder to the user's PATH, leaving the machine PATH
+unchanged. Open a new terminal after setup to run `regressify`; restart any existing
+terminal host to pick up the environment change. Upgrades do not duplicate the
+entry. Uninstall removes both executables, shortcuts, context-menu entries, and
+only the PATH entry owned by setup; pre-existing entries and later PATH edits are
+preserved. Workspaces and desktop preferences survive updates and uninstall.
+Both release executables link the MSVC runtime statically.
 
 Setup also prepares the pinned Chromium build in
 `%LOCALAPPDATA%\regressify\chromium` before launching the app. It checks the same
@@ -824,7 +829,9 @@ disabled rather than bypassing the current workspace or document conditions.
 
 The [GitHub Release workflow](../.github/workflows/tuyen-release.yml) has a `build`
 choice: `cli`, `desktop`, or `both` (default). The existing platform switches
-select targets; selecting none falls back to Linux GNU x86_64.
+select targets; selecting none falls back to Linux GNU x86_64. Selecting `desktop`
+also schedules a CLI build for each supported desktop target; `both` does not
+create duplicate CLI jobs. A `cli` selection still builds only the CLI.
 
 Every application/target pair is an independent parallel job. CLI and desktop
 jobs have separate caches and artifact names, and one failed job does not cancel
@@ -848,7 +855,10 @@ git tag v0.2.1
 git push origin v0.2.1
 ```
 
-Tag pushes build Windows desktop only. Tags must be `vN.N.N` or `vN.N.N.N`, with
+Tag pushes build Windows desktop and CLI in parallel. A separate Windows packaging
+job waits for the build jobs to succeed, downloads their exact executable artifacts,
+and creates one installer containing both. Missing or failed payload builds prevent
+packaging and publication. Tags must be `vN.N.N` or `vN.N.N.N`, with
 each numeric component between 0 and 9999. The tag supplies the desktop version,
 Windows executable metadata, installer name/version and Tuyen Drive version;
 three components normalize to four (for example `v0.2.1` becomes `0.2.1.0`).
@@ -862,7 +872,7 @@ token. Tagged Windows jobs do not require the legacy GitHub archive-upload
 credentials. The version must be higher than the latest published version.
 Releases are serialized without cancelling an active publish. CI installs Tuyen
 CLI with `tuyen-at-work/tuyen-cli-action@master` and checks that
-`tuyen drive upload-app` is available before building. The publish step passes the
+`tuyen drive upload-app` is available before packaging. The publish step passes the
 app, token, tagged version, installer file, and `<filename>=installer` role to
 that command. Tuyen CLI owns checksums, upload-size selection, and retries; there
 is no custom Python uploader. The setup action must provide a CLI release that
@@ -876,28 +886,37 @@ Tuyen Drive generates the manifest; it is never uploaded separately. Published
 versions cannot be overwritten, including with a different rebuild of the same
 tag. CI retains the installer as an Actions artifact before publishing.
 
-The installer is compiled with Inno Setup 6. Release CI verifies static-runtime
-dependencies and exercises installation, visible-update foreground requests,
-fully silent setup, active-process blocking, downgrade rejection, shortcuts,
-folder context menus and uninstall cleanup before upload. Windows may deny
+The installer is compiled with Inno Setup 6. Release CI requires both executable
+payloads, verifies both binaries' static-runtime dependencies, and runs isolated
+native PATH tests before packaging. Its installation smoke checks also exercise
+CLI lookup through the registered user PATH, upgrade idempotence, PATH cleanup,
+visible-update foreground requests, fully silent setup, active-process blocking,
+downgrade rejection, shortcuts, folder context menus and uninstall cleanup before
+upload. Windows may deny
 foreground activation on a noninteractive runner; the smoke test reports that
-as a warning while still requiring the activation request. Local packaging of a
-desktop build whose executable version matches `0.2.0.0`:
+as a warning while still requiring the activation request. Local packaging requires
+both executables in `-BinaryDirectory`, with the desktop executable's version
+matching `-Version`. For an isolated machine authorized for installation testing:
 
 ```powershell
+$env:REGRESSIFY_DESKTOP_VERSION = '0.2.0.0'
+cargo build --locked --no-default-features --features gui --bin regressify-desktop
+cargo build --locked --no-default-features --bin regressify
 ./ci/build-desktop-installer.ps1 -Version 0.2.0.0 -BinaryDirectory target/debug -Compiler 'C:/Tools/Inno Setup 6/ISCC.exe' -SmokeTest
 ./ci/desktop-smoke.ps1 -SkipBuild -UpdateFlows
 ```
 
 The installer smoke test refuses to run over an existing per-user installation,
-shortcut group or context-menu registration. It installs only under a generated
+shortcut group, context-menu registration or PATH ownership record. It installs only under a generated
 `target/installer-smoke-*` directory, suppresses relaunch, verifies both shortcuts
 and their Jump List identity, and checks the folder context-menu commands.
 Chromium requests in the smoke child processes use an unreachable loopback proxy:
 setup must reuse an existing cached build or log a non-fatal network failure,
 without downloading a browser. The fixture also checks `/SKIPCHROMIUM=1`.
-Uninstall must remove the fixture shortcuts, context menus and installation
-registration. The native UI smoke requires an unconfigured development build and
+Uninstall must remove both executables, the owned PATH entry, fixture shortcuts,
+context menus and installation registration, preserving the original user PATH
+value and type and leaving the machine PATH unchanged.
+The native UI smoke requires an unconfigured development build and
 temporarily backs up/restores preferences, like the other desktop smoke modes.
 
 The opt-in native Jump List test uses a unique application ID, temporary workspace
@@ -914,15 +933,21 @@ The tests execute all 192 application/target selections, stub Cargo and Tuyen CL
 to check the real workflow arguments and failure handling, and verify manifests
 against offline fixtures without publishing.
 
+On Windows, also set `ISCC_PATH` to an Inno Setup 6 compiler to enable
+`python ci/test-release.py InstallerTests`. These tests compile the production
+installer with synthetic payloads and execute the PATH logic against isolated
+temporary registry keys. The harness exits before installation and does not change
+the real user PATH or app registration. Both Windows packaging jobs run these
+checks with `ISCC_PATH` set before the full installation smoke test.
+
 ### Azure Pipelines
 
 Create an Azure DevOps Services pipeline using the existing YAML file
 [.ado/workflows/tuyen-release.yaml](../.ado/workflows/tuyen-release.yaml).
 It preserves the GitHub build choices, tag-only Windows installer publishing,
-manual tagged releases, Linux GNU fallback, and CLI-only Musl targets.
+manual tagged releases, companion CLI builds, Linux GNU fallback, and CLI-only Musl targets.
 The Azure version omits macOS ARM64 because Microsoft's hosted ARM64 preview is
-not generally available; macOS x86_64 uses `macos-15`. The GitHub workflow remains
-unchanged, including its ARM64 option.
+not generally available; macOS x86_64 uses `macos-15`. GitHub retains its ARM64 option.
 
 Authorize the pipeline under **Pipelines > Library > Pipeline permissions** for
 both existing variable groups, using these case-sensitive names:
@@ -933,7 +958,7 @@ both existing variable groups, using these case-sensitive names:
 
 Keep the credentials marked secret. The `Plan` stage has no Library groups;
 it runs the offline release tests and validates the complete source tag before
-emitting the version and dynamic matrix. The `Release` stage loads the groups,
+emitting the version, dynamic matrix and installer-selection flag. The `Release` stage loads the groups,
 maps secrets only to the steps that need them, and refuses pull-request runs.
 Tagged Windows desktop builds receive the app slug but not the upload token.
 
@@ -945,10 +970,12 @@ tag triggers: enable only one publisher for a release stream, because Tuyen Driv
 versions are immutable and a second upload of the same tag will fail.
 
 Windows uses Tuyen's native `https://cli.tuyen.blog/install.ps1` installer in the
-agent temporary directory and checks `drive upload-app` before building. Existing
+agent temporary directory and checks `drive upload-app` before packaging. Existing
 shell build scripts run through Git Bash on Windows, not WSL. The Rust installer
 step forwards its Musl cross-compilation environment settings to later Azure tasks.
-Inno Setup smoke tests and static-runtime checks remain mandatory, and the exact
+The `Installer` job depends on all parallel `Build` jobs and downloads the desktop
+and CLI payloads from the same pipeline run. Inno Setup smoke tests and both
+static-runtime checks remain mandatory, and the exact
 installer is retained as an Azure Pipeline Artifact before upload and verification.
 
 MSBuild discovery waits for `vswhere` to finish before selecting its first result.
@@ -956,7 +983,9 @@ Piping it directly to `Select-Object -First 1` can leave `$LASTEXITCODE` unset o
 stale and falsely report `MSBuild was not found`. A nonzero discovery exit is
 reported separately from an empty result.
 
-Azure release jobs allow 90 minutes. An Azure private project's free hosted-job
+Azure build jobs allow 90 minutes; the packaging job allows 30 minutes. Actual build
+parallelism depends on the account's available parallel-job capacity.
+An Azure private project's free hosted-job
 limit is 60 minutes; longer builds require paid hosted parallel-job capacity.
 The offline suite also exercises all 96 supported Azure application/target
 selections, PowerShell syntax, MSBuild discovery, environment forwarding, and both
@@ -1082,6 +1111,20 @@ Save As takes a workspace-relative destination and never replaces an existing
 file. Reload discards a draft after confirmation. Suite-file deletion is
 confirmed but cannot be undone through document history.
 
+The open file is checked for external changes about once per second in the
+background. Saving it in VS Code or another editor automatically reloads a clean
+document, including YAML, JSON, JavaScript, CSS, and other editable UTF-8 text.
+Reload retains the current editor tab and any selection that still exists;
+syntax-invalid configuration opens in Source with diagnostics so it can be
+repaired. Unchanged files do not reset the cursor or undo history.
+
+If Source or Fields contains unsaved edits, the desktop keeps them and shows a
+conflict banner. **Reload from disk** opens the existing unsaved-changes dialog;
+Cancel keeps the draft, while Discard loads the external version. Save As can
+preserve the draft separately. Deleted, unreadable, binary, or oversized files
+leave the current content intact with a warning; checking resumes automatically
+when the file becomes readable again. No external changes are written back to disk.
+
 The Rename suite dialog edits Filename and Display name independently. Display
 name is the optional suite-level `displayName` property, also available in
 Fields > General. Nonblank values label the desktop app and snapshot site;
@@ -1144,7 +1187,7 @@ entries are merged so separate windows retain each other's history. Appearance
 and editor defaults use the last saved settings; existing windows keep their
 current appearance until changed or reopened.
 
-Opening a folder automatically creates missing runtime starter files before
+Opening a folder automatically creates missing runtime and agent files before
 displaying the workspace. No Initialize workspace command or confirmation is
 required:
 
@@ -1155,12 +1198,24 @@ required:
 - `common/_on-ready.js`: a browser JavaScript placeholder.
 - `common/_replacement-profiles.yaml`: an empty default URL replacement profile.
 - `visual_tests/`: an empty suite folder, without adding a demo suite.
+- `.vscode/mcp.json`: the hosted `regressify-mcp` HTTP server configuration.
+- `AGENTS.md`: a managed `## Regressify CMP` section directing agents to use the MCP.
 
-Existing files are never overwritten, including unfinished or invalid drafts.
+Existing runtime defaults are never overwritten, including unfinished or invalid drafts.
 An existing `regressify.yml` or `common/_replacement-profiles.yml` is used without
 creating a higher-priority `.yaml` file. Reopening restores missing defaults.
+
+MCP setup adds a missing server or refreshes its URL while preserving other
+servers, settings, and JSONC comments. Agent setup appends a missing section or
+refreshes outdated instructions through the next top-level H2 or EOF, preserving
+surrounding content. Current MCP and agent configurations are not rewritten.
+See [workspace initialization](commands.md#workspace-initialization) for the
+shared preservation rules and Markdown freshness checks.
+
 Setup runs in the background after workspace ownership and unsaved-work checks;
 blocked or unsafe paths report an error and keep the current workspace open.
+Malformed MCP configuration or an agent draft that cannot safely accept a section
+also fails setup without replacing that file or switching the current workspace.
 
 Automatic setup does not export schema JSON, add `.vscode` settings or extensions,
 copy Node/Backstop helpers, or create reports and saved browser states. The desktop
@@ -1169,9 +1224,9 @@ their commands. Custom paths explicitly configured by the project must still
 point to real files.
 
 The explicit CLI `regressify init` command, also available as Initialize workspace
-in Runs, additionally creates an example suite and VS Code integration and copies
-missing legacy `data/` files. It shares the runtime defaults above, including
-`regressify.yaml`, and preserves existing files.
+in Runs, additionally creates an example suite, exported schemas, and VS Code
+settings/extension integration, and copies missing legacy `data/` files. It shares
+the runtime defaults and managed MCP/agent setup above.
 
 ## Editing
 
@@ -1395,8 +1450,9 @@ issue, wrapping to the first. Fixing the draft clears resolved diagnostics.
 `./ci/desktop-smoke.ps1 -SchemaFlows` verifies missing-origin guidance, credential-safe
 messages, issue jumps, Enter/Tab completion and Escape after Alt+Tab away and native
 reactivation, selected-line comments/indentation/duplication/movement/deletion,
-Edit menu focus, undo/redo, save guards, and compact/large light/dark layouts in a
-synthetic workspace on an unlocked Windows desktop.
+Edit menu focus, undo/redo, save guards, automatic external reload, conflict
+cancellation/confirmation, and compact/large light/dark layouts in a synthetic
+workspace on an unlocked Windows desktop.
 
 - Guided YAML edits retain existing comments and formatting using a concrete syntax tree. New nested values use valid YAML flow notation.
 - Generated edits are parsed and checked against the requested semantic change. Unsupported constructs leave the draft untouched; use Source instead. Multiple YAML documents are rejected.

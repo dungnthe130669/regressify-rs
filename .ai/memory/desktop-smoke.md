@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-09-30
+Verified: 2026-10-06
 
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
@@ -29,6 +29,11 @@ Verified: 2026-09-30
   after Alt+Tab to an owned temporary window and native return activation without
   clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;
   the source wrapper's `HasKeyboardFocus` stays false even while its input works.
+- Schema smoke also verifies external-save reload, draft preservation, and native
+  Cancel/Discard choices in compact/large light/dark windows. The painted unsaved
+  dialog title did not expose the expected standalone UIA name; wait for its
+  Discard/Cancel controls instead. The native flow passes with preferences and
+  clipboard restored; confirmation and final reloaded-source screenshots were inspected.
 - Exact line-command selections finish with `Shift+Home` after `Shift+Down`.
   The keyboard-driven [GUI regression](../../src/desktop/ui/tests.rs) reproduced
   a one-character drift into the third line without it. Keep the column-zero

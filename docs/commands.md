@@ -173,8 +173,8 @@ workflow and the desktop app. Existing `regressify.yaml` or `regressify.yml` fil
 are preserved; an existing `.yml` is not shadowed by a generated `.yaml`.
 Default replacement-profile generation also respects an existing `.yml` file.
 
-CLI `init` also creates or merges `.vscode/mcp.json` with the hosted Regressify
-authoring server:
+Both CLI `init` and desktop folder-open setup create or merge `.vscode/mcp.json`
+with the hosted Regressify authoring server:
 
 ```json
 {
@@ -192,16 +192,35 @@ bundled endpoint. Other server settings, including headers, other servers,
 top-level settings such as `inputs`, comments, and trailing commas are preserved.
 A matching URL leaves the file unchanged. The endpoint is defined by
 `REGRESSIFY_MCP_URL` in [initialization code](../src/init.rs), so rerunning `init`
-after a CLI endpoint change refreshes existing workspaces too.
+or reopening the workspace with an updated desktop build refreshes the endpoint.
 
 Malformed JSON-with-comments, non-object configuration/server entries, and files
 that cannot be read or updated fail initialization without replacing the MCP
 file. A read-only file is accepted when its endpoint is already current.
 
+Both entry points also maintain a dedicated `## Regressify CMP` section in the
+workspace root's `AGENTS.md`. They create the file when missing, append the section
+when absent, or replace outdated section content. The instructions direct agents to
+use `regressify-mcp`, starting with `get_authoring_guide` and consulting
+`get_schema` and `get_example` before authoring tests or configuration.
+
+The managed section includes everything through the next top-level H2 heading,
+or the end of the file. Other heading levels do not end that range. Headings in
+code examples, quotes, lists, or HTML comments are not section markers.
+`pulldown-cmark` compares parsed Markdown content for freshness, so equivalent
+heading syntax, list markers, and line endings do not trigger a rewrite. Endpoint
+or instruction changes do. Duplicate managed sections are consolidated into one.
+
+Text outside the managed sections is preserved byte-for-byte, including existing
+line endings. Current instructions are not rewritten, even in a read-only file.
+Unreadable or non-UTF-8 files, read-only files needing changes, and unfinished
+Markdown blocks that prevent appending a real H2 fail without replacing the file.
+
 The [desktop app](desktop.md#workspace-and-files) creates missing runtime defaults
-automatically when opening a folder. It does not automatically generate example
-suites, exported schemas, VS Code settings, or Node-specific helpers. CLI `init`
-retains its explicit editor setup and non-destructive legacy-file migration.
+and performs the same MCP and agent-guidance maintenance automatically when
+opening a folder. It does not automatically generate example suites, exported
+schemas, VS Code settings or extension recommendations, or Node-specific helpers.
+CLI `init` retains those editor assets and non-destructive legacy-file migration.
 
 ## MCP Authoring Worker
 

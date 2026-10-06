@@ -5930,6 +5930,346 @@ pub(super) fn editor(
     editor_at_size(cx, root, size(px(1280.), px(820.)))
 }
 
+#[gpui_kit::test]
+async fn external_reload_detects_disk_changes_without_a_refresh_command(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            this.source.update(cx, |state, cx| {
+                state.set_selected_range(4..4, cx);
+                state.focus(window, cx);
+            });
+        });
+    })
+    .unwrap();
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let external =
+        "# externally changed\nscenarios:\n  - label: Updated\n    url: https://example.org\n";
+    std::fs::write(&path, external).unwrap();
+
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx).source.read(cx).value().as_ref() == external
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let this = view.read(cx);
+        assert!(!this.unsaved());
+        assert_eq!(this.tab, 1);
+        assert_eq!(this.session.selection, Selection::Scenario(0));
+        assert_eq!(this.session.suites[0].scenarios[0].label, "Updated");
+        assert_eq!(this.source.read(cx).selected_range(), 4..4);
+        assert!(this.source.read(cx).focus_handle(cx).is_focused(window));
+        assert!(this.external_file_notice.is_none());
+    })
+    .unwrap();
+
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+    let revised = external.replace("Updated", "Revised");
+    std::fs::write(&path, &revised).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(modified))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx).source.read(cx).value().as_ref() == revised
+    })
+    .await;
+
+    let replacement = path.with_extension("tmp");
+    std::fs::write(&replacement, "scenarios: [\n").unwrap();
+    std::fs::rename(replacement, &path).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx).source.read(cx).value().as_ref() == "scenarios: [\n"
+    })
+    .await;
+    cx.update(|cx| {
+        let this = view.read(cx);
+        assert!(!this.unsaved());
+        assert!(this.diagnostic.is_some());
+        assert_eq!(this.session.selection, Selection::Root);
+        assert!(this.session.suites[0].error.is_some());
+    });
+}
+
+#[gpui_kit::test]
+async fn external_reload_after_source_save_ignores_hidden_fields(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let saved = "scenarios:\n  - label: Saved in Source\n    url: https://example.org\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input(saved, cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-s"
+            } else {
+                "ctrl-s"
+            },
+            cx,
+        );
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        !view.read(cx).busy
+            && !view.read(cx).session.dirty()
+            && view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .saved_source()
+                == saved
+    })
+    .await;
+    cx.update(|cx| assert!(!view.read(cx).external_reload_has_draft(cx)));
+    let external = saved.replace("Saved in Source", "Changed outside");
+    std::fs::write(
+        directory.path().join("visual_tests/ui-test.tests.yaml"),
+        &external,
+    )
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx).source.read(cx).value().as_ref() == external
+    })
+    .await;
+    cx.update(|cx| assert!(!view.read(cx).unsaved()));
+}
+
+#[gpui_kit::test]
+async fn external_reload_keeps_source_drafts_until_confirmed(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let draft = "# desktop draft\nscenarios: []\n";
+    let external = "# external draft\nscenarios: []\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            assert!(this.select_editor_tab(1, window, cx));
+            window.focus(&this.source.read(cx).focus_handle(cx), cx);
+        });
+        window.render_frame(cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input(draft, cx);
+        assert!(view.read(cx).external_reload_has_draft(cx));
+    })
+    .unwrap();
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    std::fs::write(&path, external).unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("external-file-notice")
+            .is_some_and(|notice| {
+                notice
+                    .label()
+                    .is_some_and(|label| label.contains("unsaved edits were kept"))
+            })
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let this = view.read(cx);
+        assert_eq!(this.source.read(cx).value().as_ref(), draft);
+        assert_eq!(this.session.open.as_ref().unwrap().document.source(), draft);
+        assert!(this.unsaved());
+        window.click("external-file-reload", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-cancel", cx);
+        assert_eq!(view.read(cx).source.read(cx).value().as_ref(), draft);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), external);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("guard-cancel").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("external-file-reload", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("guard-discard", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        !view.read(cx).busy && view.read(cx).source.read(cx).value().as_ref() == external
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!view.read(cx).unsaved());
+        assert!(window.try_find("external-file-notice").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn external_reload_keeps_pending_and_invalid_field_drafts(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let input = cx
+        .update_window(handle.into(), |_, window, cx| {
+            let input = view.update(cx, |this, cx| {
+                let binding = this
+                    .bindings
+                    .iter()
+                    .find(|binding| binding.field.key == "delay")
+                    .unwrap();
+                let super::Control::Input(input) = &binding.control else {
+                    panic!("Expected numeric input")
+                };
+                let input = input.clone();
+                window.focus(&input.read(cx).focus_handle(cx), cx);
+                input
+            });
+            window.render_frame(cx);
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
+            window.input("unfinished", cx);
+            assert!(!view.read(cx).session.dirty());
+            assert!(view.read(cx).external_reload_has_draft(cx));
+            input
+        })
+        .unwrap();
+    let external = "scenarios: []\n";
+    std::fs::write(
+        directory.path().join("visual_tests/ui-test.tests.yaml"),
+        external,
+    )
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+        window.render_frame(cx);
+        window.try_find("external-file-notice").is_some()
+    })
+    .await;
+    cx.update(|cx| {
+        let this = view.read(cx);
+        assert_eq!(input.read(cx).value().as_ref(), "unfinished");
+        assert!(this.field_errors.contains_key("delay"));
+        assert_ne!(
+            this.session.open.as_ref().unwrap().document.source(),
+            external
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn external_reload_handles_text_json_deletion_and_unreadable_recovery(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    for (relative, original, external) in [
+        (
+            "common/external.json",
+            "{\"before\": true}\n",
+            "{\"after\": true}\r\n",
+        ),
+        (
+            "common/_on-ready.js",
+            "// before\n",
+            "// \u{00e9} after\r\n",
+        ),
+    ] {
+        let path = directory.path().join(relative);
+        std::fs::write(&path, original).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.load_document(
+                    super::Entry {
+                        path: relative.into(),
+                        kind: super::DocumentKind::Data,
+                        editable: true,
+                    },
+                    window,
+                    cx,
+                );
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+            !view.read(cx).busy && view.read(cx).source.read(cx).value().as_ref() == original
+        })
+        .await;
+        std::fs::write(&path, external).unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+            view.read(cx).source.read(cx).value().as_ref() == external
+        })
+        .await;
+        std::fs::remove_file(&path).unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+            window.render_frame(cx);
+            window.try_find("external-file-notice").is_some()
+        })
+        .await;
+        let missing_message = cx
+            .update_window(handle.into(), |_, window, cx| {
+                assert_eq!(view.read(cx).source.read(cx).value().as_ref(), external);
+                assert!(!view.read(cx).unsaved());
+                window
+                    .find("external-file-notice")
+                    .label()
+                    .unwrap()
+                    .to_string()
+            })
+            .unwrap();
+        std::fs::write(&path, b"not\0text").unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+            window.render_frame(cx);
+            window
+                .try_find("external-file-notice")
+                .is_some_and(|notice| notice.label().is_some_and(|label| label != missing_message))
+        })
+        .await;
+        cx.update(|cx| assert_eq!(view.read(cx).source.read(cx).value().as_ref(), external));
+        std::fs::write(&path, original).unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(10), |window, cx| {
+            window.render_frame(cx);
+            view.read(cx).source.read(cx).value().as_ref() == original
+                && window.try_find("external-file-notice").is_none()
+        })
+        .await;
+        cx.update(|cx| {
+            assert_eq!(view.read(cx).tab, 1);
+            assert!(!view.read(cx).unsaved());
+        });
+    }
+}
+
 pub(super) fn editor_at_size(
     cx: &mut TestAppContext,
     root: &Path,

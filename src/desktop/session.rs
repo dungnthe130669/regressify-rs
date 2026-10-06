@@ -61,6 +61,14 @@ pub struct Session {
     pub suite_error: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalReload {
+    Stale,
+    Unchanged,
+    Conflict,
+    Reloaded,
+}
+
 impl Session {
     pub fn dirty(&self) -> bool {
         self.open.as_ref().is_some_and(|open| open.document.dirty())
@@ -130,6 +138,36 @@ impl Session {
         self.open = Some(open);
         self.selection = Selection::Root;
         self.refresh()
+    }
+
+    pub fn apply_external_document(
+        &mut self,
+        root: &Path,
+        saved_source: &str,
+        incoming: OpenDocument,
+    ) -> ExternalReload {
+        let Some(open) = &self.open else {
+            return ExternalReload::Stale;
+        };
+        if self
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root.as_path())
+            != Some(root)
+            || open.entry.path != incoming.entry.path
+            || open.document.saved_source() != saved_source
+        {
+            return ExternalReload::Stale;
+        }
+        if incoming.document.source() == saved_source {
+            return ExternalReload::Unchanged;
+        }
+        if self.dirty() {
+            return ExternalReload::Conflict;
+        }
+        self.open = Some(incoming);
+        self.reconcile_selection();
+        ExternalReload::Reloaded
     }
 
     pub fn save(&mut self) -> Result<()> {
@@ -419,7 +457,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connecting_creates_missing_runtime_files_without_editor_assets() {
+    fn connecting_creates_runtime_and_agent_files_without_other_editor_assets() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let mut session = Session::default();
@@ -444,8 +482,11 @@ mod tests {
             );
         }
         assert!(root.join("visual_tests").is_dir());
-        assert!(!root.join(".vscode").exists());
+        assert!(root.join(".vscode/mcp.json").is_file());
+        assert!(root.join("AGENTS.md").is_file());
         for path in [
+            ".vscode/settings.json",
+            ".vscode/extensions.json",
             "common/test-schema.json",
             "common/regressify-schema.json",
             "common/replacement-profiles-schema.json",
@@ -477,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn reconnecting_restores_only_missing_runtime_files() {
+    fn reconnecting_restores_missing_initialization_files() {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path();
         let mut session = Session::default();
@@ -485,16 +526,24 @@ mod tests {
         let config = root.join("regressify.yaml");
         let cookies = root.join("common/_cookies.yaml");
         let stylesheet = root.join("common/_override.css");
+        let mcp = root.join(".vscode/mcp.json");
+        let agents = root.join("AGENTS.md");
         std::fs::write(&config, "# custom settings\ndelay: 75\n").unwrap();
         std::fs::write(&cookies, "# unfinished draft\n[\n").unwrap();
         let modified = std::fs::metadata(&config).unwrap().modified().unwrap();
         let original_stylesheet = std::fs::read(&stylesheet).unwrap();
+        let original_mcp = std::fs::read(&mcp).unwrap();
+        let original_agents = std::fs::read(&agents).unwrap();
         std::fs::remove_file(&stylesheet).unwrap();
+        std::fs::remove_file(&mcp).unwrap();
+        std::fs::remove_file(&agents).unwrap();
 
         session.connect(root).unwrap();
         session.connect(root).unwrap();
 
         assert_eq!(std::fs::read(&stylesheet).unwrap(), original_stylesheet);
+        assert_eq!(std::fs::read(mcp).unwrap(), original_mcp);
+        assert_eq!(std::fs::read(agents).unwrap(), original_agents);
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             "# custom settings\ndelay: 75\n"
@@ -510,32 +559,123 @@ mod tests {
     }
 
     #[test]
+    fn reconnecting_merges_and_refreshes_mcp_without_removing_other_configuration() {
+        for configured in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path();
+            let mut session = Session::default();
+            session.connect(root).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            let mut expected: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            expected["servers"]["another-mcp"] =
+                serde_json::json!({"type": "stdio", "command": "node", "args": ["server.js"]});
+            expected["inputs"] = serde_json::json!([]);
+            if configured {
+                expected["servers"]["regressify-mcp"]["headers"] =
+                    serde_json::json!({"X-Environment": "staging"});
+            }
+            let mut stale = expected.clone();
+            if configured {
+                stale["servers"]["regressify-mcp"]["url"] =
+                    "https://example.com/retired-mcp".into();
+            } else {
+                stale["servers"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("regressify-mcp");
+            }
+            std::fs::write(
+                &path,
+                format!(
+                    "// Keep this project comment.\n{}",
+                    serde_json::to_string_pretty(&stale).unwrap()
+                ),
+            )
+            .unwrap();
+
+            session.connect(root).unwrap();
+
+            let updated = std::fs::read_to_string(&path).unwrap();
+            assert!(updated.starts_with("// Keep this project comment.\n"));
+            assert_eq!(
+                jsonc_parser::cst::CstRootNode::parse(&updated, &Default::default())
+                    .unwrap()
+                    .to_serde_value()
+                    .unwrap(),
+                expected
+            );
+            session.connect(root).unwrap();
+            assert_eq!(std::fs::read_to_string(path).unwrap(), updated);
+        }
+    }
+
+    #[test]
+    fn reconnecting_refreshes_agent_guidance_without_changing_other_sections() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let mut session = Session::default();
+        session.connect(root).unwrap();
+        let path = root.join("AGENTS.md");
+        let section = std::fs::read_to_string(&path).unwrap();
+        let prefix = "# Project instructions\n\nKeep these rules.\n\n";
+        let suffix = "## Review\n\nKeep these review requirements.\n";
+        let current = format!("{prefix}{section}\n{suffix}");
+        let equivalent = current.replacen("## Regressify CMP", "Regressify CMP\n--------------", 1);
+        for (original, expected) in [
+            (
+                format!("{prefix}{suffix}"),
+                format!("{prefix}{suffix}\n{section}"),
+            ),
+            (
+                format!(
+                    "{prefix}## Regressify CMP\n\nRetired instructions.\n\n### Old setup\n\nOld details.\n\n{suffix}"
+                ),
+                current,
+            ),
+            (equivalent.clone(), equivalent),
+        ] {
+            std::fs::write(&path, original).unwrap();
+
+            session.connect(root).unwrap();
+            session.connect(root).unwrap();
+
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn failed_automatic_setup_preserves_the_current_session() {
         let directory = tempfile::tempdir().unwrap();
-        let blocked = tempfile::tempdir().unwrap();
         let mut session = session(directory.path());
         session.select(Selection::Scenario(0)).unwrap();
         let original = session.open.as_ref().unwrap().document.source().to_string();
         let entries: Vec<_> = session.entries.iter().map(Entry::label).collect();
-        std::fs::write(blocked.path().join("common"), "keep this file").unwrap();
+        for (relative, contents) in [
+            ("common", "keep this file"),
+            (".vscode/mcp.json", "{ // unfinished MCP configuration\n"),
+            ("AGENTS.md", "# Project\n\n```markdown\nUnfinished example"),
+        ] {
+            let blocked = tempfile::tempdir().unwrap();
+            let path = blocked.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, contents).unwrap();
 
-        let error = session.connect(blocked.path()).unwrap_err();
+            let error = session.connect(blocked.path()).unwrap_err();
 
-        assert!(format!("{error:#}").contains("common"));
-        assert_eq!(
-            session.workspace.as_ref().unwrap().root,
-            directory.path().canonicalize().unwrap()
-        );
-        assert_eq!(session.open.as_ref().unwrap().document.source(), original);
-        assert_eq!(session.selection, Selection::Scenario(0));
-        assert_eq!(
-            session.entries.iter().map(Entry::label).collect::<Vec<_>>(),
-            entries
-        );
-        assert_eq!(
-            std::fs::read_to_string(blocked.path().join("common")).unwrap(),
-            "keep this file"
-        );
+            assert!(format!("{error:#}").contains(path.file_name().unwrap().to_str().unwrap()));
+            assert_eq!(
+                session.workspace.as_ref().unwrap().root,
+                directory.path().canonicalize().unwrap()
+            );
+            assert_eq!(session.open.as_ref().unwrap().document.source(), original);
+            assert_eq!(session.selection, Selection::Scenario(0));
+            assert_eq!(
+                session.entries.iter().map(Entry::label).collect::<Vec<_>>(),
+                entries
+            );
+            assert_eq!(std::fs::read_to_string(path).unwrap(), contents);
+        }
     }
 
     fn session(root: &Path) -> Session {
@@ -549,6 +689,128 @@ mod tests {
             .unwrap();
         session.install_document(open).unwrap();
         session
+    }
+
+    #[test]
+    fn external_reload_updates_clean_source_and_reconciles_selection() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = session(directory.path());
+        let workspace = session.workspace.clone().unwrap();
+        let entry = session.open.as_ref().unwrap().entry.clone();
+        session.select(Selection::Scenario(0)).unwrap();
+        for source in [
+            "# external edit\nscenarios:\n  - url: https://example.org\n",
+            "scenarios: []\n",
+            "scenarios: [\n",
+        ] {
+            let saved = session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .saved_source()
+                .to_string();
+            std::fs::write(workspace.root.join(&entry.path), source).unwrap();
+            let incoming = workspace.open_document(entry.clone()).unwrap();
+
+            assert_eq!(
+                session.apply_external_document(&workspace.root, &saved, incoming),
+                ExternalReload::Reloaded
+            );
+            assert_eq!(session.open.as_ref().unwrap().document.source(), source);
+            assert_eq!(
+                session.open.as_ref().unwrap().document.saved_source(),
+                source
+            );
+            assert!(!session.dirty());
+            assert_eq!(
+                session.selection,
+                if source.contains("example.org") {
+                    Selection::Scenario(0)
+                } else {
+                    Selection::Root
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn external_reload_preserves_drafts_history_and_save_conflicts() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = session(directory.path());
+        let workspace = session.workspace.clone().unwrap();
+        let entry = session.open.as_ref().unwrap().entry.clone();
+        let saved = session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .saved_source()
+            .to_string();
+        session.add_scenario().unwrap();
+        let draft = session.open.as_ref().unwrap().document.source().to_string();
+        let incoming = workspace.open_document(entry.clone()).unwrap();
+        assert_eq!(
+            session.apply_external_document(&workspace.root, &saved, incoming),
+            ExternalReload::Unchanged
+        );
+
+        std::fs::write(workspace.root.join(&entry.path), "scenarios: []\n").unwrap();
+        let incoming = workspace.open_document(entry).unwrap();
+        assert_eq!(
+            session.apply_external_document(&workspace.root, &saved, incoming),
+            ExternalReload::Conflict
+        );
+        assert_eq!(session.open.as_ref().unwrap().document.source(), draft);
+        assert_eq!(
+            session.open.as_ref().unwrap().document.saved_source(),
+            saved
+        );
+        assert!(session.save().is_err());
+        session.open.as_mut().unwrap().document.undo();
+        assert_eq!(session.open.as_ref().unwrap().document.source(), saved);
+    }
+
+    #[test]
+    fn external_reload_rejects_reads_from_before_navigation_or_save() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut session = session(directory.path());
+        let workspace = session.workspace.clone().unwrap();
+        let entry = session.open.as_ref().unwrap().entry.clone();
+        let saved = session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .saved_source()
+            .to_string();
+        for stale in ["workspace", "document", "saved source", "closed"] {
+            let incoming = workspace.open_document(entry.clone()).unwrap();
+            let root = if stale == "workspace" {
+                directory.path().join("another-workspace")
+            } else {
+                workspace.root.clone()
+            };
+            let expected = if stale == "saved source" {
+                "old source"
+            } else {
+                &saved
+            };
+            if stale == "document" {
+                session
+                    .install_document(workspace.create_suite("other").unwrap())
+                    .unwrap();
+            } else if stale == "closed" {
+                session.open = None;
+            } else {
+                session.load(entry.clone()).unwrap();
+            }
+            assert_eq!(
+                session.apply_external_document(&root, expected, incoming),
+                ExternalReload::Stale,
+                "{stale}"
+            );
+        }
     }
 
     #[test]

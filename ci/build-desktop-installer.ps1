@@ -17,17 +17,23 @@ $root = Split-Path $PSScriptRoot -Parent
 if (-not $BinaryDirectory) { $BinaryDirectory = Join-Path $root "target/$Target/release" }
 if (-not $OutputDirectory) { $OutputDirectory = Join-Path $root 'target/installer' }
 $binary = Get-Item -LiteralPath (Join-Path $BinaryDirectory 'regressify-desktop.exe')
+$cliBinary = Get-Item -LiteralPath (Join-Path $BinaryDirectory 'regressify.exe')
+if ($binary.PSIsContainer -or $cliBinary.PSIsContainer) { throw 'Both installer payloads must be executable files.' }
 if ([version]$binary.VersionInfo.FileVersion -ne [version]$Version) {
     throw "Desktop executable version $($binary.VersionInfo.FileVersion) does not match installer version $Version."
 }
 if ($RequireStaticRuntime) {
     $locator = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-    $dumpbin = & $locator -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe' | Select-Object -First 1
+    $dumpbinPaths = @(& $locator -latest -products '*' -find 'VC/Tools/MSVC/**/bin/Hostx64/x64/dumpbin.exe')
+    if ($LASTEXITCODE -ne 0) { throw "dumpbin discovery failed ($LASTEXITCODE)." }
+    $dumpbin = $dumpbinPaths | Select-Object -First 1
     if (-not $dumpbin) { throw 'dumpbin.exe is required to verify the installer runtime dependencies.' }
-    $dependencies = & $dumpbin /DEPENDENTS $binary.FullName
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect executable dependencies.' }
-    if ($dependencies -match '(?i)(vcruntime|msvcp)[0-9].*\.dll') {
-        throw 'The standalone installer must use the static MSVC runtime.'
+    foreach ($payload in @($binary, $cliBinary)) {
+        $dependencies = & $dumpbin /DEPENDENTS $payload.FullName
+        if ($LASTEXITCODE -ne 0) { throw "Cannot inspect $($payload.Name) dependencies." }
+        if ($dependencies -match '(?i)(vcruntime|msvcp)[0-9].*\.dll') {
+            throw "$($payload.Name) must use the static MSVC runtime."
+        }
     }
 }
 if (-not $Compiler) {
@@ -44,6 +50,7 @@ if (-not (Test-Path -LiteralPath $installer)) { throw 'The compiler did not crea
 if ($SmokeTest) {
     $registration = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{ED6F0908-7E11-4608-A532-E43482AA117B}_is1'
     if (Test-Path -LiteralPath $registration) { throw 'Installer smoke tests will not modify an existing Regressify Desktop installation.' }
+    $pathOwner = 'HKCU:\Software\Regressify\DesktopInstaller'
     $desktopShortcut = Join-Path ([Environment]::GetFolderPath('DesktopDirectory')) 'Regressify Desktop.lnk'
     $programGroup = Join-Path ([Environment]::GetFolderPath('Programs')) 'Regressify Desktop'
     $startShortcut = Join-Path $programGroup 'Regressify Desktop.lnk'
@@ -51,16 +58,63 @@ if ($SmokeTest) {
         @{ Path = 'HKCU:\Software\Classes\Directory\shell\RegressifyDesktop'; Argument = '%1' },
         @{ Path = 'HKCU:\Software\Classes\Directory\Background\shell\RegressifyDesktop'; Argument = '%V' }
     )
-    foreach ($path in @($desktopShortcut, $programGroup) + @($contextMenus.Path)) {
+    foreach ($path in @($desktopShortcut, $programGroup, $pathOwner) + @($contextMenus.Path)) {
         if (Test-Path -LiteralPath $path) { throw "Installer smoke tests will not modify existing shell integration: $path" }
     }
+    function Get-UserPathState {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+        try {
+            $value = if ($key) { $key.GetValue('Path', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames) } else { $null }
+            $kind = if ($null -ne $value) { $key.GetValueKind('Path') } else { $null }
+            return [pscustomobject]@{ Value = $value; Kind = $kind }
+        } finally {
+            if ($key) { $key.Dispose() }
+        }
+    }
+    $originalUserPath = Get-UserPathState
+    $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $fixture = Join-Path $root ('target/installer-smoke-' + [guid]::NewGuid().ToString('N'))
     $destination = Join-Path $fixture 'app'
+    $expectedUserPath = if ([string]::IsNullOrEmpty($originalUserPath.Value)) { $destination } else { $originalUserPath.Value + ';' + $destination }
+    $expectedPathKind = if ($null -eq $originalUserPath.Kind) { [Microsoft.Win32.RegistryValueKind]::ExpandString } else { $originalUserPath.Kind }
     [System.IO.Directory]::CreateDirectory($fixture) | Out-Null
     $arguments = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART', '/NORELAUNCH=1', ('/DIR="' + $destination + '"'))
     $uninstaller = Join-Path $destination 'unins000.exe'
     $installed = Join-Path $destination 'regressify-desktop.exe'
+    $installedCli = Join-Path $destination 'regressify.exe'
     $originalHash = (Get-FileHash -LiteralPath $binary.FullName -Algorithm SHA256).Hash
+    $originalCliHash = (Get-FileHash -LiteralPath $cliBinary.FullName -Algorithm SHA256).Hash
+    function Assert-InstallerCliPath {
+        $current = Get-UserPathState
+        if ($current.Value -cne $expectedUserPath -or $current.Kind -ne $expectedPathKind) {
+            throw 'Installer must append its directory exactly once without changing existing user PATH data or type.'
+        }
+        if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -cne $originalMachinePath) {
+            throw 'Installer modified the machine PATH.'
+        }
+        $start = [System.Diagnostics.ProcessStartInfo]::new((Join-Path ([Environment]::SystemDirectory) 'cmd.exe'))
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $start.WorkingDirectory = $fixture
+        $start.Arguments = '/d /s /c "where.exe regressify && regressify --version"'
+        $start.Environment['PATH'] = [Environment]::ExpandEnvironmentVariables($originalMachinePath + ';' + $current.Value)
+        $process = [System.Diagnostics.Process]::Start($start)
+        try {
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(15000)) {
+                $process.Kill($true)
+                throw 'CLI lookup through the installed PATH timed out.'
+            }
+            $output = $stdout.GetAwaiter().GetResult()
+            $null = $stderr.GetAwaiter().GetResult()
+            if ($process.ExitCode -ne 0 -or ($output -split '\r?\n') -inotcontains $installedCli) {
+                throw 'A fresh process could not find and run the installed CLI through PATH.'
+            }
+        } finally { $process.Dispose() }
+    }
     function Invoke-InstallerFixture([string]$Path, [string[]]$Parameters) {
         $start = [System.Diagnostics.ProcessStartInfo]::new($Path)
         $start.UseShellExecute = $false
@@ -125,6 +179,10 @@ if ($SmokeTest) {
         if ((Get-Content -LiteralPath $installLog -Raw) -match $foregroundPattern) { throw 'Fully silent installation attempted foreground activation.' }
         Assert-ChromiumPreparation $installLog $false
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'Installed executable differs from the built payload.' }
+        if ((Get-FileHash -LiteralPath $installedCli -Algorithm SHA256).Hash -ne $originalCliHash) { throw 'Installed CLI differs from the built payload.' }
+        & $installedCli --version
+        if ($LASTEXITCODE -ne 0) { throw 'Installed CLI failed to run.' }
+        Assert-InstallerCliPath
         Assert-InstallerShellIntegration
         $sentinel = Join-Path $destination 'user-workspace.txt'
         [System.IO.File]::WriteAllText($sentinel, 'User data must survive updates and uninstall.')
@@ -156,6 +214,7 @@ if ($SmokeTest) {
             Write-Warning 'Windows denied foreground activation on this runner; the visible update requested it.'
         }
         Assert-InstallerShellIntegration
+        Assert-InstallerCliPath
         if (-not (Test-Path -LiteralPath $sentinel)) { throw 'Reinstallation removed user data.' }
         $skipLog = Join-Path $fixture 'skip-chromium.log'
         if ((Invoke-InstallerFixture $installer ($arguments + @('/SKIPCHROMIUM=1', ('/LOG="' + $skipLog + '"')))) -ne 0) {
@@ -179,18 +238,29 @@ if ($SmokeTest) {
             }
         }
         if ((Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ne $originalHash) { throw 'An unsuccessful installation changed the executable.' }
-        Write-Output 'Fresh install, Chromium cache reuse/network fallback/skip, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
+        if ((Get-FileHash -LiteralPath $installedCli -Algorithm SHA256).Hash -ne $originalCliHash) { throw 'An unsuccessful installation changed the CLI.' }
+        Assert-InstallerCliPath
+        Write-Output 'Fresh install, CLI lookup through user PATH, Chromium cache reuse/network fallback/skip, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
     } finally {
         if (Test-Path -LiteralPath $uninstaller) {
             $result = Invoke-InstallerFixture $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
             if ($result -ne 0) { throw "Fixture uninstall failed ($result). See $fixture." }
             if (Test-Path -LiteralPath $installed) { throw 'Uninstall left the installed executable behind.' }
+            if (Test-Path -LiteralPath $installedCli) { throw 'Uninstall left the installed CLI behind.' }
             if (Test-Path -LiteralPath $registration) { throw 'Uninstall left the fixture registration behind.' }
+            if (Test-Path -LiteralPath $pathOwner) { throw 'Uninstall left PATH ownership metadata behind.' }
+            $remainingPath = Get-UserPathState
+            if ($remainingPath.Value -cne $originalUserPath.Value -or $remainingPath.Kind -ne $originalUserPath.Kind) {
+                throw 'Uninstall did not preserve the original user PATH data and type.'
+            }
+            if ([Environment]::GetEnvironmentVariable('Path', 'Machine') -cne $originalMachinePath) {
+                throw 'Uninstall modified the machine PATH.'
+            }
             foreach ($path in @($desktopShortcut, $startShortcut) + @($contextMenus.Path)) {
                 if (Test-Path -LiteralPath $path) { throw "Uninstall left shell integration behind: $path" }
             }
             if ($sentinel -and -not (Test-Path -LiteralPath $sentinel)) { throw 'Uninstall removed user data.' }
-            Write-Output 'Uninstall removed application files, shortcuts and context menus; user data was preserved.'
+            Write-Output 'Uninstall removed both executables, its PATH entry, shortcuts and context menus; user data and unrelated PATH entries were preserved.'
         }
     }
 }

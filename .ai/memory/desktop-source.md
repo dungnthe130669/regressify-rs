@@ -1,6 +1,6 @@
 # Desktop Source Editing
 
-Verified: 2026-10-05
+Verified: 2026-10-06
 
 - [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
   list picker and effective consumer labels. Workspace diagnostics call the
@@ -53,3 +53,12 @@ Verified: 2026-10-05
   completion and hover providers are cleared. The `common_text_files_` model and
   `workspace_files_text_documents_support_source_editing_and_save` native tests
   cover saves, conflicts, binary guards, and native undo/redo.
+- [External reload](../../src/desktop/ui/files.rs) reads the open file off-thread
+  once per second and validates workspace/path/saved-byte identity on completion.
+  Clean content reloads; pending/invalid drafts and read failures retain the editor.
+  `external_reload` model/native tests cover metadata-preserving edits, atomic
+  replacement, raw text, recovery, stale results, and real conflict button clicks.
+- Hidden Fields controls retain old values after Source edits/saves. Only inspect
+  their raw text when Fields is active; `external_reload_after_source_save` failed
+  without this guard. Native `set_value` is not typing: use keyboard input to
+  exercise change notifications and session dirty/error state.

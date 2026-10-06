@@ -82,7 +82,7 @@ stages:
                 build = "desktop" if tag_push else os.environ.get("BUILD") or "both"
                 if build not in ("cli", "desktop", "both"):
                     raise SystemExit("Build must be cli, desktop, or both")
-                applications = ("cli", "desktop") if build == "both" else (build,)
+                applications = ("cli",) if build == "cli" else ("cli", "desktop")
                 platforms = [
                     ("MACOS_X86_64", "macos-15", "x86_64-apple-darwin"),
                     ("WINDOWS_X86_64", "windows-latest", "x86_64-pc-windows-msvc"),
@@ -96,6 +96,9 @@ stages:
                 selected = selected or [platforms[-1]]
                 matrix = {}
                 for _, runner, target in selected:
+                    if build == "desktop" and target.endswith("-musl"):
+                        print(f"Skipping desktop for {target}; Musl releases are CLI-only.")
+                        continue
                     for application in applications:
                         desktop = application == "desktop"
                         if desktop and target.endswith("-musl"):
@@ -108,13 +111,15 @@ stages:
                             "features": "gui" if desktop else "",
                             "fileName": "regressify-desktop" if desktop else "regressify",
                             "packageName": "regressify-desktop" if desktop else "regressify-cli",
-                            "buildInstaller": str(ref_type == "tag" and desktop and target == "x86_64-pc-windows-msvc").lower(),
+                            "installerPayload": str(ref_type == "tag" and build != "cli" and target == "x86_64-pc-windows-msvc").lower(),
                         }
                 if not matrix:
                     raise SystemExit("Desktop releases require a Linux GNU, macOS, or Windows target; Musl is CLI-only.")
                 print(json.dumps(matrix, indent=2))
                 print(f"##vso[task.setvariable variable=matrix;isOutput=true]{json.dumps(matrix, separators=(',', ':'))}")
                 print(f"##vso[task.setvariable variable=version;isOutput=true]{version}")
+                installer = any(row["installerPayload"] == "true" for row in matrix.values())
+                print(f"##vso[task.setvariable variable=buildInstaller;isOutput=true]{str(installer).lower()}")
             env:
               BUILD: ${{ parameters.build }}
               MACOS_X86_64: ${{ parameters.macosX86_64 }}
@@ -133,6 +138,8 @@ stages:
       - group: Regressify
       - name: releaseVersion
         value: $[ stageDependencies.Plan.SetMatrix.outputs['Matrix.version'] ]
+      - name: buildInstaller
+        value: $[ stageDependencies.Plan.SetMatrix.outputs['Matrix.buildInstaller'] ]
       - name: CARGO_HOME
         value: $(Pipeline.Workspace)/.cargo
     jobs:
@@ -146,31 +153,6 @@ stages:
         steps:
           - checkout: self
             submodules: recursive
-
-          - pwsh: |
-              $installerScript = Join-Path $env:AGENT_TEMPDIRECTORY 'install-tuyen.ps1'
-              Invoke-WebRequest -Uri 'https://cli.tuyen.blog/install.ps1' -OutFile $installerScript
-              & $installerScript -NoPathUpdate -NoRegisterInstallation -NoCompletions
-              $cliBin = Join-Path $env:CLI_INSTALL 'bin'
-              if (-not (Test-Path -LiteralPath (Join-Path $cliBin 'tuyen.exe'))) {
-                  throw 'Tuyen CLI installation failed.'
-              }
-              Write-Host "##vso[task.prependpath]$cliBin"
-            displayName: Setup Tuyen CLI
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
-            env:
-              CLI_INSTALL: $(Agent.TempDirectory)/tuyen-cli
-
-          - pwsh: |
-              tuyen drive upload-app --help
-              if ($LASTEXITCODE -ne 0) { throw "Tuyen CLI must support 'drive upload-app'; update the CLI release." }
-            displayName: Check Tuyen Drive upload support
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
-
-          - task: UsePythonVersion@0
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
-            inputs:
-              versionSpec: '3.12'
 
           - pwsh: |
               New-Item -ItemType Directory -Force -Path $env:CARGO_HOME, 'target' | Out-Null
@@ -235,7 +217,7 @@ stages:
               & $env:BASH_PATH ci/make-release.sh
               if ($LASTEXITCODE -ne 0) { throw "Release build or upload failed ($LASTEXITCODE)." }
             displayName: Build artifacts
-            condition: and(succeeded(), ne(variables['buildInstaller'], 'true'))
+            condition: and(succeeded(), ne(variables['installerPayload'], 'true'))
             env:
               BASH_PATH: $(bashPath)
               FILE_NAME: $(fileName)
@@ -253,7 +235,7 @@ stages:
               cargo build --locked --no-default-features --features gui --bin regressify-desktop --release --target x86_64-pc-windows-msvc
               if ($LASTEXITCODE -ne 0) { throw "Desktop build failed ($LASTEXITCODE)." }
             displayName: Build Windows desktop release
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
+            condition: and(succeeded(), eq(variables['installerPayload'], 'true'), eq(variables['application'], 'desktop'))
             env:
               REGRESSIFY_DESKTOP_VERSION: $(releaseVersion)
               TUYEN_DRIVE_APP: $(TUYEN_DRIVE_APP)
@@ -261,23 +243,88 @@ stages:
               RUSTFLAGS: -C target-feature=+crt-static
 
           - pwsh: |
+              cargo build --locked --no-default-features --bin regressify --release --target x86_64-pc-windows-msvc
+              if ($LASTEXITCODE -ne 0) { throw "CLI build failed ($LASTEXITCODE)." }
+            displayName: Build Windows CLI release
+            condition: and(succeeded(), eq(variables['installerPayload'], 'true'), eq(variables['application'], 'cli'))
+            env:
+              BINARY_GIT_HASH: $(Build.SourceVersion)
+              RUSTFLAGS: -C target-feature=+crt-static
+
+          - task: PublishPipelineArtifact@1
+            displayName: Retain installer payload
+            condition: and(succeeded(), eq(variables['installerPayload'], 'true'))
+            inputs:
+              artifact: regressify-installer-$(application)
+              targetPath: $(Build.SourcesDirectory)/target/x86_64-pc-windows-msvc/release/$(fileName).exe
+
+      - job: Installer
+        displayName: Package Windows desktop and CLI
+        dependsOn: Build
+        condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
+        timeoutInMinutes: 30
+        pool:
+          vmImage: windows-latest
+        steps:
+          - checkout: self
+
+          - pwsh: |
+              $installerScript = Join-Path $env:AGENT_TEMPDIRECTORY 'install-tuyen.ps1'
+              Invoke-WebRequest -Uri 'https://cli.tuyen.blog/install.ps1' -OutFile $installerScript
+              & $installerScript -NoPathUpdate -NoRegisterInstallation -NoCompletions
+              $cliBin = Join-Path $env:CLI_INSTALL 'bin'
+              if (-not (Test-Path -LiteralPath (Join-Path $cliBin 'tuyen.exe'))) {
+                  throw 'Tuyen CLI installation failed.'
+              }
+              Write-Host "##vso[task.prependpath]$cliBin"
+            displayName: Setup Tuyen CLI
+            env:
+              CLI_INSTALL: $(Agent.TempDirectory)/tuyen-cli
+
+          - pwsh: |
+              tuyen drive upload-app --help
+              if ($LASTEXITCODE -ne 0) { throw "Tuyen CLI must support 'drive upload-app'; update the CLI release." }
+            displayName: Check Tuyen Drive upload support
+
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '3.12'
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download desktop payload
+            inputs:
+              buildType: current
+              artifactName: regressify-installer-desktop
+              targetPath: $(Build.SourcesDirectory)/target/x86_64-pc-windows-msvc/release
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download CLI payload
+            inputs:
+              buildType: current
+              artifactName: regressify-installer-cli
+              targetPath: $(Build.SourcesDirectory)/target/x86_64-pc-windows-msvc/release
+
+          - pwsh: |
               $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
               if (-not (Test-Path -LiteralPath $compiler)) {
                   choco install innosetup --no-progress -y
                   if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed ($LASTEXITCODE)." }
               }
+              python -m pip install PyYAML==6.0.3
+              if ($LASTEXITCODE -ne 0) { throw "Installer test dependency installation failed ($LASTEXITCODE)." }
+              $env:ISCC_PATH = $compiler
+              python ci/test-release.py InstallerTests
+              if ($LASTEXITCODE -ne 0) { throw "Installer checks failed ($LASTEXITCODE)." }
               ./ci/build-desktop-installer.ps1 -Version $env:INSTALLER_VERSION -OutputDirectory $env:BUILD_ARTIFACTSTAGINGDIRECTORY -Compiler $compiler -RequireStaticRuntime -SmokeTest
               $installer = Join-Path $env:BUILD_ARTIFACTSTAGINGDIRECTORY "Regressify-Desktop-Setup-$env:INSTALLER_VERSION-x64.exe"
               if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) { throw 'Windows installer was not created.' }
               Write-Host "##vso[task.setvariable variable=installer]$installer"
             displayName: Build Windows installer
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
             env:
               INSTALLER_VERSION: $(releaseVersion)
 
           - task: PublishPipelineArtifact@1
             displayName: Retain Windows installer
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
             inputs:
               artifact: regressify-desktop-windows-$(releaseVersion)
               targetPath: $(installer)
@@ -300,7 +347,6 @@ stages:
                 --role "$($installer.Name)=installer"
               if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive upload failed ($LASTEXITCODE)." }
             displayName: Publish Windows installer to Tuyen Drive
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
             env:
               TUYEN_DRIVE_APP: $(TUYEN_DRIVE_APP)
               TUYEN_DRIVE_TOKEN: $(TUYEN_DRIVE_TOKEN)
@@ -311,7 +357,6 @@ stages:
               python ci/drive_release.py verify --installer $env:INSTALLER
               if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive publish verification failed ($LASTEXITCODE)." }
             displayName: Verify Windows installer publish
-            condition: and(succeeded(), eq(variables['buildInstaller'], 'true'))
             env:
               TUYEN_DRIVE_APP: $(TUYEN_DRIVE_APP)
               INSTALLER: $(installer)

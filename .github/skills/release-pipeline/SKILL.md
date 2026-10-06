@@ -12,6 +12,7 @@ description: 'Use when changing GitHub Actions or Azure Pipelines release matric
 ## Procedure and Invariants
 
 1. Trace matrix inputs to target/toolchain/features, artifact names, upload fields, installer versions, and update manifests. Do not assume CLI/desktop targets match.
+1. Desktop selections also schedule a CLI job for each supported desktop target without duplicates; desktop-only Musl selections still fail. Tagged Windows payloads build independently with static runtimes. A dependent installer job must download both exact artifacts from the same run and stop if either build fails. CLI-only archive publishing stays separate.
 1. Preserve `--locked`, static-runtime flags where required, archive contents, executable resource versions, and immutable installer naming/hash/size contracts.
 1. Keep preparation/verification separate from publication. A script or workflow edit does not authorize a tag, release upload, real remote operation, or install.
 1. Validate external responses and URLs with bounded reads and clear errors. Never print publishing secrets or embed credentials in artifacts/manifests.
@@ -32,6 +33,8 @@ python ci/test-release.py
 Requires PyYAML. Tests should use synthetic credentials/local fixture responses, not live publishing commands. Run affected target build checks only when the toolchain exists; explicitly report untested cross-platform packaging.
 
 For the Azure slice, use `python ci/test-release.py AzureReleaseTests`; the full suite also executes both providers' publish scripts with a stub CLI. Bash and PowerShell 7 are required; on Windows, set `BASH_PATH` to Git Bash for the build-argument tests. Offline checks cannot validate Library permissions or execute a hosted Azure run.
+
+Both Windows packaging jobs set `ISCC_PATH` and run `python ci/test-release.py InstallerTests` before packaging/smoke. This compiles and executes isolated native PATH fixtures without installing the app; the production installer is also compiled with synthetic payloads. Missing Inno skips that native check outside the packaging jobs.
 
 ## Maintain
 

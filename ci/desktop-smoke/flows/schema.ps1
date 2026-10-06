@@ -340,7 +340,45 @@ function Test-SchemaFlows {
     if ($null -ne (Find-Control "Suite 'schema' has configuration errors")) { throw 'The corrected suite retained a stale configuration error.' }
     if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -ne $valid) { throw 'Saving the corrected suite changed its source.' }
     Capture-Window 'schema-corrected'
-    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, and compact light/dark layouts passed.'
+    $external = $valid.Replace('label: Schema example', 'label: External edit')
+    [System.IO.File]::WriteAllText($path, $external, [System.Text.UTF8Encoding]::new($false))
+    Wait-WindowState {
+        (Read-ControlText 'Configuration source').Replace("`r`n", "`n") -ceq $external
+    } 'The clean Source editor did not reload an external save.'
+    Wait-Control 'Reloaded external changes' | Out-Null
+    Capture-Window 'schema-external-reloaded'
+    $draft = $external + "# desktop draft`n"
+    Write-SchemaSource $draft
+    Send-FixtureKeys Escape
+    $external = $valid.Replace('label: Schema example', 'label: Second external edit')
+    [System.IO.File]::WriteAllText($path, $external, [System.Text.UTF8Encoding]::new($false))
+    $notice = 'File changed outside Regressify. Your unsaved edits were kept.'
+    Wait-Control $notice | Out-Null
+    if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) { throw 'An external save replaced an unsaved desktop draft.' }
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            Wait-Control $notice | Out-Null
+            Wait-Control 'Reload from disk' | Out-Null
+            Capture-Window ('schema-external-conflict-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+        }
+    }
+    Invoke-Control 'Reload from disk' -Pointer
+    Wait-Control 'Discard' | Out-Null
+    Capture-Window 'schema-external-reload-confirmation'
+    Invoke-Control 'Cancel' -Pointer
+    Wait-WindowState { $null -eq (Find-Control 'Discard') } 'Cancelling external reload did not dismiss the dialog.'
+    if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) { throw 'Cancelling external reload changed the draft.' }
+    Invoke-Control 'Reload from disk' -Pointer
+    Wait-Control 'Discard' | Out-Null
+    Invoke-Control 'Discard' -Pointer
+    Wait-WindowState {
+        (Read-ControlText 'Configuration source').Replace("`r`n", "`n") -ceq $external -and $null -eq (Find-Control $notice)
+    } 'Confirmed external reload did not load the saved file and clear its warning.'
+    if ((Get-Content -LiteralPath $path -Raw).Replace("`r`n", "`n") -cne $external) { throw 'Reloading changed the external file on disk.' }
+    Capture-Window 'schema-external-reload-confirmed'
+    Write-Output 'Native Source/Fields navigation, syntax protection, selectable issue descriptions, exact clipboard text, aligned table columns, red severity dots, issue scrolling/navigation, safe diagnostics, uninterrupted typing through suggestions, Enter/Tab completion and Escape after Alt+Tab, selected-line editing and undo/redo, corrected save, automatic external reload, conflict cancellation/confirmation, and compact light/dark layouts passed.'
     } finally {
         if ($null -ne $clipboard) {
             Invoke-SchemaClipboard { [System.Windows.Forms.Clipboard]::SetDataObject($backup, $true) }

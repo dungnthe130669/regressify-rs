@@ -17,7 +17,7 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 1. Keep [Source line commands](../../../src/desktop/ui/source.rs) scoped to `RegressifySource > Input` and the actual source focus handle. Menus restore that handle through `action_context`. Preserve Tab completion, native undo/redo, exclusive end-line bounds, reversed selections, and JSON's no-comments rule. Test disabled menu items by pointer behavior; their wrapper may not expose a disabled-state value.
 1. Scope list shortcuts to a retained list focus handle, excluding search and editor inputs. Reuse the owning selection methods; suite/scenario keyboard ranges and Ctrl+A use visible rows, while scenario selection preserves other suites. Keep single-selection lists single-select and operation locks intact.
 1. For keyboard-scrolled rows, share `track_scroll` with an explicit scrollbar. Append scrollbar overlays after rows because `ScrollHandle::scroll_to_item` indexes direct children; the convenience scroll wrapper owns a separate handle. Virtualized lists use their uniform-list handle and filtered positions.
-1. Use real pointer/keyboard tests for menus/dialogs; model tests alone cannot establish interaction behavior. Settle dialog animations with existing helpers.
+1. Use real pointer/keyboard tests for menus/dialogs; model tests alone cannot establish interaction behavior. Settle dialog animations with existing helpers. Wait for actionable dialog controls: a painted Windows dialog title may not expose a standalone UIA name.
 1. New/Rename suite dialogs focus and select the filename stem after opening. Route Enter from inputs or the primary action to the guarded asynchronous commit; Cancel/X keyboard activation must remain cancellation. gpui-kit styled buttons own internal focus handles, so use a parent focus region for default-action routing. Keep X/Cancel/Escape/backdrop dismissal blocked while busy, and retain invalid input after failed writes. Test disabled controls through their effects when wrapper metadata omits the disabled flag.
 1. Suite context actions and F2/Delete target the focused row, not the open editor or all checked rows. Keep `RegressifySuiteList` separate from inputs; no global F2 binding. Test Results targeting, dirty cancellation, independent filename/display-name edits, and confirmed artifact deletion with `desktop::ui::tests::suite_panel_`.
 1. Exercise compact/large windows, long labels, light/dark/system themes, scroll, clipboard selection, and accessibility names. Inspect actual rendered screenshots.
@@ -39,12 +39,13 @@ For smoke harness edits, run `./ci/test-desktop-smoke.ps1` in PowerShell 7 first
 ```sh
 cargo test --features gui-tests --lib suite_name_dialog_ -- --test-threads=1
 cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
+cargo test --features gui-tests --lib external_reload -- --test-threads=1
 cargo test --features gui-tests --lib deployment_activity_ -- --test-threads=1
 cargo test --features gui-tests --lib runs_open_site_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui -- --test-threads=1
 ```
 
-Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-ComparisonFlows`, or `-GitFlows`; the default flow includes pointer-focused suite/scenario/checklist shortcuts. `-SchemaFlows` also covers source line commands and the Edit menu. Use `-SkipBuild` only with a current binary. Capture flows may require managed Chromium. Do not use browser automation as a substitute for this native UI's tests.
+Run the relevant `./ci/desktop-smoke.ps1` switch, such as `-SchemaFlows`, `-ComparisonFlows`, or `-GitFlows`; the default flow includes pointer-focused suite/scenario/checklist shortcuts. `-SchemaFlows` also covers source line commands, the Edit menu, automatic external reload after Source saves, and conflict cancellation/confirmation with compact/large light/dark screenshots. Use `-SkipBuild` only with a current binary. Capture flows may require managed Chromium. Do not use browser automation as a substitute for this native UI's tests.
 
 `-ArtifactFlows` also exercises New/Rename filename focus and stem selection, Enter from inputs/focused Create, X cancellation, F2 rename, independent display-name editing in Rename and Fields, byte-preserving reference/history migration, and Delete cancellation/confirmation. Inputs and the deletion prompt need accessible names, not only visible text or test IDs.
 

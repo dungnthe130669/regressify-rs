@@ -44,7 +44,248 @@ pub(super) struct ModalState {
     status: String,
 }
 
+struct FileVersion {
+    root: PathBuf,
+    entry: Entry,
+    saved_source: String,
+}
+
+impl FileVersion {
+    fn matches(&self, session: &Session) -> bool {
+        session.workspace.as_ref().map(|workspace| &workspace.root) == Some(&self.root)
+            && session.open.as_ref().is_some_and(|open| {
+                open.entry.path == self.entry.path
+                    && open.document.saved_source() == self.saved_source
+            })
+    }
+}
+
+struct ExternalFileChange {
+    version: FileVersion,
+    document: Result<OpenDocument>,
+    catalog: Option<Result<Vec<workspace::SuiteSummary>>>,
+}
+
+pub(super) struct ExternalFileNotice {
+    version: FileVersion,
+    message: String,
+}
+
 impl Workbench {
+    pub(super) fn watch_external_file(window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
+        cx.spawn_in(window, async move |view, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(1))
+                    .await;
+                let Ok(version) = view.update(cx, |this, _| {
+                    if this.busy {
+                        return None;
+                    }
+                    let workspace = this.session.workspace.as_ref()?;
+                    let open = this.session.open.as_ref()?;
+                    Some(FileVersion {
+                        root: workspace.root.clone(),
+                        entry: open.entry.clone(),
+                        saved_source: open.document.saved_source().to_string(),
+                    })
+                }) else {
+                    break;
+                };
+                let Some(version) = version else {
+                    continue;
+                };
+                let change = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let workspace = workspace::Workspace {
+                            root: version.root.clone(),
+                        };
+                        let document = workspace.open_document(version.entry.clone());
+                        let catalog = document
+                            .as_ref()
+                            .ok()
+                            .filter(|open| open.document.source() != version.saved_source)
+                            .map(|_| workspace.suite_catalog());
+                        ExternalFileChange {
+                            version,
+                            document,
+                            catalog,
+                        }
+                    })
+                    .await;
+                if view
+                    .update_in(cx, |this, window, cx| {
+                        this.apply_external_file_change(change, window, cx);
+                    })
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+    }
+
+    pub(super) fn external_reload_has_draft(&self, cx: &App) -> bool {
+        if self.unsaved() {
+            return true;
+        }
+        if self
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| self.source.read(cx).value().as_ref() != open.document.source())
+        {
+            return true;
+        }
+        if self.tab != 0 {
+            return false;
+        }
+        let parent = self.session.selection.path();
+        self.bindings.iter().any(|binding| {
+            let text = match &binding.control {
+                Control::Input(input) => input.read(cx).value().to_string(),
+                Control::Textarea(input) => input.read(cx).value().to_string(),
+                _ => return false,
+            };
+            let value = self
+                .value
+                .pointer(&parent)
+                .and_then(|value| value.get(&binding.field.key))
+                .unwrap_or(&Value::Null);
+            text != binding.field.display(value)
+        })
+    }
+
+    fn apply_external_file_change(
+        &mut self,
+        change: ExternalFileChange,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.busy || !change.version.matches(&self.session) {
+            return;
+        }
+        let incoming = match change.document {
+            Ok(incoming) => incoming,
+            Err(error) => {
+                self.external_file_notice = Some(ExternalFileNotice {
+                    version: change.version,
+                    message: format!(
+                        "Cannot reload file from disk; current content kept: {error:#}"
+                    ),
+                });
+                cx.notify();
+                return;
+            }
+        };
+        if incoming.document.source() == change.version.saved_source {
+            if self.external_file_notice.take().is_some() {
+                cx.notify();
+            }
+            return;
+        }
+        // Native change events can still be queued when the background read finishes.
+        if self.external_reload_has_draft(cx) {
+            self.external_file_notice = Some(ExternalFileNotice {
+                version: change.version,
+                message: "File changed outside Regressify. Your unsaved edits were kept.".into(),
+            });
+            cx.notify();
+            return;
+        }
+        let selection = self.source.read(cx).selected_range();
+        if self.session.apply_external_document(
+            &change.version.root,
+            &change.version.saved_source,
+            incoming,
+        ) != super::super::session::ExternalReload::Reloaded
+        {
+            return;
+        }
+        if let Some(catalog) = change.catalog {
+            match catalog {
+                Ok(suites) => {
+                    self.session.suites = suites;
+                    self.session.suite_error = None;
+                }
+                Err(error) => {
+                    self.session.suites.clear();
+                    self.session.suite_error = Some(format!("{error:#}"));
+                }
+            }
+        }
+        if self.session.value().is_err() {
+            self.tab = 1;
+        }
+        self.external_file_notice = None;
+        self.sync_editor_content(window, cx);
+        self.source.update(cx, |state, cx| {
+            let text = state.value();
+            let boundary = |offset: usize| {
+                let mut offset = offset.min(text.len());
+                while !text.is_char_boundary(offset) {
+                    offset -= 1;
+                }
+                offset
+            };
+            state.set_selected_range(boundary(selection.start)..boundary(selection.end), cx);
+        });
+        self.status = "Reloaded external changes".into();
+        self.sync_modal(cx);
+        cx.notify();
+    }
+
+    pub(super) fn render_external_file_notice(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let notice = self
+            .external_file_notice
+            .as_ref()
+            .filter(|notice| notice.version.matches(&self.session))?;
+        Some(
+            div()
+                .id("external-file-notice")
+                .role(Role::Status)
+                .aria_label(notice.message.clone())
+                .test_support()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_2()
+                .w_full()
+                .flex_shrink_0()
+                .px_4()
+                .py_2()
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .bg(cx.theme().muted)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .whitespace_normal()
+                        .child(notice.message.clone()),
+                )
+                .child(
+                    Button::new("external-file-reload")
+                        .small()
+                        .flex_shrink_0()
+                        .icon(gpui_kit::assets::IconName::RotateCw)
+                        .label("Reload from disk")
+                        .disabled(self.busy)
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if this.session.open.is_some()
+                                && let Err(error) = this.flush_drafts(window, cx)
+                            {
+                                this.status = format!("{error:#}");
+                            }
+                            this.guard(Pending::Reload, window, cx);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
     pub(super) fn choose_field_file(
         &mut self,
         key: String,

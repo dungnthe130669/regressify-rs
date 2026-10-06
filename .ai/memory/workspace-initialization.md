@@ -19,16 +19,29 @@ Verified: 2026-10-06
   acquiring workspace ownership and checking unsaved work. `Workspace::open`
   remains read-only because activation/ownership probes also call it.
 - Automatic desktop setup creates no example suites, exported schemas, VS Code
-  files, Node helpers, or run/state artifacts. Explicit CLI `init` retains its
-  sample, editor integration, and legacy migration. See the
-  [desktop workflow](../../docs/desktop.md#workspace-and-files).
-- Explicit CLI init merges `.vscode/mcp.json`: add a missing HTTP `regressify-mcp`
+  settings/extensions, Node helpers, or run/state artifacts. It does maintain
+  MCP configuration and agent guidance using the same helpers as CLI `init`.
+  Explicit CLI `init` retains its sample, other editor assets, and legacy migration.
+  See the [desktop workflow](../../docs/desktop.md#workspace-and-files).
+- CLI and desktop setup merge `.vscode/mcp.json`: add a missing HTTP `regressify-mcp`
   server or refresh only its URL from `REGRESSIFY_MCP_URL`, preserving headers,
   other servers/settings, comments, and trailing commas. Matching URLs do not
   rewrite the file. Malformed or unwritable configurations fail unchanged.
   [Initialization](../../src/init.rs) uses `jsonc-parser` features `cst` and
   `serde_json` for CST conversion; `serde` alone does not expose `to_serde_value`.
   Parse options explicitly exclude syntax beyond VS Code JSONC.
+- CLI and desktop setup manage `AGENTS.md` under the exact H2 `Regressify CMP`.
+  They create, append, or refresh this section, including the current MCP endpoint and public
+  guide/schema/example tool names. `pulldown-cmark` offsets delimit top-level H2
+  sections through the next H2 or EOF; parsed-event equality skips current content
+  despite ATX/Setext, list-marker, or line-ending differences. Outside bytes stay
+  unchanged. Duplicate managed sections collapse to one; unfinished blocks that
+  would swallow a new heading fail without rewriting the file. `init::tests`
+  covers these boundaries alongside read-only, non-UTF-8, and concurrent creation.
+- Local tag `v0.79.0` wired MCP setup only into explicit CLI init, not desktop
+  folder opening. The desktop wiring fix also includes managed agent guidance;
+  installed older binaries require a new build. Session tests cover create,
+  restore, refresh, preserved project data, and failed-setup session retention.
 - [Workspace discovery](../../src/desktop/workspace.rs) lists all regular files
   under `common`, including `_on-ready.js`, `_override.css`, and nested/unknown
   formats. Only `visual_tests` entries become suites. `Entry::supports_editing`
@@ -40,8 +53,8 @@ Verified: 2026-10-06
   existing regular files are skipped and symlink/non-file destinations rejected.
   This prevents partial starter publication and clobbering competing files, not
   a transaction across the whole workspace or a guarantee against ancestor races.
-  MCP updates recheck the original bytes before atomic replacement; this is not
-  compare-and-swap protection against concurrent external edits.
+  MCP and agent-guidance updates recheck the original bytes before atomic
+  replacement; this is not compare-and-swap protection against external edits.
 - Evidence: `cargo test --locked --features desktop --lib init::tests` and
   `cargo test --locked --features desktop --lib desktop::session::tests` cover
   the inventory, repeated/concurrent setup, missing defaults, `.yml` preservation,

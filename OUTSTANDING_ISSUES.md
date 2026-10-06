@@ -2,6 +2,29 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Desktop Agent Setup (2026-10-06)
+
+- Resolved in source: desktop folder opening now creates or refreshes
+  `.vscode/mcp.json` and the managed `## Regressify CMP` section in `AGENTS.md`
+  using the same preservation and freshness helpers as CLI init.
+- The local `v0.79.0` tag only invoked MCP setup from explicit CLI init. Installed
+  v0.79 desktop binaries need a new build/release for automatic setup.
+- Initialization and session regressions cover missing/deleted files, MCP URL
+  updates, agent-section append/refresh/no-op behavior, retained project content,
+  concurrent creation, and preserving the current workspace on setup failure.
+
+## Desktop External Reload (2026-10-06)
+
+- Resolved: the open desktop document now detects external saves in a background
+  check and automatically reloads clean content. Unsaved Source/Fields drafts and
+  pending native input are preserved behind an explicit reload confirmation.
+- Model and native-event regressions cover stale reads, Source saves with hidden
+  Fields controls, exact text, same-size edits, atomic replacements, invalid
+  syntax, deletion, binary files, recovery, cursor/focus, and conflict choices.
+  The Windows schema smoke passes external reload and conflict cancellation/
+  confirmation, with compact/large light/dark screenshots inspected and preferences
+  restored.
+
 ## Action Viewport Selection (2026-10-05)
 
 - Implemented: all 16 actions accept `viewportNames`, with strict validation

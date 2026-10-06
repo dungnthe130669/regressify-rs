@@ -183,19 +183,27 @@ gh() {
             )
             rows = None
             if output.exists():
-                record = output.read_text(encoding="utf-8").strip()
-                self.assertTrue(record.startswith("matrix="))
-                rows = json.loads(record.removeprefix("matrix="))["include"]
+                records = dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+                rows = json.loads(records["matrix"])["include"]
+                self.assertEqual(records["installer"], str(any(row["installer"] for row in rows)).lower())
             return result, rows
 
-    def test_tag_push_builds_windows_desktop(self):
+    def test_tag_push_builds_windows_desktop_and_cli(self):
         result, rows = self.matrix("", [], event="push", ref_type="tag")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             [(row["application"], row["target"]) for row in rows],
-            [("desktop", "x86_64-pc-windows-msvc")],
+            [("cli", "x86_64-pc-windows-msvc"), ("desktop", "x86_64-pc-windows-msvc")],
         )
         self.assertNotIn("regressify", json.dumps(rows))
+
+    def test_manual_desktop_also_selects_companion_cli(self):
+        result, rows = self.matrix("desktop", ["WINDOWS_X86_64"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            {(row["application"], row["target"]) for row in rows},
+            {("cli", "x86_64-pc-windows-msvc"), ("desktop", "x86_64-pc-windows-msvc")},
+        )
 
     def test_matrix_job_does_not_load_secrets(self):
         self.assertNotIn(
@@ -213,17 +221,44 @@ gh() {
                     self.assertNotEqual(step.get("with", {}).get("ref"), "release")
 
     def test_windows_publishing_is_tag_gated_and_keeps_token_out_of_the_build(self):
-        steps = WORKFLOW["jobs"]["release"]["steps"]
-        for name in ("Setup Tuyen CLI", "Check Tuyen Drive upload support", "Build Windows desktop release", "Build Windows installer", "Retain Windows installer", "Publish Windows installer to Tuyen Drive", "Verify Windows installer publish"):
-            step = next(step for step in steps if step.get("name") == name)
-            self.assertIn("github.ref_type == 'tag'", step["if"])
-            self.assertIn("matrix.application == 'desktop'", step["if"])
-            self.assertIn("matrix.target == 'x86_64-pc-windows-msvc'", step["if"])
-        build = next(step for step in steps if step.get("name") == "Build Windows desktop release")
+        job = WORKFLOW["jobs"]["installer"]
+        self.assertEqual(job["needs"], ["set-matrix", "release"])
+        self.assertEqual(job["if"], "${{ needs.set-matrix.outputs.installer == 'true' }}")
+        self.assertEqual(job["runs-on"], "windows-latest")
+        self.assertEqual(WORKFLOW["jobs"]["set-matrix"]["outputs"]["installer"], "${{ steps.matrix.outputs.installer }}")
+        steps = job["steps"]
+        builds = WORKFLOW["jobs"]["release"]["steps"]
+        build = next(step for step in builds if step.get("name") == "Build Windows desktop release")
+        self.assertEqual(build["if"], "${{ matrix.installer && matrix.application == 'desktop' }}")
         self.assertEqual(build["env"]["REGRESSIFY_DESKTOP_VERSION"], "${{ needs.set-matrix.outputs.version }}")
         self.assertEqual(build["env"]["TUYEN_DRIVE_APP"], "${{ secrets.TUYEN_DRIVE_APP }}")
         self.assertNotIn("TUYEN_DRIVE_TOKEN", build["env"])
         self.assertIn("+crt-static", build["env"]["RUSTFLAGS"])
+        cli = next(step for step in builds if step.get("name") == "Build Windows CLI release")
+        self.assertEqual(cli["if"], "${{ matrix.installer && matrix.application == 'cli' }}")
+        self.assertIn("cargo build --locked --no-default-features --bin regressify --release --target x86_64-pc-windows-msvc", cli["run"])
+        self.assertIn("if ($LASTEXITCODE -ne 0)", cli["run"])
+        self.assertEqual(cli["env"]["BINARY_GIT_HASH"], "${{ github.sha }}")
+        self.assertIn("+crt-static", cli["env"]["RUSTFLAGS"])
+        self.assertNotIn("secrets.", json.dumps(cli))
+        payload = next(step for step in builds if step.get("name") == "Retain installer payload")
+        self.assertEqual(payload["if"], "${{ matrix.installer }}")
+        self.assertEqual(payload["with"]["name"], "regressify-installer-${{ matrix.application }}")
+        self.assertEqual(payload["with"]["path"], "target/x86_64-pc-windows-msvc/release/${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}.exe")
+        self.assertEqual(payload["with"]["if-no-files-found"], "error")
+        downloads = [step for step in steps if step.get("uses", "").startswith("actions/download-artifact@")]
+        self.assertEqual({step["with"]["name"] for step in downloads}, {"regressify-installer-cli", "regressify-installer-desktop"})
+        package = next(step for step in steps if step.get("name") == "Build Windows installer")
+        self.assertIn('$env:ISCC_PATH = $compiler', package["run"])
+        self.assertIn('python ci/test-release.py InstallerTests', package["run"])
+        for download in downloads:
+            self.assertEqual(download["with"]["path"], "target/x86_64-pc-windows-msvc/release")
+            self.assertLess(steps.index(download), steps.index(package))
+        for step in builds + steps:
+            self.assertNotIn("continue-on-error", step)
+            self.assertNotIn("always()", step.get("if", ""))
+            if step.get("name") != "Publish Windows installer to Tuyen Drive":
+                self.assertNotIn("TUYEN_DRIVE_TOKEN", step.get("env", {}))
         publish = next(step for step in steps if step.get("name") == "Publish Windows installer to Tuyen Drive")
         self.assertEqual(publish["env"]["TUYEN_DRIVE_TOKEN"], "${{ secrets.TUYEN_DRIVE_TOKEN }}")
         self.assertEqual(publish["env"]["INSTALLER_VERSION"], "${{ needs.set-matrix.outputs.version }}")
@@ -234,7 +269,10 @@ gh() {
         support = next(step for step in steps if step.get("name") == "Check Tuyen Drive upload support")
         self.assertIn("tuyen drive upload-app --help", support["run"])
         self.assertLess(steps.index(setup), steps.index(support))
-        self.assertLess(steps.index(support), steps.index(build))
+        self.assertLess(steps.index(support), steps.index(package))
+        retain = next(step for step in steps if step.get("name") == "Retain Windows installer")
+        self.assertLess(steps.index(package), steps.index(retain))
+        self.assertLess(steps.index(retain), steps.index(publish))
         verify = next(step for step in steps if step.get("name") == "Verify Windows installer publish")
         self.assertNotIn("TUYEN_DRIVE_TOKEN", verify["env"])
         self.assertIn("ci/drive_release.py verify", verify["run"])
@@ -251,7 +289,7 @@ gh() {
         self.assertNotIn("[UninstallDelete]", installer)
 
     def test_windows_installer_foreground_handoff_is_smoke_tested(self):
-        step = next(step for step in WORKFLOW["jobs"]["release"]["steps"]
+        step = next(step for step in WORKFLOW["jobs"]["installer"]["steps"]
                     if step.get("name") == "Build Windows installer")
         self.assertIn("-SmokeTest", step["run"])
         installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
@@ -268,7 +306,7 @@ gh() {
         desktop = (ROOT / "src/bin/desktop.rs").read_text(encoding="utf-8")
         smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
         self.assertIn("BeforeInstall: PrepareChromium", installer)
-        self.assertIn("if CurStep = ssPostInstall then\n    PrepareChromium;", installer)
+        self.assertIn("RegisterCliPath(ExpandConstant('{app}'));\n    PrepareChromium;", installer)
         self.assertIn("if ChromiumPrepared then", installer)
         self.assertIn("{param:SKIPCHROMIUM|0}", installer)
         self.assertIn("ExecAndLogOutput(", installer)
@@ -302,14 +340,14 @@ gh() {
     def test_tuyen_upload_arguments_and_failures(self):
         shell = shutil.which("pwsh")
         self.assertIsNotNone(shell, "PowerShell 7 is required for the Windows publish-step test")
-        step = next(step for step in WORKFLOW["jobs"]["release"]["steps"]
+        step = next(step for step in WORKFLOW["jobs"]["installer"]["steps"]
                     if step.get("name") == "Publish Windows installer to Tuyen Drive")
         pipeline = yaml.load(
             (ROOT / ".ado/workflows/tuyen-release.yaml").read_text(encoding="utf-8"),
             Loader=yaml.BaseLoader,
         )
         release = next(stage for stage in pipeline["stages"] if stage["stage"] == "Release")
-        azure_step = next(step for step in release["jobs"][0]["steps"]
+        azure_step = next(step for job in release["jobs"] for step in job["steps"]
                           if step.get("displayName") == "Publish Windows installer to Tuyen Drive")
         scripts = {"GitHub": step["run"], "Azure": azure_step["pwsh"]}
         stub = '''
@@ -365,6 +403,7 @@ function tuyen {
         self.assertNotIn("max-parallel", job["strategy"])
         self.assertEqual(job["strategy"]["matrix"], "${{ fromJson(needs.set-matrix.outputs.matrix) }}")
         build = next(step for step in job["steps"] if step.get("name") == "Build artifacts")
+        self.assertEqual(build["if"], "${{ !matrix.installer }}")
         self.assertEqual(build["env"]["FILE_NAME"], "${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}")
         self.assertEqual(build["env"]["PACKAGE_NAME"], "${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify-cli' }}")
         self.assertEqual(build["env"]["CARGO_FEATURES"], "${{ matrix.features }}")
@@ -374,7 +413,7 @@ function tuyen {
 
     def test_every_application_and_platform_selection(self):
         for build in ("cli", "desktop", "both"):
-            applications = ("cli", "desktop") if build == "both" else (build,)
+            applications = ("cli",) if build == "cli" else ("cli", "desktop")
             for flags in itertools.product((False, True), repeat=len(TARGETS)):
                 selected = [key for key, enabled in zip(TARGETS, flags) if enabled]
                 with self.subTest(build=build, selected=selected):
@@ -383,6 +422,7 @@ function tuyen {
                         (application, target)
                         for application in applications for target in targets
                         if application != "desktop" or not target.endswith("-musl")
+                        if build != "desktop" or not target.endswith("-musl")
                     }
                     result, rows = self.matrix(build, selected)
                     if not expected:
@@ -415,6 +455,18 @@ function tuyen {
         result, rows = self.matrix("invalid", [])
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(rows)
+
+    def test_installer_payloads_require_a_tagged_windows_desktop_selection(self):
+        for build, ref_type, selected in itertools.product(
+            ("cli", "desktop", "both"), ("branch", "tag"), ([], ["WINDOWS_X86_64"], ["WINDOWS_X86_64", "MACOS_AARCH64"]),
+        ):
+            with self.subTest(build=build, ref_type=ref_type, selected=selected):
+                result, rows = self.matrix(build, selected, ref_type=ref_type)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payloads = [row for row in rows if row["installer"]]
+                expected = {"cli", "desktop"} if ref_type == "tag" and build != "cli" and selected else set()
+                self.assertEqual({row["application"] for row in payloads}, expected)
+                self.assertTrue(all(row["target"] == "x86_64-pc-windows-msvc" for row in payloads))
 
     def test_release_build_arguments(self):
         bash = os.environ.get("BASH_PATH") or shutil.which("bash")
@@ -463,6 +515,8 @@ class AzureReleaseTests(unittest.TestCase):
         self.plan = next(stage for stage in self.pipeline["stages"] if stage["stage"] == "Plan")
         self.release = next(stage for stage in self.pipeline["stages"] if stage["stage"] == "Release")
         self.steps = self.release["jobs"][0]["steps"]
+        self.installer = next(job for job in self.release["jobs"] if job["job"] == "Installer")
+        self.installer_steps = self.installer["steps"]
 
     def matrix(self, build, selected, reason="Manual", ref="refs/heads/master"):
         step = next(step for step in self.plan["jobs"][0]["steps"] if step.get("name") == "Matrix")
@@ -481,18 +535,20 @@ class AzureReleaseTests(unittest.TestCase):
             for name in matrix:
                 self.assertRegex(name, r"^[A-Za-z][A-Za-z0-9_]{0,99}$")
             rows = list(matrix.values())
+            installer = str(any(row["installerPayload"] == "true" for row in rows)).lower()
+            self.assertIn(f"##vso[task.setvariable variable=buildInstaller;isOutput=true]{installer}", result.stdout)
         return result, rows
 
-    def test_tag_push_builds_windows_desktop(self):
+    def test_tag_push_builds_windows_desktop_and_cli(self):
         for reason in ("IndividualCI", "BatchedCI"):
             with self.subTest(reason=reason):
                 result, rows = self.matrix("both", list(TARGETS), reason, "refs/tags/v1.2.3")
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(
                     [(row["application"], row["target"]) for row in rows],
-                    [("desktop", "x86_64-pc-windows-msvc")],
+                    [("cli", "x86_64-pc-windows-msvc"), ("desktop", "x86_64-pc-windows-msvc")],
                 )
-                self.assertEqual(rows[0]["buildInstaller"], "true")
+                self.assertTrue(all(row["installerPayload"] == "true" for row in rows))
                 self.assertIn("##vso[task.setvariable variable=version;isOutput=true]1.2.3.0", result.stdout)
 
     def test_manual_runs_preserve_selection_and_linux_fallback(self):
@@ -507,20 +563,32 @@ class AzureReleaseTests(unittest.TestCase):
                         {(application, target) for application in ("cli", "desktop") for target in targets},
                     )
                     for row in rows:
-                        installer = (ref.startswith("refs/tags/") and row["application"] == "desktop"
-                                     and row["target"] == "x86_64-pc-windows-msvc")
-                        self.assertEqual(row["buildInstaller"], str(installer).lower())
+                        installer = ref.startswith("refs/tags/") and row["target"] == "x86_64-pc-windows-msvc"
+                        self.assertEqual(row["installerPayload"], str(installer).lower())
+
+    def test_installer_payloads_require_a_tagged_windows_desktop_selection(self):
+        for build, ref, selected in itertools.product(
+            ("cli", "desktop", "both"), ("refs/heads/master", "refs/tags/v1.2.3"), ([], ["WINDOWS_X86_64"], ["WINDOWS_X86_64", "MACOS_X86_64"]),
+        ):
+            with self.subTest(build=build, ref=ref, selected=selected):
+                result, rows = self.matrix(build, selected, ref=ref)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                payloads = [row for row in rows if row["installerPayload"] == "true"]
+                expected = {"cli", "desktop"} if ref.startswith("refs/tags/") and build != "cli" and selected else set()
+                self.assertEqual({row["application"] for row in payloads}, expected)
+                self.assertTrue(all(row["target"] == "x86_64-pc-windows-msvc" for row in payloads))
 
     def test_every_application_and_supported_platform_selection(self):
         supported = {key: target for key, target in TARGETS.items() if key != "MACOS_AARCH64"}
         for build in ("cli", "desktop", "both"):
-            applications = ("cli", "desktop") if build == "both" else (build,)
+            applications = ("cli",) if build == "cli" else ("cli", "desktop")
             for flags in itertools.product((False, True), repeat=len(supported)):
                 selected = [key for key, enabled in zip(supported, flags) if enabled]
                 with self.subTest(build=build, selected=selected):
                     targets = [supported[key] for key in selected] or [supported["LINUX_GNU_X86_64"]]
                     expected = {(application, target) for application in applications for target in targets
-                                if application != "desktop" or not target.endswith("-musl")}
+                                if (application != "desktop" or not target.endswith("-musl"))
+                                and (build != "desktop" or not target.endswith("-musl"))}
                     result, rows = self.matrix(build, selected)
                     if not expected:
                         self.assertNotEqual(result.returncode, 0)
@@ -535,7 +603,7 @@ class AzureReleaseTests(unittest.TestCase):
                         self.assertEqual(row["features"], "gui" if desktop else "")
                         self.assertEqual(row["fileName"], "regressify-desktop" if desktop else "regressify")
                         self.assertEqual(row["packageName"], "regressify-desktop" if desktop else "regressify-cli")
-                        self.assertEqual(row["buildInstaller"], "false")
+                        self.assertEqual(row["installerPayload"], "false")
                         if row["target"].endswith("-darwin"):
                             self.assertEqual(row["os"], "macos-15")
                         elif row["target"].endswith("-msvc"):
@@ -576,8 +644,11 @@ class AzureReleaseTests(unittest.TestCase):
         self.assertEqual([variable["group"] for variable in variables if "group" in variable], ["GitHub", "Regressify"])
         version = next(variable["value"] for variable in variables if variable.get("name") == "releaseVersion")
         self.assertEqual(version, "$[ stageDependencies.Plan.SetMatrix.outputs['Matrix.version'] ]")
+        installer = next(variable["value"] for variable in variables if variable.get("name") == "buildInstaller")
+        self.assertEqual(installer, "$[ stageDependencies.Plan.SetMatrix.outputs['Matrix.buildInstaller'] ]")
         job = self.release["jobs"][0]
         self.assertEqual(job["strategy"]["matrix"], "$[ stageDependencies.Plan.SetMatrix.outputs['Matrix.matrix'] ]")
+        self.assertNotIn("maxParallel", job["strategy"])
         self.assertEqual(job["pool"]["vmImage"], "$(os)")
         self.assertGreaterEqual(int(job["timeoutInMinutes"]), 90)
         parameters = {parameter["name"]: parameter for parameter in self.pipeline["parameters"]}
@@ -598,7 +669,7 @@ class AzureReleaseTests(unittest.TestCase):
             if step.get("checkout") == "self":
                 self.assertEqual(step["submodules"], "recursive")
         archives = next(step for step in self.steps if step.get("displayName") == "Build artifacts")
-        self.assertEqual(archives["condition"], "and(succeeded(), ne(variables['buildInstaller'], 'true'))")
+        self.assertEqual(archives["condition"], "and(succeeded(), ne(variables['installerPayload'], 'true'))")
         for name, value in {"FILE_NAME": "$(fileName)", "PACKAGE_NAME": "$(packageName)",
                             "CARGO_FEATURES": "$(features)", "NO_DEFAULT_FEATURES": "1",
                             "GITHUB_REF": "$(Build.SourceBranch)", "GITHUB_SHA": "$(Build.SourceVersion)",
@@ -607,34 +678,59 @@ class AzureReleaseTests(unittest.TestCase):
             self.assertEqual(archives["env"][name], value)
 
     def test_windows_release_is_gated_and_retained_before_publishing(self):
-        names = ("Setup Tuyen CLI", "Check Tuyen Drive upload support", "Build Windows desktop release",
+        self.assertEqual(self.installer["dependsOn"], "Build")
+        self.assertEqual(self.installer["condition"], "and(succeeded(), eq(variables['buildInstaller'], 'true'))")
+        self.assertEqual(self.installer["pool"]["vmImage"], "windows-latest")
+        names = ("Setup Tuyen CLI", "Check Tuyen Drive upload support",
                  "Build Windows installer", "Retain Windows installer", "Publish Windows installer to Tuyen Drive",
                  "Verify Windows installer publish")
-        steps = {name: next(step for step in self.steps if step.get("displayName") == name) for name in names}
-        indexes = [self.steps.index(steps[name]) for name in names]
+        steps = {name: next(step for step in self.installer_steps if step.get("displayName") == name) for name in names}
+        indexes = [self.installer_steps.index(steps[name]) for name in names]
         self.assertEqual(indexes, sorted(indexes))
         for step in steps.values():
-            self.assertEqual(step["condition"], "and(succeeded(), eq(variables['buildInstaller'], 'true'))")
+            self.assertNotIn("condition", step)
         self.assertIn("https://cli.tuyen.blog/install.ps1", steps[names[0]]["pwsh"])
         self.assertIn("##vso[task.prependpath]", steps[names[0]]["pwsh"])
         self.assertIn("tuyen drive upload-app --help", steps[names[1]]["pwsh"])
-        build = steps[names[2]]
+        build = next(step for step in self.steps if step.get("displayName") == "Build Windows desktop release")
+        self.assertEqual(build["condition"], "and(succeeded(), eq(variables['installerPayload'], 'true'), eq(variables['application'], 'desktop'))")
         self.assertIn("cargo build --locked --no-default-features --features gui --bin regressify-desktop", build["pwsh"])
         self.assertEqual(build["env"]["REGRESSIFY_DESKTOP_VERSION"], "$(releaseVersion)")
         self.assertEqual(build["env"]["TUYEN_DRIVE_APP"], "$(TUYEN_DRIVE_APP)")
         self.assertEqual(build["env"]["BINARY_GIT_HASH"], "$(Build.SourceVersion)")
         self.assertIn("+crt-static", build["env"]["RUSTFLAGS"])
-        self.assertIn("-RequireStaticRuntime -SmokeTest", steps[names[3]]["pwsh"])
-        self.assertEqual(steps[names[4]]["task"], "PublishPipelineArtifact@1")
-        self.assertEqual(steps[names[4]]["inputs"]["targetPath"], "$(installer)")
-        self.assertEqual(steps[names[5]]["env"]["TUYEN_DRIVE_TOKEN"], "$(TUYEN_DRIVE_TOKEN)")
-        self.assertEqual(steps[names[5]]["env"]["INSTALLER_VERSION"], "$(releaseVersion)")
-        verify = steps[names[6]]
+        cli = next(step for step in self.steps if step.get("displayName") == "Build Windows CLI release")
+        self.assertEqual(cli["condition"], "and(succeeded(), eq(variables['installerPayload'], 'true'), eq(variables['application'], 'cli'))")
+        self.assertIn("cargo build --locked --no-default-features --bin regressify --release --target x86_64-pc-windows-msvc", cli["pwsh"])
+        self.assertIn("if ($LASTEXITCODE -ne 0)", cli["pwsh"])
+        self.assertEqual(cli["env"]["BINARY_GIT_HASH"], "$(Build.SourceVersion)")
+        self.assertIn("+crt-static", cli["env"]["RUSTFLAGS"])
+        self.assertNotIn("TUYEN_", json.dumps(cli))
+        payload = next(step for step in self.steps if step.get("displayName") == "Retain installer payload")
+        self.assertEqual(payload["condition"], "and(succeeded(), eq(variables['installerPayload'], 'true'))")
+        self.assertEqual(payload["inputs"]["artifact"], "regressify-installer-$(application)")
+        self.assertEqual(payload["inputs"]["targetPath"], "$(Build.SourcesDirectory)/target/x86_64-pc-windows-msvc/release/$(fileName).exe")
+        downloads = [step for step in self.installer_steps if step.get("task") == "DownloadPipelineArtifact@2"]
+        self.assertEqual({step["inputs"]["artifactName"] for step in downloads}, {"regressify-installer-cli", "regressify-installer-desktop"})
+        for download in downloads:
+            self.assertEqual(download["inputs"]["buildType"], "current")
+            self.assertEqual(download["inputs"]["targetPath"], "$(Build.SourcesDirectory)/target/x86_64-pc-windows-msvc/release")
+            self.assertLess(self.installer_steps.index(download), self.installer_steps.index(steps[names[2]]))
+        self.assertIn("-RequireStaticRuntime -SmokeTest", steps[names[2]]["pwsh"])
+        self.assertIn('$env:ISCC_PATH = $compiler', steps[names[2]]["pwsh"])
+        self.assertIn('python ci/test-release.py InstallerTests', steps[names[2]]["pwsh"])
+        self.assertEqual(steps[names[3]]["task"], "PublishPipelineArtifact@1")
+        self.assertEqual(steps[names[3]]["inputs"]["targetPath"], "$(installer)")
+        self.assertEqual(steps[names[4]]["env"]["TUYEN_DRIVE_TOKEN"], "$(TUYEN_DRIVE_TOKEN)")
+        self.assertEqual(steps[names[4]]["env"]["INSTALLER_VERSION"], "$(releaseVersion)")
+        verify = steps[names[5]]
         self.assertIn("ci/drive_release.py verify", verify["pwsh"])
         self.assertEqual(verify["env"]["GITHUB_REF_TYPE"], "tag")
         self.assertEqual(verify["env"]["GITHUB_REF_NAME"], "$(Build.SourceBranchName)")
-        for step in self.steps:
-            if step is not steps[names[5]]:
+        for step in self.steps + self.installer_steps:
+            self.assertNotIn("continueOnError", step)
+            self.assertNotIn("always()", step.get("condition", ""))
+            if step is not steps[names[4]]:
                 self.assertNotIn("TUYEN_DRIVE_TOKEN", step.get("env", {}))
 
     def test_powershell_steps_parse(self):
@@ -652,7 +748,7 @@ foreach ($script in $scripts) {
 '''
         result = subprocess.run(
             [shell, "-NoProfile", "-NonInteractive", "-Command", parser],
-            input=json.dumps([step["pwsh"] for step in self.steps if "pwsh" in step]),
+            input=json.dumps([step["pwsh"] for step in self.steps + self.installer_steps if "pwsh" in step]),
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -733,6 +829,281 @@ function Invoke-RustFixture {
                         self.assertIn(f"##vso[task.setvariable variable={name}]{value}", result.stdout)
                 else:
                     self.assertNotIn("##vso[task.setvariable", result.stdout)
+
+
+class InstallerTests(unittest.TestCase):
+    def test_payload_preflight_requires_both_files_and_matching_desktop_version(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for installer checks")
+        script = r'''
+$ErrorActionPreference = 'Stop'
+function Get-Item([string]$LiteralPath) {
+    $file = Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath
+    [pscustomobject]@{
+        FullName = $file.FullName
+        PSIsContainer = $file.PSIsContainer
+        VersionInfo = @{ FileVersion = $env:PAYLOAD_TEST_VERSION }
+    }
+}
+$source = [System.IO.File]::ReadAllText('ci/build-desktop-installer.ps1')
+$parsed = [ScriptBlock]::Create($source)
+$boundary = $parsed.Ast.EndBlock.Statements | Where-Object { $_.Extent.Text.StartsWith('if (-not $Compiler)') } | Select-Object -First 1
+if (-not $boundary) { throw 'Installer preflight boundary was not found.' }
+$preflight = Join-Path $env:PAYLOAD_TEST_DIRECTORY 'preflight.ps1'
+[System.IO.File]::WriteAllText($preflight, $source.Substring(0, $boundary.Extent.StartOffset))
+& $preflight -Version '1.2.3.0' -BinaryDirectory $env:PAYLOAD_TEST_DIRECTORY
+'''
+        for desktop, cli, version, succeeds in [
+            ("file", "file", "1.2.3.0", True), ("file", "missing", "1.2.3.0", False),
+            ("missing", "file", "1.2.3.0", False), ("file", "directory", "1.2.3.0", False),
+            ("directory", "file", "1.2.3.0", False), ("file", "file", "1.2.4.0", False),
+        ]:
+            with self.subTest(desktop=desktop, cli=cli, version=version), tempfile.TemporaryDirectory() as directory:
+                for name, kind in [("regressify-desktop.exe", desktop), ("regressify.exe", cli)]:
+                    path = Path(directory) / name
+                    if kind == "file":
+                        path.write_bytes(b"synthetic payload")
+                    elif kind == "directory":
+                        path.mkdir()
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script], cwd=ROOT,
+                    env=dict(os.environ, PAYLOAD_TEST_DIRECTORY=directory, PAYLOAD_TEST_VERSION=version),
+                    capture_output=True, text=True, check=False, timeout=15,
+                )
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+
+    def test_static_runtime_is_required_for_each_payload(self):
+        shell = shutil.which("pwsh")
+        self.assertIsNotNone(shell, "PowerShell 7 is required for installer checks")
+        script = r'''
+$ErrorActionPreference = 'Stop'
+$binary = [pscustomobject]@{ Name = 'regressify-desktop.exe'; FullName = 'regressify-desktop.exe' }
+$cliBinary = [pscustomobject]@{ Name = 'regressify.exe'; FullName = 'regressify.exe' }
+function Invoke-DumpbinFixture {
+    if ($args[0] -ne '/DEPENDENTS') { throw 'Incorrect dumpbin arguments.' }
+    [Console]::WriteLine('Checked ' + $args[1])
+    $global:LASTEXITCODE = 0
+    if ($args[1] -eq $env:PAYLOAD_TEST_BAD_BINARY) {
+        if ($env:PAYLOAD_TEST_FAILURE -eq 'exit') { $global:LASTEXITCODE = 7 }
+        else { Write-Output 'VCRUNTIME140.dll' }
+    } else { Write-Output 'KERNEL32.dll' }
+}
+$dumpbin = 'Invoke-DumpbinFixture'
+$parsed = [ScriptBlock]::Create([System.IO.File]::ReadAllText('ci/build-desktop-installer.ps1'))
+$loop = $parsed.Ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.ForEachStatementAst] -and $node.Variable.Extent.Text -eq '$payload'
+}, $true)
+if (-not $loop) { throw 'Installer payload dependency loop was not found.' }
+& ([ScriptBlock]::Create($loop.Extent.Text))
+'''
+        for binary, failure in itertools.product(("", "regressify-desktop.exe", "regressify.exe"), ("exit", "runtime")):
+            with self.subTest(binary=binary, failure=failure):
+                result = subprocess.run(
+                    [shell, "-NoProfile", "-NonInteractive", "-Command", script], cwd=ROOT,
+                    env=dict(os.environ, PAYLOAD_TEST_BAD_BINARY=binary, PAYLOAD_TEST_FAILURE=failure),
+                    capture_output=True, text=True, check=False, timeout=15,
+                )
+                self.assertEqual(result.returncode == 0, not binary, result.stderr)
+                if not binary:
+                    self.assertIn("Checked regressify-desktop.exe", result.stdout)
+                    self.assertIn("Checked regressify.exe", result.stdout)
+                else:
+                    self.assertIn(binary, result.stderr)
+
+    def test_installer_copies_and_smoke_tests_both_executables(self):
+        installer = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
+        self.assertIn('Source: "{#SourceDir}\\regressify.exe"; DestDir: "{app}"; Flags: ignoreversion', installer)
+        self.assertIn('Source: "{#SourceDir}\\regressify-desktop.exe"; DestDir: "{app}"; Flags: ignoreversion', installer)
+        smoke = (ROOT / "ci/build-desktop-installer.ps1").read_text(encoding="utf-8")
+        self.assertIn('Get-FileHash -LiteralPath $installedCli -Algorithm SHA256', smoke)
+        self.assertIn('& $installedCli --version', smoke)
+        self.assertIn("$installedCli = Join-Path $destination 'regressify.exe'", smoke)
+        self.assertEqual(smoke.count('        Assert-InstallerCliPath\n'), 3)
+        self.assertIn('where.exe regressify && regressify --version', smoke)
+        self.assertIn('DoNotExpandEnvironmentNames', smoke)
+        self.assertIn('Uninstall did not preserve the original user PATH data and type.', smoke)
+        self.assertIn('Uninstall left the installed CLI behind.', smoke)
+
+    def test_installer_builder_powershell_parses(self):
+        script = r'''
+$tokens = $null
+$parseErrors = $null
+[System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) 'ci/build-desktop-installer.ps1'), [ref]$tokens, [ref]$parseErrors) | Out-Null
+if ($parseErrors) { throw ($parseErrors | Out-String) }
+'''
+        result = subprocess.run(
+            [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", script],
+            cwd=ROOT, capture_output=True, text=True, check=False, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(os.name == "nt" and os.environ.get("ISCC_PATH"), "Set ISCC_PATH on Windows for isolated Inno PATH tests")
+    def test_inno_path_registration_preserves_user_data(self):
+        source = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
+        self.assertIn("ChangesEnvironment=yes", source)
+        self.assertIn("RegisterCliPath(ExpandConstant('{app}'));", source)
+        self.assertIn("if CurUninstallStep = usPostUninstall then", source)
+        self.assertIn("NotifyEnvironmentChange(BroadcastWindow, EnvironmentChangeMessage", source)
+        path_code = source.split("[Code]\n", 1)[1].split("procedure ChromiumInstallLog", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="regressify-inno-") as directory:
+            fixture = Path(directory)
+            registry_root = "Software\\Regressify\\InstallerPathTests\\" + fixture.name
+            for name, key in [("UserEnvironmentKey", "Environment"), ("CliPathOwnerKey", "Software\\Regressify\\DesktopInstaller")]:
+                declaration = f"{name} = '{key}';"
+                self.assertEqual(path_code.count(declaration), 1)
+                path_code = path_code.replace(declaration, f"{name} = '{registry_root}\\{name}';")
+            results = fixture / "results.txt"
+            tests = r'''
+procedure Check(Condition: Boolean; const Message: String);
+begin
+  if not Condition then
+    RaiseException(Message);
+end;
+
+procedure CheckPath(const Expected: String; ExpectedType: Cardinal);
+var
+  Actual: String;
+  ValueType: Cardinal;
+begin
+  Check(ReadUserPath(Actual, ValueType), 'Cannot read fixture PATH');
+  Check(Actual = Expected, 'PATH entries were changed or duplicated');
+  Check(ValueType = ExpectedType, 'PATH registry type ' + IntToStr(ValueType) + ' instead of ' + IntToStr(ExpectedType) + ', value length ' + IntToStr(Length(Expected)));
+end;
+
+procedure RunPathCases;
+var
+  Original, Directory, Alias, Current: String;
+  Failed: Boolean;
+  ValueType: Cardinal;
+begin
+  Directory := 'C:\Regressify Path Test';
+  RegisterCliPath(Directory);
+  CheckPath(Directory, 2);
+  RemoveCliPath;
+  CheckPath('', 0);
+  Check(not RegKeyExists(HKCU, CliPathOwnerKey), 'Ownership was not removed');
+
+  Check(RegWriteStringValue(HKCU, UserEnvironmentKey, 'Path', ''), 'Cannot seed empty PATH');
+  RegisterCliPath(Directory);
+  RemoveCliPath;
+  CheckPath('', 1);
+
+  Original := 'C:\tools;;%SystemRoot%\System32;C:\tools-extra;';
+  Check(RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Original), 'Cannot seed PATH');
+  RegisterCliPath(Directory);
+  RegisterCliPath(Directory);
+  CheckPath(Original + ';' + Directory, 2);
+  Check(RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Original + ';' + Directory + ';C:\later'), 'Cannot append unrelated entry');
+  RemoveCliPath;
+  RemoveCliPath;
+  CheckPath(Original + ';C:\later', 2);
+
+  Check(RegDeleteValue(HKCU, UserEnvironmentKey, 'Path'), 'Cannot reset PATH type');
+  Check(RegWriteStringValue(HKCU, UserEnvironmentKey, 'Path', Original), 'Cannot seed literal PATH');
+  RegisterCliPath(Directory);
+  CheckPath(Original + ';' + Directory, 1);
+  RemoveCliPath;
+  CheckPath(Original, 1);
+
+  Original := '"' + Uppercase(Directory) + '\";C:\other';
+  Check(RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Original), 'Cannot seed existing entry');
+  RegisterCliPath(Directory);
+  Check(not RegKeyExists(HKCU, CliPathOwnerKey), 'Pre-existing entry was claimed');
+  RemoveCliPath;
+  CheckPath(Original, 2);
+
+  Alias := '%TEMP%\Regressify Path Test';
+  Directory := AddBackslash(GetEnv('TEMP')) + 'Regressify Path Test';
+  Check(RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Alias), 'Cannot seed environment alias');
+  RegisterCliPath(Directory);
+  RemoveCliPath;
+  CheckPath(Alias, 2);
+
+  Original := Directory + '-other';
+  Check(RegWriteExpandStringValue(HKCU, UserEnvironmentKey, 'Path', Original), 'Cannot seed prefix entry');
+  RegisterCliPath(Directory);
+  CheckPath(Original + ';' + Directory, 2);
+  RegisterCliPath('C:\new directory');
+  CheckPath(Original + ';C:\new directory', 2);
+  RemoveCliPath;
+  CheckPath(Original, 2);
+
+  Directory := 'C:\semicolon;directory';
+  RegisterCliPath(Directory);
+  CheckPath(Original + ';"' + Directory + '"', 2);
+  RemoveCliPath;
+  CheckPath(Original, 2);
+
+  Check(RegWriteDWordValue(HKCU, UserEnvironmentKey, 'Path', 42), 'Cannot seed invalid PATH type');
+  Failed := False;
+  try
+    RegisterCliPath(Directory);
+  except
+    Failed := True;
+  end;
+  Check(Failed, 'Invalid PATH type was overwritten');
+  Check(RegQueryDWordValue(HKCU, UserEnvironmentKey, 'Path', ValueType) and (ValueType = 42), 'Invalid PATH data was lost');
+  Check(not RegKeyExists(HKCU, CliPathOwnerKey), 'Failed registration claimed PATH');
+
+  Original := StringOfChar('x', 32766);
+  Check(RegWriteStringValue(HKCU, UserEnvironmentKey, 'Path', Original), 'Cannot seed long PATH');
+  Failed := False;
+  try
+    RegisterCliPath(Directory);
+  except
+    Failed := True;
+  end;
+  Check(Failed, 'Oversized PATH was accepted');
+  CheckPath(Original, 1);
+
+  Current := 'C:\first;C:\owned;C:\owned;C:\last';
+  Check(RemovePathEntry(Current, 'C:\owned', False), 'Owned entry was not found');
+  Check(Current = 'C:\first;C:\owned;C:\last', 'Removal deleted unrelated duplicate entries');
+  Current := 'C:\owned;C:\last';
+  Check(RemovePathEntry(Current, 'C:\owned', False) and (Current = 'C:\last'), 'Leading entry removal failed');
+end;
+'''
+            result_path = str(results).replace("'", "''")
+            harness = fixture / "path-tests.iss"
+            harness.write_text(
+                "[Setup]\nAppName=Regressify PATH Tests\nAppVersion=1\nPrivilegesRequired=lowest\n"
+                "CreateAppDir=no\nCreateUninstallRegKey=no\nUninstallable=no\nOutputBaseFilename=path-tests\n"
+                f"OutputDir={fixture}\n[Code]\n" + path_code + tests + f'''
+function InitializeSetup(): Boolean;
+begin
+  Result := False;
+  try
+    try
+      RunPathCases;
+      SaveStringToFile('{result_path}', 'ok', False);
+    except
+      SaveStringToFile('{result_path}', GetExceptionMessage, False);
+    end;
+  finally
+    RegDeleteKeyIncludingSubkeys(HKCU, '{registry_root}');
+  end;
+end;
+''', encoding="utf-8",
+            )
+            compiler = os.environ["ISCC_PATH"]
+            for command in [
+                [compiler, "/Qp", str(harness)],
+                [str(fixture / "path-tests.exe"), "/VERYSILENT", "/SUPPRESSMSGBOXES", "/SP-", "/NORESTART"],
+            ]:
+                result = subprocess.run(command, capture_output=True, text=True, check=False, timeout=90)
+                if command[0] == compiler:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(results.is_file(), "Inno PATH tests did not execute")
+            self.assertEqual(results.read_text(encoding="utf-8-sig"), "ok")
+            for name in ("regressify.exe", "regressify-desktop.exe"):
+                (fixture / name).write_bytes(b"MZ synthetic payload")
+            result = subprocess.run(
+                [compiler, "/Qp", str(ROOT / "installer/regressify-desktop.iss"), "/DAppVersion=1.2.3.0",
+                f"/DSourceDir={fixture}", f"/DInstallerOutput={fixture}"],
+                capture_output=True, text=True, check=False, timeout=90,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class DriveReleaseTests(unittest.TestCase):

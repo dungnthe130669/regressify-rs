@@ -122,6 +122,8 @@ struct Binding {
 pub struct Workbench {
     session: Session,
     activation_task: Option<Task<()>>,
+    _external_file_task: Task<()>,
+    external_file_notice: Option<files::ExternalFileNotice>,
     workspace_instance: Option<DesktopInstance>,
     #[cfg(target_os = "windows")]
     taskbar: Option<super::jump_list::WindowTaskbar>,
@@ -374,6 +376,8 @@ impl Workbench {
             session: Session::default(),
             workspace_instance: None,
             activation_task: None,
+            _external_file_task: Self::watch_external_file(window, cx),
+            external_file_notice: None,
             #[cfg(target_os = "windows")]
             taskbar: None,
             source,
@@ -1298,8 +1302,12 @@ impl Workbench {
     }
 
     fn sync_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.viewport_choices.invalidate();
         self.session.refresh_catalog();
+        self.sync_editor_content(window, cx);
+    }
+
+    fn sync_editor_content(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.viewport_choices.invalidate();
         self.sync_suites(cx);
         let source = self
             .session
@@ -2270,6 +2278,7 @@ impl Workbench {
             .size_full()
             .min_w_0()
             .child(self.render_toolbar(cx))
+            .children(self.render_external_file_notice(cx))
             .child(
                 div()
                     .px_4()

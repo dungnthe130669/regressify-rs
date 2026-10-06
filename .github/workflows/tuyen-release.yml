@@ -63,22 +63,6 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Setup Tuyen CLI
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
-        uses: tuyen-at-work/tuyen-cli-action@master
-
-      - name: Check Tuyen Drive upload support
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
-        shell: pwsh
-        run: |
-          tuyen drive upload-app --help
-          if ($LASTEXITCODE -ne 0) { throw "Tuyen CLI must support 'drive upload-app'; update the CLI release used by the setup action." }
-
-      - uses: actions/setup-python@v7
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
-        with:
-          python-version: '3.12'
-
       - name: ⚡ Cache
         uses: actions/cache@v5
         with:
@@ -112,7 +96,7 @@ jobs:
         if: ${{ contains(matrix.os, 'windows') }}
 
       - name: Build artifacts
-        if: ${{ !(github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc') }}
+        if: ${{ !matrix.installer }}
         run: ci/make-release.sh
         env:
           FILE_NAME: ${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}
@@ -126,7 +110,7 @@ jobs:
         shell: bash
 
       - name: Build Windows desktop release
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
+        if: ${{ matrix.installer && matrix.application == 'desktop' }}
         shell: pwsh
         env:
           REGRESSIFY_DESKTOP_VERSION: ${{ needs.set-matrix.outputs.version }}
@@ -137,9 +121,60 @@ jobs:
           cargo build --locked --no-default-features --features gui --bin regressify-desktop --release --target x86_64-pc-windows-msvc
           if ($LASTEXITCODE -ne 0) { throw "Desktop build failed ($LASTEXITCODE)." }
 
+      - name: Build Windows CLI release
+        if: ${{ matrix.installer && matrix.application == 'cli' }}
+        shell: pwsh
+        env:
+          BINARY_GIT_HASH: ${{ github.sha }}
+          RUSTFLAGS: -C target-feature=+crt-static
+        run: |
+          cargo build --locked --no-default-features --bin regressify --release --target x86_64-pc-windows-msvc
+          if ($LASTEXITCODE -ne 0) { throw "CLI build failed ($LASTEXITCODE)." }
+
+      - name: Retain installer payload
+        if: ${{ matrix.installer }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: regressify-installer-${{ matrix.application }}
+          path: target/x86_64-pc-windows-msvc/release/${{ matrix.application == 'desktop' && 'regressify-desktop' || 'regressify' }}.exe
+          if-no-files-found: error
+
+  installer:
+    needs: [set-matrix, release]
+    if: ${{ needs.set-matrix.outputs.installer == 'true' }}
+    name: Package Windows desktop and CLI
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Tuyen CLI
+        uses: tuyen-at-work/tuyen-cli-action@master
+
+      - name: Check Tuyen Drive upload support
+        shell: pwsh
+        run: |
+          tuyen drive upload-app --help
+          if ($LASTEXITCODE -ne 0) { throw "Tuyen CLI must support 'drive upload-app'; update the CLI release used by the setup action." }
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: Download desktop payload
+        uses: actions/download-artifact@v8
+        with:
+          name: regressify-installer-desktop
+          path: target/x86_64-pc-windows-msvc/release
+
+      - name: Download CLI payload
+        uses: actions/download-artifact@v8
+        with:
+          name: regressify-installer-cli
+          path: target/x86_64-pc-windows-msvc/release
+
       - name: Build Windows installer
         id: installer
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
         shell: pwsh
         env:
           INSTALLER_VERSION: ${{ needs.set-matrix.outputs.version }}
@@ -149,10 +184,14 @@ jobs:
             choco install innosetup --no-progress -y
             if ($LASTEXITCODE -ne 0) { throw "Inno Setup installation failed ($LASTEXITCODE)." }
           }
+          python -m pip install PyYAML==6.0.3
+          if ($LASTEXITCODE -ne 0) { throw "Installer test dependency installation failed ($LASTEXITCODE)." }
+          $env:ISCC_PATH = $compiler
+          python ci/test-release.py InstallerTests
+          if ($LASTEXITCODE -ne 0) { throw "Installer checks failed ($LASTEXITCODE)." }
           ./ci/build-desktop-installer.ps1 -Version $env:INSTALLER_VERSION -Compiler $compiler -RequireStaticRuntime -SmokeTest
 
       - name: Retain Windows installer
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
         uses: actions/upload-artifact@v7
         with:
           name: regressify-desktop-windows-${{ needs.set-matrix.outputs.version }}
@@ -160,7 +199,6 @@ jobs:
           if-no-files-found: error
 
       - name: Publish Windows installer to Tuyen Drive
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
         shell: pwsh
         env:
           TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
@@ -186,7 +224,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Tuyen Drive upload failed ($LASTEXITCODE)." }
 
       - name: Verify Windows installer publish
-        if: ${{ github.ref_type == 'tag' && matrix.application == 'desktop' && matrix.target == 'x86_64-pc-windows-msvc' }}
         shell: pwsh
         env:
           TUYEN_DRIVE_APP: ${{ secrets.TUYEN_DRIVE_APP }}
@@ -201,6 +238,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       version: ${{ steps.version.outputs.version }}
+      installer: ${{ steps.matrix.outputs.installer }}
     steps:
       - uses: actions/checkout@v6
 
@@ -235,7 +273,7 @@ jobs:
           build = "desktop" if tag_push else os.environ.get("BUILD") or "both"
           if build not in ("cli", "desktop", "both"):
               raise SystemExit("Build must be cli, desktop, or both")
-          applications = ("cli", "desktop") if build == "both" else (build,)
+          applications = ("cli",) if build == "cli" else ("cli", "desktop")
           platforms = [
               ("MACOS_X86_64", "macos-15-intel", "x86_64-apple-darwin", 15),
               ("MACOS_AARCH64", "macos-15", "aarch64-apple-darwin", 15),
@@ -250,6 +288,9 @@ jobs:
           selected = selected or [platforms[-1]]
           include = []
           for _, runner, target, timeout in selected:
+              if build == "desktop" and target.endswith("-musl"):
+                  print(f"::notice::Skipping desktop for {target}; Musl releases are CLI-only.")
+                  continue
               for application in applications:
                   desktop = application == "desktop"
                   if desktop and target.endswith("-musl"):
@@ -261,6 +302,7 @@ jobs:
                       "target": target,
                       "timeout": 90 if desktop else timeout,
                       "features": "gui" if desktop else "",
+                      "installer": os.environ.get("GITHUB_REF_TYPE") == "tag" and build != "cli" and target == "x86_64-pc-windows-msvc",
                   })
           if not include:
               raise SystemExit("Desktop releases require a Linux GNU, macOS, or Windows target; Musl is CLI-only.")
@@ -268,3 +310,4 @@ jobs:
           print(json.dumps(matrix, indent=2))
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"matrix={json.dumps(matrix, separators=(',', ':'))}\n")
+              output.write(f"installer={str(any(row['installer'] for row in include)).lower()}\n")

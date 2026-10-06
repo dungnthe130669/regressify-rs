@@ -102,7 +102,9 @@ through the [snapshot assets workflow](.github/workflows/snapshot-assets.yml).
 ## Release Script Permissions
 
 Release definitions are available for [GitHub Actions](.github/workflows/tuyen-release.yml)
-and [Azure Pipelines](.ado/workflows/tuyen-release.yaml). See the
+and [Azure Pipelines](.ado/workflows/tuyen-release.yaml). Desktop selections also
+build the CLI in parallel. The Windows installer installs both executables in
+the same folder and adds that folder to the current user's PATH. See the
 [release guide](docs/desktop.md#release-pipeline) for setup, Library variables,
 supported targets, and publishing safeguards.
 

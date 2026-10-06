@@ -83,10 +83,16 @@ If this is your first time working with **Regressify**, follow these steps (only
    server settings, and JSONC comments are preserved. See
    [workspace initialization](commands.md#workspace-initialization) for details.
 
+   A managed `## Regressify CMP` section in `AGENTS.md` tells agents to use this
+   MCP server. Initialization creates the file or section if missing and refreshes
+   outdated instructions through the next H2 or the end of the file. Other
+   sections and already-current instructions are preserved.
+
    In the [desktop app](desktop.md#workspace-and-files), opening the folder
-   automatically creates missing runtime files, including `regressify.yaml`.
-   No separate initialization step is needed; editor-only assets and an example
-   suite are not added automatically.
+   automatically creates missing runtime files, including `regressify.yaml`,
+   and performs the same MCP and `AGENTS.md` maintenance. No separate
+   initialization step is needed. Schema exports, other VS Code settings, and
+   an example suite are not added automatically.
 
 1. (Optionally) Initialize git in your folder:  
    Ensure you have [Git](https://git-scm.com/downloads) installed locally.
