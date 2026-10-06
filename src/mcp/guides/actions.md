@@ -29,7 +29,7 @@ selectors (`selector`, `selectors`, `save.selector`) become CSS rules or
 `document.querySelector` calls, so they accept standard CSS only. A `text=`
 target can pass the `hide` existence check yet produce an ignored CSS rule.
 Screenshot selectors search only the selected tab's main document, not iframes
-or shadow roots.
+or shadow roots; in them, `viewport` means the visible viewport, not an element.
 
 Prefer stable hooks such as `[data-testid=...]`, IDs, form names, or accessible
 labels over layout paths like `div:nth-child(3)`. Inspect the real page before
@@ -168,8 +168,9 @@ the example's phone/desktop labels in the viewport file before using it.
 
 ## Checkpoints and State
 
-`save.selector` crops that checkpoint independently of scenario final capture
-options. A last applicable `save` among the scenario's own actions replaces the
+`save.selector` crops that checkpoint to an element, or captures the visible
+viewport with `viewport`, independently of scenario final capture options. A
+last applicable `save` among the scenario's own actions replaces the
 automatic final full-page or singular-selector capture, but explicit scenario
 `selectors` still produce captures. Saves inherited through `needs` still create
 checkpoints, named with the consuming scenario's ID, without suppressing its

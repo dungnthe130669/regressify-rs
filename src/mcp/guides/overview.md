@@ -20,7 +20,7 @@ server's version; do not assume newer fields work in an older installed CLI.
 - `get_authoring_guide(topic="actions")`: action syntax, selector engines,
   frames, waits, typing, and tabs.
 - `get_authoring_guide(topic="recipes")`: complete patterns for dynamic content,
-  consent banners, forms, sign-in, popups, iframes, responsive menus, components,
+  consent banners, forms, sign-in, popups, iframes, header menus, components,
   and staging URLs.
 - `get_authoring_guide(topic="workspace")`: defaults, setting scopes, and
   configuration precedence.
@@ -52,6 +52,9 @@ server's version; do not assume newer fields work in an older installed CLI.
   environment variables. Keep secrets out of suites.
 - A test image whose dimensions differ from its reference always fails, so
   prefer component `selectors` when unrelated page height may change.
+- An element screenshot keeps only the pixels inside that element's box. Menus,
+  drawers, popovers, and dialogs opened by actions usually extend beyond their
+  container, so capture `viewport` or the opened layer as well.
 - A last `save` among a scenario's own actions replaces its automatic final
   screenshot; explicit `selectors` are still captured.
 - Mask only nondeterministic regions, never the behavior under test.

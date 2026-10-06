@@ -89,6 +89,17 @@ pub(super) fn build() -> Result<Value> {
             json!({"displayName": "Checkout", "viewportNames": ["phone", "desktop"], "scenarios": [{"id": "checkout", "label": "Checkout form", "url": "https://example.com/checkout", "actions": [{"click": "#mobile-menu", "viewportNames": "phone"}, {"input": "#email", "value": "qa@example.com"}, {"check": "#terms"}, {"click": "#submit"}, {"wait": "#confirmation"}, {"save": "confirmation", "selector": "#confirmation"}]}]}),
         ),
         (
+            "navigation-menus",
+            "suite",
+            "visual_tests/navigation.tests.yaml",
+            "A closed header plus opened menus, using the phone and desktop labels from the viewports example. An element capture keeps only pixels inside that element's box, so opened panels and drawers use viewport or their own selector, not header. Replace selectors with verified page selectors.",
+            json!({"viewportNames": ["phone", "desktop"], "scenarios": [
+                {"id": "header", "label": "Header", "url": "https://example.com", "selector": "header"},
+                {"id": "products-menu", "label": "Products menu", "url": "https://example.com", "actions": [{"click": "#menu-toggle", "viewportNames": "phone"}, {"click": "#products-toggle"}, {"wait": "#products-panel"}], "selectors": ["viewport", "#products-panel"]},
+                {"id": "account-menu", "label": "Account menu", "url": "https://example.com", "viewportNames": "desktop", "actions": [{"hover": "#account-toggle"}, {"wait": "#account-dropdown"}], "selector": "viewport"}
+            ]}),
+        ),
+        (
             "reuse-actions",
             "suite",
             "visual_tests/cart.tests.yaml",
@@ -290,13 +301,23 @@ mod tests {
                     serde_json::from_value::<WorkspaceConfig>(value).unwrap();
                 }
                 "suite" => {
-                    serde_json::from_value::<TestSuite>(value).unwrap();
+                    let suite = serde_json::from_value::<TestSuite>(value).unwrap();
+                    for scenario in &suite.scenarios {
+                        crate::test::capture::validate_scenario_capture_names(scenario)
+                            .unwrap_or_else(|error| panic!("{name}: {error}"));
+                        for action in scenario.actions.iter().flatten() {
+                            crate::test::validate_action_fields(action)
+                                .unwrap_or_else(|error| panic!("{name}: {error}"));
+                        }
+                    }
                 }
                 "scenario" => {
                     serde_json::from_value::<TestScenario>(value).unwrap();
                 }
                 "action" => {
-                    serde_json::from_value::<TestAction>(value).unwrap();
+                    let action = serde_json::from_value::<TestAction>(value).unwrap();
+                    crate::test::validate_action_fields(&action)
+                        .unwrap_or_else(|error| panic!("{name}: {error}"));
                 }
                 "viewports" => {
                     let viewports: Vec<ViewportDef> = serde_json::from_value(value).unwrap();
@@ -508,6 +529,10 @@ mod tests {
             "never suppress the final capture",
             "1920x1080",
             "always fails",
+            "Opened Menus and Overlays",
+            "even the element's own overflowing children",
+            "viewport captures never scroll",
+            "`viewport` in `selector`, `selectors`, or a `save` action's `selector`",
         ] {
             assert!(
                 scenarios.contains(contract),
@@ -521,6 +546,7 @@ mod tests {
             "persist: signed-in",
             "frame:",
             "process.env",
+            "selector: viewport",
         ] {
             assert!(recipes.contains(contract), "Missing recipe: {contract}");
         }
@@ -593,6 +619,10 @@ mod tests {
                             assert!(scenario.id.is_some(), "{topic}: missing id\n{block}");
                             crate::test::capture::validate_scenario_capture_names(scenario)
                                 .unwrap_or_else(|error| panic!("{topic}: {error}\n{block}"));
+                            for action in scenario.actions.iter().flatten() {
+                                crate::test::validate_action_fields(action)
+                                    .unwrap_or_else(|error| panic!("{topic}: {error}\n{block}"));
+                            }
                         }
                     }
                     "replacement-profiles" => {
@@ -622,6 +652,24 @@ mod tests {
             validated >= 20,
             "Only {validated} guide YAML blocks were validated"
         );
+    }
+
+    #[test]
+    fn screenshot_selector_help_explains_viewport_and_element_clipping() {
+        let catalog = build().unwrap();
+        let scenario = &catalog["schemas"]["scenario"]["properties"]["selector"];
+        let save = &catalog["schemas"]["action"]["$defs"]["SaveAction"]["properties"]["selector"];
+        for field in [scenario, save] {
+            let help = field["description"].as_str().unwrap();
+            assert!(help.contains("\"viewport\""), "{help}");
+            assert!(help.contains("clipped to its box"), "{help}");
+            assert!(
+                field["examples"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("viewport"))
+            );
+        }
     }
 
     #[test]

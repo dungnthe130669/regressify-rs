@@ -270,9 +270,10 @@ The generated project contains a Worker entry point, Wrangler configuration,
 package and lockfile, TypeScript configuration, tests, README, and a versioned
 content catalog with standalone guides, JSON Schemas, and synthetic examples.
 Guides cover suite discovery/identity, the scenario capture lifecycle and
-screenshot naming, every action and selector engine, configuration scopes,
-precedence, and defaults, predefined file formats, browser/Node hook contracts,
-complete recipes for common page patterns, and troubleshooting. Hook examples
+screenshot naming, capture targets for opened menus and overlays, every action
+and selector engine, configuration scopes, precedence, and defaults, predefined
+file formats, browser/Node hook contracts, complete recipes for common page
+patterns, and troubleshooting. Hook examples
 include complete suite wiring and six-argument ESM scripts. Diagnostic guidance
 covers focused reruns, preflight messages, actual report paths and fields,
 capture failure summaries and local detail lines, capture-error/log sidecars,

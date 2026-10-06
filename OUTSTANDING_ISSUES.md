@@ -2,6 +2,24 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## MCP QA Findings (2026-10-06)
+
+- Resolved in source: singular scenario `selector: viewport` and `save` with
+  `selector: viewport` searched for a `<viewport>` element and failed, although
+  `selectors: viewport` captured the viewport. All three now capture the visible
+  viewport without scrolling; the first two keep their `FINAL` and `$<name>`
+  file names. The cached-Chromium selector pixel fixture covers both.
+- Resolved in source: agents captured `header` after opening navigation menus.
+  Element captures are clipped to the element's border box, so dropdowns,
+  drawers, and body-level panels outside it were cut off. A probe confirmed the
+  clip and that `viewport` or the panel's own selector includes the opened
+  layer. The scenarios guide, schema help, overview rules, a navigation recipe,
+  and the `navigation-menus` example now explain targets for common opened
+  layers.
+- Remaining: schemas cannot tell whether a container holds its opened layers;
+  agents must inspect markup or styles. The hosted Worker needs regeneration
+  and redeployment to serve this guidance.
+
 ## MCP Knowledge Accuracy Review (2026-10-06)
 
 - Resolved in source: MCP guides, examples, and schema help contradicted the

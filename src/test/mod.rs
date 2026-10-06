@@ -31,5 +31,8 @@ pub(crate) use test_suites::{ActionViewportNameError, validate_action_viewport_n
 #[cfg(any(feature = "desktop", test))]
 pub(crate) use test_suites::validate_scenario_dependencies;
 
+#[cfg(test)]
+pub(crate) use test_action::validate_action_fields;
+
 #[cfg(feature = "desktop")]
 pub(crate) use test_suite::assign_scenario_ids;

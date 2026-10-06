@@ -264,8 +264,13 @@ pub struct SaveAction {
     /// Checkpoint name saved as <scenario-id>[_<viewport>]__$<name>.png: at most 100 bytes, no path separators, not ending in _diff. A last applicable save among the scenario's own actions replaces the automatic final screenshot, but explicit scenario selectors are still captured.
     #[schemars(example = "after-login")]
     pub save: String,
-    /// Standard CSS selector to capture instead of the whole page: the first match in the selected tab's main document, which must be visible. Independent of the scenario's final selector.
-    #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#confirmation")]
+    /// Standard CSS selector to capture instead of the whole page, or "viewport" for the visible viewport. An element capture uses the first match in the selected tab's main document, which must be visible, clipped to its box, so open menus or popups extending outside it are cut off. Independent of the scenario's final selector.
+    #[schemars(
+        length(min = 1),
+        regex(pattern = r"\S"),
+        example = "#confirmation",
+        example = &"viewport"
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
     pub frame: Option<Frame>,

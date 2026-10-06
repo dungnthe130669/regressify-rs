@@ -142,7 +142,7 @@ pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotT
         if selector.is_empty() {
             anyhow::bail!("Scenario selectors must not contain an empty value");
         }
-        let capture = if selector == "viewport" {
+        let capture = if is_viewport_target(selector) {
             ScreenshotType::Viewport
         } else {
             validate_standard_css_selector(selector)?;
@@ -226,6 +226,11 @@ pub(crate) fn validate_screenshot_selector(selector: Option<&str>) -> Result<()>
         validate_standard_css_selector(selector)?;
     }
     Ok(())
+}
+
+/// `viewport` is reserved in every screenshot selector field for the visible viewport.
+fn is_viewport_target(selector: &str) -> bool {
+    selector.trim() == "viewport"
 }
 
 /// Screenshot targets use `document.querySelector`, unlike action selectors.
@@ -987,27 +992,34 @@ async fn capture_png(
     screenshot_type: &ScreenshotType,
     selector: Option<&str>,
 ) -> Result<Vec<u8>> {
-    if let Some(selector) = selector {
-        return capture_selector_png(page, selector).await;
-    }
-    if let ScreenshotType::Selector(selector) = screenshot_type {
-        return capture_selector_png(page, selector).await;
-    }
+    let selector = selector.or(match screenshot_type {
+        ScreenshotType::Selector(selector) => Some(selector.as_str()),
+        _ => None,
+    });
+    let viewport = match selector {
+        Some(selector) if is_viewport_target(selector) => true,
+        Some(selector) => return capture_selector_png(page, selector).await,
+        None => *screenshot_type == ScreenshotType::Viewport,
+    };
 
-    let params = match screenshot_type {
-        ScreenshotType::Step(_) | ScreenshotType::Final => full_page_params(page).await?,
-        ScreenshotType::Viewport => ScreenshotParams::builder()
+    let params = if viewport {
+        ScreenshotParams::builder()
             .format(CaptureScreenshotFormat::Png)
             .from_surface(true)
             .omit_background(false)
-            .build(),
-        ScreenshotType::Selector(_) => unreachable!("selector capture is handled above"),
+            .build()
+    } else {
+        full_page_params(page).await?
     };
 
     page.screenshot(params).await.map_err(|error| {
         anyhow!(
             "Failed to capture {} screenshot: {}",
-            screenshot_type_description(screenshot_type),
+            if viewport {
+                screenshot_type_description(&ScreenshotType::Viewport)
+            } else {
+                screenshot_type_description(screenshot_type)
+            },
             error
         )
     })
@@ -1791,6 +1803,16 @@ mod tests {
                 .contains("either selector or selectors")
         );
         scenario.selectors = None;
+        for selector in ["viewport", " viewport "] {
+            scenario.selector = Some(selector.into());
+            assert_eq!(
+                final_screenshot_types(&scenario).unwrap(),
+                vec![ScreenshotType::Final]
+            );
+            assert!(is_viewport_target(selector));
+        }
+        assert!(!is_viewport_target("Viewport"));
+        assert!(!is_viewport_target("#viewport"));
         for selector in ["", " \t\n"] {
             scenario.selector = Some(selector.into());
             assert!(
@@ -1807,6 +1829,7 @@ mod tests {
         for selector in [
             serde_json::Value::Null,
             serde_json::json!("#content"),
+            serde_json::json!("viewport"),
             serde_json::json!(""),
             serde_json::json!(" \t\n"),
         ] {

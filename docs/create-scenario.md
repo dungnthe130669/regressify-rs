@@ -588,8 +588,15 @@ selector
 Type: `string`.
 
 Capture only the first matching CSS element for the scenario's `FINAL`
-screenshot. This does not affect any `save` actions, which have their own
+screenshot, or use the special value `viewport` to capture the currently visible
+viewport. This does not affect any `save` actions, which have their own
 optional `selector`. The `FINAL` filename suffix stays unchanged.
+
+An element capture contains only the pixels inside that element's box. Menus,
+drawers, popovers, and dialogs opened by actions usually extend beyond their
+container, so capturing `header` after opening a dropdown records only the
+header bar. Capture `viewport` or the opened element instead, and capture the
+closed container in a separate scenario.
 
 Omit `selector` or use `null` for a full-page final capture, unless using
 `selectors` below. A selector must be nonblank and match a visible element with
@@ -624,9 +631,10 @@ when the last applicable action is `save`. Do not combine this property with
 `save` replaces it.
 
 Targets are captured in declaration order, must be non-empty and unique, and
-must resolve to a visible element when captured. Regressify restores the prior
-page scroll position after each selector capture so one target does not alter a
-later viewport, selector, or full-page capture. Comparison reports label each
+must resolve to a visible element when captured. Like `selector`, each element
+target is clipped to its own box. Regressify restores the prior page scroll
+position after each selector capture so one target does not alter a later
+viewport, selector, or full-page capture. Comparison reports label each
 target as `document`, `viewport`, a saved step, or a stable selector capture
 name. Full-page and selector targets must resolve to finite positive dimensions
 no larger than 100000 CSS pixels in either direction or 64000000 total CSS

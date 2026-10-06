@@ -66,10 +66,11 @@ effective viewport set, not just the scenario where the actions were written.
 
 - Without `selector` or `selectors`, the automatic final screenshot is full page.
 - `selector: "#content"` crops only that final screenshot to the first matching
-  element.
-- `selectors: viewport` captures the currently visible viewport, including any
-  scroll position left by actions. A string or list of CSS selectors produces
-  separate captures for those targets.
+  element, keeping the `FINAL` file name.
+- `viewport` in `selector`, `selectors`, or a `save` action's `selector`
+  captures the currently visible viewport, including any scroll position left
+  by actions, without scrolling. Otherwise `selectors` takes a string or list of
+  CSS selectors and produces a separate capture for each target.
 - Screenshot selectors are standard CSS evaluated in the selected tab's main
   document. The element must be visible with positive size; missing, hidden, or
   invalid targets fail instead of falling back to the full page. To capture
@@ -97,6 +98,43 @@ Comparison is strict about size: a test image whose dimensions differ from its
 reference always fails, whatever the thresholds. Full-page captures therefore
 fail when unrelated content changes the page height; capture components with
 `selectors` when only part of a page is under test.
+
+## Opened Menus and Overlays
+
+An element capture is a rectangle of rendered pixels: Regressify scrolls the
+first match toward the viewport center, captures the area inside its border
+box, and restores the scroll position. The image includes anything drawn inside
+that box, even an overlay from elsewhere in the page, and excludes everything
+outside it, even the element's own overflowing children. Layers opened by
+actions rarely fit inside their trigger's container:
+
+- Dropdowns and mega menus usually hang below the header or navigation bar.
+- Mobile menus are often fixed drawers or full-screen overlays.
+- Account, language, cart, and search-suggestion lists, tooltips, popovers, and
+  date pickers are often added at the end of `body` and positioned near their
+  trigger.
+- Dialogs and consent banners are fixed layers over the page.
+- Accordions and other inline expansions usually grow their container, so
+  capturing the container still works.
+
+A scenario that opens a menu and captures `header` therefore records only the
+header bar. Decide which state each image tests, then choose a target that
+contains it:
+
+- Closed state: capture the container, such as `header`, before opening
+  anything, usually in its own scenario.
+- Opened state: capture `viewport`, the opened layer's own element, or both,
+  for example `selectors: [viewport, "#products-panel"]`. Use `viewport` for
+  fixed drawers and overlays, and for layers opened by hover or closed by
+  scrolling, because viewport captures never scroll.
+- Several states in one scenario: `save` each state with its own `selector`,
+  and close a layer, for example by clicking its toggle again or pressing
+  `Escape` on it, before capturing anything it covers.
+
+Wait for the opened layer itself, as in `wait: "#products-panel"`, before
+capturing it. When the page's markup or styles show that a layer is positioned
+absolutely or fixed, or rendered outside the container, assume a container
+capture cuts it off. The recipes topic has a complete navigation suite.
 
 ## Viewports, Waiting, and State
 

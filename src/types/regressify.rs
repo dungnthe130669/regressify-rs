@@ -240,14 +240,19 @@ pub struct TestScenario {
     #[schemars(example = "signed-in")]
     pub restore: Option<Needs>,
 
-    /// Standard CSS selector for the FINAL screenshot only: the first match in the selected tab's main document, which must be visible. Omit to capture the whole page; cannot be combined with selectors. A last applicable save skips this capture.
-    #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#content")]
+    /// Standard CSS selector for the FINAL screenshot only, or "viewport" for the visible viewport. An element capture uses the first match in the selected tab's main document, which must be visible, clipped to its box, so open menus or popups extending outside it are cut off. Omit to capture the whole page; cannot be combined with selectors. A last applicable save skips this capture.
+    #[schemars(
+        length(min = 1),
+        regex(pattern = r"\S"),
+        example = "#content",
+        example = &"viewport"
+    )]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
 
     /// Standard CSS selectors to capture instead of the full page. Use "viewport" for
-    /// the currently visible viewport; each selector produces an independent screenshot,
-    /// even when the last applicable action is save. Cannot be combined with selector.
+    /// the currently visible viewport; each selector produces an independent screenshot
+    /// clipped to its element's box, even when the last applicable action is save. Cannot be combined with selector.
     /// A list must contain at least one target; blank selectors are invalid. Omit or use null for the automatic full-page capture.
     #[schemars(example = &"viewport", example = vec!["main", ".summary"])]
     #[schemars(extend(

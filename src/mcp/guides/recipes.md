@@ -150,24 +150,45 @@ fails until the state exists, and otherwise may read an older file. Each
 `--site-env` output directory has its own `states/` folder. Keep state and
 cookie files out of version control and out of MCP requests.
 
-## Responsive Navigation
+## Header Navigation and Menus
 
 ```yaml
 viewportNames: [phone, desktop]
 scenarios:
+  - id: header
+    label: Header
+    url: https://example.com
+    selector: header
   - id: products-menu
     label: Products menu
     url: https://example.com
-    selectors: [viewport]
     actions:
       - click: "#menu-toggle"
         viewportNames: phone
-      - click: "#products-menu"
+      - click: "#products-toggle"
+      - wait: "#products-panel"
+    selectors:
+      - viewport
+      - "#products-panel"
+  - id: account-menu
+    label: Account menu
+    url: https://example.com
+    viewportNames: desktop
+    actions:
+      - hover: "#account-toggle"
+      - wait: "#account-dropdown"
+    selector: viewport
 ```
 
-Each viewport label from `common/_viewports.yaml` is a separate capture job; an
-action's `viewportNames` only skips that action in other jobs. Viewports set the
-CSS size without a mobile user agent or touch emulation.
+`header` records the closed bar in every viewport. Opened panels usually extend
+past the header, where a `header` capture would cut them off, so
+`products-menu` captures the visible viewport and the panel itself. On phones
+the first click opens the navigation drawer; its `viewportNames` skips it in
+desktop jobs. The hover-opened account menu uses `viewport`, which never
+scrolls, so the pointer stays on its trigger. Each viewport label from
+`common/_viewports.yaml` is a separate capture job, sized in CSS pixels without
+a mobile user agent or touch emulation. Read the scenarios topic for other
+opened layers, such as dialogs, popovers, and search suggestions.
 
 ## Popups and New Tabs
 

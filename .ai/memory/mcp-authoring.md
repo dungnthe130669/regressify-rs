@@ -7,11 +7,12 @@ Verified: 2026-10-06
   new directory under an existing parent, with no-clobber file publication.
   Failures may leave a partial export; there is no automatic recursive cleanup.
 - [The catalog](../../src/mcp/catalog.rs) derives six schemas from real Rust
-  types, embeds nine guides (including `recipes`), and includes 31 synthetic
+  types, embeds nine guides (including `recipes`), and includes 32 synthetic
   examples. The hooks and troubleshooting topics cover script contracts, local
   evidence, and safe repair. Tests check real parsers, local schema references,
   every property having direct or referenced help, action coverage, local
-  negative/boundary constraints, and every guide YAML fence as a complete file.
+  negative/boundary constraints, preflight action rules, and every guide YAML
+  fence as a complete file.
 - Runtime facts verified for the guides: `wait` with `url` matches the URL within
   `elementTimeout` first, then sleeps or waits for the selector; action selectors
   use the bundled Playwright engines, but hide/remove and screenshot selectors
@@ -20,6 +21,12 @@ Verified: 2026-10-06
 - Suite preflight (`validate_action_fields`, `validate_action_files`, and
   screenshot selector prefixes) rejects schema-valid but unusable actions before
   browser launch; the actions guide lists them under "Checks Beyond the Schema".
+- Element captures are pixel clips of the target's border box after centering
+  it: overflowing menus, drawers, and body-level panels are cut off, while
+  overlays drawn inside the box are included. `viewport` is reserved in
+  `selector`, `selectors`, and `save.selector`. Verified 2026-10-06 with a
+  cached-Chromium probe and the selector pixel fixture; QA reported agents
+  capturing `header` after opening menus.
 - Page-level failure markers, `engineErrorMsg`, and progress errors carry a typed
   summary (step, condition, duration, category); the console adds a sanitized
   local detail line that is never archived. Journals keep `ActionIndex`,

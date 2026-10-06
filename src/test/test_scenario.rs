@@ -1290,12 +1290,19 @@ mod tests {
                 height: 240,
             };
             let full_page = Some((640, 900, [14, 160, 80]));
+            let viewport_image = Some((640, 240, [14, 160, 80]));
             let final_clip = Some((120, 60, [200, 30, 30]));
             let checkpoint = Some((80, 40, [40, 90, 200]));
             let step = |name: &str| ScreenshotType::Step(name.into());
             for (id, mut source, expected) in [
                 ("default", json!({}), vec![(ScreenshotType::Final, full_page)]),
                 ("final-selector", json!({ "selector": "#final" }), vec![(ScreenshotType::Final, final_clip)]),
+                ("final-viewport", json!({ "selector": "viewport" }), vec![(ScreenshotType::Final, viewport_image)]),
+                (
+                    "save-viewport",
+                    json!({ "actions": [{ "save": "top", "selector": "viewport" }, { "wait": 0 }] }),
+                    vec![(step("top"), viewport_image), (ScreenshotType::Final, full_page)],
+                ),
                 (
                     "independent-selectors",
                     json!({ "selector": "#final", "actions": [
@@ -1318,7 +1325,7 @@ mod tests {
                 (
                     "explicit-finals",
                     json!({ "selectors": ["viewport", "#final"], "actions": [{ "save": "detail", "selector": "#checkpoint" }] }),
-                    vec![(step("detail"), checkpoint), (ScreenshotType::Viewport, Some((640, 240, [14, 160, 80]))), (ScreenshotType::Selector("#final".into()), final_clip)],
+                    vec![(step("detail"), checkpoint), (ScreenshotType::Viewport, viewport_image), (ScreenshotType::Selector("#final".into()), final_clip)],
                 ),
                 (
                     "excluded-save",

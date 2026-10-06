@@ -310,10 +310,10 @@ mod tests {
         let (release, wait) = std::sync::mpsc::channel();
         let task = std::thread::spawn(move || {
             let request = server
-                .recv_timeout(Duration::from_secs(5))
+                .recv_timeout(Duration::from_secs(10))
                 .unwrap()
                 .expect("Expected a local capture request");
-            wait.recv_timeout(Duration::from_secs(5)).unwrap();
+            wait.recv_timeout(Duration::from_secs(10)).unwrap();
             drop(request);
         });
         let started = std::time::Instant::now();

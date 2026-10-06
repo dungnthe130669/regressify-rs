@@ -79,7 +79,8 @@ Both use the scale 0 through 100, not fractions from 0 through 1.
   including case-insensitive collisions. Regressify checks this before capture.
 
 Use `get_example(task="minimal-suite")`, `minimal-suite-json`,
-`responsive-checkout`, or `reuse-actions` for complete synthetic suite files, and
-`get_authoring_guide(topic="recipes")` for common page patterns.
+`responsive-checkout`, `navigation-menus`, or `reuse-actions` for complete
+synthetic suite files, and `get_authoring_guide(topic="recipes")` for common
+page patterns.
 Keep only one format for a given suite. A file with a different unrecognized
 extension is not a discovered test suite.
