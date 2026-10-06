@@ -30,8 +30,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 - Maintain user-facing docs and examples alongside changes to commands, actions,
   configuration, desktop workflows, or install/release behavior. Update
   [OUTSTANDING_ISSUES.md](OUTSTANDING_ISSUES.md) when confirming or resolving a gap.
-- Run focused checks first, then the affected feature gates. Report commands and
-  outcomes honestly, including skipped checks and missing prerequisites.
+- Run focused checks first, then the affected feature gates. Report commands and outcomes honestly, including skipped checks and missing prerequisites.
 
 ## Shared Memory
 
@@ -68,6 +67,7 @@ Regressify is a Rust visual regression CLI and native desktop app. Read this gui
 | CLI commands and exit codes | [src/application.rs](src/application.rs), [docs/commands.md](docs/commands.md)                                                                                                                                            |
 | Browser actions and capture | [src/test](src/test), [docs/create-action.md](docs/create-action.md)                                                                                                                                                      |
 | Configuration and schemas   | [src/config](src/config), [src/types](src/types)                                                                                                                                                                          |
+| MCP authoring export        | [src/mcp](src/mcp), [MCP skill](.github/skills/mcp-command/SKILL.md)                                                                                                                                                      |
 | Compare and reports         | [src/compare](src/compare), [src/snapshot](src/snapshot)                                                                                                                                                                  |
 | Logging and analytics       | [src/diagnostics](src/diagnostics), [logging docs](docs/commands.md#diagnostic-verbosity), [diagnostics skill](.github/skills/logging-diagnostics/SKILL.md), [analytics skill](.github/skills/product-analytics/SKILL.md) |
 | Snapshot frontend           | [frontend](frontend/README.md), [snapshot skill](.github/skills/snapshot-command/SKILL.md)                                                                                                                                |

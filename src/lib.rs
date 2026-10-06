@@ -12,6 +12,7 @@ pub mod diagnostics;
 pub mod github;
 pub mod helpers;
 pub mod init;
+pub mod mcp;
 pub mod optimizer;
 pub mod progress;
 pub mod snapshot;

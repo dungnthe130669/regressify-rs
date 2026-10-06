@@ -35,3 +35,5 @@ Cover all cascade levels, omitted versus explicit values, malformed regexes, num
 ## Maintain
 
 Update [suite docs](../../../docs/create-test-suite.md), [scenario docs](../../../docs/create-scenario.md), examples, and this skill. Explain exceptions to normal precedence with concise code comments.
+
+Maintain the standalone [MCP guides](../mcp-command/SKILL.md) for changed semantics; field schemas derive from the same types. Run `cargo test --lib mcp` for coverage.

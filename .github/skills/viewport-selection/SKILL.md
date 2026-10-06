@@ -33,3 +33,5 @@ Include multiple viewports, case variants, invalid sizes, label collisions, unkn
 ## Maintain
 
 Update [viewport examples](../../../docs/viewports-test-sample.md), [scenario docs](../../../docs/create-scenario.md), and this skill when selection or naming changes. Comment non-obvious identity/collision rules.
+
+Viewport schema derivation is available without desktop features for [MCP export](../mcp-command/SKILL.md). Keep its guide/examples and default-feature `cargo test --lib mcp` checks aligned when changing viewport contracts.

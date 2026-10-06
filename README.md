@@ -5,7 +5,7 @@ Rust CLI for visual regression testing. It launches Chromium through the Chrome 
 ## Desktop App
 
 An optional Rust-native GPUI Kit workbench lets QA edit workspace configuration,
-suites, scenarios, all 15 action types, and viewports. It includes guided and
+suites, scenarios, all action types, and viewports. It includes guided and
 source editors, inheritance previews, safe saves with undo/redo, a bundled engine,
 and reference/current/diff image review. One workspace is active at a time.
 Select multiple suites with checkboxes and track their scenarios live through
@@ -63,7 +63,32 @@ to verify real windows, screenshot rendering, and GUI-to-CLI execution.
 
 ## Commands
 
-Implemented commands are `init`, `install`, `version`, `ref`, `test`, `compare`, `approve`, `snapshot`, and `optimize`. See [docs/commands.md](docs/commands.md) for command behavior, global flags, output folders, and exit-code semantics.
+Implemented commands are `init`, `install`, `mcp`, `version`, `ref`, `test`, `compare`, `approve`, `snapshot`, and `optimize`. See [docs/commands.md](docs/commands.md) for command behavior, global flags, output folders, and exit-code semantics.
+
+## MCP Authoring Guidance
+
+Generate a standalone Cloudflare Worker from the installed CLI:
+
+```sh
+regressify mcp --output ./regressify-mcp-worker
+cd regressify-mcp-worker
+npm ci
+npm run check
+npm test
+npm run build
+```
+
+The destination must be new and its parent must exist. Generation needs no source
+checkout, browser, Node installation, Cloudflare credentials, or workspace data.
+The generated project includes versioned guides, schemas, synthetic examples,
+the MCP handler, and a pinned npm lockfile. Local Worker checks require Node 22.12
+or newer; `build` is a dry run. Review the generated Worker name and README before
+separately running `npm run deploy` with your own Cloudflare authentication.
+
+AI clients connect to the deployed `/mcp` endpoint to retrieve instructions for
+suites, scenarios, actions, workspace configuration, and predefined files. The
+default Worker is public and read-only: it cannot read local files, run captures,
+or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
 
 ## Snapshot Frontend
 

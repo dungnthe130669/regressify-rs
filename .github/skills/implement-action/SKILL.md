@@ -45,3 +45,5 @@ Add a local-browser regression for changed event behavior: missing, delayed, hid
 ## Maintain
 
 Update [action docs](../../../docs/create-action.md), applicable [examples](../../../visual_tests), and this skill in the same change. Comment non-obvious event ordering, native setters, or platform workarounds, not each step.
+
+Keep the standalone [MCP action guide and typed examples](../mcp-command/SKILL.md) aligned; `cargo test --lib mcp` detects missing action examples and schema drift.

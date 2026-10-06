@@ -17,7 +17,7 @@ use crate::{
     },
     github::is_github,
     helpers::{IOExtensions, OnceLockBoolExtensions, OnceLockExtensions},
-    init, optimizer, snapshot, test,
+    init, mcp, optimizer, snapshot, test,
     vso::is_azure_devops,
 };
 
@@ -38,6 +38,7 @@ pub async fn execute_identified(cli: Cli, operation_id: Option<OperationId>) -> 
         Command::Optimize(_) => (SafeValue::Optimize, "Optimizing images"),
         Command::Install => (SafeValue::Install, "Installing Chromium"),
         Command::Init => (SafeValue::Init, "Initializing workspace"),
+        Command::Mcp(_) => (SafeValue::Mcp, "Generating MCP Worker"),
         Command::Version => (SafeValue::Version, "Reading version"),
     };
     let parent = runtime::current();
@@ -70,6 +71,7 @@ pub async fn execute_identified(cli: Cli, operation_id: Option<OperationId>) -> 
                 crate::progress::emit(crate::progress::Event::Phase { name: phase.into() });
                 match cli.command {
                     Command::Init => init::init(),
+                    Command::Mcp(args) => mcp::generate(args),
                     Command::Install => {
                         let executable = test::fetcher()
                             .await

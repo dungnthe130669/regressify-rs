@@ -1,0 +1,46 @@
+---
+name: mcp-command
+description: 'Use when changing regressify mcp, standalone authoring guides, generated schemas/examples, Cloudflare MCP Worker templates, protocol compatibility, or safe export destinations.'
+---
+
+# MCP Authoring Export
+
+## Start Here
+
+[Generator](../../../src/mcp/mod.rs), [catalog](../../../src/mcp/catalog.rs), [guides](../../../src/mcp/guides), [Worker template](../../../src/mcp/worker), [command reference](../../../docs/commands.md#mcp-authoring-worker), and [CI](../../workflows/mcp-checks.yml).
+
+## Procedure and Invariants
+
+1. Keep `regressify mcp --output <new-directory>` in the default CLI feature set. Embed all templates/guides with the binary; generation must not read workspace content, fetch dependencies, start Chromium, or require a source checkout.
+1. Separate generation from publication. No Cloudflare API calls, credentials, automatic installs, or deployment subprocesses belong in the Rust command.
+1. Require an existing parent and a new output directory. Reserve it with `create_dir`, validate embedded paths/directories, and use no-clobber temporary file publication. Preserve existing files and competing writes. A failed export may remain partial; do not recursively delete a directory another process could have edited. Do not claim protection from every ancestor race.
+1. Derive schemas from real Rust types. Keep viewport schema metadata available without desktop features. Cookie format guidance uses the real runtime parser in tests instead of introducing a second cookie schema.
+1. Keep guides self-contained and versioned. Explain runtime exceptions, units, inheritance, paths, safety, complete-file versus fragment examples, and valid repair strategies. No required repository links, website shortcodes, or development-only agent rules may leak into the exported authoring instructions.
+1. Every action needs a typed synthetic example. Update examples and prose for semantic changes; schema generation alone does not validate dependencies, paths, credentials, capture identity, or live browser behavior.
+1. The Worker serves public read-only tools, resources, and prompts at `/mcp`. Use the pinned SDK handler for discovery/transport. Retain Origin validation, request byte limits, no arbitrary path/URL inputs, no user data storage, and generic failure responses. Authentication is a separate deployment concern.
+1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Invalid tool arguments may return `isError: true` rather than throw at the client.
+1. Pin template dependencies and retain a matching npm lockfile. Edit the template/catalog, regenerate a fresh package, then test that actual export; do not rely only on a hand-adjusted temporary package. The frontend log-value allowlist must match new typed command identities. Embedded code/config uses `.template` filenames; only exported files are a runnable TypeScript project with a generated catalog and installed dependencies.
+
+## Checks
+
+```sh
+cargo test --locked --lib mcp
+cargo test --locked --features desktop --lib desktop::schema::tests
+cargo fmt --all -- --check
+cargo build --locked --bin regressify
+```
+
+Run the built binary from an empty temporary directory and export to a new path. In that package, with Node 22.12+ and npm:
+
+```sh
+npm ci
+npm run check
+npm test
+npm run build
+```
+
+Worker tests start/stop a local runtime; `build` is a Wrangler dry run. Neither requires publishing credentials. Cover complete/default-feature export, version and dependency consistency, deterministic bytes, self-contained schema refs, every action/example, invalid destinations, file conflicts, concurrent exports, and symlinks where the platform permits. Unix symlink checks run in Linux CI.
+
+## Maintain
+
+Update [CLI docs](../../../docs/commands.md), [README](../../../README.md), the template's standalone README, affected domain skills, and [shared notes](../../../.ai/memory/mcp-authoring.md). Keep the generated-project CI triggered by types, runtime semantics, and templates.

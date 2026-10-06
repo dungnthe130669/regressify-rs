@@ -83,6 +83,7 @@ const fieldValue = z.discriminatedUnion("type", [
       "cancelled",
       "init",
       "install",
+      "mcp",
       "version",
       "test",
       "reference",

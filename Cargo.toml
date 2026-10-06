@@ -83,6 +83,7 @@ windows = { version = "0.61", optional = true, features = ["Win32_Foundation", "
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Credentials", "Win32_System_Threading"] }
 
 [dev-dependencies]
+jsonschema = { version = "0.57", default-features = false }
 tiny_http = "0.12"
 
 [build-dependencies]

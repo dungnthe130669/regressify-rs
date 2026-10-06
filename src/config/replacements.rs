@@ -24,6 +24,7 @@ use crate::types::UrlReplacement;
 #[derive(Deserialize, Clone, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReplacementProfilesFile {
+    /// Named ordered URL replacement lists. The default profile is used when no profile is selected.
     pub profiles: HashMap<String, Vec<UrlReplacement>>,
 }
 

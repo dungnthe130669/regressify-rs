@@ -12,18 +12,17 @@ use crate::helpers::slugify;
 const MAX_CAPTURE_NAME_BYTES: usize = 48;
 
 /// A viewport definition with label and dimensions.
-#[derive(Deserialize, Clone, Debug)]
-#[cfg_attr(feature = "desktop", derive(schemars::JsonSchema))]
+#[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ViewportDef {
     /// Unique viewport name used by viewportNames and screenshot filenames. Matching ignores case.
-    #[cfg_attr(feature = "desktop", schemars(length(min = 1), example = &"phone"))]
+    #[schemars(length(min = 1), example = &"phone")]
     pub label: String,
     /// Browser viewport width in CSS pixels. Must be a positive whole number.
-    #[cfg_attr(feature = "desktop", schemars(range(min = 1), example = 375))]
+    #[schemars(range(min = 1), example = 375)]
     pub width: u32,
     /// Browser viewport height in CSS pixels. Must be a positive whole number.
-    #[cfg_attr(feature = "desktop", schemars(range(min = 1), example = 667))]
+    #[schemars(range(min = 1), example = 667)]
     pub height: u32,
 }
 

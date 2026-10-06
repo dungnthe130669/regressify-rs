@@ -144,6 +144,7 @@ detail stays in local deployment history. See [desktop Capture Log](desktop.md#r
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `init`     | Create missing starter files, Rust-derived JSON schemas, and VS Code YAML/JSON associations; copy missing legacy `data/` files without deleting their sources. Existing files, including editor settings, are preserved. |
 | `install`  | Fetch managed Chromium into the per-user cache shared by all CLI and Desktop workspaces.                                                                                                                                 |
+| `mcp`      | Generate a standalone Cloudflare MCP Worker containing versioned public authoring guidance, schemas, and examples. Does not deploy or export workspace data.                                                             |
 | `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                                         |
 | `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved.                                                                      |
 | `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                               |
@@ -176,6 +177,73 @@ The [desktop app](desktop.md#workspace-and-files) creates missing runtime defaul
 automatically when opening a folder. It does not automatically generate example
 suites, exported schemas, VS Code settings, or Node-specific helpers. CLI `init`
 retains its explicit editor setup and non-destructive legacy-file migration.
+
+## MCP Authoring Worker
+
+```sh
+regressify mcp --output ./regressify-mcp-worker
+cd regressify-mcp-worker
+npm ci
+npm run check
+npm test
+npm run build
+```
+
+`--output` is required. It names a new directory whose parent already exists;
+relative paths resolve from the CLI root. Absolute destinations outside the
+workspace are allowed. Existing directories, files, and symlink destinations are
+never replaced, and there is no `--force` option. Individual files are published
+without clobbering concurrent edits. A write failure is a command error and may
+leave an incomplete export; retry into a new directory rather than merging it.
+
+Generation works with the ordinary installed CLI, without desktop/GUI features
+or a source checkout. It uses embedded templates and schemas derived from the
+CLI's Rust types. It does not inspect or export the current workspace's suites,
+cookies, credentials, scripts, reports, or saved state. No browser, Node runtime,
+network connection, or Cloudflare credential is needed to generate the package.
+Normal CLI startup/command diagnostics still follow the diagnostic settings.
+
+The generated project contains a Worker entry point, Wrangler configuration,
+package and lockfile, TypeScript configuration, tests, README, and a versioned
+content catalog with standalone guides, JSON Schemas, and synthetic examples.
+Guides cover suite discovery/identity, scenario reuse and captures, every action,
+configuration precedence/defaults, and predefined file formats. Cookie/CSS/JS
+formats use explicit guidance; JSON Schemas do not replace runtime cross-file,
+filesystem, authentication, or browser validation.
+
+Use Node.js 22.12 or newer with npm to install and validate the result. `npm test`
+starts and stops a local Worker and exercises tools, resources, prompts, current
+stateless requests, and legacy-compatible clients. `npm run build` is a Wrangler
+dry run, not a deployment. `npm run dev` starts the local `/mcp` endpoint.
+
+Review the Worker name in the generated Wrangler configuration to avoid replacing
+an unrelated deployment. Authenticate Wrangler locally or through your own CI
+secret setup, then deploy separately:
+
+```sh
+npm run deploy
+```
+
+Connect an HTTP MCP client to the resulting
+`https://<worker>.<account-subdomain>.workers.dev/mcp` URL. The generated README
+includes a VS Code connection example. Start by calling `get_authoring_guide`
+with `topic: overview`; use `get_schema` for exact fields and `get_example` for
+synthetic templates. Guides/schemas are also MCP resources, and the
+`author_regressify` prompt loads the workflow and a chosen topic. Clients may
+require explicit selection of resources or prompts rather than loading them
+automatically.
+
+The Worker is public and unauthenticated by default. It provides only bounded,
+read-only knowledge lookups; it cannot access a user's workspace, execute tests,
+or approve baselines. It needs no database, Durable Objects, or LLM API key. Do
+not publish private content in it. Use MCP-compatible authorization before adding
+private material, and set appropriate Cloudflare rate limits for public traffic.
+Origin/CORS validation is not authentication. The AI edits the user's files only
+through its own authorized client tools.
+
+The MCP identity reports the generating CLI version. Regenerate into a new
+directory after upgrading Regressify, review differences, revalidate, and redeploy.
+Do not mix guides and schemas from different CLI versions.
 
 ## Snapshot Site
 

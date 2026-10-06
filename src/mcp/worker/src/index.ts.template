@@ -1,0 +1,192 @@
+import { McpServer } from "@modelcontextprotocol/server";
+import { createMcpHandler } from "agents/mcp/server";
+import { z } from "zod";
+import generated from "../content/catalog.json";
+
+type Guide = { title: string; content: string };
+type Example = {
+  kind: string;
+  path: string;
+  description: string;
+  format: string;
+  content: string;
+};
+type Schema = Record<string, unknown>;
+type Catalog = {
+  formatVersion: number;
+  regressifyVersion: string;
+  instructions: string;
+  schemas: Record<string, Schema>;
+  guides: Record<string, Guide>;
+  examples: Record<string, Example>;
+  actions: string[];
+};
+
+const catalog: Catalog = generated;
+const topics = Object.keys(catalog.guides) as [string, ...string[]];
+const kinds = Object.keys(catalog.schemas) as [string, ...string[]];
+const tasks = Object.keys(catalog.examples) as [string, ...string[]];
+const actionNames = catalog.actions as [string, ...string[]];
+const annotations = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+const versionHeader = `Regressify ${catalog.regressifyVersion} authoring reference`;
+const resourceRoot = `regressify://authoring/${catalog.regressifyVersion}`;
+
+function textResult(text: string) {
+  return { content: [{ type: "text" as const, text: `${versionHeader}\n\n${text}` }] };
+}
+
+function schemaFor(kind: string, action?: string): Schema {
+  const schema = catalog.schemas[kind];
+  if (!action) return schema;
+  if (kind !== "action") throw new Error("The action parameter requires kind action.");
+  const definitions = schema.$defs as Record<string, Schema>;
+  const variants = schema.anyOf as { $ref: string }[];
+  const selected = variants.find((variant) => {
+    const definition = definitions[variant.$ref.slice("#/$defs/".length)];
+    return Object.hasOwn(definition.properties as object, action);
+  });
+  if (!selected) throw new Error("Unknown action.");
+  return {
+    $schema: schema.$schema,
+    ...definitions[selected.$ref.slice("#/$defs/".length)],
+    $defs: definitions,
+  };
+}
+
+function exampleText(example: Example) {
+  return `${example.description}\n\nTarget: ${example.path}\n\n\`\`\`${example.format}\n${example.content.trimEnd()}\n\`\`\``;
+}
+
+function createServer() {
+  const server = new McpServer(
+    { name: "regressify-authoring", version: catalog.regressifyVersion },
+    { instructions: catalog.instructions },
+  );
+  server.registerTool(
+    "get_authoring_guide",
+    {
+      title: "Regressify authoring guide",
+      description:
+        "Read versioned Regressify instructions before creating or changing suites, scenarios, actions, workspace settings, or shared files. Start with overview; then select the relevant topic. Requires no source checkout and accepts no workspace contents.",
+      inputSchema: { topic: z.enum(topics).default("overview") },
+      annotations,
+    },
+    async ({ topic }) => textResult(catalog.guides[topic].content),
+  );
+  server.registerTool(
+    "get_schema",
+    {
+      title: "Regressify configuration schema",
+      description:
+        "Get exact fields, required properties, types, descriptions, examples, and constraints for YAML/JSON authoring. For kind action, optionally select one action by name. Schemas are self-contained; runtime cross-file and browser checks still apply. Cookie and script formats are explained in the files guide.",
+      inputSchema: {
+        kind: z.enum(kinds),
+        action: z.enum(actionNames).optional(),
+      },
+      annotations,
+    },
+    async ({ kind, action }) => {
+      if (action && kind !== "action") {
+        return { ...textResult("Use the action parameter only with kind action."), isError: true };
+      }
+      return textResult(JSON.stringify(schemaFor(kind, action), null, 2));
+    },
+  );
+  server.registerTool(
+    "get_example",
+    {
+      title: "Regressify authoring example",
+      description:
+        "Get a synthetic, parser-tested example and its target location. Action/scenario examples are fragments; suite examples are complete. Adapt selectors and URLs locally. Never send credentials, cookies, persisted state, private files, or page content to this server.",
+      inputSchema: { task: z.enum(tasks) },
+      annotations,
+    },
+    async ({ task }) => textResult(exampleText(catalog.examples[task])),
+  );
+
+  for (const [topic, guide] of Object.entries(catalog.guides)) {
+    const uri = `${resourceRoot}/guides/${topic}`;
+    server.registerResource(
+      `guide-${topic}`,
+      uri,
+      { title: guide.title, description: guide.title, mimeType: "text/markdown" },
+      async () => ({ contents: [{ uri, mimeType: "text/markdown", text: `${versionHeader}\n\n${guide.content}` }] }),
+    );
+  }
+  for (const [kind, schema] of Object.entries(catalog.schemas)) {
+    const uri = `${resourceRoot}/schemas/${kind}`;
+    server.registerResource(
+      `schema-${kind}`,
+      uri,
+      { title: `${kind} schema`, description: `Complete Regressify ${kind} schema`, mimeType: "application/schema+json" },
+      async () => ({ contents: [{ uri, mimeType: "application/schema+json", text: JSON.stringify(schema, null, 2) }] }),
+    );
+  }
+  server.registerPrompt(
+    "author_regressify",
+    {
+      title: "Author Regressify files",
+      description: "Load the safe authoring workflow and a selected topic before editing local Regressify files.",
+      argsSchema: { topic: z.enum(topics).optional() },
+    },
+    async ({ topic = "overview" }) => ({
+      messages: [{
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text: `${versionHeader}\n\n${catalog.instructions}\n\n${catalog.guides.overview.content}${topic === "overview" ? "" : `\n\n${catalog.guides[topic].content}`}\n\nInspect the user's local files with authorized client tools, then retrieve the relevant schema before proposing an edit.`,
+        },
+      }],
+    }),
+  );
+  return server;
+}
+
+const handler = createMcpHandler(createServer, { route: "/mcp", responseMode: "json" });
+const maximumBodyBytes = 16 * 1024;
+
+async function boundedRequest(request: Request): Promise<Request | Response> {
+  if (!request.body) return request;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    length += value.byteLength;
+    if (length > maximumBodyBytes) {
+      await reader.cancel();
+      return new Response("MCP requests must not exceed 16 KiB.", { status: 413 });
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new Request(request, { body: body.buffer });
+}
+
+export default {
+  async fetch(request, env, context) {
+    const path = new URL(request.url).pathname;
+    if (path === "/" && request.method === "GET") {
+      return Response.json({ name: "regressify-authoring", version: catalog.regressifyVersion, endpoint: "/mcp", readOnly: true });
+    }
+    if (path !== "/mcp") return new Response("Not found", { status: 404 });
+    try {
+      const bounded = request.method === "POST" ? await boundedRequest(request) : request;
+      if (bounded instanceof Response) return bounded;
+      return await handler(bounded, env, context);
+    } catch {
+      return new Response("MCP request failed.", { status: 500 });
+    }
+  },
+} satisfies ExportedHandler;

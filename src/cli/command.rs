@@ -1,6 +1,8 @@
 use clap::Subcommand;
 
-use crate::cli::args::{ApproveArgs, CompareArgs, OptimizeArgs, RefArgs, SnapshotArgs, TestArgs};
+use crate::cli::args::{
+    ApproveArgs, CompareArgs, McpArgs, OptimizeArgs, RefArgs, SnapshotArgs, TestArgs,
+};
 
 #[derive(Subcommand)]
 pub enum Command {
@@ -9,6 +11,9 @@ pub enum Command {
 
     /// Fetch/install the Chromium browser used by this CLI
     Install,
+
+    /// Generate a standalone Cloudflare MCP Worker with Regressify authoring guidance
+    Mcp(McpArgs),
 
     /// Print the CLI version
     Version,

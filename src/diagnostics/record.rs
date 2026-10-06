@@ -361,6 +361,7 @@ pub enum SafeValue {
     Cancelled,
     Init,
     Install,
+    Mcp,
     Version,
     Test,
     Reference,

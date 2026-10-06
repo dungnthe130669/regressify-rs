@@ -1,0 +1,130 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { after, before, test } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { unstable_dev } from "wrangler";
+
+let worker;
+let client;
+const catalog = JSON.parse(await readFile(new URL("../content/catalog.json", import.meta.url), "utf8"));
+
+before(async () => {
+  worker = await unstable_dev("src/index.ts", {
+    local: true,
+    ip: "127.0.0.1",
+    port: 0,
+    inspectorPort: 0,
+    logLevel: "error",
+    experimental: { disableExperimentalWarning: true },
+  });
+  client = new Client({ name: "regressify-package-test", version: "1.0.0" });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`http://${worker.address}:${worker.port}/mcp`)));
+}, { timeout: 60000 });
+
+after(async () => {
+  try {
+    await client?.close();
+  } finally {
+    await worker?.stop();
+  }
+});
+
+test("MCP clients discover exactly the read-only authoring tools", async () => {
+  const { tools } = await client.listTools();
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["get_authoring_guide", "get_example", "get_schema"]);
+  for (const tool of tools) {
+    assert.equal(tool.annotations.readOnlyHint, true);
+    assert.equal(tool.annotations.destructiveHint, false);
+  }
+  assert.equal(client.getServerVersion().version, catalog.regressifyVersion);
+});
+
+test("every guide, schema, and example can be retrieved", async () => {
+  for (const topic of Object.keys(catalog.guides)) {
+    const result = await client.callTool({ name: "get_authoring_guide", arguments: { topic } });
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes(catalog.guides[topic].content));
+    assert.ok(result.content[0].text.includes(catalog.regressifyVersion));
+  }
+  for (const kind of Object.keys(catalog.schemas)) {
+    const result = await client.callTool({ name: "get_schema", arguments: { kind } });
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes('"$schema"'));
+  }
+  for (const action of catalog.actions) {
+    const result = await client.callTool({ name: "get_schema", arguments: { kind: "action", action } });
+    const schema = JSON.parse(result.content[0].text.split("\n\n").slice(1).join("\n\n"));
+    assert.ok(schema.required.includes(action));
+    assert.ok(schema.$defs);
+  }
+  for (const task of Object.keys(catalog.examples)) {
+    const result = await client.callTool({ name: "get_example", arguments: { task } });
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes(catalog.examples[task].path));
+  }
+});
+
+test("resources and prompts contain standalone instructions", async () => {
+  const { resources } = await client.listResources();
+  assert.equal(resources.length, Object.keys(catalog.guides).length + Object.keys(catalog.schemas).length);
+  for (const resource of resources) {
+    const result = await client.readResource({ uri: resource.uri });
+    assert.ok(result.contents[0].text.length > 0);
+  }
+  const { prompts } = await client.listPrompts();
+  assert.equal(prompts[0].name, "author_regressify");
+  const prompt = await client.getPrompt({ name: "author_regressify", arguments: { topic: "actions" } });
+  assert.ok(prompt.messages[0].content.text.includes(catalog.guides.actions.content));
+  assert.ok(prompt.messages[0].content.text.includes("Never send cookies"));
+});
+
+test("unknown topics and incompatible arguments fail without filesystem access", async () => {
+  const unknown = await client.callTool({ name: "get_authoring_guide", arguments: { topic: "../../private" } });
+  assert.equal(unknown.isError, true);
+  const result = await client.callTool({ name: "get_schema", arguments: { kind: "workspace", action: "click" } });
+  assert.equal(result.isError, true);
+  const response = await worker.fetch("/content/catalog.json");
+  assert.equal(response.status, 404);
+});
+
+test("untrusted origins and oversized requests are rejected", async () => {
+  const hostile = await worker.fetch("/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream", Origin: "https://untrusted.invalid" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  assert.equal(hostile.status, 403);
+  const oversized = await worker.fetch("/mcp", { method: "POST", body: "x".repeat(16385) });
+  assert.equal(oversized.status, 413);
+  const malformed = await worker.fetch("/mcp", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json, text/event-stream" },
+    body: "{",
+  });
+  assert.ok(malformed.status >= 400);
+});
+
+test("the stateless protocol supports discovery and tool requests", async () => {
+  const metadata = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+    "io.modelcontextprotocol/clientInfo": { name: "regressify-stateless-test", version: "1.0.0" },
+  };
+  for (const method of ["server/discover", "tools/list"]) {
+    const response = await worker.fetch("/mcp", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": method,
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params: { _meta: metadata } }),
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json();
+    assert.equal(result.error, undefined);
+    assert.ok(result.result);
+  }
+});

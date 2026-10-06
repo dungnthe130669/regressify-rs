@@ -1,0 +1,62 @@
+name: MCP Export Checks
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - '.github/workflows/mcp-checks.yml'
+  pull_request:
+    branches: [master]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
+      - '.github/workflows/mcp-checks.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE: 'true'
+  WRANGLER_SEND_METRICS: 'false'
+
+jobs:
+  standalone-worker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: src/mcp/worker/package-lock.json
+      - name: Catalog and export safety
+        run: cargo test --locked --lib mcp
+      - name: Build default CLI
+        run: cargo build --locked --bin regressify
+      - name: Generate without a source workspace
+        run: |
+          mkdir "$RUNNER_TEMP/mcp-empty-workspace"
+          cp target/debug/regressify "$RUNNER_TEMP/mcp-empty-workspace/regressify"
+          cd "$RUNNER_TEMP/mcp-empty-workspace"
+          ./regressify mcp --output "$RUNNER_TEMP/regressify-mcp"
+      - name: Validate standalone Worker without publishing
+        working-directory: ${{ runner.temp }}/regressify-mcp
+        run: |
+          npm ci
+          npm run check
+          npm test
+          npm run build

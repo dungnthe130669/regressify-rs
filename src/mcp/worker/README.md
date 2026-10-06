@@ -1,0 +1,92 @@
+# Regressify Authoring MCP Worker
+
+This standalone Cloudflare Worker serves versioned public instructions for
+authoring Regressify suites, scenarios, actions, workspace configuration, and
+predefined files. Its complete knowledge bundle is generated from the installed
+CLI and embedded in this project. It does not need the Regressify source
+repository, Rust, Chromium, an LLM API key, or access to a user's test workspace.
+
+The MCP endpoint is `/mcp` using Streamable HTTP. It exposes three read-only tools:
+`get_authoring_guide`, `get_schema`, and `get_example`; discoverable guide/schema
+resources; and the `author_regressify` prompt. Agents edit local files using their
+own authorized tools. This server cannot execute tests or approve references.
+
+## Local Verification
+
+Use Node.js 22.12 or newer and npm. The lockfile pins dependencies. Commands below
+operate only on this generated project; the tests start and stop a local Worker.
+
+```sh
+npm ci
+npm run check
+npm test
+npm run build
+npm run dev
+```
+
+`build` is a Wrangler dry run, not a deployment. `dev` prints the local URL;
+connect an MCP client to that URL with `/mcp` appended. The endpoint is a protocol
+handler, not a web page. The root URL returns basic service metadata.
+
+## Deployment
+
+Review the Worker name in `wrangler.jsonc` before publishing. Do not deploy over
+an unrelated Worker with the same name. Authenticate Wrangler locally using
+your Cloudflare account or your own CI secret configuration, then run:
+
+```sh
+npm run deploy
+```
+
+Wrangler prints the deployed URL. Append `/mcp`, typically
+`https://regressify-mcp.<account-subdomain>.workers.dev/mcp`, and configure it as
+an HTTP MCP server in your AI client. For VS Code, merge this entry into
+`.vscode/mcp.json` in your workspace instead of overwriting existing servers:
+
+```json
+{
+  "servers": {
+    "regressify": {
+      "type": "http",
+      "url": "https://regressify-mcp.<account-subdomain>.workers.dev/mcp"
+    }
+  }
+}
+```
+
+Ask the agent to read the overview guide before editing Regressify files.
+Resources and prompts are available but may not be loaded automatically by the
+client. Tool descriptions and the overview explain how to retrieve each topic.
+
+## Public Access and Safety
+
+The default deployment is public and unauthenticated. It accepts only small
+knowledge lookup requests, not workspace uploads, URLs to fetch, scripts to
+execute, or arbitrary filesystem paths. It rejects unknown routes, invalid
+topics, oversized bodies, and disallowed browser origins. It performs no outbound
+fetches and stores no user state. No KV, R2, D1, or Durable Objects are required.
+
+Do not add real cookies, tokens, passwords, saved state, customer suites, or
+private source to the generated content. Cloudflare handles ordinary network
+request metadata; the Worker does not log request bodies. CORS/origin checks
+are not authentication. Use Cloudflare's MCP-compatible OAuth/Access guidance
+before adding private content, and configure rate limits appropriate to your
+account. Custom domains/browser clients may require explicit host/origin
+allowlists in the handler; do not disable Origin validation.
+
+## Updating the Content
+
+The service reports the generating CLI version. Regenerate with an updated CLI
+into a new directory, review the generated differences and dependency changes,
+rerun local checks, then redeploy. Do not mix schemas or examples from different
+CLI versions. The generator never reads current workspace contents and never
+overwrites an existing destination; a failed export may leave an incomplete
+directory, so retry into a new path.
+
+JSON Schemas cover document structure, not all runtime semantics. The guides
+explain cross-file constraints, inheritance exceptions, saved state, and capture
+behavior. Examples use synthetic URLs/selectors and require adaptation to the
+user's real application. Never treat an example as authorization to run actions.
+
+The standalone package's version tracks its template format; the Regressify
+content version is in `content/catalog.json` and the MCP server identity.
