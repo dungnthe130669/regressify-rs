@@ -241,19 +241,34 @@ async fn frame_access(
 
 // ─── Actionability Checks ────────────────────────────────────────────────────
 
-/// Wait for an element to exist in the DOM. Polls with interval until timeout.
+/// Wait for an element to exist and then become visible, recording the unmet
+/// condition under `stage`.
 pub async fn wait_for_selector(
     page: &Page,
     selector: &str,
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
+    stage: crate::diagnostics::record::Stage,
 ) -> Result<()> {
-    wait_for_attached_selector(page, selector, frame, config).await?;
+    use crate::diagnostics::record::SafeValue;
+    diagnostic_condition_in(
+        stage,
+        SafeValue::Exists,
+        selector,
+        wait_for_attached_selector(page, selector, frame, config),
+    )
+    .await?;
     let visibility = ActionabilityConfig {
         actionability_timeout_ms: config.element_timeout_ms,
         ..config.clone()
     };
-    wait_for_visible(page, selector, frame, &visibility).await
+    diagnostic_condition_in(
+        stage,
+        SafeValue::Visible,
+        selector,
+        wait_for_visible(page, selector, frame, &visibility),
+    )
+    .await
 }
 
 async fn wait_for_attached_selector(
@@ -965,9 +980,26 @@ pub(crate) async fn diagnostic_condition<Output>(
     selector: &str,
     work: impl Future<Output = Result<Output>>,
 ) -> Result<Output> {
+    diagnostic_condition_in(
+        crate::diagnostics::record::Stage::ActionsFrames,
+        condition,
+        selector,
+        work,
+    )
+    .await
+}
+
+/// Record one wait condition as its own stage so a failure names the unmet
+/// condition and the selector fingerprint, never the selector text.
+pub(crate) async fn diagnostic_condition_in<Output>(
+    stage: crate::diagnostics::record::Stage,
+    condition: crate::diagnostics::record::SafeValue,
+    selector: &str,
+    work: impl Future<Output = Result<Output>>,
+) -> Result<Output> {
     use crate::diagnostics::{record::*, runtime as diagnostics};
     diagnostics::stage(
-        Stage::ActionsFrames,
+        stage,
         [
             (Field::Condition, FieldValue::Kind(condition)),
             (
@@ -1059,7 +1091,12 @@ pub async fn ensure_exists(
     frame: &Option<Frame>,
     config: &ActionabilityConfig,
 ) -> Result<()> {
-    wait_for_attached_selector(page, selector, frame, config).await
+    diagnostic_condition(
+        crate::diagnostics::record::SafeValue::Exists,
+        selector,
+        wait_for_attached_selector(page, selector, frame, config),
+    )
+    .await
 }
 
 // ─── CDP Mouse Helpers ───────────────────────────────────────────────────────

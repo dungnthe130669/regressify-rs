@@ -556,7 +556,7 @@ async fn run_scenario_capture(browser: &Browser, ctx: CaptureContext<'_>) -> Res
                 ctx.scenario,
                 &error_screenshot_types,
                 viewport_label,
-                &SanitizedError::capture(&e).summary(),
+                &diagnostics::failure_summary(&e),
             )?;
             Err(e)
         }
@@ -575,11 +575,14 @@ where
 {
     match tokio::time::timeout(timeout, operation).await {
         Ok(result) => result,
-        Err(_) => Err(anyhow!(
-            "Scenario '{}' exceeded its {}ms timeout",
-            label,
-            timeout.as_millis()
-        )),
+        Err(_) => {
+            crate::diagnostics::runtime::scenario_timeout(timeout.as_millis() as u64);
+            Err(anyhow!(
+                "Scenario '{}' exceeded its {}ms timeout",
+                label,
+                timeout.as_millis()
+            ))
+        }
     }
 }
 
@@ -657,7 +660,9 @@ async fn run_scenario_capture_inner(
         tabs,
     };
 
-    let run_hook = |script: Option<&str>, page: &chromiumoxide::Page| {
+    let run_hook = |script: Option<&str>,
+                    page: &chromiumoxide::Page,
+                    phase: crate::diagnostics::record::SafeValue| {
         let script = script.map(str::to_string);
         let endpoint = browser.websocket_address().to_string();
         let target = page.target_id().as_ref().to_string();
@@ -676,13 +681,19 @@ async fn run_scenario_capture_inner(
                     root,
                     payload,
                     std::time::Duration::from_millis(resolved.element_timeout_ms),
+                    phase,
                 )
                 .await?;
             }
             Ok::<_, anyhow::Error>(())
         }
     };
-    run_hook(scenario.on_before_script.as_deref(), &active.page).await?;
+    run_hook(
+        scenario.on_before_script.as_deref(),
+        &active.page,
+        crate::diagnostics::record::SafeValue::Before,
+    )
+    .await?;
 
     let target = active
         .runtime
@@ -699,6 +710,7 @@ async fn run_scenario_capture_inner(
         .unwrap_or_default();
     target.navigate(url, &options).await?;
     if let Some(selector) = &scenario.ready_selector {
+        use crate::diagnostics::{record::*, runtime as diagnostics};
         let timeout = scenario
             .ready_timeout
             .filter(|value| *value > 0)
@@ -708,7 +720,25 @@ async fn run_scenario_capture_inner(
             actionability_timeout_ms: timeout,
             ..Default::default()
         };
-        crate::test::actionability::wait_for_selector(&target, selector, &None, &readiness).await?;
+        diagnostics::stage(
+            Stage::Navigation,
+            [
+                (Field::State, FieldValue::Kind(SafeValue::Ready)),
+                (
+                    Field::Target,
+                    FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+                ),
+                (Field::TimeoutMs, FieldValue::Number(timeout)),
+            ],
+            crate::test::actionability::wait_for_selector(
+                &target,
+                selector,
+                &None,
+                &readiness,
+                Stage::Navigation,
+            ),
+        )
+        .await?;
     }
 
     hooks.apply(&active.page).await?;
@@ -750,7 +780,12 @@ async fn run_scenario_capture_inner(
         active.exec(browser, ctx, &hooks, action).await?;
     }
 
-    run_hook(scenario.on_ready_script.as_deref(), &active.page).await?;
+    run_hook(
+        scenario.on_ready_script.as_deref(),
+        &active.page,
+        crate::diagnostics::record::SafeValue::Ready,
+    )
+    .await?;
     hooks.apply(&active.page).await?;
 
     if screenshot_types.is_empty() {

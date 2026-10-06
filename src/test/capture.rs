@@ -145,6 +145,7 @@ pub fn final_screenshot_types(scenario: &TestScenario) -> Result<Vec<ScreenshotT
         let capture = if selector == "viewport" {
             ScreenshotType::Viewport
         } else {
+            validate_standard_css_selector(selector)?;
             ScreenshotType::Selector(selector.to_string())
         };
         if !names.insert(screenshot_type_name(&capture)) {
@@ -220,6 +221,27 @@ pub fn validate_screenshot_step_name(name: &str) -> Result<()> {
 pub(crate) fn validate_screenshot_selector(selector: Option<&str>) -> Result<()> {
     if selector.is_some_and(|selector| selector.trim().is_empty()) {
         anyhow::bail!("Screenshot selector must not be empty");
+    }
+    if let Some(selector) = selector {
+        validate_standard_css_selector(selector)?;
+    }
+    Ok(())
+}
+
+/// Screenshot targets use `document.querySelector`, unlike action selectors.
+/// Reject Playwright engine prefixes, which can never be valid CSS, before a
+/// browser starts; other invalid CSS still fails when the target is captured.
+fn validate_standard_css_selector(selector: &str) -> Result<()> {
+    let lowercase = selector.trim_start().to_ascii_lowercase();
+    if let Some(engine) = ["text=", "xpath=", "css=", "id=", "data-testid=", "//"]
+        .into_iter()
+        .find(|prefix| lowercase.starts_with(prefix))
+    {
+        anyhow::bail!(
+            "Screenshot selector '{}' uses Playwright '{}' syntax; screenshot selectors accept standard CSS only, such as '#summary' or 'main .card'",
+            selector,
+            engine
+        );
     }
     Ok(())
 }
@@ -1092,7 +1114,20 @@ async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<Selecto
             .get("error")
             .and_then(|field| field.as_str())
             .unwrap_or("unknown");
-        anyhow::bail!("Cannot capture selector '{}': {}", selector, error);
+        let (condition, problem) = selector_capture_problem(error);
+        use crate::diagnostics::{record::*, runtime as diagnostics};
+        let mut fields = vec![(
+            Field::Target,
+            FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+        )];
+        fields.extend(condition.map(|condition| (Field::Condition, FieldValue::Kind(condition))));
+        diagnostics::event(
+            Stage::CaptureArtifacts,
+            DiagnosticEvent::Waiting,
+            Severity::Error,
+            fields,
+        );
+        anyhow::bail!("Cannot capture selector '{}': {}", selector, problem);
     }
 
     let coordinate = |name: &str| -> Result<f64> {
@@ -1142,6 +1177,35 @@ async fn restore_page_scroll(page: &Page, x: f64, y: f64) -> Result<()> {
         .await
         .map_err(|_| anyhow!("Timed out restoring page scroll after selector capture"))??;
     Ok(())
+}
+
+/// Map a selector-capture script failure to the unmet condition and a message
+/// worded so the error category stays accurate.
+fn selector_capture_problem(
+    error: &str,
+) -> (Option<crate::diagnostics::record::SafeValue>, String) {
+    use crate::diagnostics::record::SafeValue;
+    match error {
+        "invalid_selector" => (
+            None,
+            "invalid CSS selector; screenshot selectors accept standard CSS only".into(),
+        ),
+        "not_found" => (Some(SafeValue::Exists), "element not found".into()),
+        "detached" => (
+            Some(SafeValue::Exists),
+            "element not found after scrolling it into view".into(),
+        ),
+        "zero_size"
+        | "no_window"
+        | "display_none"
+        | "visibility_hidden"
+        | "content_visibility_hidden"
+        | "zero_opacity" => (
+            Some(SafeValue::Visible),
+            format!("element is not visible ({error})"),
+        ),
+        error => (None, format!("selector capture failed ({error})")),
+    }
 }
 
 fn selector_capture_script(selector: &str) -> Result<String> {
@@ -2137,6 +2201,70 @@ global.document = {{ querySelector: () => element }};
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn screenshot_selectors_reject_playwright_engines_but_keep_css_attribute_text() {
+        for selector in ["text=Buy", "xpath=//main", " css=main", "//main", "ID=hero"] {
+            let error = validate_screenshot_selector(Some(selector))
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("standard CSS only"), "{error}");
+
+            let scenario: TestScenario = serde_json::from_value(serde_json::json!({
+                "url": "https://example.com",
+                "selectors": ["viewport", selector]
+            }))
+            .unwrap();
+            assert!(final_screenshot_types(&scenario).is_err(), "{selector}");
+
+            let scenario: TestScenario = serde_json::from_value(serde_json::json!({
+                "url": "https://example.com",
+                "actions": [{"save": "step", "selector": selector}]
+            }))
+            .unwrap();
+            assert!(
+                validate_scenario_capture_names(&scenario).is_err(),
+                "{selector}"
+            );
+        }
+        for selector in [
+            "main .card",
+            "[data-label=\"text=Buy\"]",
+            "#summary",
+            "textarea",
+        ] {
+            validate_screenshot_selector(Some(selector)).unwrap();
+        }
+    }
+
+    #[test]
+    fn selector_capture_failures_name_conditions_with_accurate_categories() {
+        use crate::diagnostics::record::{ErrorCategory, SafeValue, SanitizedError};
+        for (code, condition, category) in [
+            (
+                "not_found",
+                Some(SafeValue::Exists),
+                ErrorCategory::NotFound,
+            ),
+            ("detached", Some(SafeValue::Exists), ErrorCategory::NotFound),
+            (
+                "display_none",
+                Some(SafeValue::Visible),
+                ErrorCategory::Actionability,
+            ),
+            (
+                "content_visibility_hidden",
+                Some(SafeValue::Visible),
+                ErrorCategory::Actionability,
+            ),
+            ("invalid_selector", None, ErrorCategory::InvalidData),
+        ] {
+            let (actual, problem) = selector_capture_problem(code);
+            assert_eq!(actual, condition, "{code}");
+            let error = anyhow!("Cannot capture selector '#hero': {problem}");
+            assert_eq!(SanitizedError::capture(&error).category, category, "{code}");
+        }
     }
 
     #[test]

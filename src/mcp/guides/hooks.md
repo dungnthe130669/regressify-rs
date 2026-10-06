@@ -77,10 +77,13 @@ pages; never depend on their execution order or mutate a sibling's session.
 Node execution, including attachment/import, is bounded by workspace
 `elementTimeout` (default 30000 ms); the overall `scenarioTimeout` also applies.
 Throw an error when the intended operation fails. Standard output is discarded;
-retained standard error is bounded and contributes to hook failures. Reports
-and capture logs keep only an error category for a failed hook, not its message.
-While diagnosing, temporarily append sanitized progress notes to a local,
-version-control-ignored file from the hook and remove that code afterwards.
+retained standard error is bounded and becomes part of the failure message.
+Reports and capture logs name the failed hook, as in
+`onReadyScript failed after 812 ms (Unknown)`, but not its message. The local
+console's `Local detail` line shows the sanitized message, including the start
+of standard error, truncated to 2048 characters. For more context while
+diagnosing, temporarily write sanitized notes to standard error or to a local,
+version-control-ignored file, and remove that code afterwards.
 Never log credentials, cookies, input values, or private response bodies.
 
 Retrieve `get_example(task="node-before-hook")`, `node-ready-hook`, and

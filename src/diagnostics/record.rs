@@ -473,8 +473,48 @@ pub enum ErrorCategory {
 impl ErrorCategory {
     fn classify(message: &str) -> Self {
         let message = message.to_ascii_lowercase();
-        if message.contains("timed out")
-            || message.contains("timeout")
+        // Failure summaries end with their category in parentheses. Comparison
+        // records classify report messages again, so keep that category.
+        if let Some(category) = [
+            Self::Timeout,
+            Self::NotFound,
+            Self::Permission,
+            Self::Navigation,
+            Self::Actionability,
+            Self::Cancelled,
+            Self::InvalidData,
+            Self::Storage,
+        ]
+        .into_iter()
+        .find(|category| message.contains(&format!("({category:?})").to_ascii_lowercase()))
+        {
+            return category;
+        }
+        // Match `timeout` as a word so expected-field lists in parse errors, such
+        // as `readyTimeout`, cannot turn a schema mistake into a timeout.
+        let has_word = |word: &str| {
+            message.match_indices(word).any(|(start, _)| {
+                !message[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|character| character.is_ascii_alphanumeric())
+            })
+        };
+        if [
+            "unknown field",
+            "unknown variant",
+            "missing field",
+            "duplicate field",
+            "invalid type",
+            "did not match any variant",
+            "unknown keyboard key",
+        ]
+        .iter()
+        .any(|phrase| message.contains(phrase))
+        {
+            Self::InvalidData
+        } else if message.contains("timed out")
+            || has_word("timeout")
             || message.contains("navigation exceeded")
         {
             Self::Timeout
@@ -497,7 +537,10 @@ impl ErrorCategory {
         .any(|word| message.contains(word))
         {
             Self::Actionability
-        } else if message.contains("invalid") || message.contains("parse") {
+        } else if ["invalid", "parse", "must be", "must have", "must not"]
+            .iter()
+            .any(|word| message.contains(word))
+        {
             Self::InvalidData
         } else if message.contains("write") || message.contains("disk") || message.contains("flush")
         {
@@ -543,6 +586,141 @@ impl SanitizedError {
             causes: vec![ErrorCategory::Provider],
             local_detail: Some(super::redaction::sanitize(message, authorization)),
         }
+    }
+}
+
+/// Fields that locate a failed capture step. They are reviewed typed values that
+/// public capture journals already contain, so summaries built only from them
+/// are as safe to publish as those journals.
+const FAILURE_LOCATION_FIELDS: [Field; 7] = [
+    Field::ActionIndex,
+    Field::ActionType,
+    Field::Condition,
+    Field::State,
+    Field::Artifact,
+    Field::Endpoint,
+    Field::ScenarioTimeoutMs,
+];
+
+/// The failed step of a capture, assembled from typed diagnostic fields.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailureSite {
+    stage: Stage,
+    fields: BTreeMap<Field, FieldValue>,
+    duration_ms: Option<u64>,
+}
+
+impl FailureSite {
+    pub fn new(stage: Stage) -> Self {
+        Self {
+            stage,
+            fields: BTreeMap::new(),
+            duration_ms: None,
+        }
+    }
+
+    /// Add a failed record. Errors propagate outward, so the innermost failure
+    /// arrives first and wins each field; enclosing failures only fill gaps, such
+    /// as the action that owned a failed condition.
+    pub fn merge(&mut self, fields: &BTreeMap<Field, FieldValue>, duration_ms: Option<u64>) {
+        for field in FAILURE_LOCATION_FIELDS {
+            if let Some(value) = fields.get(&field) {
+                self.fields.entry(field).or_insert_with(|| value.clone());
+            }
+        }
+        self.duration_ms = self.duration_ms.or(duration_ms);
+    }
+
+    fn kind(&self, field: Field) -> Option<SafeValue> {
+        match self.fields.get(&field) {
+            Some(FieldValue::Kind(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    fn number(&self, field: Field) -> Option<u64> {
+        match self.fields.get(&field) {
+            Some(FieldValue::Number(value)) => Some(*value),
+            _ => None,
+        }
+    }
+
+    /// The failing step in authoring terms, such as `Action 2 (click)`.
+    pub fn location(&self) -> String {
+        if let (Some(index), Some(action)) = (
+            self.number(Field::ActionIndex),
+            self.kind(Field::ActionType),
+        ) {
+            let name = match action {
+                SafeValue::Navigate => "goto".to_owned(),
+                action => serde_json::to_value(action)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| format!("{action:?}")),
+            };
+            return format!("Action {index} ({name})");
+        }
+        let location = match (
+            self.kind(Field::ActionType),
+            self.kind(Field::Condition),
+            self.kind(Field::State),
+        ) {
+            (Some(SafeValue::Hook), Some(SafeValue::Before), _) => "onBeforeScript",
+            (Some(SafeValue::Hook), Some(SafeValue::Ready), _) => "onReadyScript",
+            (Some(SafeValue::Hook), _, Some(SafeValue::Ready)) => {
+                "CSS override or browser ready script"
+            }
+            (Some(SafeValue::Hook), ..) => "Hook file loading",
+            (Some(SafeValue::Restore), ..) if self.fields.contains_key(&Field::Artifact) => {
+                "Cookie file"
+            }
+            (Some(SafeValue::Restore), ..) => "Saved state",
+            (None, _, Some(SafeValue::Ready)) => "readySelector",
+            _ => match self.stage {
+                Stage::QueueSetup if self.kind(Field::Endpoint) == Some(SafeValue::Browser) => {
+                    "Browser launch"
+                }
+                Stage::Navigation => "Navigation",
+                Stage::ScreenshotSettling
+                    if self.kind(Field::Condition) == Some(SafeValue::LazyLoading) =>
+                {
+                    "Lazy-load scrolling"
+                }
+                Stage::ScreenshotSettling => "Capture preparation",
+                Stage::CaptureArtifacts => "Screenshot capture",
+                Stage::StateHooks => "State or hooks",
+                Stage::ActionsFrames => "Actions",
+                _ => "Capture",
+            },
+        };
+        location.to_owned()
+    }
+
+    /// One publish-safe line naming the step, the unmet condition, and the error
+    /// category, for example `Action 1 (click): no element matched after 30012 ms
+    /// (Timeout)`. It never contains selectors, URLs, page text, or error text.
+    pub fn summary(&self, category: ErrorCategory) -> String {
+        let location = self.location();
+        if let Some(timeout) = self.number(Field::ScenarioTimeoutMs) {
+            return format!(
+                "scenarioTimeout of {timeout} ms expired during {location} ({category:?})"
+            );
+        }
+        let problem = match self.kind(Field::Condition) {
+            Some(SafeValue::Exists) => ": no element matched",
+            Some(SafeValue::Visible) => ": element was not visible",
+            Some(SafeValue::Stable) => ": element kept moving",
+            Some(SafeValue::Scroll) => ": element could not be scrolled into view",
+            Some(SafeValue::Unobscured) => ": element was covered or outside the viewport",
+            Some(SafeValue::Enabled) => ": element was disabled",
+            Some(SafeValue::Navigate) => ": URL did not match",
+            _ => " failed",
+        };
+        let duration = self
+            .duration_ms
+            .map(|duration| format!(" after {duration} ms"))
+            .unwrap_or_default();
+        format!("{location}{problem}{duration} ({category:?})")
     }
 }
 
@@ -836,5 +1014,199 @@ mod tests {
                 .unwrap()
                 .contains("synthetic-secret")
         );
+    }
+
+    #[test]
+    fn error_categories_prefer_parse_failures_and_whole_word_timeouts() {
+        let category =
+            |message: &str| SanitizedError::capture(&anyhow::anyhow!("{message}")).category;
+        for message in [
+            "unknown field `readySelectr`, expected one of `readySelector`, `readyTimeout`",
+            "data did not match any variant of untagged enum TestAction at line 4 column 7",
+            "invalid type: integer `5`, expected a string",
+            "missing field `url`",
+            "workspace elementTimeout must be greater than zero",
+            "`input` action must have either `value` or `file`",
+            "Unknown keyboard key 'enter'",
+        ] {
+            assert_eq!(category(message), ErrorCategory::InvalidData, "{message}");
+        }
+        for message in [
+            "Scenario 'checkout' exceeded its 600000ms timeout",
+            "Timeout waiting for URL '**/done'",
+            "Timed out after 30000ms waiting for element '#a' to exist in the DOM",
+            "Navigation exceeded the configured limit",
+        ] {
+            assert_eq!(category(message), ErrorCategory::Timeout, "{message}");
+        }
+        assert_eq!(
+            category("Cannot capture selector '#hero': element not found"),
+            ErrorCategory::NotFound
+        );
+        assert_eq!(
+            category("Element '#buy' is not visible after 5000ms (reason: display_none)"),
+            ErrorCategory::Actionability
+        );
+        for (summary, expected) in [
+            (
+                "Test scenario failed to capture: Action 1 (save): no element matched after 3 ms (NotFound)",
+                ErrorCategory::NotFound,
+            ),
+            (
+                "Reference scenario failed to capture: Screenshot capture failed (Storage)",
+                ErrorCategory::Storage,
+            ),
+        ] {
+            assert_eq!(category(summary), expected, "{summary}");
+        }
+    }
+
+    #[test]
+    fn failure_summaries_name_the_step_and_condition_without_payloads() {
+        type FailedRecord<'a> = (&'a [(Field, FieldValue)], Option<u64>);
+        let site = |stage, records: &[FailedRecord<'_>]| {
+            let mut site = FailureSite::new(stage);
+            for (fields, duration) in records {
+                site.merge(&fields.iter().cloned().collect(), *duration);
+            }
+            site
+        };
+        let kind = FieldValue::Kind;
+        let target = (
+            Field::Target,
+            FieldValue::Identity(SafeIdentity::fingerprint("#private-selector")),
+        );
+        let action = [
+            (Field::ActionIndex, FieldValue::Number(2)),
+            (Field::ActionType, kind(SafeValue::Click)),
+            target.clone(),
+        ];
+        let condition = [
+            action[0].clone(),
+            action[1].clone(),
+            (Field::Condition, kind(SafeValue::Exists)),
+        ];
+        let click = site(
+            Stage::ActionsFrames,
+            &[(&condition, Some(30_012)), (&action, Some(30_020))],
+        );
+        assert_eq!(
+            click.summary(ErrorCategory::Timeout),
+            "Action 2 (click): no element matched after 30012 ms (Timeout)"
+        );
+
+        let covered = site(
+            Stage::ActionsFrames,
+            &[
+                (&[(Field::Condition, kind(SafeValue::Unobscured))], None),
+                (&action, Some(5_100)),
+            ],
+        );
+        assert_eq!(
+            covered.summary(ErrorCategory::Actionability),
+            "Action 2 (click): element was covered or outside the viewport after 5100 ms (Actionability)"
+        );
+
+        let goto = [
+            (Field::ActionIndex, FieldValue::Number(1)),
+            (Field::ActionType, kind(SafeValue::Navigate)),
+        ];
+        let navigation = site(
+            Stage::Navigation,
+            &[
+                (std::slice::from_ref(&target), Some(60_001)),
+                (&goto, Some(60_005)),
+            ],
+        );
+        assert_eq!(
+            navigation.summary(ErrorCategory::Timeout),
+            "Action 1 (goto) failed after 60001 ms (Timeout)"
+        );
+
+        let screenshot = site(
+            Stage::CaptureArtifacts,
+            &[
+                (
+                    &[(Field::Condition, kind(SafeValue::Visible)), target.clone()],
+                    None,
+                ),
+                (
+                    &[(
+                        Field::Capture,
+                        FieldValue::Identity(SafeIdentity::fingerprint("home__FINAL")),
+                    )],
+                    Some(105),
+                ),
+            ],
+        );
+        assert_eq!(
+            screenshot.summary(ErrorCategory::Actionability),
+            "Screenshot capture: element was not visible after 105 ms (Actionability)"
+        );
+
+        let ready = site(
+            Stage::Navigation,
+            &[
+                (&[(Field::Condition, kind(SafeValue::Exists))], Some(1_000)),
+                (&[(Field::State, kind(SafeValue::Ready))], Some(1_002)),
+            ],
+        );
+        assert_eq!(
+            ready.summary(ErrorCategory::Timeout),
+            "readySelector: no element matched after 1000 ms (Timeout)"
+        );
+
+        for (phase, expected) in [
+            (
+                Some(SafeValue::Before),
+                "onBeforeScript failed after 7 ms (Unknown)",
+            ),
+            (
+                Some(SafeValue::Ready),
+                "onReadyScript failed after 7 ms (Unknown)",
+            ),
+            (None, "Hook file loading failed after 7 ms (Unknown)"),
+        ] {
+            let mut fields = vec![(Field::ActionType, kind(SafeValue::Hook))];
+            fields.extend(phase.map(|phase| (Field::Condition, kind(phase))));
+            assert_eq!(
+                site(Stage::StateHooks, &[(&fields, Some(7))]).summary(ErrorCategory::Unknown),
+                expected
+            );
+        }
+        let document_hooks = site(
+            Stage::StateHooks,
+            &[(
+                &[
+                    (Field::ActionType, kind(SafeValue::Hook)),
+                    (Field::State, kind(SafeValue::Ready)),
+                ],
+                Some(3),
+            )],
+        );
+        assert_eq!(
+            document_hooks.location(),
+            "CSS override or browser ready script"
+        );
+
+        let timeout = site(
+            Stage::ActionsFrames,
+            &[(
+                &[
+                    (Field::ScenarioTimeoutMs, FieldValue::Number(600_000)),
+                    action[0].clone(),
+                    action[1].clone(),
+                ],
+                None,
+            )],
+        );
+        assert_eq!(
+            timeout.summary(ErrorCategory::Timeout),
+            "scenarioTimeout of 600000 ms expired during Action 2 (click) (Timeout)"
+        );
+        for site in [click, covered, navigation, screenshot, ready, timeout] {
+            assert!(!site.summary(ErrorCategory::Unknown).contains("private"));
+            assert!(!site.summary(ErrorCategory::Unknown).contains("sha256"));
+        }
     }
 }

@@ -24,7 +24,8 @@ use crate::{
         capture,
         test_scenario::{
             ScenarioRequest, capture_progress_keys, collect_needs_scenarios,
-            collect_url_replacements, scenario_capture_order_keys, scenario_capture_viewports,
+            collect_url_replacements, make_log_prefix, scenario_capture_order_keys,
+            scenario_capture_viewports,
         },
         test_suite::{ScenarioOutcome, exec_single_scenario, parse_test_suite},
     },
@@ -383,12 +384,35 @@ fn spawn_capture_jobs(
                     let (error, infrastructure) = match &outcome {
                         ScenarioOutcome::Passed => (None, false),
                         ScenarioOutcome::PageFailed(error) => {
-                            (Some(SanitizedError::capture(error).summary()), false)
+                            (Some(runtime::failure_summary(error)), false)
                         }
                         ScenarioOutcome::InfraFailed(error) => {
-                            (Some(SanitizedError::capture(error).summary()), true)
+                            (Some(runtime::failure_summary(error)), true)
                         }
                     };
+                    if let (
+                        Some(summary),
+                        ScenarioOutcome::PageFailed(detail) | ScenarioOutcome::InfraFailed(detail),
+                    ) = (&error, &outcome)
+                    {
+                        log_capture_failure(
+                            &make_log_prefix(index, total),
+                            &format!(
+                                "{}:{} [{}]",
+                                suite.id.as_deref().unwrap_or_default(),
+                                suite.scenarios[scenario_idx]
+                                    .id
+                                    .as_deref()
+                                    .unwrap_or_default(),
+                                viewport
+                                    .as_ref()
+                                    .map(|viewport| viewport.label.as_str())
+                                    .unwrap_or("Default")
+                            ),
+                            summary,
+                            detail,
+                        );
+                    }
                     progress::emit(ProgressEvent::Captured {
                         id: index,
                         error,
@@ -433,6 +457,29 @@ fn spawn_capture_jobs(
     }
 
     handles
+}
+
+/// Print a failed capture's step summary and its sanitized error detail. The
+/// detail can name selectors, files, or hook output, so it goes only to the
+/// local console and live desktop log; markers, reports, and journals keep the
+/// typed summary.
+fn log_capture_failure(prefix: &str, capture: &str, summary: &str, error: &anyhow::Error) {
+    if common::NO_PRINT.get().copied().unwrap_or(false) {
+        return;
+    }
+    progress::scenario_log!("{} {} {}: {}", prefix, "FAILED:".red(), capture, summary);
+    progress::scenario_log!(
+        "{}   Local detail (not saved in reports): {}",
+        prefix,
+        capture_failure_detail(error)
+    );
+}
+
+/// Sanitized error chain for local display: URL paths, queries, credentials,
+/// credential-like assignments, and control characters are removed and the text
+/// is bounded.
+fn capture_failure_detail(error: &anyhow::Error) -> String {
+    crate::diagnostics::redaction::sanitize_known(&format!("{error:#}"), &[])
 }
 
 fn queue_setup_fields(
@@ -806,6 +853,17 @@ fn validate_test_suite_config(input: &TestSuiteInput, suite: &TestSuite) -> Resu
                 error
             )
         })?;
+        for (action_index, action) in scenario.actions.iter().flatten().enumerate() {
+            super::test_action::validate_action_fields(action).map_err(|error| {
+                anyhow!(
+                    "Invalid action #{} in test suite '{}' scenario '{}': {}",
+                    action_index + 1,
+                    input.name,
+                    scenario_name,
+                    error
+                )
+            })?;
+        }
     }
     validate_scenario_dependencies(input, suite)?;
     Ok(())
@@ -987,6 +1045,11 @@ fn validate_external_capture_files_in(
             {
                 super::node_hook::validate(root_dir, script)
                     .with_context(|| format!("Invalid Node hook for {}", context))?;
+            }
+
+            for action in scenario.actions.iter().flatten() {
+                super::test_action::validate_action_files(action, &root_dir.join("visual_tests"))
+                    .with_context(|| format!("Invalid input file for {}", context))?;
             }
 
             let cookie_path = match resolved.cookie_path.as_deref() {
@@ -1683,6 +1746,35 @@ fn generate_snapshot_reports() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_failure_detail_keeps_local_context_without_url_paths_or_credentials() {
+        let error = anyhow!(
+            "Timeout waiting for URL 'https://synthetic-user:synthetic-pass@shop.example/checkout?sig=abc', current URL is 'https://shop.example/private-login'"
+        )
+        .context("Wait failed\nwith token=synthetic-secret");
+        let detail = capture_failure_detail(&error);
+        assert!(
+            detail.starts_with("Wait failed with [redacted]"),
+            "{detail}"
+        );
+        assert!(detail.contains("Timeout waiting for URL"), "{detail}");
+        assert!(
+            detail.contains("'https://shop.example/[redacted]'"),
+            "{detail}"
+        );
+        for secret in [
+            "synthetic-user",
+            "synthetic-pass",
+            "checkout",
+            "sig=abc",
+            "synthetic-secret",
+            "private-login",
+            "\n",
+        ] {
+            assert!(!detail.contains(secret), "{detail}");
+        }
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn queue_setup_stage_records_for_passed_and_timed_out_captures() {
@@ -2683,6 +2775,100 @@ mod tests {
                 .contains("Invalid selectors for scenario 'home'")
         );
         assert!(error.to_string().contains("at least one capture target"));
+    }
+
+    #[test]
+    fn rejects_action_field_combinations_before_browser_launch() {
+        use serde_json::json;
+        let action = |value: serde_json::Value| -> crate::types::TestAction {
+            serde_json::from_value(value).unwrap()
+        };
+        for (invalid, expected) in [
+            (
+                json!({"input": "#name", "value": "Ada", "file": "a.txt"}),
+                "must not contain both `value` and `file`",
+            ),
+            (json!({"input": "#name"}), "either `value` or `file`"),
+            (
+                json!({"select": "#country", "value": "se", "label": "Sweden"}),
+                "not both",
+            ),
+            (json!({"select": "#country"}), "either `value` or `label`"),
+            (
+                json!({"press": "#search", "key": "enter"}),
+                "Unknown keyboard key 'enter'. Key names are case-sensitive",
+            ),
+            (json!({"persist": "../escape"}), "Invalid state name"),
+            (
+                json!({"switchTab": "previous", "url": "**/quote"}),
+                "only supported with switchTab: new",
+            ),
+        ] {
+            let mut suite = suite(vec![scenario("home", None)]);
+            suite.scenarios[0].actions =
+                Some(vec![action(json!({"click": "#ok"})), action(invalid)]);
+            let error = validate_test_suite_config(&input(), &suite)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("Invalid action #2 in test suite 'alloy' scenario 'home'"),
+                "{error}"
+            );
+            assert!(error.contains(expected), "{error}");
+        }
+
+        let mut valid = suite(vec![scenario("home", None)]);
+        valid.scenarios[0].actions = Some(vec![
+            action(json!({"input": "#name", "value": "Ada"})),
+            action(json!({"select": "#country", "label": "Sweden"})),
+            action(json!({"press": "#search", "key": "Enter"})),
+            action(json!({"persist": "signed-in"})),
+            action(json!({"switchTab": "new", "url": "**/quote"})),
+        ]);
+        validate_test_suite_config(&input(), &valid).unwrap();
+    }
+
+    #[test]
+    fn upload_files_are_validated_before_browser_launch() {
+        let workspace_root = tempfile::tempdir().unwrap();
+        let output_dir = workspace_root.path().join(".regressify");
+        std::fs::create_dir_all(workspace_root.path().join("visual_tests/files")).unwrap();
+        std::fs::write(workspace_root.path().join("visual_tests/files/a.txt"), "a").unwrap();
+        let mut configured = suite(vec![scenario("home", None)]);
+        configured.scenarios[0].actions = Some(
+            serde_json::from_value(serde_json::json!([
+                {"input": "#upload", "file": "files/a.txt"}
+            ]))
+            .unwrap(),
+        );
+        let workspace = config::WorkspaceConfig::default();
+        validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &[(input(), Arc::new(configured.clone()))],
+        )
+        .unwrap();
+
+        configured.scenarios[0].actions = Some(
+            serde_json::from_value(serde_json::json!([
+                {"input": "#upload", "file": ["files/a.txt", "files/missing.txt"]}
+            ]))
+            .unwrap(),
+        );
+        let error = validate_external_capture_files_in(
+            workspace_root.path(),
+            &output_dir,
+            &workspace,
+            &[(input(), Arc::new(configured))],
+        )
+        .unwrap_err();
+        let error = format!("{error:#}");
+        assert!(error.contains("Invalid input file for test suite 'alloy' scenario 'home'"));
+        assert!(
+            error.contains("file does not exist: files/missing.txt"),
+            "{error}"
+        );
     }
 
     #[test]

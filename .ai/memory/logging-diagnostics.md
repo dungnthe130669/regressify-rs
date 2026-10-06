@@ -1,10 +1,22 @@
 # Logging Diagnostics
 
-Verified: 2026-10-02
+Verified: 2026-10-06
 
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
   from live progress. Public capture records use templates, typed fields, opaque
   identities, and categorical errors; provider detail is deployment-only.
+- Capture failure summaries (`FailureSite` in the record module, tracked by
+  `OperationContext::track` in the [runtime](../../src/diagnostics/runtime.rs))
+  use only typed record fields and the category, so markers, `engineErrorMsg`,
+  and progress errors stay publishable. The first failed record wins each field;
+  enclosing failures fill the action. Field-less wrapper records are skipped
+  because their zero durations would replace the step's. Scenario deadlines
+  read the unfinished-stage stack, since cancelled stages record no completion.
+- The sanitized error chain is printed only by `log_capture_failure` in
+  [test_suites](../../src/test/test_suites.rs) (console and live desktop log,
+  hidden by `--no-print`); never put it in journals, markers, or reports.
+  `ErrorCategory::classify` treats serde phrases as `InvalidData`, matches
+  `timeout` as a word, and keeps a trailing `(Category)` from a summary.
 - [Startup journals](../../src/diagnostics/startup.rs) are entry-point-owned in
   local application data, use the bounded operation queue for native warnings,
   finalize explicitly, and are excluded from public reports. The desktop installs

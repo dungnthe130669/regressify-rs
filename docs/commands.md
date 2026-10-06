@@ -44,7 +44,8 @@ regressify --root ./my-tests --site-env staging test --test-suite alloy
 explicit `--log-level` is supplied. Display precedence is CLI flag, then
 `REGRESSIFY_LOG_LEVEL`, then scenario `logLevel`, suite `logLevel`, workspace
 `logLevel`, and finally `info`. Parallel captures keep independent display levels.
-`--no-print` suppresses diagnostic console records, not command-result stdout.
+`--no-print` suppresses diagnostic console records and capture failure lines,
+not command-result stdout.
 
 Display filters never reduce the standard archived timeline. For example,
 `regressify --log-level error test` still archives detailed standard debug events
@@ -55,6 +56,24 @@ Failures retain `error` severity, cancellation and visual mismatches retain `war
 and successful completion retains `info`. Version output, interactive prompts,
 human-readable result summaries, and emergency sink warnings remain console output;
 they are not forwarded wholesale into archives.
+
+Each failed capture prints two console lines:
+
+```text
+[ 3 of 12] FAILED: shop:checkout [Desktop]: Action 2 (click): no element matched after 30012 ms (Timeout)
+[ 3 of 12]   Local detail (not saved in reports): Timed out after 30000ms waiting for element '#buy' to exist in the DOM
+```
+
+The text after the viewport is the failure summary, which is also the
+error-marker message, report `engineErrorMsg`, and desktop progress error. It is
+built only from typed diagnostic fields: the failed step, unmet condition,
+duration, and error category; a deadline reads
+`scenarioTimeout of 600000 ms expired during Action 4 (wait) (Timeout)`. The
+local detail is the error message chain with URLs reduced to scheme and host,
+credential-like values redacted, control characters removed, and length limited
+to 2048 characters. It can still name selectors, files, and Node hook standard
+error, so it appears only on the console and in the live desktop scenario log,
+never in archives, reports, or published logs.
 
 ### Diagnostic Storage Limits
 
@@ -256,9 +275,9 @@ precedence, and defaults, predefined file formats, browser/Node hook contracts,
 complete recipes for common page patterns, and troubleshooting. Hook examples
 include complete suite wiring and six-argument ESM scripts. Diagnostic guidance
 covers focused reruns, preflight messages, actual report paths and fields,
-capture-error/log sidecars, reading category-only capture records, journal
-health, and common corrective checks. Every YAML block in the guides is parsed
-and schema-checked by the catalog tests. Cookie/CSS/JS
+capture failure summaries and local detail lines, capture-error/log sidecars,
+journal records, journal health, and common corrective checks. Every YAML block
+in the guides is parsed and schema-checked by the catalog tests. Cookie/CSS/JS
 formats use explicit guidance; JSON Schemas do not replace runtime cross-file,
 filesystem, authentication, or browser validation.
 
@@ -567,7 +586,7 @@ An unreadable PNG or failed file replacement makes `optimize` fail rather than s
 
 Initial page navigation defaults to `60000` ms (60 seconds), matching the legacy Node/VS Code runner. Override it per scenario with `engineOptions.gotoParameters.timeout`; an omitted or zero value uses the bounded 60-second default. This is independent of `elementTimeout`, whose default remains `30000` ms for element waits.
 
-Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify preserves completed intermediate captures, records failed-capture placeholders for remaining expected targets, and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
+Set `scenarioTimeout` in `regressify.yaml` or `regressify.yml` to bound one complete scenario/viewport capture in milliseconds. It defaults to `600000` (ten minutes). When the deadline expires, Regressify records which step was still running, preserves completed intermediate captures, records failed-capture placeholders for remaining expected targets, and continues the remaining scenarios instead of allowing one unresponsive page or CDP operation to stall the run.
 
 ## Capture stability
 

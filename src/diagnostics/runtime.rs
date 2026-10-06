@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     future::Future,
     path::Path,
     sync::{
@@ -71,7 +71,14 @@ pub struct OperationContext {
     sequence: AtomicU64,
     action_index: AtomicU64,
     display_level: std::sync::atomic::AtomicU8,
+    /// First failed capture step, merged with the steps that enclosed it.
+    failure: Mutex<Option<FailureSite>>,
+    /// Unfinished capture stages, innermost last. A scenario deadline drops their
+    /// futures, so they never record their own completion.
+    active: Mutex<Vec<ActiveStage>>,
 }
+
+type ActiveStage = (SpanId, Stage, BTreeMap<Field, FieldValue>);
 
 impl OperationContext {
     pub fn set_display_level(&self, level: Severity) {
@@ -119,11 +126,58 @@ impl OperationContext {
             record.span_id = span.clone();
             record.parent_span = parent.clone();
         });
+        self.track(&record);
         if install::current().is_some_and(|installation| installation.installed()) {
             let _ = super::adapter::emit(&record);
         } else {
             self.sink.record(&record);
         }
+    }
+
+    /// Follow capture steps through the records themselves, so failure summaries
+    /// can only contain typed fields that public capture journals already allow.
+    fn track(&self, record: &DiagnosticRecordV1) {
+        let capture_step = match record.stage {
+            Stage::Navigation
+            | Stage::StateHooks
+            | Stage::ActionsFrames
+            | Stage::ScreenshotSettling
+            | Stage::CaptureArtifacts => true,
+            Stage::QueueSetup => {
+                record.fields.get(&Field::Endpoint) == Some(&FieldValue::Kind(SafeValue::Browser))
+            }
+            _ => false,
+        };
+        if !capture_step || self.identity.operation_kind != OperationKind::Capture {
+            return;
+        }
+        match record.event_name {
+            DiagnosticEvent::StageStarted => {
+                if let Ok(mut active) = self.active.lock() {
+                    active.push((record.span_id.clone(), record.stage, record.fields.clone()));
+                }
+            }
+            DiagnosticEvent::StageFinished => {
+                if let Ok(mut active) = self.active.lock() {
+                    active.retain(|(span, ..)| *span != record.span_id);
+                }
+            }
+            _ => {}
+        }
+        // Field-less wrapper records, such as the overall scenario result, carry
+        // no location; their zero durations must not replace the failed step's.
+        if record.severity == Severity::Error
+            && !record.fields.is_empty()
+            && let Ok(mut failure) = self.failure.lock()
+        {
+            failure
+                .get_or_insert_with(|| FailureSite::new(record.stage))
+                .merge(&record.fields, record.duration_ms);
+        }
+    }
+
+    fn failure_site(&self) -> Option<FailureSite> {
+        self.failure.lock().ok()?.clone()
     }
 }
 
@@ -209,6 +263,8 @@ impl Operation {
             sequence: AtomicU64::new(0),
             action_index: AtomicU64::new(0),
             display_level: std::sync::atomic::AtomicU8::new(u8::MAX),
+            failure: Mutex::new(None),
+            active: Mutex::new(Vec::new()),
         });
         if let Ok(mut routes) = ROUTES.get_or_init(Default::default).lock() {
             routes.insert(metadata.operation_id, Arc::downgrade(&sink));
@@ -339,6 +395,49 @@ impl Drop for Operation {
 
 pub fn current() -> Option<Arc<OperationContext>> {
     CURRENT.try_with(Arc::clone).ok()
+}
+
+/// Publish-safe one-line description of a failed capture for error markers,
+/// reports, and progress events: the failed step from typed diagnostic fields
+/// plus the error category, never the error text itself.
+pub fn failure_summary(error: &anyhow::Error) -> String {
+    let category = SanitizedError::capture(error).category;
+    match current().and_then(|context| context.failure_site()) {
+        Some(site) => site.summary(category),
+        None => format!("Capture failed ({category:?})"),
+    }
+}
+
+/// Record the unfinished capture step that a scenario deadline cancelled.
+pub fn scenario_timeout(timeout_ms: u64) {
+    let Some(context) = current() else {
+        return;
+    };
+    let (stage, mut fields) = context
+        .active
+        .lock()
+        .ok()
+        .and_then(|active| {
+            let stage = active.last()?.1;
+            let mut fields = BTreeMap::new();
+            // Innermost stage first, so an enclosing action fills in its index.
+            for (_, _, stage_fields) in active.iter().rev() {
+                for (field, value) in stage_fields {
+                    fields.entry(*field).or_insert_with(|| value.clone());
+                }
+            }
+            Some((stage, fields))
+        })
+        .unwrap_or((Stage::CaptureArtifacts, BTreeMap::new()));
+    fields.insert(Field::ScenarioTimeoutMs, FieldValue::Number(timeout_ms));
+    fields.insert(Field::Reason, FieldValue::Kind(SafeValue::Timeout));
+    context.record(
+        stage,
+        DiagnosticEvent::Decision,
+        Severity::Error,
+        fields,
+        Completion::default(),
+    );
 }
 
 pub fn next_action_index() -> u64 {
@@ -678,5 +777,117 @@ mod tests {
         assert!(live.lock().unwrap().omitted_logs > 0);
         assert!(live.lock().unwrap().logs.len() <= 4096);
         live.lock().unwrap().clear_logs();
+    }
+
+    #[tokio::test]
+    async fn failure_summaries_follow_the_innermost_failed_step_and_scenario_deadlines() {
+        let root = tempfile::tempdir().unwrap();
+        let action = |index, kind| {
+            vec![
+                (Field::ActionIndex, FieldValue::Number(index)),
+                (Field::ActionType, FieldValue::Kind(kind)),
+            ]
+        };
+
+        let operation = Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        let summary = scope(Some(operation.context()), async {
+            assert_eq!(
+                failure_summary(&anyhow::anyhow!("Timed out")),
+                "Capture failed (Timeout)"
+            );
+            let passed = action(1, SafeValue::Click);
+            action_scope(
+                passed.clone(),
+                stage(Stage::ActionsFrames, passed, async { Ok(()) }),
+            )
+            .await
+            .unwrap();
+            let failed = action(2, SafeValue::Wait);
+            let error = action_scope(
+                failed.clone(),
+                stage(
+                    Stage::ActionsFrames,
+                    failed,
+                    stage(
+                        Stage::ActionsFrames,
+                        [
+                            (Field::Condition, FieldValue::Kind(SafeValue::Visible)),
+                            (
+                                Field::Target,
+                                FieldValue::Identity(SafeIdentity::fingerprint("#private")),
+                            ),
+                        ],
+                        async {
+                            Err::<(), _>(anyhow::anyhow!(
+                                "Element '#private' is not visible after 5ms"
+                            ))
+                        },
+                    ),
+                ),
+            )
+            .await
+            .unwrap_err();
+            // The enclosing scenario result carries no location or real duration.
+            result(Stage::CaptureArtifacts, &Err(anyhow::anyhow!("wrapper")), 0);
+            failure_summary(&error)
+        })
+        .await;
+        assert!(
+            summary.starts_with("Action 2 (wait): element was not visible after "),
+            "{summary}"
+        );
+        assert!(summary.ends_with(" ms (Actionability)"), "{summary}");
+        assert!(!summary.contains("private"), "{summary}");
+        operation.finish(Outcome::Failure).await;
+
+        let operation = Operation::start(root.path(), OperationKind::Capture, None, None, None);
+        let summary = scope(Some(operation.context()), async {
+            let goto = action(1, SafeValue::Navigate);
+            let pending = action_scope(
+                goto.clone(),
+                stage(
+                    Stage::ActionsFrames,
+                    goto,
+                    navigation(
+                        "https://example.test/private",
+                        5,
+                        std::future::pending::<anyhow::Result<()>>(),
+                    ),
+                ),
+            );
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_millis(5), pending)
+                    .await
+                    .is_err()
+            );
+            scenario_timeout(5);
+            failure_summary(&anyhow::anyhow!(
+                "Scenario 'private' exceeded its 5ms timeout"
+            ))
+        })
+        .await;
+        assert_eq!(
+            summary,
+            "scenarioTimeout of 5 ms expired during Action 1 (goto) (Timeout)"
+        );
+        let reference = operation.finish(Outcome::Failure).await;
+        let mut deadline = false;
+        JournalReader::open(root.path(), &reference.operation_id)
+            .unwrap()
+            .visit(|record| {
+                assert!(!serde_json::to_string(&record).unwrap().contains("private"));
+                if record.fields.get(&Field::ScenarioTimeoutMs) == Some(&FieldValue::Number(5)) {
+                    deadline = true;
+                    assert_eq!(record.stage, Stage::Navigation);
+                    assert_eq!(record.severity, Severity::Error);
+                    assert_eq!(
+                        record.fields.get(&Field::ActionIndex),
+                        Some(&FieldValue::Number(1))
+                    );
+                    assert!(record.fields.contains_key(&Field::Destination));
+                }
+            })
+            .unwrap();
+        assert!(deadline);
     }
 }

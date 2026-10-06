@@ -45,8 +45,10 @@ url
 Type: `string`.
 
 The URL you want to test.
-Initial navigation, including the reload used after restoring local storage, is
-bounded by the workspace `elementTimeout` setting before actions begin.
+Initial navigation waits for `engineOptions.gotoParameters.waitUntil` (default
+`load`) within `engineOptions.gotoParameters.timeout` (default `60000` ms),
+independent of `elementTimeout`. Saved local storage is restored before page
+scripts run, without a reload.
 
 {% end %}
 
@@ -216,6 +218,23 @@ Resolution order: scenario, workspace, then the default. Set `delay: 0` to disab
 
 Wait for X milliseconds before each `save` checkpoint and before the scenario's final captures. This is separate from `postInteractionWait`, which applies only after the actions finish.  
 Use this for scenarios where the page under test needs extra time to load or render.
+
+{% end %}
+
+{% spoiler() %}
+
+hideSelectors
+
+:::::
+
+Type: `string[]`.  
+Default value: Test suite's value, then workspace value, then `[]`.
+
+Standard CSS selectors set to `visibility: hidden` in every document of the
+scenario, before actions and captures. Hidden elements keep their layout space,
+actions cannot interact with them, and selectors that match nothing are ignored.
+A scenario list replaces the inherited list. Use the [`hide` action][action-hide]
+instead when only a later step should hide an element.
 
 {% end %}
 
@@ -466,6 +485,24 @@ Capture preparation hides blinking text carets without blurring focused fields o
 
 {% spoiler() %}
 
+removeSelectors
+
+:::::
+
+Type: `string[]`.  
+Default value: Test suite's value, then workspace value, then `[]`.
+
+Standard CSS selectors set to `display: none` in every document of the
+scenario, before actions and captures. Matching elements stay in the DOM but
+take no space, actions cannot interact with them, and selectors that match
+nothing are ignored. A scenario list replaces the inherited list. Use the
+[`remove` action][action-remove] instead when only a later step should remove
+an element.
+
+{% end %}
+
+{% spoiler() %}
+
 restore
 
 :::::
@@ -620,7 +657,10 @@ Type: `string`.
 Default value: Empty.
 
 Click the specified DOM element prior to screen shot.  
-Notes: this legacy property runs after `actions` when both are configured. Prefer the explicit `click` action for new suites.
+Notes: legacy shortcuts become actions only when `actions` is omitted; any
+`actions` list, even an empty one, disables them. They run in this order:
+`keyPressSelector(s)`, `hoverSelector(s)`, `clickSelector(s)`, then
+`scrollToSelector`. Prefer the explicit `click` action for new suites.
 
 {% end %}
 
@@ -632,43 +672,13 @@ clickSelectors - *obsoleted*
 
 > OBSOLETED - use [actions.click][action-click] instead.
 
-Type: `string[]`.  
-Default value: `[]`.
+Type: `string | string[]`.  
+Default value: Empty.
 
-Click the specified DOM elements prior to screen shot.  
-Notes: this legacy property is not implemented by the Rust CLI. Prefer the explicit `click` action for new suites.
-
-{% end %}
-
-{% spoiler(danger=true) %}
-
-hideSelectors - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.hide][action-hide] instead.
-
-Type: `string[]`.  
-Default value: Test suite's value.
-
-Array of selectors set to `visibility: hidden`  
-Notes: this property is applied through the config cascade before capture. Prefer the explicit `hide` action when the change belongs to a specific action sequence.
-
-{% end %}
-
-{% spoiler(danger=true) %}
-
-removeSelectors - *obsoleted*
-
-:::::
-
-> OBSOLETED - use [actions.remove][action-remove] instead.
-
-Type: `string[]`.  
-Default value: Test suite's value.
-
-Array of selectors set to `display: none`.  
-Notes: this property is applied through the config cascade before capture. Prefer the explicit `remove` action when the change belongs to a specific action sequence.
+Click the specified DOM elements, in order, prior to screen shot.  
+Notes: converted like `clickSelector`, only when `actions` is omitted. When both
+are set, `clickSelectors` is used and `clickSelector` is ignored. Prefer
+explicit `click` actions for new suites.
 
 {% end %}
 

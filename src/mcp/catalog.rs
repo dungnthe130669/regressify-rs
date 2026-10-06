@@ -472,6 +472,11 @@ mod tests {
             "sha256:",
             "lexicographically greatest",
             "data did not match any variant of untagged enum TestAction",
+            "Local detail",
+            "no element matched",
+            "scenarioTimeout of N ms expired during",
+            "onBeforeScript",
+            "State=Ready` it is the `readySelector`",
         ] {
             assert!(
                 troubleshooting.contains(contract),
@@ -488,6 +493,9 @@ mod tests {
             "URL must match first",
             "case-sensitive",
             "never substitutes environment variables",
+            "Checks Beyond the Schema",
+            "Invalid action #N in test suite",
+            "missing upload files",
         ] {
             assert!(
                 actions.contains(contract),
@@ -517,6 +525,7 @@ mod tests {
             assert!(recipes.contains(contract), "Missing recipe: {contract}");
         }
         assert!(hooks.contains("process.env"));
+        assert!(hooks.contains("Local detail"));
         assert!(
             catalog["guides"]["overview"]["content"]
                 .as_str()

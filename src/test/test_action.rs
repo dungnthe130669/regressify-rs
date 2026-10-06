@@ -24,7 +24,7 @@ use crate::{
     types::{
         CheckAction, ClickAction, FileInput, FocusAction, GotoAction, HideAction, HoverAction,
         InputAction, PersistAction, PressAction, RemoveAction, SaveAction, ScreenshotType,
-        ScrollAction, SelectAction, SelectValue, TestAction, TestScenario, TestSuite,
+        ScrollAction, SelectAction, SelectValue, TabTarget, TestAction, TestScenario, TestSuite,
         UncheckAction, UrlReplacement, Wait, WaitAction,
     },
 };
@@ -58,6 +58,53 @@ fn resolve_file_paths(file: &FileInput, visual_tests_dir: &Path) -> Result<Vec<S
         );
     }
     Ok(paths)
+}
+
+/// Validate action field combinations that the JSON Schema does not express, so
+/// suite preflight fails before any browser starts. Execution keeps its own
+/// checks because prerequisite and legacy actions are also built in code.
+pub(crate) fn validate_action_fields(action: &TestAction) -> Result<()> {
+    match action {
+        TestAction::Input(InputAction { value, file, .. }) => match (value, file) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!("`input` action must not contain both `value` and `file`")
+            }
+            (None, None) => anyhow::bail!("`input` action must have either `value` or `file`"),
+            _ => {}
+        },
+        TestAction::Select(SelectAction { value, label, .. }) => match (value, label) {
+            (Some(_), Some(_)) => {
+                anyhow::bail!("Select action must have only either `value` or `label`, not both.")
+            }
+            (None, None) => anyhow::bail!("Select action must have either `value` or `label`."),
+            _ => {}
+        },
+        TestAction::Press(PressAction { key, .. }) => {
+            parse_press_key(key).map_err(|error| {
+                anyhow!(
+                    "{error}. Key names are case-sensitive, for example Enter, Tab, ArrowDown, or Control+A"
+                )
+            })?;
+        }
+        TestAction::Persist(PersistAction { persist, .. }) => validate_state_name(persist)?,
+        TestAction::SwitchTab(action) => anyhow::ensure!(
+            action.switch_tab == TabTarget::New || action.url.is_none(),
+            "switchTab.url is only supported with switchTab: new"
+        ),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Confirm upload files exist inside `visual_tests` during suite preflight.
+pub(crate) fn validate_action_files(action: &TestAction, visual_tests_dir: &Path) -> Result<()> {
+    if let TestAction::Input(InputAction {
+        file: Some(file), ..
+    }) = action
+    {
+        resolve_file_paths(file, visual_tests_dir)?;
+    }
+    Ok(())
 }
 
 /// Build an ActionabilityConfig from a ResolvedConfig.
@@ -778,35 +825,40 @@ async fn exec_test_action_inner(
                 let timeout = std::time::Duration::from_millis(ac.element_timeout_ms);
                 let start = std::time::Instant::now();
 
-                loop {
-                    let remaining = timeout.saturating_sub(start.elapsed());
-                    if remaining.is_zero() {
-                        anyhow::bail!("Timeout waiting for URL '{}'", target_url);
-                    }
-                    let current_url = actionability::cdp_with_timeout(
-                        remaining,
-                        "reading current URL",
-                        page.url(),
-                    )
-                    .await?
-                    .ok_or_else(|| anyhow!("Failed to get current URL"))?;
+                actionability::diagnostic_condition(
+                    crate::diagnostics::record::SafeValue::Navigate,
+                    &target_url,
+                    async {
+                        loop {
+                            let remaining = timeout.saturating_sub(start.elapsed());
+                            if remaining.is_zero() {
+                                anyhow::bail!("Timeout waiting for URL '{}'", target_url);
+                            }
+                            let current_url = actionability::cdp_with_timeout(
+                                remaining,
+                                "reading current URL",
+                                page.url(),
+                            )
+                            .await?
+                            .ok_or_else(|| anyhow!("Failed to get current URL"))?;
 
-                    let matches = matcher.matches(&current_url);
+                            if matcher.matches(&current_url) {
+                                return Ok(());
+                            }
 
-                    if matches {
-                        break;
-                    }
+                            if start.elapsed() > timeout {
+                                anyhow::bail!(
+                                    "Timeout waiting for URL '{}', current URL is '{}'",
+                                    target_url,
+                                    current_url
+                                );
+                            }
 
-                    if start.elapsed() > timeout {
-                        anyhow::bail!(
-                            "Timeout waiting for URL '{}', current URL is '{}'",
-                            target_url,
-                            current_url
-                        );
-                    }
-
-                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                }
+                            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                        }
+                    },
+                )
+                .await?;
             }
 
             match wait {
@@ -814,7 +866,14 @@ async fn exec_test_action_inner(
                     tokio::time::sleep(std::time::Duration::from_millis(*milliseconds)).await;
                 }
                 Wait::String(selector) => {
-                    wait_for_selector(page, selector, frame, &ac).await?;
+                    wait_for_selector(
+                        page,
+                        selector,
+                        frame,
+                        &ac,
+                        crate::diagnostics::record::Stage::ActionsFrames,
+                    )
+                    .await?;
                 }
             }
         }

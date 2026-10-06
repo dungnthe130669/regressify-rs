@@ -113,15 +113,25 @@ contents. Without `useFileChooser`, the target must be a visible
 `<input type="file">`; when the site hides that input, set
 `useFileChooser: true` and target the visible button that opens the chooser.
 
-## Runtime-Only Checks
+## Checks Beyond the Schema
 
-Preflight rejects unknown fields, unknown viewport labels, invalid save, state,
-and restore names, and colliding screenshot names before any browser starts.
-Some combinations pass schema validation but fail when the action runs, as a
-page failure: `input` with neither or both of `value` and `file`, `select` with
-neither or both of `value` and `label`, `check` on a non-checkbox target,
-`switchTab.url` with `previous` or `original`, an invalid `persist` name, and an
-unknown `press` key.
+The JSON Schema cannot express every rule, so capture preflight checks these
+before any browser starts and fails the command with
+`Invalid action #N in test suite '<suite>' scenario '<scenario>': ...`:
+
+- `input` needs exactly one of `value` and `file`.
+- `select` needs exactly one of `value` and `label`.
+- `press.key` must be a known, correctly cased key name.
+- `persist` needs a valid state name.
+- `switchTab.url` is allowed only with `switchTab: new`.
+
+Preflight also rejects unknown fields, unknown viewport labels, invalid save
+and restore names, colliding screenshot names, missing upload files, and
+screenshot selectors written with `text=`, `xpath=`, `css=`, `id=`,
+`data-testid=`, or `//`. Other problems appear only when the action runs, as a
+page failure: a target that is not a checkbox, radio, `<select>`, editable
+field, or file input; a missing option; or other invalid CSS in a screenshot
+selector.
 
 ## Frames and Responsive Actions
 

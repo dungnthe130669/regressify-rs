@@ -21,12 +21,20 @@ pub(crate) fn validate(root: &Path, script: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn run(root: &Path, payload: serde_json::Value, timeout: Duration) -> Result<()> {
+/// Run a Node lifecycle hook. `phase` is `Before` for `onBeforeScript` and
+/// `Ready` for `onReadyScript`, so failures name the hook that failed.
+pub(crate) async fn run(
+    root: &Path,
+    payload: serde_json::Value,
+    timeout: Duration,
+    phase: crate::diagnostics::record::SafeValue,
+) -> Result<()> {
     use crate::diagnostics::{record::*, runtime as diagnostics};
     diagnostics::stage(
         Stage::StateHooks,
         [
             (Field::ActionType, FieldValue::Kind(SafeValue::Hook)),
+            (Field::Condition, FieldValue::Kind(phase)),
             (
                 Field::TimeoutMs,
                 FieldValue::Number(timeout.as_millis() as u64),
@@ -108,11 +116,27 @@ mod tests {
             let page = browser.new_page("about:blank").await?;
             let payload = serde_json::json!({"script": hook, "endpoint": browser.websocket_address(),
                 "target": page.target_id(), "scenario": {"label": "hook completed"}, "isReference": true});
-            run(workspace.path(), payload.clone(), Duration::from_secs(10)).await?;
+            run(
+                workspace.path(),
+                payload.clone(),
+                Duration::from_secs(10),
+                crate::diagnostics::record::SafeValue::Ready,
+            )
+            .await?;
             let text: String = page.evaluate("document.body.textContent").await?.into_value()?;
             anyhow::ensure!(text == "hook completed", "Node hook did not execute on the scenario page");
             std::fs::write(&hook, "module.exports = async () => await new Promise(() => {});")?;
-            anyhow::ensure!(run(workspace.path(), payload, Duration::from_secs(2)).await.is_err(), "unbounded hook");
+            anyhow::ensure!(
+                run(
+                    workspace.path(),
+                    payload,
+                    Duration::from_secs(2),
+                    crate::diagnostics::record::SafeValue::Ready,
+                )
+                .await
+                .is_err(),
+                "unbounded hook"
+            );
             page.evaluate("document.body.textContent = 'browser remains available'").await?;
             Ok(())
         }.await;

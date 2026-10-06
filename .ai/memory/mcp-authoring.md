@@ -17,8 +17,12 @@ Verified: 2026-10-06
   use the bundled Playwright engines, but hide/remove and screenshot selectors
   are plain CSS in the main document; captures and `report.json` share
   `<output>/<suite>/bitmaps_test/<run>/` (there is no `tests/<run>` folder).
-- Page-level failure markers, `engineErrorMsg`, and console/journal causes keep
-  only a keyword-derived category; agents locate failures via `ActionIndex`,
+- Suite preflight (`validate_action_fields`, `validate_action_files`, and
+  screenshot selector prefixes) rejects schema-valid but unusable actions before
+  browser launch; the actions guide lists them under "Checks Beyond the Schema".
+- Page-level failure markers, `engineErrorMsg`, and progress errors carry a typed
+  summary (step, condition, duration, category); the console adds a sanitized
+  local detail line that is never archived. Journals keep `ActionIndex`,
   `Condition`, and stage records. Identity fields are unsalted `sha256:` of the
   exact text, so local candidates can be hashed to confirm a match.
 - New guide topics are discovered through the overview served by the same Worker

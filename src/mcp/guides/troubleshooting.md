@@ -13,8 +13,8 @@ source, screenshots, and raw logs local. Do not send them in MCP tool arguments.
    scenario ID, viewport, and run ID. Preserve the original CLI error and report.
 1. Identify the stage: preflight/configuration, browser startup/navigation,
    state/hooks, actions, capture, comparison, or report generation. A categorical
-   cause alone is insufficient: an invalid zero timeout can be a preflight error,
-   not a browser that took too long.
+   cause alone is insufficient: a missing element and a slow page both report
+   `Timeout`.
 1. Read the applicable topic/schema and inspect the actual local inputs. Validate
    names, paths, inheritance, and conditional action fields before changing code.
 
@@ -27,8 +27,7 @@ peers. Missing diagnostics do not establish either a successful or failed captur
 
 A nonzero exit prints a final line beginning `ERROR:` with the full message
 chain; that line is authoritative. Earlier console records carry only a coarse
-keyword category, which can mislead: an unknown-field error may show
-`cause=Timeout` because its expected-field list mentions `readyTimeout`.
+keyword category of that message, so read the final line before acting.
 Typical preflight messages and corrections:
 
 - `data did not match any variant of untagged enum TestAction`, with a line and
@@ -43,7 +42,13 @@ Typical preflight messages and corrections:
 - `Duplicate scenario ID` or `colliding screenshot filename`: make scenario
   IDs, save names, and selector targets distinct.
 - `Invalid selectors for scenario`: an invalid `selector`, `selectors`, or save
-  name.
+  name, including `text=` or other Playwright syntax in a screenshot selector.
+- `Invalid action #N in test suite`: a field combination from the actions
+  topic's checks beyond the schema, such as `input` with both `value` and
+  `file` or a wrongly cased `press` key. `N` counts that scenario's own
+  `actions` list from 1.
+- `Invalid input file for`: an upload file is missing or outside
+  `visual_tests/`.
 - `Selected scenario ... must match exactly one scenario` or
   `No matching test suites found`: check suite names and file discovery.
 - `Capture run directory already exists`: choose a new `--run-id`.
@@ -128,11 +133,39 @@ with `fileName`, `scenarioId`, `selector` (`document`, `viewport`,
   capture failed.
 - `Dimensions differ: reference WxH vs test WxH`: always a failure, whatever
   the thresholds; usually the page height changed. Inspect the diff first.
-- `Test scenario failed to capture: <Category> failure (causes: [...])`, or the
-  `Reference` and `Both` variants: a page-level failure left a placeholder. In a
-  `ref` run the message says `Test` because that run's capture failed; the
-  placeholder is never promoted.
+- `Test scenario failed to capture: <summary>`, or the `Reference` and `Both`
+  variants: a page-level failure left a placeholder. In a `ref` run the message
+  says `Test` because that run's capture failed; the placeholder is never
+  promoted. Reports from releases before failure summaries show
+  `<Category> failure (causes: [...])` instead.
 - `Comparison error: ...`: an image could not be read or compared.
+
+A failure summary names the failed step, the unmet condition when known, the
+step duration, and the error category, for example
+`Action 2 (click): no element matched after 30012 ms (Timeout)` or
+`onReadyScript failed after 812 ms (Unknown)`. Steps are `Action N (<type>)`,
+`readySelector`, `Navigation`, `onBeforeScript`, `onReadyScript`,
+`CSS override or browser ready script`, `Hook file loading`, `Cookie file`,
+`Saved state`, `Lazy-load scrolling`, `Capture preparation` (delay, settling,
+and caret hiding), `Screenshot capture`, and `Browser launch`. Conditions:
+
+- `no element matched`: nothing matched within `elementTimeout`: a wrong
+  selector, frame, tab, or page, or content that has not loaded.
+- `element was not visible`: zero size, hidden, `display: none`, or opacity 0,
+  including elements hidden by your own `hideSelectors` or `removeSelectors`.
+- `element kept moving` or `could not be scrolled into view`: animation,
+  layout shifts, or a scroll container that resists scrolling.
+- `element was covered or outside the viewport`: another element, such as a
+  consent banner, sticky header, or modal, covers its center.
+- `element was disabled`: disabled, `aria-disabled`, or inert.
+- `URL did not match`: a `wait` with `url` timed out.
+- `scenarioTimeout of N ms expired during <step>`: the whole capture exceeded
+  `scenarioTimeout`; the step was still running.
+
+`Action N` counts actions executed in that capture job from 1: inherited
+`needs` actions first, then the scenario's `actions`, then legacy shortcuts;
+viewport-skipped actions are not counted. A summary never contains selectors,
+URLs, page text, or error messages.
 
 A visual mismatch has `comparisonOutcome` `mismatch`, with
 `misMatchPercentage` above `misMatchThreshold`. In diff images, magenta pixels
@@ -140,10 +173,18 @@ mark differences over a dimmed copy of the reference.
 
 ## Read Capture Records
 
-Failure markers and `engineErrorMsg` keep only an error category (`Timeout`,
-`Actionability`, `Navigation`, `NotFound`, `InvalidData`, `Permission`,
-`Storage`, or `Unknown`), never the selector or page text. Find the failing
-step in the console records or the capture journal. A console record looks like:
+The console prints each failed capture as
+`[i of n] FAILED: <suite-id>:<scenario-id> [<viewport>]: <summary>`, followed by
+`Local detail (not saved in reports): <message>`. The detail is the error
+message chain, such as the selector that never appeared, the unknown key name,
+or a hook's exception and standard error output, after sanitizing: URLs are
+reduced to scheme and host, credential-like values are redacted, and long text
+is truncated. It never enters reports, markers, or journals. `--no-print` hides
+both lines, and output captured by CI may be visible to others, so review it
+before sharing.
+
+For timing and identities, read the console records or the capture journal. A
+console record looks like:
 
 ```text
 [5345ms 64e6b72f-...] [Error] ActionsFrames: Stage finished ActionIndex=1 ActionType=Click Target=sha256:bb62... Condition=Exists FrameDepth=0 outcome=Failure duration=2080ms cause=Timeout failure (causes: [Timeout])
@@ -153,30 +194,24 @@ Journal JSON lines carry the same `stage`, `eventName`, `fields`, `outcome`, and
 `errorCause` in camelCase, plus an `execution` block with suite, scenario, and
 viewport identities, viewport size, and `captureRole`. Useful fields:
 
-- `ActionIndex`: 1-based position among actions executed in that capture job,
-  counting inherited `needs` actions first; viewport-skipped actions are not
-  counted. `ActionType` names the action; `Navigate` is `goto`.
-- `Condition` on a failed action: `Exists` means nothing matched within
-  `elementTimeout` (wrong selector, frame, tab, or page, or content not loaded);
-  `Visible` means zero size, hidden, `display: none`, or opacity 0, including
-  elements hidden by your own `hideSelectors` or `removeSelectors`; `Stable`
-  means still moving; `Unobscured` means another element, such as a consent
-  banner, sticky header, or modal, covers its center; `Enabled` means
-  disabled, `aria-disabled`, or inert.
-- `Wait` records have no `Condition`. `Actionability` means its selector stayed
-  hidden; `Timeout` means the selector never appeared or the `url` never
-  matched. A numeric wait has no `Target`, so its failure is the URL.
+- `ActionIndex`: the `Action N` number of the summary. `ActionType` names the
+  action; `Navigate` is `goto`.
+- `Condition` on a failed record: `Exists`, `Visible`, `Stable`, `Scroll`,
+  `Unobscured`, and `Enabled` are the element checks described above;
+  `Navigate` is the URL of a `wait`. A selector `wait` checks `Exists` and
+  then `Visible`.
 - Stage `Navigation` with `Destination` and `TimeoutMs` covers initial
-  navigation and `goto`. A failure right after successful initial navigation,
-  before any `StateHooks` record with `State=Ready`, is the `readySelector`.
+  navigation and `goto`; with `State=Ready` it is the `readySelector` wait.
 - Stage `StateHooks` with `ActionType=Hook`: `State=Ready` applies CSS and the
-  ready script; with `TimeoutMs` it is a Node hook. `ActionType=Restore` loads
+  ready script; `Condition=Before` or `Condition=Ready` with `TimeoutMs` is the
+  `onBeforeScript` or `onReadyScript` Node hook. `ActionType=Restore` loads
   saved state, or the cookie file when an `Artifact` field is present. Stage
   `ScreenshotSettling` with `Condition=LazyLoading` is the 20-second lazy-load
-  scroll. Stage `CaptureArtifacts` with `Capture` is a screenshot target, often
-  a missing or hidden screenshot selector.
-- When the last started stage never finishes and the cause is `Timeout`, the
-  whole `scenarioTimeout` expired.
+  scroll. Stage `CaptureArtifacts` with `Capture` is a screenshot target; a
+  failed screenshot selector also records `Waiting for readiness` with its
+  `Target` and `Condition`.
+- A `scenarioTimeout` expiry records `Execution decision` with
+  `ScenarioTimeoutMs` and `Reason=Timeout` in the stage that was still running.
 
 `Target`, `Destination`, `Capture`, and execution identities are `sha256:` plus
 the hex SHA-256 of the exact UTF-8 text: the selector as written, the navigated
@@ -203,20 +238,20 @@ the saved command operation. The snapshot report exposes referenced sanitized
 capture logs. Startup failures may instead have journals under the user's local
 application-data directory at `regressify/diagnostics/startup/_diagnostics`.
 Capture journals are not browser console logs or network-body recordings. When
-the category is not enough, reproduce with `--debug` and browser developer
-tools, with authorization.
+the summary and local detail are not enough, reproduce with `--debug` and
+browser developer tools, with authorization.
 
 ## Common Failures
 
 - Element not found or not actionable: confirm the URL, tab, frame, and
-  selector against the live page, then act on the `Condition`. Wait for the URL
+  selector against the live page, then act on the condition. Wait for the URL
   and a destination element after navigation, add `switchTab: new` after links
   that open tabs, set `frame` for iframes, dismiss or remove covering overlays,
   click the visible label of a visually hidden native checkbox, and use
   `useFileChooser` for hidden file inputs. Do not blindly raise timeouts.
-- Screenshot selector failure: the `CaptureArtifacts` target is missing,
-  hidden, zero-sized, inside an iframe or shadow root, or written with `text=`
-  or another non-CSS engine.
+- Screenshot selector failure: `Screenshot capture` or a `save` action is
+  missing, hidden, zero-sized, inside an iframe or shadow root, or written with
+  `text=` or another non-CSS engine (`InvalidData`).
 - Navigation or URL wait timeout: check the authorized URL, replacements,
   redirects, TLS, and `waitUntil`. A URL wait does not select a popup; end the
   pattern with `*` when a query string may follow; `networkidle` may never
@@ -225,9 +260,10 @@ tools, with authorization.
   environment, state names, cookie attributes, and Basic Auth origins and
   placeholders locally. State must exist before capture preflight; `needs` and
   `requiredLogin` do not create a login session.
-- Browser ready script or CSS failure: a `StateHooks` record with `State=Ready`
-  failed. Check for JavaScript exceptions and the `elementTimeout` bound, and
-  try the script on the page in browser developer tools.
+- Browser ready script or CSS failure: the summary names
+  `CSS override or browser ready script`. Read the local detail for the
+  browser's error, check the `elementTimeout` bound, and try the script on the
+  page in browser developer tools.
 - Node module/export error or hook timeout: read the hooks topic. Check
   workspace dependencies, `.mjs`/`.cjs`, the six-argument default export,
   `elementTimeout`, and lifecycle order. `onReadyScript` runs after actions and

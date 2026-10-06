@@ -254,6 +254,10 @@ keys, including inside frames. Unicode characters without a keyboard mapping
 use Chromium text insertion. Browser edit constraints and `beforeinput`
 handlers are honored. A native input receives a final `change` event.
 
+Set exactly one of `value` and `file`. Upload `file` paths are relative to
+`visual_tests/`, must stay inside it, and must exist. These rules are checked
+before the browser starts.
+
 Example:
 
 ```yml
@@ -348,6 +352,8 @@ Supported modifier names are `Ctrl`/`Control`, `Alt`/`Option`, `Shift`, and `Met
 `ControlOrMeta` selects Control on Windows/Linux and Meta on macOS. Standalone
 modifiers, literal `+` (or `Control++`), physical codes such as `KeyA`, and
 function keys are supported. Modifiers are pressed and released around the key.
+Key names are case-sensitive: use `Enter`, not `enter`. Unknown names fail
+before the browser starts.
 
 > Important:
 >
@@ -490,7 +496,7 @@ actions:
 
 > Notes:
 >
-> The `select` action requires either `value` or `label` to be set, but not both. Omit or include both of them will leading to an error.
+> The `select` action requires either `value` or `label` to be set, but not both. Omitting both or setting both fails before the browser starts.
 > The selected value or label must match an existing option. Selecting multiple values requires a `<select multiple>` element.
 
 {% end %}
@@ -513,7 +519,7 @@ require Node.js or change the link's `target` behavior.
 An optional `url` on `switchTab: new` filters the destination using the same
 exact URL/glob rules as `wait`. It follows redirects and includes query strings
 and fragments. Test-mode URL replacements also apply; reference-mode URLs stay
-as written. Omit `url` for `previous` and `original`.
+as written. Omit `url` for `previous` and `original`; preflight rejects it there.
 
 Tab selection is bounded by `elementTimeout`. Missing or closed tabs fail the
 scenario. If several new tabs match, use a more specific `url`; Regressify does
@@ -630,9 +636,10 @@ Type: `string | string[]`.
 Default: empty.
 
 This property specifies the selector for the target iframe within which the current action should be executed.
-Frames wait for the configured element timeout while loading, must be visible and
-same-origin, and an array must contain at least one selector. Regressify checks
-every parent frame boundary for overlays before interacting with a nested target.
+Frames wait for the configured element timeout while loading and must be
+visible; same-origin and cross-origin frames both work. An array must contain at
+least one selector. Regressify checks every parent frame boundary for overlays
+before interacting with a nested target.
 
 Example:
 

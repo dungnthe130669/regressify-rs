@@ -1062,7 +1062,7 @@ mod tests {
             anyhow::ensure!(nested_clicked == "yes", "nested frame click missed");
             root.evaluate("(() => { const element = document.createElement('div'); element.id = 'later'; element.textContent = 'later'; element.style.display = 'none'; document.body.append(element); setTimeout(() => element.style.display = 'block', 200); })()").await?;
             let started = std::time::Instant::now();
-            super::super::actionability::wait_for_selector(&root, "#later", &None, &config).await?;
+            super::super::actionability::wait_for_selector(&root, "#later", &None, &config, crate::diagnostics::record::Stage::ActionsFrames).await?;
             anyhow::ensure!(started.elapsed() >= Duration::from_millis(100), "selector wait returned before visibility");
             root.evaluate("(() => { const overlay = document.createElement('div'); overlay.id = 'overlay'; overlay.style.cssText = 'position:fixed;inset:0;z-index:99999;background:white'; document.body.append(overlay); })()").await?;
             let error = super::super::actionability::ensure_actionable(&frame, "#inside", &None, &config).await.err()

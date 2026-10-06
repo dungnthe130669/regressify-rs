@@ -15,20 +15,31 @@ Issues identified during adversarial review that remain after the September 2026
   (`ActionIndex`, `Condition`, local SHA-256 matching), run-ID reuse/selection,
   literal action values, and viewport emulation limits. Catalog tests now parse
   and schema-check every guide YAML fence; the exported package checks pass.
-- Remaining gap: page-level failure detail is reduced to a keyword category in
-  reports, error markers, and console records. A missing screenshot selector is
-  `Unknown failure`, Node hook stderr never surfaces, and an unknown-field
-  preflight error printed `cause=Timeout` because its field list contains
-  `readyTimeout`. Agents must infer causes from stage and `Condition` fields.
-- Remaining docs drift: [create-action](docs/create-action.md) still says frames
-  must be same-origin, though its introduction and the runtime support
-  cross-origin frames. [create-scenario](docs/create-scenario.md) says legacy
-  `clickSelector` runs after `actions` and `clickSelectors` is unimplemented
-  (both convert only when `actions` is omitted), and that initial navigation is
-  bounded by `elementTimeout` rather than `gotoParameters.timeout`.
-- Schemas cannot express exclusive `input` value/file or `select` value/label
-  pairs; violations fail when the action runs. This is documented, not enforced.
-  The hosted Worker needs regeneration and redeployment to serve these changes.
+- Resolved in source: page-level failures were reduced to a keyword category in
+  reports, error markers, and progress (`Unknown failure` for a missing
+  screenshot selector; Node hook output never surfaced; an unknown-field error
+  printed `cause=Timeout` because its field list contains `readyTimeout`).
+  Failure summaries now name the step, unmet condition, duration, and category
+  from typed journal fields, such as
+  `Action 1 (click): no element matched after 1539 ms (Timeout)`; a
+  `scenarioTimeout` names the step still running. The console adds a sanitized
+  local detail line that never enters archives or reports. Classification
+  treats parse errors as `InvalidData` and matches `timeout` as a word.
+  readySelector, Node hook phases, selector waits, URL waits, and screenshot
+  selectors now record their conditions.
+- Resolved in source: frame, legacy-shortcut, hide/remove selector, and initial
+  navigation timeout docs in [create-action](docs/create-action.md) and
+  [create-scenario](docs/create-scenario.md) matched the runtime.
+- Resolved in source: schema-valid but unusable actions (`input` value/file and
+  `select` value/label exclusivity, case-sensitive `press` keys, `persist`
+  names, `switchTab.url` without `new`), missing upload files, and Playwright
+  prefixes in screenshot selectors now fail preflight before browser launch.
+  JSON Schemas still do not encode these rules; the actions guide lists them.
+- Verified with unit tests and a cached-Chromium probe of missing, hidden,
+  covered, URL, readySelector, screenshot-selector, key, and deadline failures.
+  Node hook summaries were covered by unit tests only, without a Node hook
+  browser run. The hosted Worker needs regeneration and redeployment to serve
+  these guide changes.
 
 ## Windows Installer Smoke Completion (2026-10-06)
 
