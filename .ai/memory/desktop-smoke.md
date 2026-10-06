@@ -2,6 +2,11 @@
 
 Verified: 2026-10-06
 
+- Run/download bars use Kit Progress with percentages and accessible names.
+  Native default smoke checks `Scenario job progress` as a ProgressBar with
+  range 0..100 and zero value for workspace initialization (no scenario jobs).
+  The update bar retains its observed `update-download-progress` wrapper;
+  styled Progress alone is not registered by Kit's headless test-support API.
 - The [entry point](../../ci/desktop-smoke.ps1) owns parameters, Windows safety
   guards, build, flow precedence, and the run/cleanup boundary. It dot-sources
   [support and flow scripts](../../ci/desktop-smoke) into the same script scope.

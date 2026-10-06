@@ -293,26 +293,18 @@ impl RunPanel {
                                 )),
                         )
                         .child(
-                            div()
-                                .h(px(5.))
-                                .w_full()
-                                .bg(cx.theme().muted)
-                                .rounded_sm()
-                                .child(
-                                    div()
-                                        .h_full()
-                                        .w(relative(counts.fraction()))
-                                        .bg(if counts.failed > 0 {
-                                            cx.theme().danger
-                                        } else if counts.cancelled > 0 {
-                                            cx.theme().warning
-                                        } else if counts.captured > 0 && counts.passed == 0 {
-                                            cx.theme().info
-                                        } else {
-                                            cx.theme().primary
-                                        })
-                                        .rounded_sm(),
-                                ),
+                            progress::Progress::new("run-job-progress")
+                                .accessibility_label("Scenario job progress")
+                                .value(counts.fraction() * 100.)
+                                .color(if counts.failed > 0 {
+                                    cx.theme().danger
+                                } else if counts.cancelled > 0 {
+                                    cx.theme().warning
+                                } else if counts.captured > 0 && counts.passed == 0 {
+                                    cx.theme().info
+                                } else {
+                                    cx.theme().primary
+                                }),
                         ),
                 )
                 .child(

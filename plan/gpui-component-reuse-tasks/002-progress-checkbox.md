@@ -1,7 +1,7 @@
 # 002: Progress And Binary Git Checkbox
 
-Status: Not started. Depends on 001; retain application-owned accounting and
-selection policy throughout both replacements.
+Status: Verified; local commit pending. Depends on 001. Application-owned
+accounting and selection policy remain unchanged; evidence is in README.
 
 ## Scope
 

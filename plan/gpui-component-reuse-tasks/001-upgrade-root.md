@@ -1,7 +1,7 @@
 # 001: Upgrade Kit And Migrate Window Root
 
-Status: Verified on Windows; see README for exact results and the approved
-non-green Linux baseline exception. Depends on 000. Local commit pending.
+Status: Completed in `4809144`; see README for exact Windows results and the
+approved non-green Linux baseline exception. Depends on 000.
 
 ## Scope
 

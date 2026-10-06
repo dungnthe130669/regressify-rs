@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning committed; task 001 is verified on Windows with the explicitly
-approved Linux baseline exception. Component-adoption tasks have not started.
+Status: Planning and task 001 committed; task 002 verified and awaiting its local
+commit. The explicitly approved Linux baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -71,26 +71,26 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 ## Implementation Checklist
 
 - [x] 000 Planning: 36-answer interview, release/source review, requirement coverage, dependencies, and all 20 tasks reconciled; scoped Markdown checks pass. Committed as `278be67`.
-- [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Local commit pending.
-- [ ] 002 Progress and binary checkbox: not started; blocked by 001.
-- [ ] 003 Numeric fields: not started; blocked by 001.
-- [ ] 004 Forms: not started; blocked by 001.
-- [ ] 005 Status and content components: not started; blocked by 001.
-- [ ] 006 Dialog footers: not started; blocked by 001.
-- [ ] 007 Toolbars: not started; blocked by 001.
-- [ ] 008 Context menus: not started; blocked by 001.
-- [ ] 009 Value selectors: not started; blocked by 001.
-- [ ] 010 Clipboard: not started; blocked by 001.
-- [ ] 011 Log navigation: not started; blocked by 001.
-- [ ] 012 Application menus: not started; blocked by 001.
-- [ ] 013 Collapsible groups: not started; blocked by 001 and 004.
-- [ ] 014 Flat collections: not started; blocked by 001.
-- [ ] 015 Git Tree: not started; blocked by 001 and 014.
-- [ ] 016 Overview Table: not started; blocked by 001.
-- [ ] 017 Command palette: not started; blocked by 001.
-- [ ] 018 Source font size: not started; blocked by 001.
-- [ ] 019 Stock theme and normal sizing: not started; blocked by 001-018.
-- [ ] 020 Final acceptance: not started; blocked by 001-019.
+- [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Committed as `4809144`.
+- [x] 002 Progress and binary checkbox: Kit Progress at both bars and binary Git-file Checkbox verified; aggregates remain mixed-state. Local commit pending.
+- [ ] 003 Numeric fields: not started; next unit.
+- [ ] 004 Forms: not started.
+- [ ] 005 Status and content components: not started.
+- [ ] 006 Dialog footers: not started.
+- [ ] 007 Toolbars: not started.
+- [ ] 008 Context menus: not started.
+- [ ] 009 Value selectors: not started.
+- [ ] 010 Clipboard: not started.
+- [ ] 011 Log navigation: not started.
+- [ ] 012 Application menus: not started.
+- [ ] 013 Collapsible groups: not started; awaits 004.
+- [ ] 014 Flat collections: not started.
+- [ ] 015 Git Tree: not started; awaits 014.
+- [ ] 016 Overview Table: not started.
+- [ ] 017 Command palette: not started.
+- [ ] 018 Source font size: not started; awaits 003 and 007.
+- [ ] 019 Stock theme and normal sizing: not started; awaits remaining 003-018.
+- [ ] 020 Final acceptance: not started; awaits remaining 003-019.
 
 When a task changes state, record the exact focused command, exact outcome and nonzero test count, required gates, any approved deferral and its owner, and commit ID if one is authorized and created. Do not mark a failed, skipped, zero-test, or unavailable gate green.
 
@@ -145,7 +145,33 @@ When a task changes state, record the exact focused command, exact outcome and n
   Reverse-selection branching was removed under the approved policy. Added
   state/subscriptions: none. Three native lifecycle/focus regressions and
   existing-test/smoke repairs are coverage, not counted as code savings.
-- Task 001 is ready for its authorized local commit. Linux is not claimed green.
+- Task 001 is committed as `4809144`. Linux is not claimed green.
+
+### Task 002 Verification
+
+- Replaced run/update painted tracks with labeled Kit Progress, converting
+  fractions to 0..100 and retaining outcome colors, download denominator guard,
+  clamping and update lifecycle. Normal toolkit bar sizing is intentional.
+- Individual Git-file selection uses styled Checkbox with unchanged paths and
+  disabled conditions. Mixed folder/suite adapters remain. Added explicit
+  comparison-group keyboard and no-file-open assertions to the existing test.
+- Focused checks pass: `update_progress_` (1),
+  `live_dashboard_tracks_parallel_scenarios_and_filters_failures` (1),
+  `desktop::ui::git::tests` (16), and the extended
+  `comparison_changes_require_explicit_selection_and_stay_separate` (1).
+  Commands use `cargo test --locked --features gui-tests --lib <filter> -- --test-threads=1`.
+- Rustfmt, production GUI Clippy with `-D warnings`, desktop build, editor
+  diagnostics and headless smoke harness checks pass.
+- Native default and Git smoke flows pass with the current binary. The new
+  native assertion checks actual progress role/range/zero-total value. Reviewed
+  run progress, file-checkbox tree and compact dark conflict screenshots.
+- Initial update check exposed missing headless observation for styled Progress;
+  retaining the existing observed wrapper fixed it. A headless accessibility
+  snapshot probe was unavailable and removed; native accessibility now covers
+  that contract without private toolkit APIs.
+- Production accounting: 33 lines added, 46 removed across activity, update and
+  Git-row renderers (net 13 removed), including the retained wrapper. No added
+  state or subscriptions. Test/smoke additions are excluded from savings.
 
 ### Approved Linux Baseline Exception
 

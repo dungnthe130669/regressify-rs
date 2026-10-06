@@ -696,24 +696,20 @@ impl GitPanel {
                     row.bg(cx.theme().accent)
                 })
                 .child(
-                    design::selection_checkbox(
-                        ("git-select", file),
-                        selected,
-                        false,
-                        self.disabled || self.active() || conflict || change.submodule,
-                        cx,
-                    )
-                    .accessibility_label(format!("Select {}", visible_name(&path)))
-                    .on_change(move |state, _, _, cx| {
-                        panel.update(cx, |this, cx| {
-                            if state == gpui_kit::base::CheckboxState::Checked {
-                                this.selection.insert(checkbox_path.clone());
-                            } else {
-                                this.selection.remove(&checkbox_path);
-                            }
-                            cx.notify();
-                        })
-                    }),
+                    Checkbox::new(("git-select", file))
+                        .checked(selected)
+                        .disabled(self.disabled || self.active() || conflict || change.submodule)
+                        .accessibility_label(format!("Select {}", visible_name(&path)))
+                        .on_change(move |checked, _, cx| {
+                            panel.update(cx, |this, cx| {
+                                if *checked {
+                                    this.selection.insert(checkbox_path.clone());
+                                } else {
+                                    this.selection.remove(&checkbox_path);
+                                }
+                                cx.notify();
+                            })
+                        }),
                 )
                 .child(
                     Button::new(("git-file", file))

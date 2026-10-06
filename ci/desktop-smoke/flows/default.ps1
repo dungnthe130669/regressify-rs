@@ -237,6 +237,12 @@ function Test-DefaultFlows {
     Invoke-Control 'More actions' -Pointer
     Invoke-Control 'Initialize Workspace'
     Wait-Control 'Workspace initialized' | Out-Null
+    $progress = Wait-Control 'Scenario job progress'
+    if ($progress.Current.ControlType -ne [System.Windows.Automation.ControlType]::ProgressBar) { throw 'Scenario progress must expose the native progress role.' }
+    $progressPattern = $null
+    if (-not $progress.TryGetCurrentPattern([System.Windows.Automation.RangeValuePattern]::Pattern, [ref]$progressPattern)) { throw 'Scenario progress must expose its numeric range.' }
+    $progressRange = ([System.Windows.Automation.RangeValuePattern]$progressPattern).Current
+    if ($progressRange.Minimum -ne 0 -or $progressRange.Maximum -ne 100 -or $progressRange.Value -ne 0) { throw 'A zero-scenario command must expose zero percent progress in the 0..100 range.' }
     Capture-Window 'run-completed'
     if (-not (Test-Path (Join-Path $workspace 'common/_override.css'))) { throw 'GUI init command did not create starter files.' }
     Select-Theme 'Dark'

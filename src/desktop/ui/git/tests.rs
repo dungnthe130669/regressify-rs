@@ -969,6 +969,13 @@ fn comparison_changes_require_explicit_selection_and_stay_separate(cx: &mut Test
         assert!(window.find(("git-file", 2_usize)).visible());
         window.click(("git-select", 1_usize), cx);
         assert!(panel.read(cx).selection.contains(paths[1]));
+        assert!(panel.read(cx).active_file.is_none());
+        window.press("space", cx);
+        assert!(!panel.read(cx).selection.contains(paths[1]));
+        assert!(panel.read(cx).selection.contains(paths[0]));
+        window.press("space", cx);
+        assert!(panel.read(cx).selection.contains(paths[1]));
+        assert!(panel.read(cx).active_file.is_none());
         window.click("git-select-all", cx);
         assert_eq!(
             panel.read(cx).selection,
@@ -992,6 +999,7 @@ fn comparison_changes_require_explicit_selection_and_stay_separate(cx: &mut Test
         window.press("end", cx);
         window.press("space", cx);
         assert!(panel.read(cx).selection.is_empty());
+        assert!(panel.read(cx).active_file.is_none());
         window.press("home", cx);
         window.press("enter", cx);
         assert!(window.try_find(("git-file", 0_usize)).is_none());

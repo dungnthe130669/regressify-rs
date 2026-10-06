@@ -30,6 +30,11 @@ dependency. Production windows and native test fixtures use
 layers. Application close, cancellation and unsaved-document guards remain
 owned by the workbench.
 
+Run and installer-download progress expose labeled percentage values to
+assistive technologies. Download progress remains separate from verification
+and installation readiness. Individual Git-file checkboxes use the toolkit's
+binary control; folder and suite aggregates retain partial-selection semantics.
+
 For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
 The desktop executable contains the engine; no separate `regressify` binary or
 executable picker is needed. It launches itself in a private headless worker mode

@@ -236,16 +236,15 @@ impl Workbench {
                             .id("update-download-progress")
                             .test_support()
                             .w_full()
-                            .h(px(4.))
-                            .bg(cx.theme().border)
                             .child(
-                                div()
-                                    .h_full()
-                                    .w(relative(
+                                progress::Progress::new("update-download-bar")
+                                    .accessibility_label("Installer download progress")
+                                    .value(
                                         (progress.received as f32 / progress.total.max(1) as f32)
-                                            .clamp(0., 1.),
-                                    ))
-                                    .bg(cx.theme().primary),
+                                            .clamp(0., 1.)
+                                            * 100.,
+                                    )
+                                    .color(cx.theme().primary),
                             ),
                     )
                 })

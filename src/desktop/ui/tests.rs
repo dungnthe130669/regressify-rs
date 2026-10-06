@@ -3175,14 +3175,44 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
             Some("Queued")
         );
         assert_eq!(window.find("metric-active").label(), Some("Running: 1"));
+        assert_eq!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .manager
+                .progress
+                .counts(None)
+                .fraction(),
+            0.
+        );
         view.update(cx, |this, cx| {
             this.runs.update(cx, |panel, cx| {
-                for event in [
-                    Event::Captured {
+                panel.manager.progress.apply(Record {
+                    version: 1,
+                    elapsed_ms: 1000,
+                    event: Event::Captured {
                         id: 1,
                         error: None,
                         infrastructure: false,
                     },
+                });
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .manager
+                .progress
+                .counts(None)
+                .fraction(),
+            0.5
+        );
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                for event in [
                     Event::Compared {
                         suite_id: "shop".into(),
                         capture: "capture-1".into(),
@@ -3217,6 +3247,16 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
             })
         });
         window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .runs
+                .read(cx)
+                .manager
+                .progress
+                .counts(None)
+                .fraction(),
+            1.
+        );
         assert_eq!(
             window.find(("live-status", 1_usize)).label(),
             Some("Passed")
