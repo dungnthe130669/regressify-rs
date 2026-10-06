@@ -1,6 +1,6 @@
 [package]
 name = "regressify"
-version = "0.78.0"
+version = "0.79.0"
 edition = "2024"
 default-run = "regressify"
 
@@ -38,6 +38,7 @@ globset = "0.4"
 gpui-kit = { version = "=0.6.1", optional = true, features = ["tree-sitter-yaml"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 imagequant = { version = "4.4", optional = true }
+jsonc-parser = { version = "0.34", features = ["cst", "serde_json"] }
 jsonschema = { version = "0.57", default-features = false, optional = true }
 keyring = { version = "3.6.3", optional = true, features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust", "vendored"] }
 lodepng = "3.12.1"

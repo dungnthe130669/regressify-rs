@@ -1,6 +1,6 @@
 # Workspace Initialization
 
-Verified: 2026-09-28
+Verified: 2026-10-06
 
 - [Initialization](../../src/init.rs) shares runtime defaults between CLI `init`
   and desktop setup: `regressify.yaml`, five `common/` files, and `visual_tests/`.
@@ -22,6 +22,13 @@ Verified: 2026-09-28
   files, Node helpers, or run/state artifacts. Explicit CLI `init` retains its
   sample, editor integration, and legacy migration. See the
   [desktop workflow](../../docs/desktop.md#workspace-and-files).
+- Explicit CLI init merges `.vscode/mcp.json`: add a missing HTTP `regressify-mcp`
+  server or refresh only its URL from `REGRESSIFY_MCP_URL`, preserving headers,
+  other servers/settings, comments, and trailing commas. Matching URLs do not
+  rewrite the file. Malformed or unwritable configurations fail unchanged.
+  [Initialization](../../src/init.rs) uses `jsonc-parser` features `cst` and
+  `serde_json` for CST conversion; `serde` alone does not expose `to_serde_value`.
+  Parse options explicitly exclude syntax beyond VS Code JSONC.
 - [Workspace discovery](../../src/desktop/workspace.rs) lists all regular files
   under `common`, including `_on-ready.js`, `_override.css`, and nested/unknown
   formats. Only `visual_tests` entries become suites. `Entry::supports_editing`
@@ -33,6 +40,8 @@ Verified: 2026-09-28
   existing regular files are skipped and symlink/non-file destinations rejected.
   This prevents partial starter publication and clobbering competing files, not
   a transaction across the whole workspace or a guarantee against ancestor races.
+  MCP updates recheck the original bytes before atomic replacement; this is not
+  compare-and-swap protection against concurrent external edits.
 - Evidence: `cargo test --locked --features desktop --lib init::tests` and
   `cargo test --locked --features desktop --lib desktop::session::tests` cover
   the inventory, repeated/concurrent setup, missing defaults, `.yml` preservation,

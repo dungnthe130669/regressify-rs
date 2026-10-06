@@ -4,8 +4,12 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use jsonc_parser::{cst::CstRootNode, json};
 
-use crate::{common, helpers::OnceLockExtensions};
+use crate::{
+    common,
+    helpers::{OnceLockExtensions, write_file_atomically},
+};
 
 const VIEWPORTS: &str = "- label: phone\n  width: 375\n  height: 667\n- label: tablet\n  width: 768\n  height: 1024\n- label: desktop\n  width: 1366\n  height: 768\n";
 const COOKIES: &str = "[]\n";
@@ -13,6 +17,7 @@ const OVERRIDE_CSS: &str = "/* Add project-specific CSS overrides here. */\n";
 const ON_READY_JS: &str = "// Add project-specific JavaScript that runs before capture.\n";
 const REPLACEMENT_PROFILES: &str = "profiles:\n  default: []\n";
 const SAMPLE_SUITE: &str = "scenarios:\n  - url: https://example.com\n    label: example-home\n";
+const REGRESSIFY_MCP_URL: &str = "https://regressify-mcp.tuyen-at-work.workers.dev/mcp";
 
 pub fn init() -> Result<()> {
     let root_dir = common::ROOT_DIR.get_required()?;
@@ -57,6 +62,106 @@ fn init_workspace(root_dir: &Path) -> Result<()> {
         ".vscode/extensions.json",
         "{\n  \"recommendations\": [\"redhat.vscode-yaml\"]\n}\n",
     )?;
+    init_mcp_config(root_dir)?;
+    Ok(())
+}
+
+fn init_mcp_config(root_dir: &Path) -> Result<()> {
+    let relative_path = ".vscode/mcp.json";
+    let path = workspace_file_path(root_dir, relative_path)?;
+    if !existing_starter_file(&path)? {
+        let config = serde_json::json!({
+            "servers": {
+                "regressify-mcp": {"type": "http", "url": REGRESSIFY_MCP_URL}
+            }
+        });
+        write_if_missing(
+            root_dir,
+            relative_path,
+            &(serde_json::to_string_pretty(&config)? + "\n"),
+        )?;
+    }
+
+    let original = fs::read_to_string(&path)
+        .with_context(|| format!("Cannot read MCP configuration '{}'", path.display()))?;
+    let parse_options = jsonc_parser::ParseOptions {
+        allow_comments: true,
+        allow_trailing_commas: true,
+        allow_loose_object_property_names: false,
+        allow_missing_commas: false,
+        allow_single_quoted_strings: false,
+        allow_hexadecimal_numbers: false,
+        allow_unary_plus_numbers: false,
+        allow_bare_decimal_point_numbers: false,
+        allow_non_finite_numbers: false,
+        allow_extended_string_escapes: false,
+    };
+    // Parser diagnostics may echo credentials from the file, so report only its path.
+    let document = CstRootNode::parse(&original, &parse_options).map_err(|_| {
+        anyhow::anyhow!(
+            "Cannot initialize MCP configuration '{}': invalid JSON with comments",
+            path.display()
+        )
+    })?;
+    let config = document
+        .object_value_or_create()
+        .with_context(|| format!("MCP configuration '{}' must be an object", path.display()))?;
+    let servers = config.object_value_or_create("servers").with_context(|| {
+        format!(
+            "MCP configuration '{}' must have an object for 'servers'",
+            path.display()
+        )
+    })?;
+    // Refresh only the endpoint so authentication and other server settings survive.
+    if let Some(server) = servers.get("regressify-mcp") {
+        let server = server.object_value().with_context(|| {
+            format!(
+                "MCP configuration '{}' must have an object for 'regressify-mcp'",
+                path.display()
+            )
+        })?;
+        match server.get("url") {
+            Some(url) => {
+                if url
+                    .to_serde_value()
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    == Some(REGRESSIFY_MCP_URL)
+                {
+                    return Ok(());
+                }
+                url.set_value(REGRESSIFY_MCP_URL.into());
+            }
+            None => {
+                server.append("url", REGRESSIFY_MCP_URL.into());
+            }
+        }
+    } else {
+        servers.append(
+            "regressify-mcp",
+            json!({"type": "http", "url": REGRESSIFY_MCP_URL}),
+        );
+    }
+
+    anyhow::ensure!(
+        workspace_file_path(root_dir, relative_path)? == path
+            && existing_starter_file(&path)?
+            && fs::read_to_string(&path).with_context(|| format!(
+                "Cannot recheck MCP configuration '{}'",
+                path.display()
+            ))? == original,
+        "MCP configuration '{}' changed during initialization; retry init",
+        path.display()
+    );
+    let metadata = fs::metadata(&path)
+        .with_context(|| format!("Cannot inspect MCP configuration '{}'", path.display()))?;
+    anyhow::ensure!(
+        !metadata.permissions().readonly(),
+        "Cannot update read-only MCP configuration '{}'",
+        path.display()
+    );
+    write_file_atomically(&path, document.to_string().as_bytes())?;
+    eprintln!("{} {}", "UPDATE:".green(), path.display());
     Ok(())
 }
 
@@ -367,6 +472,347 @@ mod tests {
             fs::read_to_string(temp_dir.path().join("common/_cookies.yaml")).unwrap(),
             COOKIES
         );
+        let mcp: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(temp_dir.path().join(".vscode/mcp.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mcp,
+            serde_json::json!({
+                "servers": {
+                    "regressify-mcp": {"type": "http", "url": REGRESSIFY_MCP_URL}
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn init_adds_mcp_server_without_removing_existing_config() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::create_dir(root.join(".vscode")).unwrap();
+        let path = root.join(".vscode/mcp.json");
+        let mut expected = serde_json::json!({
+            "servers": {
+                "another-mcp": {
+                    "type": "stdio",
+                    "command": "node",
+                    "args": ["server.js"]
+                }
+            },
+            "inputs": [{"id": "environment", "type": "promptString", "description": "Environment"}],
+            "custom": {"enabled": true}
+        });
+        fs::write(&path, serde_json::to_string_pretty(&expected).unwrap()).unwrap();
+
+        init_workspace(root).unwrap();
+        let first_run = fs::read_to_string(&path).unwrap();
+        init_workspace(root).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), first_run);
+
+        expected["servers"]["regressify-mcp"] = serde_json::json!({
+            "type": "http",
+            "url": REGRESSIFY_MCP_URL
+        });
+        let actual: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn init_updates_existing_mcp_url_preserving_other_settings_and_formatting() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::create_dir(root.join(".vscode")).unwrap();
+        let path = root.join(".vscode/mcp.json");
+        let original = r#"{
+    // Project-specific MCP endpoint.
+    "servers": {
+        "regressify-mcp": {
+            "type": "http",
+            "url": "https://example.com/custom-mcp",
+            "headers": {"Authorization": "${input:mcp-token}"},
+        },
+    },
+    "inputs": [{"id": "mcp-token", "type": "promptString", "password": true}],
+}
+"#;
+        fs::write(&path, original).unwrap();
+
+        init_workspace(root).unwrap();
+        init_workspace(root).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(path).unwrap(),
+            original.replace("https://example.com/custom-mcp", REGRESSIFY_MCP_URL)
+        );
+    }
+
+    #[test]
+    fn init_replaces_missing_or_invalid_mcp_urls_preserving_other_settings() {
+        for url in [
+            None,
+            Some(serde_json::json!(null)),
+            Some(serde_json::json!("")),
+            Some(serde_json::json!(42)),
+            Some(serde_json::json!([])),
+            Some(serde_json::json!({})),
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            fs::create_dir(root.join(".vscode")).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            let mut expected = serde_json::json!({
+                "servers": {
+                    "regressify-mcp": {
+                        "type": "http",
+                        "headers": {"X-Environment": "staging"},
+                        "custom": true
+                    }
+                },
+                "inputs": []
+            });
+            if let Some(url) = url {
+                expected["servers"]["regressify-mcp"]["url"] = url;
+            }
+            fs::write(&path, serde_json::to_string_pretty(&expected).unwrap()).unwrap();
+
+            init_workspace(root).unwrap();
+
+            expected["servers"]["regressify-mcp"]["url"] = REGRESSIFY_MCP_URL.into();
+            let actual: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[test]
+    fn init_preserves_mcp_comments_trailing_commas_and_other_values() {
+        for newline in ["\n", "\r\n"] {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            fs::create_dir(root.join(".vscode")).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            let original = r#"{
+  // Keep the existing server.
+  "servers": {
+    "another-mcp": {"type": "stdio", "command": "node", "args": ["server.js",]},
+  },
+  /* Keep inputs and custom settings. */
+  "inputs": [],
+  "custom": 9007199254740993,
+}
+"#
+            .replace('\n', newline);
+            fs::write(&path, &original).unwrap();
+            let mut expected = CstRootNode::parse(&original, &Default::default())
+                .unwrap()
+                .to_serde_value()
+                .unwrap();
+            expected["servers"]["regressify-mcp"] =
+                serde_json::json!({"type": "http", "url": REGRESSIFY_MCP_URL});
+
+            init_workspace(root).unwrap();
+
+            let updated = fs::read_to_string(&path).unwrap();
+            let actual = CstRootNode::parse(&updated, &Default::default())
+                .unwrap()
+                .to_serde_value()
+                .unwrap();
+            assert_eq!(actual, expected);
+            for preserved in [
+                "// Keep the existing server.",
+                r#""another-mcp": {"type": "stdio", "command": "node", "args": ["server.js",]},"#,
+                "/* Keep inputs and custom settings. */",
+                r#""custom": 9007199254740993,"#,
+            ] {
+                assert!(updated.contains(preserved), "Missing {preserved}");
+            }
+            if newline == "\r\n" {
+                assert!(!updated.replace("\r\n", "").contains('\n'));
+            }
+            init_workspace(root).unwrap();
+            assert_eq!(fs::read_to_string(path).unwrap(), updated);
+        }
+    }
+
+    #[test]
+    fn init_adds_mcp_server_to_empty_or_missing_servers() {
+        for original in [
+            "",
+            " \n",
+            "// Keep this comment.\n",
+            "{}\n",
+            "{\"servers\": {}}\n",
+            "{\"inputs\": [], \"custom\": true}\n",
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            fs::create_dir(root.join(".vscode")).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            fs::write(&path, original).unwrap();
+            let mut expected = CstRootNode::parse(original, &Default::default())
+                .unwrap()
+                .to_serde_value()
+                .unwrap_or_else(|| serde_json::json!({}));
+            expected["servers"] = serde_json::json!({
+                "regressify-mcp": {"type": "http", "url": REGRESSIFY_MCP_URL}
+            });
+
+            init_workspace(root).unwrap();
+
+            let updated = fs::read_to_string(path).unwrap();
+            assert_eq!(
+                CstRootNode::parse(&updated, &Default::default())
+                    .unwrap()
+                    .to_serde_value()
+                    .unwrap(),
+                expected
+            );
+            if original.contains("//") {
+                assert!(updated.contains("// Keep this comment."));
+            }
+        }
+    }
+
+    #[test]
+    fn init_rejects_invalid_mcp_config_without_changing_or_logging_it() {
+        for original in [
+            "{",
+            r#"{"inputs": [}"#,
+            r#"{"credential": "fixture-sensitive-value", "broken": }"#,
+            r#"{servers: {}}"#,
+            r#"{"inputs": [] "servers": {}}"#,
+            "{'servers': {}}",
+            r#"{"custom": NaN}"#,
+            r#"{"custom": +1}"#,
+            r#"{"custom": 0x10}"#,
+            r#"{"custom": .5}"#,
+            r#"{"custom": "\x41"}"#,
+            "[]",
+            "null",
+            "true",
+            "42",
+            r#""not an object""#,
+            r#"{"servers": null}"#,
+            r#"{"servers": []}"#,
+            r#"{"servers": "custom"}"#,
+            r#"{"servers": false}"#,
+            r#"{"servers": 42}"#,
+            r#"{"servers": {"regressify-mcp": null}}"#,
+            r#"{"servers": {"regressify-mcp": []}}"#,
+            r#"{"servers": {"regressify-mcp": "custom"}}"#,
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            fs::create_dir(root.join(".vscode")).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            fs::write(&path, original).unwrap();
+
+            let error = init_workspace(root).unwrap_err();
+
+            let diagnostic = format!("{error:#}");
+            assert!(diagnostic.contains("mcp.json"), "{diagnostic}");
+            assert!(!diagnostic.contains("fixture-sensitive-value"));
+            assert_eq!(fs::read_to_string(path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn init_preserves_read_only_mcp_config() {
+        for (up_to_date, config) in [
+            (false, serde_json::json!({"inputs": []})),
+            (
+                false,
+                serde_json::json!({
+                    "servers": {
+                        "regressify-mcp": {"type": "http", "url": "https://example.com/mcp"}
+                    }
+                }),
+            ),
+            (
+                true,
+                serde_json::json!({
+                    "servers": {
+                        "regressify-mcp": {"type": "http", "url": REGRESSIFY_MCP_URL}
+                    }
+                }),
+            ),
+        ] {
+            let workspace = tempfile::tempdir().unwrap();
+            let root = workspace.path();
+            fs::create_dir(root.join(".vscode")).unwrap();
+            let path = root.join(".vscode/mcp.json");
+            let original = serde_json::to_string_pretty(&config).unwrap();
+            fs::write(&path, &original).unwrap();
+            let permissions = fs::metadata(&path).unwrap().permissions();
+            let mut read_only = permissions.clone();
+            read_only.set_readonly(true);
+            fs::set_permissions(&path, read_only).unwrap();
+
+            let result = init_workspace(root);
+
+            fs::set_permissions(&path, permissions).unwrap();
+            if up_to_date {
+                result.unwrap();
+            } else {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("read-only MCP configuration"));
+            }
+            assert_eq!(fs::read_to_string(path).unwrap(), original);
+            assert_eq!(fs::read_dir(root.join(".vscode")).unwrap().count(), 3);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn init_reports_unreadable_mcp_config_without_replacing_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        fs::create_dir(root.join(".vscode")).unwrap();
+        let path = root.join(".vscode/mcp.json");
+        let original = "{\"inputs\": []}\n";
+        fs::write(&path, original).unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&path)
+            .unwrap();
+
+        let error = init_workspace(root).unwrap_err();
+
+        drop(locked);
+        assert!(error.to_string().contains("Cannot read MCP configuration"));
+        assert_eq!(fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn concurrent_mcp_init_creates_only_complete_config() {
+        let workspace = tempfile::tempdir().unwrap();
+        let root = workspace.path();
+        std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| init_mcp_config(root)))
+                .collect();
+            for thread in threads {
+                thread.join().unwrap().unwrap();
+            }
+        });
+
+        let actual: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(root.join(".vscode/mcp.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            actual,
+            serde_json::json!({
+                "servers": {
+                    "regressify-mcp": {"type": "http", "url": REGRESSIFY_MCP_URL}
+                }
+            })
+        );
+        assert_eq!(fs::read_dir(root.join(".vscode")).unwrap().count(), 1);
     }
 
     #[test]
@@ -417,6 +863,7 @@ mod tests {
             ("common/test-schema.json", "{\"custom\": true}\n"),
             ("visual_tests/shop.tests.yml", SAMPLE_SUITE),
             (".vscode/settings.json", "{ // user settings\n}\n"),
+            (".vscode/mcp.json", "{ // user MCP draft\n"),
         ];
         for (path, contents) in existing {
             fs::write(root.join(path), contents).unwrap();
@@ -491,6 +938,7 @@ mod tests {
             "common/_on-ready.js",
             "common/_replacement-profiles.yaml",
             ".vscode/settings.json",
+            ".vscode/mcp.json",
         ] {
             let workspace = tempfile::tempdir().unwrap();
             let blocked = workspace.path().join(relative);
@@ -535,14 +983,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn init_refuses_symlinked_workspace_directories() {
-        let workspace = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
-        std::os::unix::fs::symlink(outside.path(), workspace.path().join("common")).unwrap();
+        for directory in ["common", ".vscode"] {
+            let workspace = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            std::os::unix::fs::symlink(outside.path(), workspace.path().join(directory)).unwrap();
 
-        let error = init_workspace(workspace.path()).unwrap_err();
+            let error = init_workspace(workspace.path()).unwrap_err();
 
-        assert!(error.to_string().contains("symlinked directory"));
-        assert!(!outside.path().join("_viewports.yaml").exists());
+            assert!(error.to_string().contains("symlinked directory"));
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+        }
     }
 
     #[cfg(unix)]
@@ -553,11 +1003,12 @@ mod tests {
             "regressify.yml",
             "common/_cookies.yaml",
             "common/_replacement-profiles.yml",
+            ".vscode/mcp.json",
         ] {
             for dangling in [false, true] {
                 let workspace = tempfile::tempdir().unwrap();
                 let outside = tempfile::tempdir().unwrap();
-                fs::create_dir(workspace.path().join("common")).unwrap();
+                fs::create_dir_all(workspace.path().join(relative).parent().unwrap()).unwrap();
                 let target = outside.path().join("existing.yaml");
                 if !dangling {
                     fs::write(&target, "existing").unwrap();

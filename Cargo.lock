@@ -4255,6 +4255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "jsonc-parser"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ecded084f9b9a718d39668a42657c32253663d1f6afb3fbb9134f0305f73f48"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "jsonschema"
 version = "0.57.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6659,7 +6668,7 @@ checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
 name = "regressify"
-version = "0.78.0"
+version = "0.79.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -6676,6 +6685,7 @@ dependencies = [
  "gpui-kit",
  "image",
  "imagequant",
+ "jsonc-parser",
  "jsonschema",
  "keyring",
  "lodepng",

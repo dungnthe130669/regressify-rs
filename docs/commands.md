@@ -140,18 +140,18 @@ detail stays in local deployment history. See [desktop Capture Log](desktop.md#r
 
 ## Commands
 
-| Command    | Purpose                                                                                                                                                                                                                  |
-| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `init`     | Create missing starter files, Rust-derived JSON schemas, and VS Code YAML/JSON associations; copy missing legacy `data/` files without deleting their sources. Existing files, including editor settings, are preserved. |
-| `install`  | Fetch managed Chromium into the per-user cache shared by all CLI and Desktop workspaces.                                                                                                                                 |
-| `mcp`      | Generate a standalone Cloudflare MCP Worker containing versioned public authoring guidance, schemas, and examples. Does not deploy or export workspace data.                                                             |
-| `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                                         |
-| `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved.                                                                      |
-| `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                               |
-| `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                                                                                       |
-| `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                                                                                       |
-| `snapshot` | Generate the static snapshot SPA from existing comparison data.                                                                                                                                                          |
-| `optimize` | Optimize PNG files in the project output tree.                                                                                                                                                                           |
+| Command    | Purpose                                                                                                                                                                                                        |
+| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `init`     | Create missing starter files, schemas, and VS Code associations; add or refresh the Regressify MCP endpoint while preserving other settings. Copy missing legacy `data/` files without deleting their sources. |
+| `install`  | Fetch managed Chromium into the per-user cache shared by all CLI and Desktop workspaces.                                                                                                                       |
+| `mcp`      | Generate a standalone Cloudflare MCP Worker containing versioned public authoring guidance, schemas, and examples. Does not deploy or export workspace data.                                                   |
+| `version`  | Print the CLI package version. `regressify --version` is also supported by Clap.                                                                                                                               |
+| `ref`      | Capture baseline screenshots and promote successful captures to references. Failed page captures are skipped and existing references are preserved.                                                            |
+| `test`     | Capture current screenshots, compare against references unless `--skip-compare` is set, and generate snapshot report data.                                                                                     |
+| `compare`  | Compare the latest test run for each matching suite against reference screenshots.                                                                                                                             |
+| `approve`  | Promote latest successful test screenshots to references. Failed capture placeholders are skipped.                                                                                                             |
+| `snapshot` | Generate the static snapshot SPA from existing comparison data.                                                                                                                                                |
+| `optimize` | Optimize PNG files in the project output tree.                                                                                                                                                                 |
 
 All suite filters accept exact names or glob patterns. Use `all`, `*`, or omit `--test-suite` to process every discovered suite. Invalid glob patterns, unreadable suite directories, and an explicit filter that matches no suite fail the command instead of silently reducing coverage.
 
@@ -172,6 +172,31 @@ empty configuration inherits built-in defaults and can be edited by both the CLI
 workflow and the desktop app. Existing `regressify.yaml` or `regressify.yml` files
 are preserved; an existing `.yml` is not shadowed by a generated `.yaml`.
 Default replacement-profile generation also respects an existing `.yml` file.
+
+CLI `init` also creates or merges `.vscode/mcp.json` with the hosted Regressify
+authoring server:
+
+```json
+{
+  "servers": {
+    "regressify-mcp": {
+      "type": "http",
+      "url": "https://regressify-mcp.tuyen-at-work.workers.dev/mcp"
+    }
+  }
+}
+```
+
+If `regressify-mcp` already exists, only its `url` is added or refreshed to the
+bundled endpoint. Other server settings, including headers, other servers,
+top-level settings such as `inputs`, comments, and trailing commas are preserved.
+A matching URL leaves the file unchanged. The endpoint is defined by
+`REGRESSIFY_MCP_URL` in [initialization code](../src/init.rs), so rerunning `init`
+after a CLI endpoint change refreshes existing workspaces too.
+
+Malformed JSON-with-comments, non-object configuration/server entries, and files
+that cannot be read or updated fail initialization without replacing the MCP
+file. A read-only file is accepted when its endpoint is already current.
 
 The [desktop app](desktop.md#workspace-and-files) creates missing runtime defaults
 automatically when opening a folder. It does not automatically generate example

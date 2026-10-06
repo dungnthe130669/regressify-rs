@@ -78,6 +78,11 @@ If this is your first time working with **Regressify**, follow these steps (only
    overwriting existing files. An existing `regressify.yml` is preserved instead
    of creating a competing configuration file.
 
+   It also adds `regressify-mcp` to `.vscode/mcp.json`, or refreshes its URL to the
+   bundled endpoint if the server already exists. Other servers, input definitions,
+   server settings, and JSONC comments are preserved. See
+   [workspace initialization](commands.md#workspace-initialization) for details.
+
    In the [desktop app](desktop.md#workspace-and-files), opening the folder
    automatically creates missing runtime files, including `regressify.yaml`.
    No separate initialization step is needed; editor-only assets and an example
