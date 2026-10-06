@@ -2,13 +2,13 @@
 
 Date: 2026-10-06
 
-Status: Proposed for review after additional source-review passes. No UI,
-dependency, or runtime behavior changes made; implementation is not yet approved.
+Status: Approved for implementation subject to the verification gates below.
+This document records approved scope and behavior; no implementation is claimed.
 
 ## Recommendation
 
-Upgrade GPUI Kit to the latest published stable version, currently **0.7.1**,
-then prefer its matching components throughout the desktop. The expanded scope
+Upgrade GPUI Kit to the latest published stable version, verified as **0.7.1**
+on 2026-10-06, then prefer its matching components throughout the desktop. The scope
 includes progress, numeric and binary controls, forms, toolbars, managed menus,
 value pickers, clipboard controls, status/footer elements, log navigation,
 metadata, empty states, and controlled collapsible sections. Lists, trees,
@@ -21,10 +21,11 @@ hover cards, resizable panels, and scrollbars. Much of the remaining UI code
 connects those components to application behavior, not a custom widget library.
 
 Prefer toolkit components wherever they meet the project's use case, including
-through a small application adapter. Keeping domain state or adding a modest
-subscription is not, by itself, a reason to retain a custom widget. Handing
-keyboard, focus, accessibility, selection mechanics, and styling to the toolkit
-can be worthwhile even when the immediate line-count reduction is small.
+through a small application adapter. The primary objective is maintainable code
+reduction, measured as deleted rendering code against added adapters, state, and
+subscriptions. A correct toolkit migration remains acceptable even if it
+increases net code. Keeping domain state or adding a modest subscription is not,
+by itself, a reason to retain a custom widget.
 
 Preserve application policy: source fidelity, invalid drafts, operation guards,
 selection scope, artifact identity, and asynchronous ownership. Distinguish a
@@ -35,16 +36,19 @@ and build-time effects would need separate measurement.
 
 ## Review Baseline
 
-- Regressify revision: `5802db8e68231d1e0f10422b39c176ff197f70f3`.
-- [Cargo.toml](../../Cargo.toml#L38) pins `gpui-kit = "=0.6.1"`. The inspected
+- Current Regressify revision: `be843359a593b19d155c82bdcea0ee163e015423`.
+- Original proposal revision: `5802db8e68231d1e0f10422b39c176ff197f70f3`
+  (historical, not the current implementation baseline).
+- [Cargo.toml](../Cargo.toml#L38) pins `gpui-kit = "=0.6.1"`. The inspected
   lockfile resolves Kit, Component, and Base to 0.6.1, and GPUI Pre to 0.3.4.
-- Inspected the user's local GPUI Kit clone at
-  `c0bebdc8a8cf9a74f9f52feaca278a52a9cfcca2`; its worktree was clean.
+- The read-only GPUI Kit clone HEAD was
+  `c0bebdc8a8cf9a74f9f52feaca278a52a9cfcca2`.
 - Also compared the relevant source paths with release tag `v0.7.1`, commit
   `87d10ae5e1299d1be18670a37570c5402f952e34`. Recommendations below reference
   that release rather than assuming every feature at HEAD has been published.
-- The [registry API][kit-registry] reported 0.7.1 as the latest stable, non-yanked
-  release on 2026-10-06, published on 2026-10-05. Recheck before implementation.
+- The [registry API][kit-registry], rechecked 2026-10-06, reported 0.7.1 as the
+  latest stable, non-yanked release, published 2026-10-05. This migration is
+  frozen at 0.7.1; do not chase newer releases during implementation.
 - Reviewed native UI rendering, callbacks, selection helpers, source commands,
   representative native tests, and the toolkit implementations. This is a static
   source/API review, not a compiled or interactively tested migration.
@@ -53,52 +57,71 @@ Scope is the Rust desktop UI. The React report frontend is not a GPUI consumer.
 Consume `gpui_kit::component` through Cargo; do not copy component source into
 Regressify or add a machine-local path dependency on the clone.
 
-### Additional Review Passes
+### Review Findings And Decision Ledger
 
-- **Catalog and call sites:** screened the complete released component-family
-  catalog against the native renderers and dialog builders. This added managed
-  context menus, value pickers, clipboard/status primitives, menu bars, dialog
-  footers, binary Git checkboxes, and log tabs/pagination.
-- **Integration feasibility:** followed list/tree selection, menu action targets,
-  form synchronization, live/archive paging, and parent/child focus ownership.
-  Small adapters are now preferred over retaining entire custom presentations.
-- **Adversarial checks:** checked release-specific APIs and neighboring tests for
-  disabled behavior, stale identity, invalid drafts, unavailable values, mixed
-  selection, variable row heights, and private APIs. The restrictions below are
-  specific findings, not blanket reasons to avoid toolkit components.
+- The reported baseline was 61 broken relative links after the plan moved from
+  `docs/plan/` to `plan/`. The first focused check after fixing the Cargo link
+  found 60 remaining; all now resolve from this directory, including desktop
+  docs at `../docs/desktop.md`.
+- The original baseline `5802db8e68231d1e0f10422b39c176ff197f70f3` is historical.
+  Current Regressify is `be843359a593b19d155c82bdcea0ee163e015423`.
+- Several pilots lacked exact outcomes, and old open questions left important
+  interaction choices unsettled. The interview now supplies those contracts;
+  they replace contrary recommendations elsewhere in this document.
+- The registry was rechecked 2026-10-06: 0.7.1 remains latest stable and
+  non-yanked. Kit HEAD and published `v0.7.1` were compared; use only the
+  published release. No speculative context-menu generation-ID failure,
+  log-filter reset defect, or other new runtime bug is established here.
+- API feasibility and lifecycle are pilot verification risks, not confirmed
+  defects. If a genuine public API or behavior blocker remains after bounded
+  investigation, stop that dependent migration and ask the user before deferring
+  it or retaining a custom component. Unaffected tasks may continue.
 
-These were source-review passes, not repeated runtime test runs. Detailed API
-inspection covered candidates; nonmatching catalog families were screened for
-an existing product use case, not exhaustively tested internally.
+Approved scope is the full native desktop plan: R1-R12, Other Matching
+Components, and every collection/workflow pilot. React and browser automation
+are out of scope. Prefer maintainable code reduction, but keep a correct
+migration even if net code increases. Use stock kit styling, palette, typography,
+and normal sizing for all desktop controls, including existing kit controls;
+preserve Source editor font preferences and specialized image/editor geometry.
+Keep toolbar commands visible and wrapping. Remaining detailed behavior choices
+are recorded at their owning pilots below.
+
+This is static source/API review, not a compiled or interactively tested
+migration. The 0.7.1 `open_window(options, &mut App, builder)` returns
+`Result<(AnyWindowHandle, Entity<V>)>`; the builder returns content, not `Root`,
+and async callers use `cx.update`. Current launch manually mounts overlay layers;
+the kit entry point owns them. Existing UI fixtures return `WindowHandle<Root>`
+and must move with launch. The read-only clone was compared with published 0.7.1;
+no clone changes or path dependencies are authorized.
 
 ## Component Map
 
-| Existing UI                                       | Built-in candidate                                          | Recommendation                                                      |
-| ------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- |
-| Run/update progress rectangles                    | `Progress`                                                  | Adopt, R1.                                                          |
-| Numeric fields with custom step buttons           | `NumberInput`                                               | Adopt with draft/step adapter, R2.                                  |
-| Field layouts and static sections                 | `Form`, `Field`, normal `GroupBox`                          | Adopt presentation, R3.                                             |
-| Editor/run/source/log command bars                | `Toolbar`, `ToolbarGroup`                                   | Adopt with scoped keyboard/width checks, R4.                        |
-| Manually owned suite/image popups                 | `ContextMenuExt`                                            | Prefer; image invalidation needs a lifecycle pilot, R5.             |
-| Single/multiple value pickers                     | `Select`, `Combobox`                                        | Prefer with controlled values, R6.                                  |
-| Always-available copy actions                     | `Clipboard`                                                 | Adopt where feedback timing fits; preserve gated Buttons, R7.       |
-| Status footers, notices, labels, dots, dividers   | `StatusBar`, `Marker`, `Tag`, `Badge`, `Separator`, `Label` | Adopt matching primitives, R8.                                      |
-| File/Publish/Help strip                           | `AppMenuBar`                                                | Pilot with exact action targeting and menu refresh, R9.             |
-| Hand-composed dialog footers                      | `DialogFooter`, limited default button props                | Adopt footer layout; retain busy guards, R10.                       |
-| Individual Git-file selection                     | Styled `Checkbox`                                           | Adopt; this call site does not need mixed state, R11.               |
-| Log source switch and archive paging              | `TabBar`, compact `Pagination`                              | Adopt with source/page/tail adapter, R12.                           |
-| Message-only errors                               | `Alert`                                                     | Adopt where alert semantics fit.                                    |
-| Capture metadata                                  | `DescriptionList`                                           | Adopt with existing URL/copy children.                              |
-| Whole-pane empty states                           | `Empty`                                                     | Adopt; optional slots need not all be populated.                    |
-| Expandable field/activity groups                  | `Accordion`, `Collapsible`                                  | Prefer controlled components; review error-expansion policy.        |
-| Flat file/capture/action lists                    | `List`, `ListItem`                                          | Prefer targeted migration with scoped selection/activation.         |
-| Checkable suite/scenario rows                     | `ListItem` and retained selection policy                    | Prefer row presentation; keep checked/open/focused states separate. |
-| Hierarchical Git change trees                     | `Tree` plus checkbox/action adapter                         | Pilot; keyboard locks and refresh identity need explicit handling.  |
-| Overview/diagnostics tables                       | `Table`                                                     | Overview pilot; variable-height diagnostics are a real limitation.  |
-| Command palette                                   | `Command`                                                   | Prefer guarded prototype; park search/Escape choices for review.    |
-| Mixed folder/suite selection                      | Base-backed checkbox adapter                                | Retain only mixed-state uses; styled API is insufficient.           |
-| Breadcrumbs and guarded links                     | Existing toolkit Buttons/link variant                       | Retain; legacy Breadcrumb/Link lose required interaction behavior.  |
-| Source commands, image comparison, split Git diff | Existing toolkit editor/virtualization                      | Retain domain integrations, not a competing widget framework.       |
+| Existing UI                                       | Built-in candidate                                          | Recommendation                                                        |
+| ------------------------------------------------- | ----------------------------------------------------------- | --------------------------------------------------------------------- |
+| Run/update progress rectangles                    | `Progress`                                                  | Adopt, R1.                                                            |
+| Numeric fields with custom step buttons           | `NumberInput`                                               | Adopt with draft/step adapter, R2.                                    |
+| Field layouts and static sections                 | `Form`, `Field`, normal `GroupBox`                          | Adopt presentation, R3.                                               |
+| Editor/run/source/log command bars                | `Toolbar`, `ToolbarGroup`                                   | Adopt with scoped keyboard/width checks, R4.                          |
+| Manually owned suite/image popups                 | `ContextMenuExt`                                            | Prefer; image invalidation needs a lifecycle pilot, R5.               |
+| Single/multiple value pickers                     | `Select`, `Combobox`                                        | Prefer with controlled values, R6.                                    |
+| Always-available copy actions                     | `Clipboard`                                                 | Adopt where feedback timing fits; preserve gated Buttons, R7.         |
+| Status footers, notices, labels, dots, dividers   | `StatusBar`, `Marker`, `Tag`, `Badge`, `Separator`, `Label` | Adopt matching primitives, R8.                                        |
+| File/Publish/Help strip                           | `AppMenuBar`                                                | Pilot with exact action targeting and menu refresh, R9.               |
+| Hand-composed dialog footers                      | `DialogFooter`, limited default button props                | Adopt footer layout; retain busy guards, R10.                         |
+| Individual Git-file selection                     | Styled `Checkbox`                                           | Adopt; this call site does not need mixed state, R11.                 |
+| Message-only errors                               | `Alert`                                                     | Adopt where alert semantics fit.                                      |
+| Capture metadata                                  | `DescriptionList`                                           | Adopt with existing URL/copy children.                                |
+| Expandable field/activity groups                  | `Accordion`, `Collapsible`                                  | Force full open for errors/search; restore user collapse state.       |
+| Log source switch and archive paging              | `TabBar`, `Pagination`                                      | Use page-aligned transition from Follow, R12.                         |
+| Command palette                                   | `Command`                                                   | Stock substring search; Escape clears, then dismisses.                |
+| Whole-pane empty states                           | `Empty`                                                     | Adopt; optional slots need not all be populated.                      |
+| Flat file/capture/action lists                    | `List`, `ListItem`                                          | Prefer targeted migration with scoped selection/activation.           |
+| Checkable suite/scenario rows                     | `ListItem` and retained selection policy                    | Prefer row presentation; keep checked/open/focused states separate.   |
+| Hierarchical Git change trees                     | `Tree` plus checkbox/action adapter                         | Pilot; keyboard locks and refresh identity need explicit handling.    |
+| Overview/diagnostics tables                       | `Table`                                                     | Uniform overview rows with complete details dialog; keep diagnostics. |
+| Mixed folder/suite selection                      | Base-backed checkbox adapter                                | Retain only mixed-state uses; styled API is insufficient.             |
+| Breadcrumbs and guarded links                     | Existing toolkit Buttons/link variant                       | Retain; legacy Breadcrumb/Link lose required interaction behavior.    |
+| Source commands, image comparison, split Git diff | Existing toolkit editor/virtualization                      | Retain domain integrations, not a competing widget framework.         |
 
 The 0.6.1 source already exposes most of these component families. `Toolbar` and
 `Empty` are absent from its public module list. The detailed adapters below were
@@ -123,13 +146,14 @@ This is an explicit prerequisite, independently reviewable from component reuse.
   versioned GPUI/Base/Component dependencies.
 - Review release notes and the resolved dependency graph. Do not enable an
   alternative backend or unrelated optional features as part of this cleanup.
-- Fix the known startup incompatibility: [launch](../../src/desktop/ui/mod.rs)
-  calls `cx.open_window` and constructs `Root::new`, while `Workbench::render`
-  manually renders dialog, sheet, and notification layers. Use the release's
-  [gpui_kit::open_window][kit-window] entry point, returning the workbench content
-  instead of another Root; remove the now-automatic overlay mounting.
+- Fix the startup incompatibility in [launch](../src/desktop/ui/mod.rs): use
+  [gpui_kit::open_window][kit-window], whose builder returns workbench content
+  rather than constructing `Root`. The release returns an
+  `AnyWindowHandle` and content `Entity`; retain the entity for fixture access,
+  use `cx.update` from async callers, and remove manual overlay mounting now
+  owned by the kit entry point.
 - Apply the same root/window migration to native test fixtures, including
-  [UI tests](../../src/desktop/ui/tests.rs). Retain the returned content entity
+  [UI tests](../src/desktop/ui/tests.rs). Retain the returned content entity
   for fixture access. Do not weaken interaction assertions to make tests compile.
 - Preserve all startup and close behavior: workspace ownership/activation,
   Windows taskbar setup, unsaved-document and landing guards, cancellation,
@@ -138,15 +162,15 @@ This is an explicit prerequisite, independently reviewable from component reuse.
   below before starting presentation migrations. A successful dependency resolve
   is not evidence of GUI compatibility.
 
-An unpublished API remains out of scope unless a Git dependency is separately
-approved. No dependency upgrade was performed during this review.
+No unpublished API, Git/path dependency, clone edit, fork, or vendoring is in
+scope. No dependency upgrade was performed during this review.
 
 ## Phase 2: Small Replacements
 
 ### R1: Progress Bars
 
-**Owners:** [run activity](../../src/desktop/ui/runs/activity.rs#L300) and
-[update download progress](../../src/desktop/ui/updates.rs#L233).
+**Owners:** [run activity](../src/desktop/ui/runs/activity.rs#L300) and
+[update download progress](../src/desktop/ui/updates.rs#L233).
 
 **Replacement:** [Progress][kit-progress] supports a value, custom color, size,
 accessible name, and optional indeterminate loading. It supplies the track,
@@ -156,8 +180,8 @@ indicator, animation, and progress accessibility behavior.
   calculations, textual counts, cancellation, and update lifecycle logic.
 - Convert fractions to percentages: `Progress::value` expects **0..100**, not
   0..1. Preserve the existing update ratio's denominator guard and clamping.
-- Preserve the run bar's failure/cancelled/captured color distinctions. Keep the
-  current 5px/4px density through the size API and give each bar a stable ID.
+- Preserve the run bar's failure/cancelled/captured color distinctions. Use
+  normal toolkit sizing and give each bar a stable ID.
 - Preserve `update-download-progress` as a discoverable test boundary, using an
   outer wrapper if necessary. Supply a meaningful progress accessibility name.
 - Do not invent an indeterminate state or equate download completion with
@@ -172,7 +196,7 @@ runs, animation settling, and the existing `update_progress_` native regression.
 ### R2: Numeric Field Controls
 
 **Owner:** numeric suffix buttons in
-[render_fields](../../src/desktop/ui/mod.rs#L2030), plus the existing field input
+[render_fields](../src/desktop/ui/mod.rs#L2030), plus the existing field input
 subscriptions and `adjust_field` in the same module.
 
 **Replacement:** [NumberInput][kit-number] accepts the existing
@@ -199,27 +223,29 @@ subscriptions and `adjust_field` in the same module.
 `adjust_field` method is application policy and must remain. The net saving must
 include the new event subscription, not just the removed render chain.
 
-**Checks:** [numeric stepping](../../src/desktop/ui/tests.rs#L5533) and
-[threshold inheritance/reset](../../src/desktop/ui/tests.rs#L5405), extended for
+**Checks:** [numeric stepping](../src/desktop/ui/tests.rs#L5533) and
+[threshold inheritance/reset](../src/desktop/ui/tests.rs#L5405), extended for
 invalid/intermediate text, exponent notation, keyboard stepping, busy state,
 blur without coercion, and undo/redo. Pilot before applying to every number field.
 
-The [Source font-size controls](../../src/desktop/ui/source.rs#L1160) are another
-eligible numeric surface: a bounded integer NumberInput could replace the
-minus/value/plus composition while retaining `change_source_size` and preference
-saving. Direct text entry is a small interaction change, parked as Q5 below.
-Do not treat the image fit-mode percentage readout as the same problem: it is
-derived from laid-out image bounds, not merely a stored numeric preference.
+The [Source font-size controls](../src/desktop/ui/source.rs#L1160) are another
+eligible numeric surface. Replace the minus/value/plus composition with direct
+integer NumberInput entry in the inclusive range 10..24. Valid integers apply and
+persist; invalid or out-of-range drafts never persist, and blur restores the
+last valid size. Preserve reset and preference behavior. Do not coerce
+configuration numeric drafts: they remain lossless, including invalid text.
+Image fit-mode percentage remains derived from laid-out image bounds and is not
+the same preference control.
 
 ## Phase 3: Shared Presentation
 
 ### R3: Form And Field Layout
 
-**Owners:** [Fields](../../src/desktop/ui/mod.rs#L1834),
-[run options](../../src/desktop/ui/runs/settings.rs),
-[deployment forms](../../src/desktop/ui/deployment.rs),
-[token forms](../../src/desktop/ui/tokens.rs), and
-[landing forms](../../src/desktop/ui/landing.rs#L217).
+**Owners:** [Fields](../src/desktop/ui/mod.rs#L1834),
+[run options](../src/desktop/ui/runs/settings.rs),
+[deployment forms](../src/desktop/ui/deployment.rs),
+[token forms](../src/desktop/ui/tokens.rs), and
+[landing forms](../src/desktop/ui/landing.rs#L217).
 
 **Replacement:** [Form][kit-form] and [Field][kit-field] provide label placement,
 column layout, required markers, descriptions, custom label/description builders,
@@ -261,11 +287,14 @@ long labels, offscreen fields, and compact/large light/dark layouts.
 
 ### R4: Toolbars
 
-**Owners:** [editor toolbar](../../src/desktop/ui/mod.rs#L1523),
-[Source toolbar](../../src/desktop/ui/source.rs#L1011),
-[run command bar](../../src/desktop/ui/runs.rs#L1648),
-[log controls](../../src/desktop/ui/log_controls.rs), capture-log headers, and
-the command rows in [Git review](../../src/desktop/ui/git/view.rs#L1257).
+Toolbar controls wrap at the chosen minimum width; keep every command visible.
+Use normal toolkit sizing and do not redesign the bars as overflow menus.
+
+**Owners:** [editor toolbar](../src/desktop/ui/mod.rs#L1523),
+[Source toolbar](../src/desktop/ui/source.rs#L1011),
+[run command bar](../src/desktop/ui/runs.rs#L1648),
+[log controls](../src/desktop/ui/log_controls.rs), capture-log headers, and
+the command rows in [Git review](../src/desktop/ui/git/view.rs#L1257).
 
 **Replacement:** [Toolbar and ToolbarGroup][kit-toolbar] own consistent control
 sizing, layout, semantic groups, and roving keyboard focus.
@@ -274,9 +303,6 @@ sizing, layout, semantic groups, and roving keyboard focus.
   controls and `content` for spacers, labels, separators, or custom wrappers.
 - Keep every command callback, tooltip, accessible name, and individual disabled
   condition. `Toolbar::disabled` disables toolbar navigation, **not its children**.
-- Preserve current wrapping and height constraints explicitly: the toolkit's
-  default fixed-height horizontal bar is not equivalent to every existing
-  `flex_wrap` row. Do not hide commands at the compact window size.
 - Exercise arrow/Tab navigation and hosted input editing. Toolkit guidance puts
   inputs at the trailing end; do not consume search-input caret shortcuts.
 - Retain application action contexts and the existing title-bar mouse-down
@@ -296,8 +322,8 @@ are implementation gates, not claims that a migration has already been tested.
 ### R5: Managed Context Menus
 
 **Owners:** `SuiteMenu`, `show_suite_menu`, and manual popup mounting in
-[navigation](../../src/desktop/ui/navigation.rs#L8); `ImageMenu`,
-`show_image_menu`, and its overlay in [results](../../src/desktop/ui/reports.rs#L953).
+[navigation](../src/desktop/ui/navigation.rs#L8); `ImageMenu`,
+`show_image_menu`, and its overlay in [results](../src/desktop/ui/reports.rs#L953).
 
 **Prefer:** [ContextMenuExt][kit-context-menu] on the actual row/preview trigger.
 It owns right-click handling, popup placement, menu focus, dismissal subscription,
@@ -317,10 +343,11 @@ and the deferred overlay. Its internal dismissal subscription uses weak ownershi
 - For image menus, freeze capture/image identity and retain validated path/URL
   handling. Cancel panning when opening the menu. A capture refresh, mode change,
   or Results exit must dismiss it, as clearing `image_menu` does today.
-- The extension has no public explicit-dismiss setter. Test a generation-scoped
-  trigger ID or trigger removal on invalidation before deleting the image-menu
-  owner. If stale-menu/focus cleanup cannot be preserved, migrate suite menus
-  first and retain only the necessary image-menu lifecycle adapter.
+- Treat explicit dismissal and invalidation as lifecycle pilot gates. Test
+  capture/image identity across refresh, mode change, Results exit, focus return,
+  and workbench release. Do not assume a generation-ID workaround is impossible
+  or proven; investigate the released public API and ask the user before
+  deferring or retaining a custom menu if parity is genuinely blocked.
 
 **Expected deletion:** application popup structs, coordinates, subscriptions, and
 manual `anchored`/`deferred` mounting where the lifecycle tests pass. Keep native
@@ -330,10 +357,10 @@ while open and workbench release after closing the window.
 ### R6: Value Selectors
 
 **Single values:** use [Select][kit-select] for `Control::Choice` in
-[Fields](../../src/desktop/ui/mod.rs#L2119), followed by value pickers in
-[deployment](../../src/desktop/ui/deployment.rs),
-[tokens](../../src/desktop/ui/tokens.rs), and
-[Git remotes](../../src/desktop/ui/git/view.rs#L18).
+[Fields](../src/desktop/ui/mod.rs#L2119), followed by value pickers in
+[deployment](../src/desktop/ui/deployment.rs),
+[tokens](../src/desktop/ui/tokens.rs), and
+[Git remotes](../src/desktop/ui/git/view.rs#L18).
 
 - Keep real command menus as menus: Add, Publish, Help, Run, and destructive
   actions are commands, not select values. Existing toolkit dropdowns need not
@@ -341,10 +368,6 @@ while open and workbench release after closing the window.
 - Retain `SelectState` with each binding/panel and subscribe only to user
   confirmation for writes. Programmatic `set_selected_value` does not emit a
   confirmation; use it to synchronize rebuilt or externally refreshed data.
-- Display effective/inherited values without writing an override. Explicitly
-  choosing the same value must still be able to create an override. Preserve
-  invalid/unknown source values in the document; an unresolved select value must
-  not silently replace them with the first option.
 - Refresh items and selected values by stable identity, not filtered indices.
   Keep reset separate from selection unless clearing has the same field policy.
 - Preserve provider/token identity locks, draft guards, and operation-time
@@ -353,20 +376,22 @@ while open and workbench release after closing the window.
 
 **Multiple values:** pilot [Combobox][kit-combobox] as the existing guided picker
 beside the free-form `viewportNames` and `needs` controls in
-[choices](../../src/desktop/ui/choices.rs). Do not remove the raw textarea.
+[choices](../src/desktop/ui/choices.rs). Do not remove the raw textarea.
 
 - Use multi-select mode with an optional search field. This can keep the picker
   open across toggles instead of rebuilding the checked-menu interaction.
-- Apply changes through the existing list-choice policy; do not serialize the
-  combobox's selected values over the entire source field. Unresolved values
-  are omitted by `set_selected_values`, so the document must remain authoritative.
+- Apply each accepted toggle immediately through the existing list-choice
+  policy; create exactly one document-history entry per accepted toggle. Escape
+  closes the picker without rollback. Keep the document authoritative rather
+  than serializing the combobox's full selected-value list.
 - Preserve unknown entries, scalar/list syntax, case-insensitive viewport labels,
   case-sensitive dependency IDs, inherited defaults, and the last-viewport guard.
 - Distinguish `ComboboxEvent::Change` from `Confirm`: Change is emitted per toggle;
   Confirm is emitted on closing, including cancellation. Do not apply changes
-  twice or interpret Escape as rollback when updates were already applied.
+  twice or interpret Escape as rollback after accepted toggles.
 - Retain invalid-draft disabling and use a controlled selection/guard adapter to
-  reconcile a rejected toggle. Preserve compact trigger labels and full option
+- Retain invalid-draft disabling and use a controlled selection/guard adapter to
+  reconcile a rejected toggle. Preserve concise trigger labels and full option
   descriptions; the kit provides a custom trigger builder.
 
 **Checks:** native pointer and keyboard choice, same-value confirmation, data
@@ -377,15 +402,14 @@ viewport removal, failed writes, and no duplicate document-history entries.
 
 **Prefer:** [Clipboard][kit-clipboard] for always-available text copy actions,
 starting with the saved publication URL in
-[deployment](../../src/desktop/ui/deployment.rs#L407). Keep its existing accessible
+[deployment](../src/desktop/ui/deployment.rs#L407). Keep its existing accessible
 name and use `value` for immutable text or `value_fn` for a current snapshot.
 
-The component supplies the Copy/Check feedback and reset timer. It does not
-provide a disabled API and suppresses another copy for two seconds after copying.
-Therefore do not substitute it blindly for incomplete-log export/copy gates or
-unavailable image URLs. Preserve a disabled toolkit Button for those states.
-Use a snapshot/generation-scoped identity or retain the current Button when a
-new selection must be copyable immediately during the feedback interval.
+The component supplies the Copy/Check feedback and reset timer. Its two-second
+repeat suppression is acceptable only for unchanged text: a changed selection
+or value must be immediately copyable, using value/generation identity as
+needed. It has no disabled API, so keep gated copies as guarded Buttons for
+incomplete-log export or unavailable image URLs.
 
 Reevaluate Git activity, source-side diff copy, update failure details, and
 results URL copies individually. Copy exact source or validated URLs, not
@@ -396,11 +420,12 @@ states; do not add copy actions for secrets that are not currently copyable.
 ### R8: Status, Labels, And Dividers
 
 - **StatusBar:** replace the manual footer in
-  [Source](../../src/desktop/ui/source.rs#L1215) with
+  [Source](../src/desktop/ui/source.rs#L1215) with
   [StatusBar][kit-status-bar]. Its left/center/right slots accept the existing
   language, caret position, completion status, and issue-navigation controls.
   Keep each child's status role/name and stable ID; the container does not add
-  those semantics for the application. Retain the 30px density and compact fit.
+  those semantics for the application. Use normal toolkit sizing and preserve
+  layout fit without compact control overrides.
 - **Marker:** [Marker][kit-marker] accepts arbitrary children and an explicit
   status role, making it a better candidate than Alert for passive operational
   notices with actions, such as update-ready and external-file notices. Keep
@@ -423,16 +448,16 @@ states; do not add copy actions for secrets that are not currently copyable.
   plus secondary text run, but does not replace input accessibility names or the
   multiline selectable diagnostics renderer by itself.
 
-The relevant owners are [source UI](../../src/desktop/ui/source.rs),
-[run activity](../../src/desktop/ui/runs/activity.rs),
-[run options](../../src/desktop/ui/runs/settings.rs), and
-[external-file notices](../../src/desktop/ui/files.rs#L239). Prefer these small
+The relevant owners are [source UI](../src/desktop/ui/source.rs),
+[run activity](../src/desktop/ui/runs/activity.rs),
+[run options](../src/desktop/ui/runs/settings.rs), and
+[external-file notices](../src/desktop/ui/files.rs#L239). Prefer these small
 components even when an application still supplies domain text and callbacks.
 
 ### R9: Application Menu Bar
 
 **Prefer a pilot:** [AppMenuBar][kit-app-menu-bar] for File/Publish/Help in
-[the title bar](../../src/desktop/ui/overview.rs#L65). It supplies cross-menu
+[the title bar](../src/desktop/ui/overview.rs#L65). It supplies cross-menu
 keyboard navigation, hover switching, popup focus, and menu-bar semantics on
 Windows/Linux. [Owned menu conversion][kit-menu-items] preserves checked and
 disabled item flags, so dynamic enablement is supported.
@@ -442,7 +467,7 @@ disabled item flags, so dynamic enablement is supported.
   render. Preserve menu names, commands, busy states, and compact title-bar space.
 - Preserve platform behavior explicitly; using AppMenuBar on Windows/Linux does
   not itself establish the macOS native-menu integration.
-- Critical target difference: [File menu](../../src/desktop/ui/files.rs#L384)
+- Critical target difference: [File menu](../src/desktop/ui/files.rs#L384)
   explicitly uses the workbench focus context, so Rename/Delete target the open
   document. AppMenuBar captures the focused control, which might be the suite
   list, whose FileCommand handler targets its focused row. Use explicit
@@ -455,7 +480,7 @@ disabled item flags, so dynamic enablement is supported.
 ### R10: Dialog Footers And Actions
 
 **Adopt:** [DialogFooter][kit-dialog-footer] for repeated footer alignment in
-[file dialogs](../../src/desktop/ui/files.rs), deployment/token/landing dialogs,
+[file dialogs](../src/desktop/ui/files.rs), deployment/token/landing dialogs,
 Git confirmation, and update dialogs. It accepts the existing Button children;
 preserve wrapping, names, disabled states, and callbacks.
 
@@ -465,7 +490,7 @@ button props have no disabled/busy setting, while New/Rename/Save and publishing
 must block repeated submission and dismissal during asynchronous writes.
 
 The public DialogAction/DialogClose composition is worth a focused pilot, but
-keep the existing [name-dialog focus guard](../../src/desktop/ui/files.rs#L632)
+keep the existing [name-dialog focus guard](../src/desktop/ui/files.rs#L632)
 until Enter on input/primary action, Enter on Cancel/X, and busy-state tests prove
 parity. `DialogDispatchAnchor` is private in 0.7.1; do not plan an application
 integration using it. Save/Discard/Cancel and inline approval confirmations keep
@@ -474,7 +499,7 @@ their distinct application policies rather than becoming generic two-button prom
 ### R11: Binary Git Checkboxes
 
 **Adopt:** styled Checkbox for individual files in
-[tree_row](../../src/desktop/ui/git/view.rs#L699). This call passes `partial = false`
+[tree_row](../src/desktop/ui/git/view.rs#L699). This call passes `partial = false`
 and ignores the Base callback's event arguments. It can use the Boolean callback
 without losing an existing mixed-state or modifier behavior.
 
@@ -487,16 +512,15 @@ small independent migration; it need not wait for a full Tree replacement.
 ### R12: Log Source Tabs And Pagination
 
 **Adopt:** segmented TabBar for the manually paired Reference/Test buttons in
-[Capture Log](../../src/desktop/ui/reports/log.rs#L133). Keep the existing source
+[Capture Log](../src/desktop/ui/reports/log.rs#L133). Keep the existing source
 selection and load callbacks, reset offset on source change, preserve unavailable
 source messages, and reject stale reads. Use a stable tab-bar scope and update
 native test selectors without dropping source-identity assertions.
 
 **Adopt for non-tail archive pages:** [Pagination][kit-pagination] in Capture Log
-and [run logs](../../src/desktop/ui/runs/log.rs#L290). Compact mode provides just
-previous/next controls. The [reader](../../src/desktop/logs.rs#L114) already returns
-`matched`, `offset`, and bounded records, so no new full-log allocation or guessed
-total is necessary.
+and [run logs](../src/desktop/ui/runs/log.rs#L290). Use normal toolkit sizing.
+The [reader](../src/desktop/logs.rs#L114) already returns `matched`, `offset`,
+and bounded records, so no new full-log allocation or guessed total is necessary.
 
 - For page-aligned results, use `matched.div_ceil(PAGE_RECORDS).max(1)` pages and
   `offset / PAGE_RECORDS + 1` as the current page. The kit API is one-based.
@@ -509,10 +533,9 @@ total is necessary.
   messages and export restrictions. Matched records are not proof that an
   incomplete archive contains every original record.
 - Live follow-tail uses a rolling offset (`matched - returned_records`), which
-  need not be divisible by PAGE_RECORDS. Do not present that window as an ordinary
-  numbered page. Initially scope Pagination to non-tail views; any explicit
-  transition from Follow to browsing must be deliberate, not an accidental side
-  effect of integer division.
+  need not be divisible by PAGE_RECORDS. When leaving Follow, deliberately load
+  the last numbered page using its page-aligned offset; do not freeze a rolling
+  tail window and label it as a numbered page. Keep pagination non-tail only.
 
 Test 0/1/500/501 matching records, first/last page, filtering on a later page,
 shrinking totals, loading clicks, partial archives, source switching, and live
@@ -530,8 +553,8 @@ because they save fewer lines than the first batch.
   update-install and external-reload notices, retaining their action buttons.
   Keep diagnostics and log health separate from test outcomes.
 - **Capture metadata:** adopt [DescriptionList][kit-description] for matching
-  label/value layout in [capture information](../../src/desktop/ui/reports.rs#L1724).
-  Use a borderless compact layout and custom value elements for URL/copy controls.
+  label/value layout in [capture information](../src/desktop/ui/reports.rs#L1724).
+  Use its stock styling and custom value elements for URL/copy controls.
   Preserve raw reference versus test URLs, signed dimension differences,
   unavailable values, safe URL handling, and existing test IDs.
 - **Empty panes:** adopt [Empty][kit-empty] for no-workspace, no-capture, no-command,
@@ -542,25 +565,28 @@ because they save fewer lines than the first batch.
   whole-pane empty states.
 - **Expandable groups:** prefer controlled [Accordion][kit-accordion] triggers
   for Fields, workspace-files expansion, and applicable activity groups; use
-  [Collapsible][kit-collapsible] when the trigger must retain richer children.
-  Keep multiple groups open, stable group IDs, filtered-index mapping, and Expand
-  All. Recommended simplification: force a whole group open for visible errors
-  or search results (Q3). That differs from today's special case showing only
-  erroneous rows inside a collapsed group. Never hide the errors; if exact old
-  presentation is required, retain that small policy adapter.
-- **Theme defaults:** reducing [manual palette overrides](../../src/desktop/ui/design.rs)
-  could remove additional code, but it changes appearance rather than replacing
-  a widget. Treat that as a separate design decision, retaining the existing
-  contrast/focus tests and system/light/dark preference behavior.
+  [Collapsible][kit-collapsible] when the trigger needs richer children. Keep
+  multiple groups open, stable group IDs, filtered-index mapping, and Expand All.
+  Force the full group open while it contains visible errors or search results,
+  retaining the user's underlying collapse preference. Restore that preference
+  when the condition clears; do not add a partial-error adapter.
+- **Theme defaults:** adopt the stock toolkit palette with no brand color
+  overrides and stock toolkit UI typography. Preserve Source editor font
+  preferences separately. Use normal toolkit sizing for all desktop controls,
+  including existing kit Buttons and inputs; retain specialized image/editor
+  geometry, not former compact button sizes. Start with the attempted 1000x640
+  minimum and increase only when layout evidence requires it, up to 1200x720.
+  Test the chosen minimum and large windows in both themes; do not raise the
+  minimum automatically. Visual review needs no per-surface approval pause.
 
 ## Collection And Workflow Pilots
 
 ### Flat Lists And Row Presentation
 
 Prefer toolkit [List][kit-list] and [ListItem][kit-list-item] for the flat
-[workspace files](../../src/desktop/ui/navigation.rs#L1342),
-[captures](../../src/desktop/ui/reports.rs#L1081), and
-[action sequence](../../src/desktop/ui/sequence.rs#L107), one surface at a time.
+[workspace files](../src/desktop/ui/navigation.rs#L1342),
+[captures](../src/desktop/ui/reports.rs#L1081), and
+[action sequence](../src/desktop/ui/sequence.rs#L107), one surface at a time.
 Retaining application callbacks is normal integration, not a blocker.
 
 - Keep current searches/filters or connect them to the delegate; do not render a
@@ -568,8 +594,10 @@ Retaining application callbacks is normal integration, not a blocker.
 - Preserve the distinction between changing the keyboard cursor and activating
   an item. File browsing must keep binary rows inert; capture changes must call
   `select_capture` and dismiss pending approval through the existing path.
-- Add only the missing scoped Home/End, modifier, Enter/Space, and Escape behavior.
-  Do not move list shortcuts into search, commit-message, or source inputs.
+- Preserve Home/End, scoped focus, and distinct activation. Single-selection
+  lists and the Git tree may use the toolkit's wrapping Up/Down behavior. Keep
+  suite/scenario checked-range policy authoritative; do not move shortcuts into
+  search, commit-message, or source inputs.
 - Keep virtualization and scroll-to-selection. Defer parent mutations when a
   delegate callback would otherwise re-enter the currently borrowed list entity.
 - Use ListItem presentation for checkable suite/scenario rows even if their
@@ -584,14 +612,14 @@ Retaining application callbacks is normal integration, not a blocker.
 keyboard-equivalent replacement for existing Buttons: its main row is rendered
 as a clickable div without the corresponding focus/key setup. Prefer List for
 keyboard-driven collections, or reuse sidebar groups around existing controls.
-Do not remove [lists.rs](../../src/desktop/ui/lists.rs) until its remaining callers
+Do not remove [lists.rs](../src/desktop/ui/lists.rs) until its remaining callers
 no longer need the shared application-specific operations.
 
 ### Git Tree
 
 Pilot [Tree][kit-tree] for the existing Changes and Comparison Changes hierarchies.
 It can own visible flattening, expansion, scrolling, and standard tree structure,
-replacing parts of [rebuild_tree](../../src/desktop/ui/git/view.rs#L570).
+replacing parts of [rebuild_tree](../src/desktop/ui/git/view.rs#L570).
 
 Use two tree states, IDs based on group plus repository path, and retained
 application checkbox selection. Preserve folder aggregation, conflict/submodule
@@ -599,26 +627,28 @@ exclusions, group-specific Select All, and reviewed request identity.
 
 The [TreeState implementation][kit-tree-state] establishes concrete adapter work:
 `set_items` clears cursor selection; restore it by stable item ID and preserve
-expansion. Up/Down wraps where Regressify currently clamps, Home/End are not
-bound, and built-in Confirm handles folders rather than opening leaf reviews.
-Item `disabled` gates pointer handling, not all keyboard navigation/expansion.
-Keep scoped application activation/bounds/operation-lock guards and test them;
-do not assume a disabled-looking tree is inert. If those adapters work, prefer
-the kit tree even if checkbox policy still occupies application code.
+expansion. Permit wrapping Up/Down, provide Home/End, and keep cursor movement
+distinct from leaf activation. Item `disabled` gates pointer handling, not all
+keyboard navigation/expansion, so enforce mutation locks in application policy.
+Keep read-only folder expansion and diff opening available during Git operations;
+lock checkbox changes and mutation commands. Keep the in-flight reviewed request
+identity immutable, reject stale diff responses, and test these effects. Prefer the kit tree even if
+checkbox policy still occupies application code.
 
 ### Tables
 
-Pilot [Table][kit-table] for the [overview](../../src/desktop/ui/overview.rs#L307).
-Custom cells can retain the suite checkbox, summary, status, and Edit/Open Report
-buttons while the kit owns columns, header alignment, and scrolling.
+Pilot [Table][kit-table] for the [overview](../src/desktop/ui/overview.rs#L307)
+with uniform rows. Keep the suite checkbox, summary, status, and Edit/Open Report
+actions separate while the kit owns columns, header alignment, and scrolling.
 
 The limitation is row geometry, not merely delegate boilerplate:
 [TableState][kit-table-state] uses uniform rows derived from a single Size;
 custom Size changes every row's height, not individual row heights. Preserve
-multiline summaries and complete errors, possibly with an explicit details area
-if approved in Q4. Keep action clicks separate from row navigation/selection.
+complete selectable long summaries and errors in an explicit details dialog.
+Open it with a Details control or Enter on the focused row; row selection/click
+alone must not open it. Keep row checkboxes/actions separate and discard no data.
 
-The [diagnostics table](../../src/desktop/ui/source.rs#L829) has independently
+The [diagnostics table](../src/desktop/ui/source.rs#L829) has independently
 wrapping, selectable messages. Do not force those into clipped uniform rows.
 Keep its current layout unless the resolved toolkit provides the required height
 behavior or the owner approves an equally accessible full-message presentation.
@@ -630,16 +660,17 @@ ListDelegate. Keep the command catalog, enablement, and existing execution paths
 An actionless CommandItem plus explicit `on_confirm` can close the palette,
 restore the workbench context, and dispatch exactly once in the required order.
 
-Preserve all-words search through the supported external-filtering callback when
-necessary, and resolve the Escape convention in Q2. Add no second command-routing
-framework. The detailed compatibility findings below still apply; ordinary
-catalog/selection adapters are no longer grounds for automatic deferral.
+Use the toolkit's stock substring search, not an all-words compatibility
+adapter. Escape clears a nonempty search first; the next Escape dismisses the
+palette. Use an actionless item with `on_confirm` to close, restore workbench
+focus, and dispatch exactly once in the approved order. Add no second
+command-routing framework.
 
 ## Specific Retentions
 
 ### Tri-State Selection Checkbox
 
-[selection_checkbox](../../src/desktop/ui/design.rs#L13) paints a Base checkbox
+[selection_checkbox](../src/desktop/ui/design.rs#L13) paints a Base checkbox
 for suite, run, and Git selection. The release's [styled Checkbox][kit-checkbox]
 has Boolean checked state but no indeterminate-state builder. Its callback also
 does not expose the same Base state/event signature used by these callers.
@@ -651,7 +682,7 @@ the relevant interaction tests pass, not by creating a local component fork.
 
 ### Breadcrumbs
 
-Current [editor breadcrumbs](../../src/desktop/ui/mod.rs#L2298) use actual Buttons
+Current [editor breadcrumbs](../src/desktop/ui/mod.rs#L2298) use actual Buttons
 with focus behavior, accessible names, tooltips, disabled state, and stable IDs.
 [BreadcrumbItem][kit-breadcrumb] renders a clickable `div`; its ID setter is
 private and it does not install the corresponding focus/keyboard behavior.
@@ -667,31 +698,22 @@ style with the current validated URL/opening callback instead.
 
 ### Command Palette
 
-[commands.rs](../../src/desktop/ui/commands.rs) already uses toolkit
+[commands.rs](../src/desktop/ui/commands.rs) already uses toolkit
 `List`, `ListState`, and `ListItem`. Most of the command catalog and enablement
 rules must remain even if [Command][kit-command] replaces the delegate.
 
 Concrete differences to resolve before a migration:
 
-- Current search matches every whitespace-separated word across title and group.
-  [CommandItem matching][kit-command-item] checks a whole-query substring against
-  its label or individual keywords instead. Preserve all-words matching with an
-  adapter, or request approval to change search semantics.
-- Current confirmation closes the dialog, restores the workbench focus, and then
-  dispatches the action. [CommandState][kit-command-state] dispatches an item's
-  action before its deferred `on_confirm` callback. Closing in that callback is
-  too late for a direct action-based substitution.
-- The new palette clears a nonempty query on Escape before allowing dismissal;
-  the current list delegate cancels the dialog. Preserve or explicitly approve
-  that behavior change rather than letting it slip into a cleanup.
-
-Use the prototype described above to resolve these differences. Keep the
-existing `command_palette_` tests and add an explicit multi-word search and
-single-dispatch regression; do not silently change semantics to shorten the code.
+Approved behavior is the toolkit's stock substring search, not all-words
+matching. Escape clears a nonempty search, then a subsequent Escape dismisses.
+Use an actionless item and `on_confirm` to close, restore workbench focus, and
+dispatch exactly once in the approved order. Keep `command_palette_` tests and
+add regressions for substring search, Escape sequencing, focus restoration, and
+single dispatch. This is a pilot gate, not a confirmed API defect.
 
 ### Source, Logs, And Comparison Views
 
-- [Source editing](../../src/desktop/ui/source.rs) already uses the toolkit editor,
+- [Source editing](../src/desktop/ui/source.rs) already uses the toolkit editor,
   undo/redo, completion, hover, and diagnostics APIs. Schema providers and draft
   synchronization are application integrations, not replacement widgets.
 - Keep literal-diagnostic escaping for the current TextView path. The released
@@ -704,13 +726,13 @@ single-dispatch regression; do not silently change semantics to shorten the code
   column-zero exclusive end line. No matching built-in comment/move/duplicate
   line action was found in the inspected input action implementation. Retain
   strict JSON behavior, CRLF/Unicode handling, focus guards, and native history.
-- [Run logs](../../src/desktop/ui/runs/log.rs), deployment logs, and Git activity
+- [Run logs](../src/desktop/ui/runs/log.rs), deployment logs, and Git activity
   already use read-only `CodeEditor`. Their filters, full-text copying, archive
   completeness, follow-tail behavior, and bounded loading remain application work.
-- [Image comparison](../../src/desktop/ui/reports.rs#L1468) includes pointer-centered
+- [Image comparison](../src/desktop/ui/reports.rs#L1468) includes pointer-centered
   zoom, panning, independent fit modes, synchronized comparison behavior, and
   approval identity. A carousel or generic image element is not an equivalent.
-- [Split Git diff](../../src/desktop/ui/git/view.rs#L1257) already uses virtual lists
+- [Split Git diff](../src/desktop/ui/git/view.rs#L1257) already uses virtual lists
   and shared scroll geometry. Syntax highlighting for a raw diff does not replace
   aligned before/after rows, original line numbers, change navigation, and exact
   source copying. Keep the bounded diff model and fallback behavior.
@@ -756,48 +778,93 @@ implementation was runtime-tested.
   The comparison inspector is not an image carousel; workspace path inputs and
   native file pickers are not an attachment-upload workflow.
 
-## Questions For Review
+## Interview Decision Ledger
 
-No response is needed while the owner is away. These decisions are parked here;
-none authorizes dropping data-integrity, security, or operation guards.
+The completed 36-answer interview is the implementation contract; these choices
+supersede old proposal text. Full scope is R1-R12, Other Matching Components,
+and all collection/workflow pilots. Use stock palette, typography, and normal
+control sizing throughout, with no brand color overrides; retain Source font
+preferences and specialized image/editor geometry. Preserve toolbar wrapping and
+visible commands. Start with 1000x640 and increase only on layout evidence, up
+to 1200x720; review both themes at the chosen minimum and a large window.
 
-| Question                                                                                      | Recommended Default                                                                                                                                                        |
-| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Q1: May matching controls use kit-default styling instead of reproducing every current pixel? | Yes, prefer defaults with minimal density/contrast/overflow adjustments and screenshot review.                                                                             |
-| Q2: May Command use Escape-to-clear before dismissal?                                         | Prefer the native convention if approved; retain all-words search through the small filtering adapter unless changing that is also approved.                               |
-| Q3: May a collapsed field group open fully when it contains a visible error?                  | Yes; this enables a simpler controlled Accordion while keeping errors visible. Otherwise retain the partial-error presentation adapter.                                    |
-| Q4: May overview Table rows use a separate keyboard-accessible details area for long errors?  | Pilot this; never truncate away information. If not approved, retain variable-height rows rather than force Table.                                                         |
-| Q5: May Source text size become an integer NumberInput with direct entry?                     | Yes as a later pilot, retaining the 10..24 range, reset, and preference saving. Image fit-mode zoom remains distinct.                                                      |
-| Q6: Should the custom palette move toward a stock kit theme?                                  | Prefer a stock theme with minimal brand overrides if contrast and focus gates pass; review separately from control behavior.                                               |
-| Q7: Should remaining API gaps be proposed upstream?                                           | Prefer upstream mixed-state Checkbox, accessible Breadcrumb, and public popup-dismiss support over a local fork; no issue/PR or clone edits are authorized by this review. |
+- Command uses stock substring search. Escape clears a nonempty query, then
+  dismisses; an actionless item closes, restores focus, and dispatches exactly
+  once. Controlled field groups fully open for errors/search while retaining the
+  user's collapse preference.
+- Overview Table uses uniform rows and a Details dialog opened by its control or
+  Enter on the focused row. Selection alone does not open it; long content stays
+  complete and selectable. Diagnostics remain variable-height and selectable.
+- Source font size is an integer NumberInput from 10 through 24; invalid values
+  never persist and blur restores the last valid size. Config numeric drafts stay
+  lossless. Single-choice unknown values remain visible and invalid until an
+  explicit user choice. Multi-choice accepted toggles write immediately, one
+  history entry each; Escape closes without rollback, retaining raw text and
+  unknown values.
+- Single-selection lists and Git tree may wrap Up/Down while preserving Home/End,
+  focus scope, activation, stable identity, and selection rules. During Git
+  operations permit read-only navigation, expansion, and diff opening; lock
+  selection mutations and commands, preserve request identity, reject stale diffs.
+- Leaving log Follow loads the last page-aligned numbered page. Clipboard's
+  two-second suppression applies only to unchanged text; changed content remains
+  immediately copyable. Keep tri-state Checkbox, keyboard Breadcrumb/guarded
+  links, diagnostic escaping, line-operation policy, image comparison, and split
+  Git diff.
 
-Until reviewed, keep the current behavior on questions involving interaction or
-layout changes. The independently compatible candidates can proceed after the
-plan itself is approved; unanswered questions need not block unrelated slices.
+Genuine public API or behavior blockers require bounded investigation, then a
+user decision before deferring or retaining a custom component. No toolkit edits,
+issues, PRs, vendoring, forks, or path dependencies are authorized. Unaffected
+tasks may proceed while awaiting a blocker decision.
 
 ## Delivery And Acceptance
 
-- Deliver Phase 1 alone first. Establish the existing test baseline before the
-  upgrade and distinguish pre-existing failures from migration failures.
-- Follow with small, separately reviewable patches: progress and binary
-  checkboxes (R1/R11), numeric/form controls (R2/R3), presentation primitives and
-  footers (R8/R10), then toolbars, menus, selectors, copy and log controls
-  (R4-R7/R12). R9 and the collection/workflow pilots follow their parity checks.
-  Group other matching components with their owning surface instead of a bulk rewrite.
-- Record removed rendering code versus added state, subscriptions, and wrappers.
-  Prefer toolkit ownership even with modest line savings; do not count relocated
-  code or deleted tests as maintenance savings. Do not copy private implementations
-  just to claim a native-component migration.
-- Keep the same application behavior and compact control density. Toolkit visual
-  changes need screenshot review; a compile-only result is insufficient.
-- Preserve public CLI behavior and keep headless desktop models independent of
-  GUI components. No fork, component vendoring, new generic UI framework, or
-  new dependency beyond the requested version update is part of this plan.
-- Update [desktop documentation](../desktop.md), affected native tests/smoke flows,
-  and relevant [skills](../../.github/skills) and [shared memory](../../.ai/memory)
-  when implementation makes their pinned-version or interaction notes stale.
-- Do not commit, publish, install releases, change credentials, or operate on
-  real Git remotes as part of carrying out a component migration.
+The [task bundle](gpui-component-reuse-tasks/README.md) defines 20 separately
+verifiable implementation units, their dependency order, acceptance checks,
+and the live implementation/verification ledger. Its task order refines these
+delivery groups without changing their approved behavior:
+
+1. **Baseline and upgrade:** record the current feature/test baseline, recheck
+   the published release, update the exact 0.7.1 pin and lockfile, and migrate
+   launch plus UI fixtures to `open_window`. Preserve startup, close, and overlay
+   ownership; resolve compile/API changes before presentation work.
+1. **Foundational controls:** implement R1 progress and R11 binary checkboxes,
+   then R2 numeric controls including Source font size. Retain application
+   accounting, draft/history policy, selection semantics, and operation guards.
+1. **Shared presentation:** pilot R3 forms and R4 toolbars; migrate R8 status,
+   labels, separators, and matching components using normal toolkit sizing.
+1. **Stock theme and layout:** separately verify stock palette, typography, and
+   both themes. Collect layout evidence before changing the 1000x640 minimum;
+   increase only as needed and never beyond 1200x720.
+1. **Menus, values, and dialogs:** implement R5-R7 and R9-R10. Follow exact
+   action targets, selection identity, guarded writes, per-toggle history,
+   immediate changed-value copying, and close/focus/dispatch ordering. Ask the
+   user before deferring any genuine blocker.
+1. **Collections and workflows:** pilot flat lists, R12, overview Table, Git
+   Tree, and Command. Preserve checked-range policy, full details, read-only Git
+   navigation during operations, immutable request identity, and stale-response
+   rejection. Keep diagnostics variable-height and selectable.
+1. **Complete adoption and parity:** cover remaining Other Matching Components,
+   verify all explicit retention decisions, update affected desktop docs/tests/
+   smoke flows and stale skill or memory guidance, then run focused and required
+  feature/platform gates. Record results in the task bundle.
+
+For each task, compare deleted rendering code with added adapters, state,
+subscriptions, and wrappers. Maintainability is the objective, not an arbitrary
+net-line threshold; do not count relocated code or removed tests as savings.
+Keep public CLI behavior and headless desktop models independent of GUI code.
+No toolkit fork, component vendoring, generic UI framework, or dependency beyond
+the approved version update is in scope.
+
+After each task is verified, the user authorizes a local commit for that task.
+Do not create branches, push, publish, install releases, change credentials, or
+operate on real Git remotes. Delegation is allowed for independent tasks; avoid
+shared-file conflicts and serialize builds/commits.
+
+Native Windows smoke may use isolated fixtures and temporarily take focus,
+pointer, or clipboard only with backup and restore. Honor the unlocked-desktop and
+no-other-instance guards; never close user windows. On Linux, use an existing
+local environment if available; otherwise leave the Linux gate explicitly
+pending for CI. Do not install WSL or report Windows as Linux verification.
 
 ## Verification Plan
 
@@ -824,7 +891,7 @@ and `run_log_` / `log_health_warning_` with gui-tests, extending existing module
 for page boundaries, follow-tail, source tabs, and shrinking filtered totals.
 
 After focused checks, run the affected gates from
-[Desktop Checks](../../.github/workflows/desktop-checks.yml):
+[Desktop Checks](../.github/workflows/desktop-checks.yml):
 
 ```sh
 cargo fmt --all -- --check
@@ -841,7 +908,7 @@ rather than substituting an all-features build.
 
 Run native Windows smoke flows relevant to changed surfaces: `-SchemaFlows`,
 `-ComparisonFlows`, `-GitFlows`, `-PublishingFlows`, and `-DeploymentFlows` on
-[desktop-smoke.ps1](../../ci/desktop-smoke.ps1). Root migration affects all of
+[desktop-smoke.ps1](../ci/desktop-smoke.ps1). Root migration affects all of
 these surfaces. Inspect compact/large light/dark screenshots, long labels,
 keyboard focus, actual input values, scrolling, and clipboard behavior.
 
@@ -850,8 +917,12 @@ bypass its guards or close the user's windows. Use `-SkipBuild` only with a
 current binary. Browser/Playwright tests are not a substitute for native GPUI
 interaction tests, and live publishing is not required for this migration.
 
-This review changed only this plan. No upgraded build, runtime tests, smoke
-flows, screenshots, or binary-size measurements were executed.
+Planning changed this document and created the task bundle. Pre-upgrade checks
+initially failed because the build disk was full. After authorized removal of
+the regenerable incremental cache, the 0.6.1 GUI compile passed with
+`CARGO_INCREMENTAL=0`; the full GUI baseline is in progress. The task bundle
+records subsequent outcomes. No upgraded build, smoke flow, screenshot, or
+binary-size measurement is claimed by this review.
 
 [kit-registry]: https://crates.io/api/v1/crates/gpui-kit
 [kit-window]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/kit/src/lib.rs#L149
@@ -873,8 +944,6 @@ flows, screenshots, or binary-size measurements were executed.
 [kit-tree]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/tree.rs
 [kit-table]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/table/delegate.rs
 [kit-command]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/command/command.rs
-[kit-command-item]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/command/item.rs
-[kit-command-state]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/command/state.rs#L594
 [kit-indent]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/base/src/input/editor/indent.rs#L290
 [kit-context-menu]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/menu/context_menu.rs
 [kit-select]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/component/src/select.rs
