@@ -70,9 +70,9 @@ function createServer() {
   server.registerTool(
     "get_authoring_guide",
     {
-      title: "Regressify authoring guide",
+      title: "Regressify authoring and troubleshooting guide",
       description:
-        "Read versioned Regressify instructions before creating or changing suites, scenarios, actions, workspace settings, or shared files. Start with overview; then select the relevant topic. Requires no source checkout and accepts no workspace contents.",
+        "Read versioned Regressify instructions before authoring files or diagnosing failures. Start with overview; use troubleshooting for reports, logs, configuration/capture errors, and MCP setup, or hooks for browser/Node lifecycle contracts. Other topics cover suites, scenarios, actions, workspace settings, and shared files. Requires no source checkout and accepts no workspace contents or logs.",
       inputSchema: { topic: z.enum(topics).default("overview") },
       annotations,
     },
@@ -130,8 +130,8 @@ function createServer() {
   server.registerPrompt(
     "author_regressify",
     {
-      title: "Author Regressify files",
-      description: "Load the safe authoring workflow and a selected topic before editing local Regressify files.",
+      title: "Author or diagnose Regressify files",
+      description: "Load the safe workflow and a selected topic before local investigation or editing. Choose troubleshooting for failures or hooks for script contracts.",
       argsSchema: { topic: z.enum(topics).optional() },
     },
     async ({ topic = "overview" }) => ({
@@ -139,7 +139,7 @@ function createServer() {
         role: "user" as const,
         content: {
           type: "text" as const,
-          text: `${versionHeader}\n\n${catalog.instructions}\n\n${catalog.guides.overview.content}${topic === "overview" ? "" : `\n\n${catalog.guides[topic].content}`}\n\nInspect the user's local files with authorized client tools, then retrieve the relevant schema before proposing an edit.`,
+          text: `${versionHeader}\n\n${catalog.instructions}\n\n${catalog.guides.overview.content}${topic === "overview" ? "" : `\n\n${catalog.guides[topic].content}`}\n\nInspect the user's local files with authorized client tools, then retrieve the relevant schema before proposing an edit. For failures, identify the original operation, stage, and evidence before changing configuration or baselines.`,
         },
       }],
     }),

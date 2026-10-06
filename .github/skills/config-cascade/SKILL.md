@@ -18,6 +18,10 @@ description: 'Use when changing workspace, suite, or scenario configuration, def
 1. Suite `displayName` is an optional presentation label, not a cascading capture option or an ID. Preserve file/output identity and use blank-name fallbacks in desktop and report consumers. Include explicitly set optional fields in schema-coverage fixtures when serialization omits unset values.
 1. Scenario `selector` and `save.selector` are independent, non-cascading CSS capture options; omitted/null means full page. Keep nonblank constraints and scenario `selector`/`selectors` exclusivity aligned between preflight and generated schema. Explicit plural `selectors` remain compatible and run after terminal saves.
 1. Validate finite thresholds, positive concurrency, non-negative delays, browser support, and replacement regexes before fetch/capture. Do not clamp bad input silently or defer configuration errors to individual scenarios.
+   Schema metadata must reject zero element/actionability/scenario timeouts and
+   empty/blank capture selectors while retaining zero navigation/readiness
+   fallbacks, disabled settling, and empty viewport selections. Keep constraints
+   on the owning property instead of narrowing shared string/list types globally.
 1. Preserve reference versus test URL replacement behavior and precedence of CLI options/environment settings. Compile regexes once at the owning boundary.
 1. Resolve configured files through the existing canonical containment helpers. An absolute configured file is allowed only inside the canonical workspace; missing optional defaults and missing explicit files have different semantics.
 1. Keep authentication origin-scoped and secrets out of serialized effective configuration, diagnostics, completion examples, and progress events.

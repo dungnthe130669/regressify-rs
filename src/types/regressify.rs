@@ -71,7 +71,7 @@ pub struct TestSuite {
     /// Ignore HTTPS certificate errors for this suite. Inherits the workspace setting (default: false).
     pub ignore_ssl_errors: Option<bool>,
 
-    /// JavaScript file executed when the page is ready, before capture. Inherits the workspace setting.
+    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; inherits the workspace setting.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
 
@@ -140,7 +140,7 @@ pub enum Browser {
 pub struct TestScenario {
     /// Diagnostic display level. Inherits suite/workspace logLevel; does not filter archived records.
     pub log_level: Option<crate::diagnostics::record::Severity>,
-    /// Browser actions, executed in order. Use one action per list item; a failed action stops this scenario but not other scenarios.
+    /// Browser actions, executed in order after needs actions. A present list, including an empty list, disables legacy shortcuts. Use one action per item; a failed action stops this scenario but not its peers.
     pub actions: Option<Vec<TestAction>>,
 
     /// Legacy hover shortcut. Prefer an explicit hover action for ordered interactions.
@@ -149,23 +149,25 @@ pub struct TestScenario {
     pub hover_selectors: Option<Selectors>,
     /// Legacy click shortcut accepting one CSS selector or a list. Prefer explicit click actions.
     pub click_selectors: Option<Selectors>,
-    /// Legacy keypress shortcut with selector and keyPress. Prefer a press action with key.
+    /// Legacy text-append shortcut with selector and keyPress, used only when actions is omitted. Prefer an input action with value and append: true.
     pub key_press_selector: Option<KeyPressSelector>,
-    /// List of legacy keypress shortcuts. Each entry needs selector and keyPress; prefer explicit press actions.
+    /// Legacy text-append shortcuts, used only when actions is omitted. Each entry needs selector and literal keyPress text; prefer explicit input actions.
     pub key_press_selectors: Option<Vec<KeyPressSelector>>,
     /// Legacy CSS selector to scroll into view. Prefer an explicit scroll action.
     pub scroll_to_selector: Option<String>,
     /// CSS selector to wait for after navigation, before interactions. Use readyTimeout to override its timeout.
     #[schemars(example = &"main")]
     pub ready_selector: Option<String>,
-    /// Whole milliseconds to wait for readySelector. Omit to use the configured element timeout (default: 30000).
+    /// Whole milliseconds to wait for readySelector. Omit or use zero to inherit elementTimeout (default: 30000); readiness runs before dependency and scenario actions.
     #[schemars(example = 30000)]
     pub ready_timeout: Option<u64>,
     /// Navigation settings, nested under gotoParameters (waitUntil, timeout, and referer).
     pub engine_options: Option<EngineOptions>,
-    /// Node.js hook executed before navigation. Requires Playwright or playwright-core installed in the workspace.
+    /// Workspace-relative Node.js hook executed before initial navigation, after state/cookie setup. Export a default or CommonJS function(page, scenario, viewport, isReference, context, config). Requires local Node and workspace Playwright/playwright-core; bounded by elementTimeout. Do not close the attached browser.
+    #[schemars(example = "common/hooks/on-before.mjs")]
     pub on_before_script: Option<String>,
-    /// Node.js hook executed after the page is ready. Requires Playwright or playwright-core installed in the workspace.
+    /// Workspace-relative Node.js hook executed after dependency, scenario, and legacy actions, before automatic final captures. It cannot prepare earlier actions or change earlier save checkpoints. Uses the same six-argument export contract and elementTimeout as onBeforeScript; receives the currently selected tab.
+    #[schemars(example = "common/hooks/on-ready.mjs")]
     pub on_ready_script: Option<String>,
 
     /// HTTP Basic Auth for this scenario. Each object needs origin, username, and password; matching origins override inherited credentials.
@@ -200,7 +202,7 @@ pub struct TestScenario {
     #[schemars(example = "sign-in")]
     pub id: Option<String>,
 
-    /// JavaScript file executed when the page is ready, before capture. Inherits the suite or workspace setting.
+    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; inherits the suite or workspace setting.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
 
@@ -246,7 +248,14 @@ pub struct TestScenario {
     /// CSS selectors to capture instead of the full page. Use "viewport" for
     /// the visible viewport; each selector produces an independent screenshot,
     /// even when the last applicable action is save. Cannot be combined with selector.
+    /// A list must contain at least one target; blank selectors are invalid. Omit or use null for the automatic full-page capture.
     #[schemars(example = &"viewport", example = vec!["main", ".summary"])]
+    #[schemars(extend(
+        "minItems" = 1,
+        "minLength" = 1,
+        "pattern" = r"\S",
+        "items" = serde_json::json!({"type": "string", "minLength": 1, "pattern": r"\S"})
+    ))]
     pub selectors: Option<Selectors>,
 
     /// Required page URL to open before actions, for example https://example.com. URL replacement rules are applied before navigation.
@@ -261,8 +270,8 @@ pub struct TestScenario {
     pub viewport_names: Option<Selectors>,
 }
 
-/// One or more CSS selectors to capture. Use "viewport" for the visible
-/// viewport; omit the property for the full page.
+/// A string or list of strings. The containing field defines their meaning
+/// and whether an empty list is allowed; viewport labels are not CSS selectors.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 #[derive(schemars::JsonSchema)]
@@ -285,11 +294,11 @@ impl Selectors {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct KeyPressSelector {
-    /// CSS selector of the element that receives the keypress. Quote selectors beginning with # in YAML.
+    /// CSS selector of the element that receives appended text. Quote selectors beginning with # in YAML.
     #[schemars(example = "#search")]
     pub selector: String,
-    /// Key or combination, such as Enter, Tab, Ctrl+A, or Shift+Tab.
-    #[schemars(example = &"Enter")]
+    /// Text to append literally, not a keyboard key or combination. Prefer input.value for text; use press.key to send Enter, Tab, or other keyboard events.
+    #[schemars(example = "search terms")]
     pub key_press: String,
 }
 

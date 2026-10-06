@@ -14,6 +14,11 @@ description: 'Use when changing CSS overrides, jsOnReady, document navigation ho
 1. Resolve hook files through workspace containment checks. Distinguish absent optional default scripts from invalid explicit paths.
 1. Apply document CSS/on-ready code once per document, including after navigation. Preserve ready-context data and propagate script errors instead of marking an incomplete hook successful. Review selector CSS and JS serialization separately.
 1. Optional Node hooks require Node and workspace Playwright/playwright-core. They attach to the existing Chromium target; they must not close its browser. After `switchTab`, `onReadyScript` receives the selected target. Document hooks remain once-per-document when moving between previously visited tabs.
+   Document the default/CommonJS export `(page, scenario, viewport, isReference,
+   context, config)`, nullable viewport, and `elementTimeout` bound.
+   `onReadyScript` follows dependency and scenario/legacy actions; it cannot
+   initialize earlier actions or change earlier saves. Explicit `actions`, even
+   empty, suppress legacy shortcuts. Browser ready scripts follow `readySelector`.
 1. Pass the structured payload through stdin, never a shell command string. Bound execution and retained stderr while continuing to drain the pipe.
 1. Scripts are executable project code: use trusted fixtures and synthetic data. Review timeout/cancellation for descendants as well as the immediate process; kill-on-drop of one child is not proof of process-tree cleanup.
 
@@ -29,3 +34,5 @@ These fixtures are ignored without managed Chromium; the Node fixture also names
 ## Maintain
 
 Update [scenario docs](../../../docs/create-scenario.md), [suite docs](../../../docs/create-test-suite.md), and this skill. Comment lifecycle ownership and script-order decisions, not routine payload assignments.
+Maintain the standalone [hooks guide](../../../src/mcp/guides/hooks.md), examples,
+and exported Worker script-contract tests when hook contracts change.

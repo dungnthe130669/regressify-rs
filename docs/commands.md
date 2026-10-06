@@ -251,13 +251,17 @@ The generated project contains a Worker entry point, Wrangler configuration,
 package and lockfile, TypeScript configuration, tests, README, and a versioned
 content catalog with standalone guides, JSON Schemas, and synthetic examples.
 Guides cover suite discovery/identity, scenario reuse and captures, every action,
-configuration precedence/defaults, and predefined file formats. Cookie/CSS/JS
+configuration precedence/defaults, predefined file formats, browser/Node hook
+contracts, and troubleshooting. Hook examples include complete suite wiring and
+six-argument ESM scripts. Diagnostic guidance covers focused reruns, actual report
+paths, capture-error/log sidecars, journal health, and common corrective checks. Cookie/CSS/JS
 formats use explicit guidance; JSON Schemas do not replace runtime cross-file,
 filesystem, authentication, or browser validation.
 
 Use Node.js 22.12 or newer with npm to install and validate the result. `npm test`
 starts and stops a local Worker and exercises tools, resources, prompts, current
-stateless requests, and legacy-compatible clients. `npm run build` is a Wrangler
+stateless requests, and legacy-compatible clients. It also executes the exported
+hook examples with stub pages; this does not launch Chromium. `npm run build` is a Wrangler
 dry run, not a deployment. `npm run dev` starts the local `/mcp` endpoint.
 
 Review the Worker name in the generated Wrangler configuration to avoid replacing
@@ -272,7 +276,10 @@ Connect an HTTP MCP client to the resulting
 `https://<worker>.<account-subdomain>.workers.dev/mcp` URL. The generated README
 includes a VS Code connection example. Start by calling `get_authoring_guide`
 with `topic: overview`; use `get_schema` for exact fields and `get_example` for
-synthetic templates. Guides/schemas are also MCP resources, and the
+synthetic templates. Select `topic: troubleshooting` for failures and local evidence,
+or `topic: hooks` before writing lifecycle scripts. Schema tests enforce positive
+workspace timeouts and nonempty capture selectors while allowing empty viewport
+selections and the documented zero-timeout fallbacks. Guides/schemas are also MCP resources, and the
 `author_regressify` prompt loads the workflow and a chosen topic. Clients may
 require explicit selection of resources or prompts rather than loading them
 automatically.

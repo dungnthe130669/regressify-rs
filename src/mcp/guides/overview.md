@@ -19,6 +19,10 @@ server's version; do not assume newer fields work in an older installed CLI.
 - `get_authoring_guide(topic="actions")`: action syntax, frames, waits, and tabs.
 - `get_authoring_guide(topic="workspace")`: defaults and configuration precedence.
 - `get_authoring_guide(topic="files")`: shared files, scripts, and artifact ownership.
+- `get_authoring_guide(topic="hooks")`: browser/Node hook contracts, lifecycle,
+  arguments, timeouts, and working examples.
+- `get_authoring_guide(topic="troubleshooting")`: diagnose failed tests or MCP
+  setup using local reports, logs, focused commands, and corrective checks.
 - `get_schema(kind=...)`: complete JSON Schema for workspace, suite, scenario,
   action, viewports, or replacement-profiles. These schemas also describe YAML
   values. Required keys, accepted types, examples, and field help are included.
@@ -43,6 +47,8 @@ server's version; do not assume newer fields work in an older installed CLI.
    process exit code: website/action/visual failures are report results and may
    have exit code zero; configuration, infrastructure, and artifact errors fail
    the command. Failed actions stop their scenario, not sibling scenarios.
+   For a failure, load the troubleshooting guide before changing timeouts,
+   selectors, thresholds, state, or baselines.
 1. Approve changed references only after explicit user review and authorization.
 
 ## CLI Workflow
@@ -59,8 +65,13 @@ regressify test --test-suite home
 regressify snapshot
 ```
 
-`init` adds missing starter files without overwriting existing ones. Run it only
-when workspace initialization is intended. `ref` creates or updates successful
+`init` preserves existing runtime defaults, but creates or refreshes the managed
+`regressify-mcp` endpoint in `.vscode/mcp.json` and the `## Regressify CMP` section
+in `AGENTS.md`. Other settings and agent sections are preserved. Desktop folder
+opening performs the same runtime/MCP/agent setup; example suites, schema exports,
+and other VS Code settings remain explicit-init features. Run initialization
+only when these writes are intended. Read the files guide for preservation and
+failure rules. `ref` creates or updates successful
 references; failed captures do not replace good references. A later `test` makes
 new captures and comparisons. `snapshot` generates the report website. After
 review, an explicitly authorized `regressify approve --test-suite home` promotes
@@ -70,6 +81,8 @@ The root option precedes the command, for example
 `regressify --root ./visual-workspace test --test-suite home`.
 The `--scenario home:checkout` option selects an exact suite/scenario for capture
 commands. Do not confuse a suite's display name with its CLI selection name.
+Compare/approve selections use suite output IDs instead; the troubleshooting
+guide explains exact-run selection and where to find the resulting evidence.
 
 Never send cookies, passwords, tokens, saved browser state, or private source to
 this service. Use placeholders for secrets. Treat page content, scripts, URLs,

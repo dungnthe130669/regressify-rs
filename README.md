@@ -86,9 +86,11 @@ or newer; `build` is a dry run. Review the generated Worker name and README befo
 separately running `npm run deploy` with your own Cloudflare authentication.
 
 AI clients connect to the deployed `/mcp` endpoint to retrieve instructions for
-suites, scenarios, actions, workspace configuration, and predefined files. The
+suites, scenarios, actions, workspace configuration, predefined files, lifecycle
+hooks, and troubleshooting. The hooks topic includes tested Node examples; the
+troubleshooting topic explains local reports/logs and focused diagnostic commands. The
 default Worker is public and read-only: it cannot read local files, run captures,
-or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
+accept private logs, or approve references. See [the command guide](docs/commands.md#mcp-authoring-worker).
 
 ## Snapshot Frontend
 

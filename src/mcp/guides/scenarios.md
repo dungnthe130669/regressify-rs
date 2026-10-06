@@ -42,6 +42,8 @@ effective viewport set, not just the scenario where the actions were written.
 - `selector: "#content"` crops only that final screenshot to one CSS selector.
 - `selectors: viewport` captures the visible viewport. A string or list of CSS
   selectors produces separate captures for those targets.
+- A plural selector list must be nonempty and contain no blank targets.
+  `selectors: []` is invalid; omit it or use null for automatic full-page capture.
 - Do not combine singular `selector` with plural `selectors`.
 - A `save` action creates a named checkpoint; its own `selector` is independent
   of the scenario's final `selector`.
@@ -60,9 +62,13 @@ empty list selects all configured viewports. An unknown label is an error.
 Each scenario/viewport capture is independent.
 
 `readySelector` waits after navigation; `readyTimeout` is whole milliseconds and
-defaults to the workspace element timeout. Use observable page-state waits in
-`actions` for subsequent changes. Legacy `clickSelector`, `hoverSelector`, and
-keypress shortcuts remain supported, but ordered actions are clearer.
+defaults to the workspace element timeout when omitted or zero. It runs before
+browser ready scripts and dependency/scenario actions, so do not use it to wait
+for content created by those later steps. Use observable page-state waits in
+`actions` for subsequent changes. Legacy click, hover, scroll, and text-append
+shortcuts run only when `actions` is omitted. An explicit list, including `[]`,
+disables those shortcuts; inherited `needs` actions still run. Ordered actions
+are clearer for new scenarios.
 
 Workspace/suite `state` restores saved state; scenario `restore` adds state names
 to the inherited selection in order, without duplicates. `persist` writes cookies
@@ -77,4 +83,10 @@ it does not perform authentication.
 `onBeforeScript` and `onReadyScript` are optional Node hooks, distinct from the
 browser-side `common/_on-ready.js`. They require local Node plus Playwright or
 playwright-core installed in the workspace. They attach to the existing browser
-and must not close it. Do not execute or introduce untrusted scripts.
+and must not close it. `onBeforeScript` runs before initial navigation;
+`onReadyScript` runs after all dependency, scenario, and legacy actions, before
+remaining final captures. It does not affect earlier `save` screenshots.
+Read `get_authoring_guide(topic="hooks")` for export signatures, arguments,
+timeouts, and the `hooked-suite`, `node-before-hook`, and `node-ready-hook` examples.
+Do not execute or introduce untrusted scripts. For failed captures, use the
+troubleshooting topic before changing the scenario or its baselines.

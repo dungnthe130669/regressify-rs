@@ -60,7 +60,7 @@ pub struct WorkspaceConfig {
     pub hide_selectors: Option<Vec<String>>,
     /// Ignore HTTPS certificate errors (default: false).
     pub ignore_ssl_errors: Option<bool>,
-    /// Default JavaScript file executed when the page is ready, before capture.
+    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; defaults to common/_on-ready.js.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
     /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
@@ -101,16 +101,18 @@ pub struct WorkspaceConfig {
     /// Workspace-relative viewport YAML file. Default: common/_viewports.yaml. An explicit path must exist inside the workspace.
     #[schemars(example = "common/_viewports.yaml")]
     pub viewports_path: Option<String>,
-    /// Timeout in ms for waiting for an element to exist (default: 30000)
+    /// Positive whole milliseconds for element existence waits and document/Node hooks. Default: 30000; zero is invalid.
+    #[schemars(range(min = 1), example = 30000)]
     pub element_timeout: Option<u64>,
-    /// Timeout in ms for actionability checks (default: 5000)
+    /// Positive whole milliseconds for visibility, stability, enabled, and unobscured-target checks. Default: 5000; zero is invalid.
+    #[schemars(range(min = 1), example = 5000)]
     pub actionability_timeout: Option<u64>,
     /// Max time in ms to wait for the page to settle (fonts ready, layout/DOM
     /// quiet) right before capturing the screenshot. `0` disables the settle
     /// wait. Default: 5000.
     pub settle_timeout: Option<u64>,
-    /// Max time in ms for one complete scenario/viewport capture. Default:
-    /// 600000 (ten minutes).
+    /// Positive whole milliseconds for one complete scenario/viewport capture, including actions and hooks. Default: 600000 (ten minutes); zero is invalid.
+    #[schemars(range(min = 1), example = 600000)]
     pub scenario_timeout: Option<u64>,
 }
 

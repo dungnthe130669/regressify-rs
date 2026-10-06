@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
+import { Script } from "node:vm";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { unstable_dev } from "wrangler";
@@ -77,6 +78,54 @@ test("resources and prompts contain standalone instructions", async () => {
   const prompt = await client.getPrompt({ name: "author_regressify", arguments: { topic: "actions" } });
   assert.ok(prompt.messages[0].content.text.includes(catalog.guides.actions.content));
   assert.ok(prompt.messages[0].content.text.includes("Never send cookies"));
+});
+
+test("diagnostic and hook guidance is discoverable without workspace uploads", async () => {
+  const { tools } = await client.listTools();
+  const guide = tools.find((tool) => tool.name === "get_authoring_guide");
+  assert.match(guide.description, /diagnos/i);
+  for (const topic of ["hooks", "troubleshooting"]) {
+    const result = await client.callTool({ name: "get_authoring_guide", arguments: { topic } });
+    assert.equal(result.isError, undefined);
+    assert.ok(result.content[0].text.includes(catalog.guides[topic].content));
+    const prompt = await client.getPrompt({ name: "author_regressify", arguments: { topic } });
+    assert.ok(prompt.messages[0].content.text.includes(catalog.guides[topic].content));
+    assert.ok(prompt.messages[0].content.text.includes("Never send cookies"));
+  }
+  assert.ok(catalog.guides.troubleshooting.content.includes("--log-level debug"));
+  assert.ok(catalog.guides.troubleshooting.content.includes("_diagnostics"));
+  assert.ok(catalog.guides.files.content.includes("AGENTS.md"));
+});
+
+test("exported script examples match the Node adapter contract without a browser", async () => {
+  new Script(catalog.examples["ready-script"].content);
+  const { default: onBefore } = await import("../content/examples/node-before-hook.js");
+  const { default: onReady } = await import("../content/examples/node-ready-hook.js");
+  assert.equal(onBefore.length, 6);
+  assert.equal(onReady.length, 6);
+  assert.ok(catalog.examples["node-before-hook"].path.endsWith(".mjs"));
+  assert.ok(catalog.examples["node-ready-hook"].path.endsWith(".mjs"));
+  const headers = [];
+  const waits = [];
+  const page = {
+    async setExtraHTTPHeaders(value) { headers.push(value); },
+    async waitForSelector(selector, options) { waits.push({ selector, options }); },
+  };
+  const scenario = { id: "home", url: "https://example.com" };
+  const context = {};
+  const config = { elementTimeoutMs: 1234 };
+  for (const viewport of [null, { label: "phone", width: 375, height: 667 }]) {
+    await onBefore(page, scenario, viewport, true, context, config);
+    await onBefore(page, scenario, viewport, false, context, config);
+    await onReady(page, scenario, viewport, false, context, config);
+  }
+  assert.deepEqual(headers, [
+    { "X-Visual-Mode": "reference" }, { "X-Visual-Mode": "test" },
+    { "X-Visual-Mode": "reference" }, { "X-Visual-Mode": "test" },
+  ]);
+  assert.deepEqual(waits, Array.from({ length: 2 }, () => ({
+    selector: "main", options: { state: "visible", timeout: 1234 },
+  })));
 });
 
 test("unknown topics and incompatible arguments fail without filesystem access", async () => {

@@ -2,7 +2,7 @@
 
 This standalone Cloudflare Worker serves versioned public instructions for
 authoring Regressify suites, scenarios, actions, workspace configuration, and
-predefined files. Its complete knowledge bundle is generated from the installed
+predefined files, plus lifecycle-hook contracts and failure diagnosis. Its complete knowledge bundle is generated from the installed
 CLI and embedded in this project. It does not need the Regressify source
 repository, Rust, Chromium, an LLM API key, or access to a user's test workspace.
 
@@ -10,11 +10,16 @@ The MCP endpoint is `/mcp` using Streamable HTTP. It exposes three read-only too
 `get_authoring_guide`, `get_schema`, and `get_example`; discoverable guide/schema
 resources; and the `author_regressify` prompt. Agents edit local files using their
 own authorized tools. This server cannot execute tests or approve references.
+Use the `hooks` topic before writing scripts and `troubleshooting` for local
+reports, logs, configuration/capture failures, and MCP connection problems.
+Diagnostic lookups never upload workspace contents or private logs.
 
 ## Local Verification
 
 Use Node.js 22.12 or newer and npm. The lockfile pins dependencies. Commands below
 operate only on this generated project; the tests start and stop a local Worker.
+They also import and invoke the generated Node-hook examples with stub pages,
+checking the six-argument contract without launching a browser.
 
 ```sh
 npm ci
@@ -46,7 +51,7 @@ an HTTP MCP server in your AI client. For VS Code, merge this entry into
 ```json
 {
   "servers": {
-    "regressify": {
+    "regressify-mcp": {
       "type": "http",
       "url": "https://regressify-mcp.<account-subdomain>.workers.dev/mcp"
     }
@@ -57,6 +62,10 @@ an HTTP MCP server in your AI client. For VS Code, merge this entry into
 Ask the agent to read the overview guide before editing Regressify files.
 Resources and prompts are available but may not be loaded automatically by the
 client. Tool descriptions and the overview explain how to retrieve each topic.
+Regressify initialization manages this server name and can refresh its URL to
+the installed CLI's bundled endpoint. For an independently hosted endpoint that
+must remain unmanaged, choose a distinct client server name and matching agent
+instructions, or review the connection after initialization.
 
 ## Public Access and Safety
 

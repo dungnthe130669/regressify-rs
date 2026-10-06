@@ -52,6 +52,16 @@ pub(super) fn build() -> Result<Value> {
             "Predefined files, scripts, and generated artifacts",
             include_str!("guides/files.md"),
         ),
+        (
+            "hooks",
+            "Browser and Node hook contracts, examples, and lifecycle",
+            include_str!("guides/hooks.md"),
+        ),
+        (
+            "troubleshooting",
+            "Diagnose configuration, capture, comparison, and MCP failures",
+            include_str!("guides/troubleshooting.md"),
+        ),
     ]
     .into_iter()
     .map(|(topic, title, content)| (topic.into(), json!({"title": title, "content": content})))
@@ -122,6 +132,13 @@ pub(super) fn build() -> Result<Value> {
             "Merge this field into the existing workspace configuration. Resolve these placeholders locally; never upload the environment values.",
             json!({"basicAuth": {"origin": "https://example.com", "username": "${REGRESSIFY_USER}", "password": "${REGRESSIFY_PASSWORD}"}}),
         ),
+        (
+            "hooked-suite",
+            "suite",
+            "visual_tests/hooked-home.tests.yaml",
+            "A complete suite requiring the node-before-hook and node-ready-hook examples at their target paths, plus local Node and workspace playwright-core. Read the hooks guide and adapt the URL/selectors before an authorized capture.",
+            json!({"scenarios": [{"id": "home", "url": "https://example.com", "readySelector": "main", "onBeforeScript": "common/hooks/on-before.mjs", "onReadyScript": "common/hooks/on-ready.mjs", "selector": "main"}]}),
+        ),
     ] {
         examples.insert(name.into(), json!({"kind": kind, "path": path, "description": description, "format": "yaml", "content": serde_yaml::to_string(&value)?}));
     }
@@ -170,6 +187,20 @@ pub(super) fn build() -> Result<Value> {
             "Browser-side JavaScript executed once per document before capture, not a Node hook.",
             "document.documentElement.dataset.regressifyReady = \"true\";\n",
         ),
+        (
+            "node-before-hook",
+            "javascript",
+            "common/hooks/on-before.mjs",
+            "ESM Node hook with the six-argument runtime contract. Sets a synthetic header before initial navigation; requires workspace Playwright/playwright-core. Do not use this as the browser-side ready script.",
+            "export default async function onBefore(page, scenario, viewport, isReference, context, config) {\n  await page.setExtraHTTPHeaders({\n    \"X-Visual-Mode\": isReference ? \"reference\" : \"test\",\n  });\n}\n",
+        ),
+        (
+            "node-ready-hook",
+            "javascript",
+            "common/hooks/on-ready.mjs",
+            "ESM Node hook run after actions and before final capture. Waits for a verified visible target; cannot prepare earlier actions or modify earlier save screenshots. Read the hooks guide for timing and timeout details.",
+            "export default async function onReady(page, scenario, viewport, isReference, context, config) {\n  await page.waitForSelector(\"main\", {\n    state: \"visible\",\n    timeout: config.elementTimeoutMs,\n  });\n}\n",
+        ),
     ] {
         examples.insert(name.into(), json!({"kind": kind, "path": path, "description": description, "format": kind, "content": content}));
     }
@@ -178,7 +209,7 @@ pub(super) fn build() -> Result<Value> {
     Ok(json!({
         "formatVersion": 1,
         "regressifyVersion": env!("CARGO_PKG_VERSION"),
-        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files. Use topic guides, get_schema for exact fields, and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, run browsers, or approve baselines. Never send cookies, credentials, saved state, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
+        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files. Use topic troubleshooting for failed tests, logs, or setup issues, and topic hooks before writing browser/Node hooks. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
         "schemaKinds": schemas.keys().collect::<Vec<_>>(),
         "schemas": schemas,
         "guides": guides,
@@ -312,12 +343,74 @@ mod tests {
     }
 
     #[test]
+    fn schemas_enforce_local_timeout_and_capture_constraints() {
+        let catalog = build().unwrap();
+        for (kind, value, expected) in [
+            ("workspace", json!({"elementTimeout": 0}), false),
+            ("workspace", json!({"actionabilityTimeout": 0}), false),
+            ("workspace", json!({"scenarioTimeout": 0}), false),
+            (
+                "workspace",
+                json!({"elementTimeout": 1, "actionabilityTimeout": 1, "scenarioTimeout": 1, "settleTimeout": 0}),
+                true,
+            ),
+            ("workspace", json!({"viewportNames": []}), true),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": []}),
+                false,
+            ),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": " "}),
+                false,
+            ),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": ["main", ""]}),
+                false,
+            ),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": ["main", ".summary"]}),
+                true,
+            ),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": "viewport"}),
+                true,
+            ),
+            (
+                "scenario",
+                json!({"url": "about:blank", "selectors": null, "viewportNames": [], "readyTimeout": 0}),
+                true,
+            ),
+            (
+                "action",
+                json!({"click": "#submit", "viewportNames": []}),
+                true,
+            ),
+        ] {
+            let validator = jsonschema::validator_for(&catalog["schemas"][kind]).unwrap();
+            assert_eq!(validator.is_valid(&value), expected, "{kind}: {value}");
+        }
+    }
+
+    #[test]
     fn guides_are_standalone_and_cover_runtime_exceptions() {
         let catalog = build().unwrap();
         for guide in catalog["guides"].as_object().unwrap().values() {
             let body = guide["content"].as_str().unwrap();
             assert!(body.starts_with("# "));
-            for forbidden in ["../../../", "(@/", "{%", "AGENTS.md", "src/test/"] {
+            for forbidden in [
+                "../../../",
+                "(@/",
+                "{%",
+                "src/test/",
+                ".github/skills/",
+                "cargo test",
+                "../docs/",
+            ] {
                 assert!(!body.contains(forbidden), "{forbidden}");
             }
         }
@@ -334,9 +427,95 @@ mod tests {
             "_replacement-profiles.yaml",
             "_override.css",
             "_on-ready.js",
+            ".vscode/mcp.json",
+            "AGENTS.md",
         ] {
             assert!(files.contains(path), "{path}");
         }
+        let hooks = catalog["guides"]["hooks"]["content"].as_str().unwrap();
+        for contract in [
+            "isReference",
+            "elementTimeoutMs",
+            "module.exports",
+            "after dependency, scenario, and legacy actions",
+            "window.__REGRESSIFY__",
+        ] {
+            assert!(
+                hooks.contains(contract),
+                "Missing hook contract: {contract}"
+            );
+        }
+        let troubleshooting = catalog["guides"]["troubleshooting"]["content"]
+            .as_str()
+            .unwrap();
+        for contract in [
+            "--log-level debug",
+            "report.json",
+            "_diagnostics",
+            ".log.json",
+            "partial",
+            "AGENTS.md",
+            "--fetch-browser false",
+        ] {
+            assert!(
+                troubleshooting.contains(contract),
+                "Missing diagnostic contract: {contract}"
+            );
+        }
+    }
+
+    #[test]
+    fn schema_properties_have_direct_or_referenced_help() {
+        fn described(schema: &Value, root: &Value) -> bool {
+            if schema["description"]
+                .as_str()
+                .is_some_and(|text| !text.trim().is_empty())
+            {
+                return true;
+            }
+            if let Some(target) = schema["$ref"]
+                .as_str()
+                .and_then(|reference| reference.strip_prefix('#'))
+                .and_then(|pointer| root.pointer(pointer))
+            {
+                return described(target, root);
+            }
+            ["anyOf", "oneOf", "allOf"].iter().any(|keyword| {
+                schema[keyword]
+                    .as_array()
+                    .is_some_and(|variants| variants.iter().any(|variant| described(variant, root)))
+            })
+        }
+
+        let catalog = build().unwrap();
+        for (kind, root) in catalog["schemas"].as_object().unwrap() {
+            for schema in std::iter::once(root).chain(
+                root["$defs"]
+                    .as_object()
+                    .into_iter()
+                    .flat_map(|definitions| definitions.values()),
+            ) {
+                if let Some(properties) = schema["properties"].as_object() {
+                    for (name, property) in properties {
+                        assert!(described(property, root), "Missing help for {kind}.{name}");
+                    }
+                }
+            }
+        }
+        let description = catalog["schemas"]["action"]["$defs"]["Selectors"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(!description.contains("visible viewport"));
+        assert!(description.contains("containing field"));
+        let legacy_typing =
+            &catalog["schemas"]["scenario"]["$defs"]["KeyPressSelector"]["properties"]["keyPress"];
+        assert!(
+            legacy_typing["description"]
+                .as_str()
+                .unwrap()
+                .contains("Text to append")
+        );
+        assert_eq!(legacy_typing["examples"][0], "search terms");
     }
 
     #[test]

@@ -6,6 +6,11 @@ For example, use `{click: "#submit"}`, not `{type: click, selector: "#submit"}`.
 Unknown fields and objects mixing multiple actions fail parsing. A failed action
 stops this scenario's remaining execution, not its peers.
 
+An explicit `actions` list, including `[]`, disables scenario legacy shortcuts.
+Legacy `keyPressSelector`/`keyPressSelectors` append the `keyPress` string as
+literal text; they do not send a key named Enter or Tab. Use `input` with `value`
+and `append: true` for equivalent typing, or `press` with `key` for keyboard events.
+
 Use `get_schema(kind="action", action="click")` for one action's exact schema,
 or omit `action` for the complete union. Every action has a synthetic example
 named `action-<name>`, such as `get_example(task="action-input")`.

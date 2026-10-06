@@ -57,10 +57,15 @@ Do not assume every field exists at every scope. Examples:
 | `debug`, `bypassCsp`, `ignoreSslErrors`, `noScrollTop`, `requiredLogin` | false. Headed debug mode is disabled in CI without a display.           |
 
 Thresholds and timing values must be finite; do not use negative delays or zero
-concurrency. A scenario's initial navigation timeout lives under
+concurrency. `elementTimeout`, `actionabilityTimeout`, and `scenarioTimeout` must
+be positive whole milliseconds; zero is invalid. `elementTimeout` also bounds
+document and Node hooks. `settleTimeout: 0` disables settling, not all waits or
+animation freezing. A scenario's initial navigation timeout lives under
 `engineOptions.gotoParameters.timeout`; omitted or zero means 60000 milliseconds,
 independent of `elementTimeout`. `waitUntil` is `commit`, `domcontentloaded`,
 `load` (default), or `networkidle`. The overall scenario timeout still applies.
+Omitted/zero scenario `readyTimeout` inherits `elementTimeout`. Use the hooks
+topic for script timing and troubleshooting for interpreting timeout failures.
 
 ## Files, Replacements, and Credentials
 

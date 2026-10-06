@@ -2,6 +2,22 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Standalone MCP Knowledge (2026-10-06)
+
+- Resolved in source: added source-independent troubleshooting and hook guides,
+  focused diagnostic commands and artifact paths, complete hook exports/arguments,
+  lifecycle ordering, and tested script examples with companion suite wiring.
+- Exported schemas now reject invalid zero workspace timeouts and empty/blank
+  capture selectors without narrowing valid viewport selections. Shared selector
+  help is neutral; every emitted property requires direct or referenced help.
+- Corrected managed CLI/desktop initialization descriptions and the obsolete
+  prohibition on documenting consumer `AGENTS.md`. Legacy `keyPress` help now
+  describes literal text append, not keyboard events; explicit actions suppress
+  shortcuts. Tool, prompt, and managed-agent guidance route diagnosis to the MCP.
+- Standalone export/typecheck and local MCP/script tests pass without source or
+  browser access. Existing deployed services need regeneration and redeployment;
+  no publication is implied by the source changes or local dry-run checks.
+
 ## Desktop Agent Setup (2026-10-06)
 
 - Resolved in source: desktop folder opening now creates or refreshes
