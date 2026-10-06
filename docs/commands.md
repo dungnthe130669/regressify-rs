@@ -286,7 +286,8 @@ Use Node.js 22.12 or newer with npm to install and validate the result. `npm tes
 starts and stops a local Worker and exercises tools, resources, prompts, current
 stateless requests, and legacy-compatible clients. It also executes the exported
 hook examples with stub pages; this does not launch Chromium. `npm run build` is a Wrangler
-dry run, not a deployment. `npm run dev` starts the local `/mcp` endpoint.
+dry run, not a deployment; it writes the single minified module that `npm run deploy`
+uploads, without source maps. `npm run dev` starts the local `/mcp` endpoint.
 
 Review the Worker name in the generated Wrangler configuration to avoid replacing
 an unrelated deployment. Authenticate Wrangler locally or through your own CI

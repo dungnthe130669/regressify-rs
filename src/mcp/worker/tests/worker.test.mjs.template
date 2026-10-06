@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { Script } from "node:vm";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -136,6 +141,25 @@ test("unknown topics and incompatible arguments fail without filesystem access",
   assert.equal(result.isError, true);
   const response = await worker.fetch("/content/catalog.json");
   assert.equal(response.status, 404);
+});
+
+test("deployment bundle is one minified module without source maps", { timeout: 120000 }, async () => {
+  const outdir = await mkdtemp(join(tmpdir(), "regressify-mcp-bundle-"));
+  try {
+    const wrangler = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
+    await promisify(execFile)(process.execPath, [wrangler, "deploy", "--dry-run", "--outdir", outdir], {
+      cwd: fileURLToPath(new URL("..", import.meta.url)),
+      env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+    });
+    // Wrangler always writes a README note to --outdir; it is never uploaded.
+    const files = (await readdir(outdir, { recursive: true })).filter((file) => file !== "README.md");
+    assert.deepEqual(files, ["index.js"]);
+    const bundle = await readFile(join(outdir, "index.js"), "utf8");
+    assert.ok(!bundle.includes("sourceMappingURL"));
+    assert.ok(!bundle.includes("// src/index.ts"), "esbuild module comments show an unminified bundle");
+  } finally {
+    await rm(outdir, { recursive: true, force: true });
+  }
 });
 
 test("untrusted origins and oversized requests are rejected", async () => {

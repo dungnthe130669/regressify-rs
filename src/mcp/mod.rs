@@ -202,6 +202,10 @@ mod tests {
         }
         let package: serde_json::Value = serde_json::from_slice(&files["package.json"]).unwrap();
         let lock: serde_json::Value = serde_json::from_slice(&files["package-lock.json"]).unwrap();
+        let wrangler: serde_json::Value = serde_json::from_slice(&files["wrangler.jsonc"]).unwrap();
+        // Disabling uploads also stops Wrangler from generating source maps.
+        assert_eq!(wrangler["minify"], true);
+        assert_eq!(wrangler["upload_source_maps"], false);
         assert_eq!(
             package["dependencies"],
             lock["packages"][""]["dependencies"]

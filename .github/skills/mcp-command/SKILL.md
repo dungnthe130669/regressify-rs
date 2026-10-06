@@ -36,6 +36,7 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
 1. The Worker serves public read-only tools, resources, and prompts at `/mcp`. Use the pinned SDK handler for discovery/transport. Retain Origin validation, request byte limits, no arbitrary path/URL inputs, no user data storage, and generic failure responses. Authentication is a separate deployment concern.
 1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Invalid tool arguments may return `isError: true` rather than throw at the client.
 1. Pin template dependencies and retain a matching npm lockfile. Edit the template/catalog, regenerate a fresh package, then test that actual export; do not rely only on a hand-adjusted temporary package. The frontend log-value allowlist must match new typed command identities. Embedded code/config uses `.template` filenames; only exported files are a runnable TypeScript project with a generated catalog and installed dependencies.
+1. Keep `minify: true` and `upload_source_maps: false` in the Wrangler template so a deployment uploads one minified module and no source maps; Wrangler generates maps whenever uploads are unset. The package test inspects a dry-run bundle; only the worker's imports, such as `content/catalog.json`, enter it.
 
 ## Checks
 

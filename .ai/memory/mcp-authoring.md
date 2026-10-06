@@ -56,5 +56,9 @@ Verified: 2026-10-06
 - [CI](../../.github/workflows/mcp-checks.yml) builds the default CLI, copies it
   into an empty directory, exports a package, and runs npm installation,
   typechecking, local MCP tests, and a Wrangler dry run. No publishing is implied.
+- Wrangler 4.147 passes `upload_source_maps` to esbuild as `sourcemap`, and an
+  unset value means `true`: maps were written to `dist` (not uploaded) and the
+  bundle was unminified. The template now sets `minify: true` and
+  `upload_source_maps: false`; a package test checks the dry-run output.
 - See [the task skill](../../.github/skills/mcp-command/SKILL.md) for maintenance
   gates. Keep schema/runtime changes synchronized with the self-contained prose.

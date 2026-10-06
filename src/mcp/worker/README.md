@@ -31,9 +31,12 @@ npm run build
 npm run dev
 ```
 
-`build` is a Wrangler dry run, not a deployment. `dev` prints the local URL;
-connect an MCP client to that URL with `/mcp` appended. The endpoint is a protocol
-handler, not a web page. The root URL returns basic service metadata.
+`build` is a Wrangler dry run, not a deployment. It writes the single minified
+module that `deploy` uploads to `dist/index.js`; source maps are neither generated
+nor uploaded, and Wrangler's `dist/README.md` note is never uploaded. `dev` prints
+the local URL; connect an MCP client to that URL with `/mcp` appended. The
+endpoint is a protocol handler, not a web page. The root URL returns basic
+service metadata.
 
 ## Deployment
 
