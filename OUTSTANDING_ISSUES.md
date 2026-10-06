@@ -2,6 +2,17 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Windows Installer Smoke Completion (2026-10-06)
+
+- Resolved in source: the smoke helper waited only for Inno's first-phase
+  uninstaller, checking PATH ownership while second-phase cleanup was still running.
+  It now waits for the complete process tree with a bounded deadline and retains
+  the uninstall log. Installer payloads and PATH cleanup logic were unchanged.
+- Native synthetic setup/uninstall and process fixtures reproduce the boundary
+  and verify completion, exit-code propagation, proxy/argument preservation and
+  timeout child cleanup. The 42-test release suite passes; a hosted release rerun
+  remains separate from local verification.
+
 ## Standalone MCP Knowledge (2026-10-06)
 
 - Resolved in source: added source-independent troubleshooting and hook guides,

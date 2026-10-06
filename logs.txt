@@ -1,0 +1,110 @@
+2026-10-06T04:44:39.2253061Z ##[section]Starting: Build Windows installer
+2026-10-06T04:44:39.2260027Z ==============================================================================
+2026-10-06T04:44:39.2260136Z Task         : PowerShell
+2026-10-06T04:44:39.2260190Z Description  : Run a PowerShell script on Linux, macOS, or Windows
+2026-10-06T04:44:39.2260272Z Version      : 2.279.1
+2026-10-06T04:44:39.2260324Z Author       : Microsoft Corporation
+2026-10-06T04:44:39.2260391Z Help         : https://docs.microsoft.com/azure/devops/pipelines/tasks/utility/powershell
+2026-10-06T04:44:39.2260474Z ==============================================================================
+2026-10-06T04:44:40.5046643Z Generating script.
+2026-10-06T04:44:40.5533110Z ========================== Starting Command Output ===========================
+2026-10-06T04:44:40.5877806Z ##[command]"C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Unrestricted -Command ". 'D:\a\_temp\d0214f5f-09a5-4ffc-9eb9-9efb9e05e847.ps1'"
+2026-10-06T04:44:45.8504663Z Collecting PyYAML==6.0.3
+2026-10-06T04:44:46.3040921Z   Downloading pyyaml-6.0.3-cp312-cp312-win_amd64.whl.metadata (2.4 kB)
+2026-10-06T04:44:46.4115193Z Downloading pyyaml-6.0.3-cp312-cp312-win_amd64.whl (154 kB)
+2026-10-06T04:44:46.9039724Z Installing collected packages: PyYAML
+2026-10-06T04:44:47.0067354Z Successfully installed PyYAML-6.0.3
+2026-10-06T04:44:58.6835354Z .....
+2026-10-06T04:44:58.6836078Z ----------------------------------------------------------------------
+2026-10-06T04:44:58.6836587Z Ran 5 tests in 11.161s
+2026-10-06T04:44:58.6867540Z 
+2026-10-06T04:44:58.6868845Z OK
+2026-10-06T04:45:01.7617755Z Inno Setup 6 Command-Line Compiler
+2026-10-06T04:45:01.7618575Z Copyright (C) 1997-2026 Jordan Russell. All rights reserved.
+2026-10-06T04:45:01.7619244Z Portions Copyright (C) 2000-2026 Martijn Laan. All rights reserved.
+2026-10-06T04:45:01.7654651Z Portions Copyright (C) 2001-2004 Alex Yackimoff. All rights reserved.
+2026-10-06T04:45:01.7655269Z https://www.innosetup.com
+2026-10-06T04:45:01.7655560Z 
+2026-10-06T04:45:01.7828921Z Compiler engine version: Inno Setup 6.7.1
+2026-10-06T04:45:01.7829467Z Non-commercial use only
+2026-10-06T04:45:01.7829737Z 
+2026-10-06T04:45:01.7982706Z Preprocessing
+2026-10-06T04:45:01.7985427Z    Reading file: C:\Program Files (x86)\Inno Setup 6\ISPPBuiltins.iss
+2026-10-06T04:45:01.7997168Z Parsing [Setup] section, line 12
+2026-10-06T04:45:01.7997674Z Parsing [Setup] section, line 13
+2026-10-06T04:45:01.7998096Z Parsing [Setup] section, line 14
+2026-10-06T04:45:01.7998505Z Parsing [Setup] section, line 15
+2026-10-06T04:45:01.7998953Z Parsing [Setup] section, line 16
+2026-10-06T04:45:01.7999522Z Parsing [Setup] section, line 17
+2026-10-06T04:45:01.8005924Z Parsing [Setup] section, line 18
+2026-10-06T04:45:01.8006408Z Parsing [Setup] section, line 19
+2026-10-06T04:45:01.8006846Z Parsing [Setup] section, line 20
+2026-10-06T04:45:01.8007484Z Parsing [Setup] section, line 21
+2026-10-06T04:45:01.8008246Z Parsing [Setup] section, line 22
+2026-10-06T04:45:01.8008658Z Parsing [Setup] section, line 23
+2026-10-06T04:45:01.8009127Z Parsing [Setup] section, line 24
+2026-10-06T04:45:01.8009515Z Parsing [Setup] section, line 25
+2026-10-06T04:45:01.8009900Z Parsing [Setup] section, line 26
+2026-10-06T04:45:01.8010284Z Parsing [Setup] section, line 27
+2026-10-06T04:45:01.8010668Z Parsing [Setup] section, line 28
+2026-10-06T04:45:01.8011054Z Parsing [Setup] section, line 29
+2026-10-06T04:45:01.8011451Z Parsing [Setup] section, line 30
+2026-10-06T04:45:01.8011833Z Parsing [Setup] section, line 31
+2026-10-06T04:45:01.8012213Z Parsing [Setup] section, line 32
+2026-10-06T04:45:01.8012596Z Parsing [Setup] section, line 33
+2026-10-06T04:45:01.8013014Z Parsing [Setup] section, line 34
+2026-10-06T04:45:01.8013414Z Parsing [Setup] section, line 35
+2026-10-06T04:45:01.8013799Z Parsing [Setup] section, line 36
+2026-10-06T04:45:01.8014188Z Parsing [Setup] section, line 37
+2026-10-06T04:45:01.8014565Z Parsing [Setup] section, line 38
+2026-10-06T04:45:01.8016596Z Parsing [Setup] section, line 39
+2026-10-06T04:45:01.8017200Z Reading file (WizardImageFile)
+2026-10-06T04:45:01.8017621Z Reading file (WizardSmallImageFile)
+2026-10-06T04:45:01.8018025Z Preparing Setup program executable
+2026-10-06T04:45:01.8435881Z    Verification successful
+2026-10-06T04:45:01.8466249Z    Updating icons (Setup.e32)
+2026-10-06T04:45:01.8567483Z    Updating version info (Setup.e32)
+2026-10-06T04:45:01.8585765Z Determining language code pages
+2026-10-06T04:45:01.8586313Z    Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+2026-10-06T04:45:01.8591103Z    Messages in script file
+2026-10-06T04:45:01.8591614Z Reading default messages from Default.isl
+2026-10-06T04:45:01.8597229Z Parsing [LangOptions], [Messages], and [CustomMessages] sections
+2026-10-06T04:45:01.8597711Z    Reading file: C:\Program Files (x86)\Inno Setup 6\Default.isl
+2026-10-06T04:45:01.8600561Z    Messages in script file
+2026-10-06T04:45:01.8603448Z Reading [Code] section
+2026-10-06T04:45:01.8605883Z Parsing [Icons] section, line 46
+2026-10-06T04:45:01.8606420Z Parsing [Icons] section, line 47
+2026-10-06T04:45:01.8606839Z Parsing [Registry] section, line 50
+2026-10-06T04:45:01.8607243Z Parsing [Registry] section, line 51
+2026-10-06T04:45:01.8607641Z Parsing [Registry] section, line 52
+2026-10-06T04:45:01.8608090Z Parsing [Registry] section, line 53
+2026-10-06T04:45:01.8608545Z Parsing [Registry] section, line 54
+2026-10-06T04:45:01.8609005Z Parsing [Registry] section, line 55
+2026-10-06T04:45:01.8609478Z Parsing [Run] section, line 58
+2026-10-06T04:45:01.8609897Z Parsing [Files] section, line 42
+2026-10-06T04:45:01.8610287Z Parsing [Files] section, line 43
+2026-10-06T04:45:01.8610696Z Compiling [Code] section
+2026-10-06T04:45:01.8685601Z Creating setup files
+2026-10-06T04:45:01.8789004Z    Verification successful
+2026-10-06T04:45:01.8797475Z    Updating icons (Setup.exe)
+2026-10-06T04:45:01.8834238Z    Compressing: D:\a\1\s\target\x86_64-pc-windows-msvc\release\regressify-desktop.exe
+2026-10-06T04:45:07.9970971Z    Compressing: D:\a\1\s\target\x86_64-pc-windows-msvc\release\regressify.exe
+2026-10-06T04:45:11.1106935Z    Compressing Setup program executable
+2026-10-06T04:45:11.8805858Z    Updating version info (Setup.exe)
+2026-10-06T04:45:11.8806517Z    Updating manifest (Setup.exe)
+2026-10-06T04:45:11.8808158Z 
+2026-10-06T04:45:11.8812265Z 
+2026-10-06T04:45:11.8812746Z Successful compile (10.094 sec). Resulting Setup program filename is:
+2026-10-06T04:45:11.8813187Z D:\a\1\a\Regressify-Desktop-Setup-0.80.0.0-x64.exe
+2026-10-06T04:45:16.8131785Z regressify 0.80.0 (82c2b2e1ce83035c1b625ad97a4854858d0bd909)
+2026-10-06T04:45:24.3741465Z 
+2026-10-06T04:45:24.3742124Z 
+2026-10-06T04:45:34.6190728Z PreprocessingFresh install, CLI lookup through user PATH, Chromium cache reuse/network fallback/skip, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.
+2026-10-06T04:45:35.2407524Z [31;1m[31;1mUninstall left PATH ownership metadata behind.[0m
+2026-10-06T04:45:35.2408444Z [31;1m[31;1mAt D:\a\1\s\ci\build-desktop-installer.ps1:251 char:54[0m
+2026-10-06T04:45:35.2410558Z [31;1m[31;1m+ … pathOwner) { throw 'Uninstall left PATH ownership metadata behind.' }[0m
+2026-10-06T04:45:35.2411138Z [31;1m[31;1m+                ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+2026-10-06T04:45:35.2411728Z [31;1m[31;1m+ CategoryInfo          : OperationStopped: (Uninstall left PATH…ip metadata behind.:String) [], RuntimeException[0m
+2026-10-06T04:45:35.2412416Z [31;1m[31;1m+ FullyQualifiedErrorId : Uninstall left PATH ownership metadata behind.[0m
+2026-10-06T04:45:35.3962626Z ##[error]PowerShell exited with code '1'.
+2026-10-06T04:45:35.4408964Z ##[section]Finishing: Build Windows installer

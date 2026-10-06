@@ -938,6 +938,75 @@ if ($parseErrors) { throw ($parseErrors | Out-String) }
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def installer_process_helper(self):
+        return r'''
+$ErrorActionPreference = 'Stop'
+$parsed = [ScriptBlock]::Create([System.IO.File]::ReadAllText('ci/build-desktop-installer.ps1'))
+$helper = $parsed.Ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-InstallerFixture'
+}, $true)
+if (-not $helper) { throw 'Installer process helper was not found.' }
+. ([ScriptBlock]::Create($helper.Extent.Text))
+'''
+
+    @unittest.skipUnless(os.name == "nt", "Installer process-tree waits require Windows")
+    def test_installer_process_wait_preserves_exits_and_cleans_up_timeouts(self):
+        child_script = '''
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import threading
+
+mode = os.environ["INSTALLER_TEST_MODE"]
+if mode == "second-phase":
+    subprocess.Popen([sys.executable, __file__, *sys.argv[1:]],
+                     env=dict(os.environ, INSTALLER_TEST_MODE="hang"),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    raise SystemExit(0)
+Path(os.environ["INSTALLER_TEST_REPORT"]).write_text(json.dumps({
+    "pid": os.getpid(), "arguments": sys.argv[1:],
+    "proxy": {name: os.environ.get(name, "") for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY")},
+}), encoding="utf-8")
+if mode == "hang":
+    threading.Event().wait()
+raise SystemExit(7 if mode == "failure" else 0)
+'''
+        invoke = self.installer_process_helper() + r'''
+$parameters = @(('"' + $env:INSTALLER_TEST_SCRIPT + '"'), '"two words"')
+try {
+    $code = Invoke-InstallerFixture $env:INSTALLER_TEST_PYTHON $parameters -TimeoutMilliseconds 3000
+    if ($env:INSTALLER_TEST_MODE -in @('hang', 'second-phase')) { throw 'Expected a fixture timeout.' }
+    Write-Output "Exit code: $code"
+} catch {
+    if ($env:INSTALLER_TEST_MODE -notin @('hang', 'second-phase') -or $_ -notmatch 'Installer fixture timed out') { throw }
+    $report = Get-Content -LiteralPath $env:INSTALLER_TEST_REPORT -Raw | ConvertFrom-Json
+    if (Get-Process -Id $report.pid -ErrorAction SilentlyContinue) { throw 'Timed-out installer process survived.' }
+    Write-Output 'Timed out and cleaned up'
+}
+'''
+        for mode in ("success", "failure", "hang", "second-phase"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory(prefix="installer process ") as directory:
+                fixture = Path(directory)
+                script = fixture / "child script.py"
+                script.write_text(child_script, encoding="utf-8")
+                report = fixture / "report.json"
+                result = subprocess.run(
+                    [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", invoke], cwd=ROOT,
+                    env=dict(os.environ, INSTALLER_TEST_MODE=mode, INSTALLER_TEST_SCRIPT=str(script),
+                             INSTALLER_TEST_REPORT=str(report), INSTALLER_TEST_PYTHON=sys.executable),
+                    capture_output=True, text=True, check=False, timeout=30,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                expected = "Timed out and cleaned up" if mode in ("hang", "second-phase") else f"Exit code: {7 if mode == 'failure' else 0}"
+                self.assertIn(expected, result.stdout)
+                recorded = json.loads(report.read_text(encoding="utf-8"))
+                self.assertEqual(recorded["arguments"], ["two words"])
+                self.assertEqual(recorded["proxy"], {"HTTP_PROXY": "http://127.0.0.1:9", "HTTPS_PROXY": "http://127.0.0.1:9",
+                                                     "ALL_PROXY": "http://127.0.0.1:9", "NO_PROXY": ""})
+
     @unittest.skipUnless(os.name == "nt" and os.environ.get("ISCC_PATH"), "Set ISCC_PATH on Windows for isolated Inno PATH tests")
     def test_inno_path_registration_preserves_user_data(self):
         source = (ROOT / "installer/regressify-desktop.iss").read_text(encoding="utf-8")
@@ -1096,6 +1165,62 @@ end;
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(results.is_file(), "Inno PATH tests did not execute")
             self.assertEqual(results.read_text(encoding="utf-8-sig"), "ok")
+            import winreg
+
+            uninstall_code = "procedure CurUninstallStepChanged" + source.split("procedure CurUninstallStepChanged", 1)[1].split("function ShouldLaunch", 1)[0]
+            lifecycle = fixture / "path-lifecycle.iss"
+            destination = fixture / "installed"
+            lifecycle.write_text(
+                "[Setup]\nAppName=Regressify PATH Lifecycle Tests\nAppVersion=1\nPrivilegesRequired=lowest\n"
+                "CreateUninstallRegKey=no\nArchitecturesAllowed=x64compatible\nArchitecturesInstallIn64BitMode=x64compatible\n"
+                f"DefaultDirName={destination}\nOutputDir={fixture}\nOutputBaseFilename=path-lifecycle\n"
+                "[Code]\n" + path_code + uninstall_code + """
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+    RegisterCliPath(ExpandConstant('{app}'));
+end;
+""", encoding="utf-8",
+            )
+            uninstall_log = fixture / "uninstall.log"
+            invoke = self.installer_process_helper() + r'''
+$parameters = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/SP-', '/NORESTART')
+if ($env:INSTALLER_TEST_LOG) { $parameters += '/LOG="' + $env:INSTALLER_TEST_LOG + '"' }
+$result = Invoke-InstallerFixture $env:INSTALLER_TEST_EXECUTABLE $parameters
+if ($result -eq 0 -and $env:INSTALLER_TEST_LOG) {
+    if (Test-Path -LiteralPath ($env:INSTALLER_TEST_REGISTRY + '\CliPathOwnerKey')) {
+        throw 'Uninstall helper returned before removing PATH ownership metadata.'
+    }
+}
+exit $result
+'''
+            try:
+                result = subprocess.run([compiler, "/Qp", str(lifecycle)], capture_output=True, text=True, check=False, timeout=90)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                for executable, log in [
+                    (fixture / "path-lifecycle.exe", ""),
+                    (destination / "unins000.exe", str(uninstall_log)),
+                ]:
+                    result = subprocess.run(
+                        [shutil.which("pwsh"), "-NoProfile", "-NonInteractive", "-Command", invoke],
+                        cwd=ROOT, capture_output=True, text=True, check=False, timeout=135,
+                        env=dict(os.environ, INSTALLER_TEST_EXECUTABLE=str(executable), INSTALLER_TEST_LOG=log,
+                                 INSTALLER_TEST_REGISTRY="HKCU:\\" + registry_root),
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                details = uninstall_log.read_text(encoding="utf-8-sig", errors="replace")
+                with self.assertRaises(FileNotFoundError, msg="Uninstall left PATH ownership metadata behind.\n" + details):
+                    with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_root + "\\CliPathOwnerKey"):
+                        pass
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, registry_root + "\\UserEnvironmentKey") as environment:
+                    with self.assertRaises(FileNotFoundError, msg="Uninstall left its PATH entry behind.\n" + details):
+                        winreg.QueryValueEx(environment, "Path")
+            finally:
+                for key in ("\\CliPathOwnerKey", "\\UserEnvironmentKey", ""):
+                    try:
+                        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, registry_root + key)
+                    except FileNotFoundError:
+                        pass
             for name in ("regressify.exe", "regressify-desktop.exe"):
                 (fixture / name).write_bytes(b"MZ synthetic payload")
             result = subprocess.run(

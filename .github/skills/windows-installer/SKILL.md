@@ -32,6 +32,9 @@ description: 'Use when changing Inno Setup packaging, Windows installer versions
 1. Preserve user data on upgrade/uninstall. Smoke tests must refuse an existing
    app registration, shell integration or PATH ownership record; never bypass
    these guards on this machine.
+1. Inno's first-phase uninstaller exits before second-phase PATH cleanup completes.
+   Use the smoke helper's bounded `Start-Process -Wait` process-tree wait, not only
+   `Process.WaitForExit`. Keep timeout child cleanup and the fixture uninstall log.
 
 ## Checks
 
@@ -39,15 +42,18 @@ description: 'Use when changing Inno Setup packaging, Windows installer versions
 python ci/test-release.py
 ```
 
-Requires PyYAML. For authorized isolated Windows installer testing, build the
+Requires PyYAML and PowerShell 7.4+. For authorized isolated Windows installer testing, build the
 matching desktop executable and companion CLI, then run `./ci/build-desktop-installer.ps1` with `-Version`,
 `-Compiler`, `-RequireStaticRuntime`, and `-SmokeTest`. Use the actual four-part
 release version, not the three-part Cargo package version. Inno Setup is required.
 
 Set `ISCC_PATH` to an Inno Setup 6 compiler and run
-`python ci/test-release.py InstallerTests` for native PATH fixtures and a
+`python ci/test-release.py InstallerTests` for native PATH fixtures, a temporary
+synthetic setup/uninstall cycle through the actual smoke helper, and a
 synthetic-payload compile without installing the app or changing the real user
-PATH. Both packaging jobs require this gate. The Inno 6 setup engine is 32-bit
+PATH. Assert cleanup inside the invoking process so inherited output handles do
+not mask premature return; cover both parent and orphaned second-phase timeouts.
+Both packaging jobs require this gate. The Inno 6 setup engine is 32-bit
 even in x64 install mode; keep external Win32 declarations compatible. Inno's
 `RegWriteStringValue` preserves an existing `REG_EXPAND_SZ` type, so remove only
 the isolated fixture value before seeding a `REG_SZ` test case.

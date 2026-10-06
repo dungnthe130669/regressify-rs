@@ -916,6 +916,10 @@ without downloading a browser. The fixture also checks `/SKIPCHROMIUM=1`.
 Uninstall must remove both executables, the owned PATH entry, fixture shortcuts,
 context menus and installation registration, preserving the original user PATH
 value and type and leaving the machine PATH unchanged.
+The smoke helper waits for the complete installer/uninstaller process tree with
+a two-minute execution deadline and retains `uninstall.log` in the fixture.
+Inno's first-phase uninstaller can exit before its second phase finishes PATH
+cleanup; waiting only on the launcher can falsely report leftover metadata.
 The native UI smoke requires an unconfigured development build and
 temporarily backs up/restores preferences, like the other desktop smoke modes.
 
@@ -928,7 +932,7 @@ cargo test --features gui-tests --lib desktop::jump_list::tests -- --include-ign
 
 Release tests run before generating the matrix. To run them locally, install
 `PyYAML==6.0.3` for Python 3.11+ and run `python ci/test-release.py`. Bash and
-PowerShell 7 (`pwsh`) are also required; set `BASH_PATH` to Git Bash on Windows.
+PowerShell 7.4+ (`pwsh`) are also required; set `BASH_PATH` to Git Bash on Windows.
 The tests execute all 192 application/target selections, stub Cargo and Tuyen CLI
 to check the real workflow arguments and failure handling, and verify manifests
 against offline fixtures without publishing.
@@ -936,8 +940,11 @@ against offline fixtures without publishing.
 On Windows, also set `ISCC_PATH` to an Inno Setup 6 compiler to enable
 `python ci/test-release.py InstallerTests`. These tests compile the production
 installer with synthetic payloads and execute the PATH logic against isolated
-temporary registry keys. The harness exits before installation and does not change
-the real user PATH or app registration. Both Windows packaging jobs run these
+temporary registry keys. A synthetic setup/uninstall cycle exercises the actual
+uninstall callback and smoke process helper inside a temporary directory, without
+changing the real user PATH or app registration. Process fixtures also verify
+exit codes, argument/proxy preservation and timeout cleanup, including a surviving
+second phase after its launcher exits. Both Windows packaging jobs run these
 checks with `ISCC_PATH` set before the full installation smoke test.
 
 ### Azure Pipelines

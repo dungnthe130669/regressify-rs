@@ -115,20 +115,47 @@ if ($SmokeTest) {
             }
         } finally { $process.Dispose() }
     }
-    function Invoke-InstallerFixture([string]$Path, [string[]]$Parameters) {
-        $start = [System.Diagnostics.ProcessStartInfo]::new($Path)
-        $start.UseShellExecute = $false
-        $start.Arguments = $Parameters -join ' '
-        foreach ($name in @('HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY')) {
-            $start.Environment[$name] = 'http://127.0.0.1:9'
+    function Invoke-InstallerFixture([string]$Path, [string[]]$Parameters, [int]$TimeoutMilliseconds = 120000) {
+        $runner = [PowerShell]::Create()
+        $output = [System.Management.Automation.PSDataCollection[psobject]]::new()
+        $environment = @{ HTTP_PROXY = 'http://127.0.0.1:9'; HTTPS_PROXY = 'http://127.0.0.1:9'; ALL_PROXY = 'http://127.0.0.1:9'; NO_PROXY = '' }
+        # Inno's launcher exits before its second phase finishes. -Wait tracks descendants too.
+        $null = $runner.AddCommand('Start-Process').AddParameter('FilePath', $Path).
+            AddParameter('ArgumentList', ($Parameters -join ' ')).AddParameter('Environment', $environment).
+            AddParameter('NoNewWindow').AddParameter('PassThru').AddParameter('Wait').AddParameter('ErrorAction', 'Stop')
+        $pending = $runner.BeginInvoke[object, psobject]($null, $output)
+        try {
+            if (-not $pending.AsyncWaitHandle.WaitOne($TimeoutMilliseconds)) {
+                foreach ($process in $output) {
+                    # The first phase may already have exited, so kill its surviving second phase explicitly.
+                    foreach ($child in Get-CimInstance Win32_Process -Filter "ParentProcessId = $($process.Id)" -OperationTimeoutSec 5) {
+                        $childProcess = Get-Process -Id $child.ProcessId -ErrorAction SilentlyContinue
+                        if ($childProcess) {
+                            try {
+                                $childProcess.Kill($true)
+                                if (-not $childProcess.WaitForExit(5000)) { throw 'Installer child did not stop after timeout.' }
+                            } catch [System.InvalidOperationException] {} finally { $childProcess.Dispose() }
+                        }
+                    }
+                    if (-not $process.HasExited) {
+                        $process.Kill($true)
+                        if (-not $process.WaitForExit(5000)) { throw 'Installer did not stop after timeout.' }
+                    }
+                }
+                $runner.Stop()
+                throw 'Installer fixture timed out.'
+            }
+            $null = $runner.EndInvoke($pending)
+            if ($runner.HadErrors) { throw $runner.Streams.Error[0] }
+            if ($output.Count -ne 1) { throw 'Installer fixture did not return a process.' }
+            return $output[0].ExitCode
+        } finally {
+            if (-not $pending.IsCompleted) { $runner.Stop() }
+            $runner.Dispose()
+            foreach ($process in $output) { $process.Dispose() }
+            $output.Dispose()
+            $pending.AsyncWaitHandle.Dispose()
         }
-        $start.Environment['NO_PROXY'] = ''
-        $process = [System.Diagnostics.Process]::Start($start)
-        if (-not $process.WaitForExit(120000)) {
-            $process.Kill($true)
-            throw 'Installer fixture timed out.'
-        }
-        return $process.ExitCode
     }
     function Assert-ChromiumPreparation([string]$LogPath, [bool]$ProgressVisible) {
         $text = Get-Content -LiteralPath $LogPath -Raw
@@ -243,7 +270,8 @@ if ($SmokeTest) {
         Write-Output 'Fresh install, CLI lookup through user PATH, Chromium cache reuse/network fallback/skip, visible update foreground handoff, fully silent setup, shortcuts, folder context menus, running-app protection and downgrade protection passed.'
     } finally {
         if (Test-Path -LiteralPath $uninstaller) {
-            $result = Invoke-InstallerFixture $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART')
+            $uninstallLog = Join-Path $fixture 'uninstall.log'
+            $result = Invoke-InstallerFixture $uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/LOG="' + $uninstallLog + '"'))
             if ($result -ne 0) { throw "Fixture uninstall failed ($result). See $fixture." }
             if (Test-Path -LiteralPath $installed) { throw 'Uninstall left the installed executable behind.' }
             if (Test-Path -LiteralPath $installedCli) { throw 'Uninstall left the installed CLI behind.' }

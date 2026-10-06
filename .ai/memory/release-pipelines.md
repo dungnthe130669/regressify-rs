@@ -27,7 +27,7 @@ Verified: 2026-10-06
   discovery regression verify the failure and fix.
 - [Offline tests](../../ci/test-release.py) exercise 192 GitHub and 96 Azure
   selections, real publish scripts with a stub CLI, and Azure PowerShell wrappers.
-  Use `python ci/test-release.py`; PyYAML, Bash, and PowerShell 7 are required.
+  Use `python ci/test-release.py`; PyYAML, Bash, and PowerShell 7.4+ are required.
   On Windows, set `BASH_PATH` to Git Bash for the build-argument tests.
   [Setup details](../../docs/desktop.md#azure-pipelines) include Library permissions
   and the hosted-job timeout limit. Hosted Azure execution remains a separate gate.
@@ -36,5 +36,12 @@ Verified: 2026-10-06
   Ownership metadata survives upgrades; uninstall preserves unowned entries,
   later PATH edits and the registry value type. Both packaging jobs set
   `ISCC_PATH` and run `python ci/test-release.py InstallerTests`: native fixtures
-  use isolated registry keys and exit before installation. The separate release
+  use isolated registry keys and a temporary synthetic setup/uninstall cycle,
+  without changing the real user PATH or app registration. The separate release
   smoke test verifies actual CLI lookup from a fresh process and uninstall cleanup.
+- Inno's uninstaller launcher exits before its second-phase PATH cleanup. The
+  [smoke helper](../../ci/build-desktop-installer.ps1) uses bounded
+  `Start-Process -Wait` to await descendants and retains `uninstall.log`.
+  Native regression assertions run inside the invoking PowerShell process so
+  inherited output handles cannot hide an early return; separate fixtures cover
+  nonzero exits and timeout cleanup of a surviving second phase.

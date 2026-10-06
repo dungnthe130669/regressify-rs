@@ -32,9 +32,9 @@ python ci/test-release.py
 
 Requires PyYAML. Tests should use synthetic credentials/local fixture responses, not live publishing commands. Run affected target build checks only when the toolchain exists; explicitly report untested cross-platform packaging.
 
-For the Azure slice, use `python ci/test-release.py AzureReleaseTests`; the full suite also executes both providers' publish scripts with a stub CLI. Bash and PowerShell 7 are required; on Windows, set `BASH_PATH` to Git Bash for the build-argument tests. Offline checks cannot validate Library permissions or execute a hosted Azure run.
+For the Azure slice, use `python ci/test-release.py AzureReleaseTests`; the full suite also executes both providers' publish scripts with a stub CLI. Bash and PowerShell 7.4+ are required; on Windows, set `BASH_PATH` to Git Bash for the build-argument tests. Offline checks cannot validate Library permissions or execute a hosted Azure run.
 
-Both Windows packaging jobs set `ISCC_PATH` and run `python ci/test-release.py InstallerTests` before packaging/smoke. This compiles and executes isolated native PATH fixtures without installing the app; the production installer is also compiled with synthetic payloads. Missing Inno skips that native check outside the packaging jobs.
+Both Windows packaging jobs set `ISCC_PATH` and run `python ci/test-release.py InstallerTests` before packaging/smoke. This runs isolated native PATH fixtures and a synthetic setup/uninstall cycle through the smoke helper without installing the app; the production installer is also compiled with synthetic payloads. Process fixtures cover exit codes and timeout cleanup. Missing Inno skips the native checks outside the packaging jobs.
 
 ## Maintain
 
