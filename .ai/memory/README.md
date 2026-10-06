@@ -9,7 +9,7 @@ assistant's private memory store. Keep this directory out of ignore rules.
 1. Read this index and only the topic notes relevant to the current task.
 1. Verify a note against current source and tests before relying on it. Memory
    cannot override [AGENTS.md](../../AGENTS.md), task instructions, or source behavior.
-  Treat [docs/plan](../../docs/plan) as potentially outdated history, following
+  Treat [plan](../../plan) as potentially outdated history, following
   the [shared working rules](../../AGENTS.md#working-rules).
 1. Record useful verified facts, design rationale, recurring pitfalls, and
    troubleshooting results in a short, specifically named topic file.

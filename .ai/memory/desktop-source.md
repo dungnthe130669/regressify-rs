@@ -2,6 +2,15 @@
 
 Verified: 2026-10-06
 
+- [Native windows](../../src/desktop/ui/mod.rs) and
+  [test fixtures](../../src/desktop/ui/tests.rs) use GPUI Kit 0.7.1's
+  `open_window`, returning content under a Base root with automatic overlays.
+  The two `root_overlay_` tests pass for single dialog mounting, pointer/Escape
+  dismissal, focus return and workbench release after closing the window.
+- The schema jump/hover/save-guard test failed on both retained 0.6.1 and 0.7.1
+  binaries when diagnostic 3 was offscreen. Scrolling the diagnostic table
+  before clicking preserves all cursor, hover, draft and save assertions; the
+  focused native test passes. Visibility checks must exercise actual scrolling.
 - [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
   list picker and effective consumer labels. Workspace diagnostics call the
   shared CLI validator, point to own/inherited action fields, and retain invalid
@@ -20,6 +29,10 @@ Verified: 2026-10-06
 - Line edits are a single `apply_lsp_edits` replacement, followed by selection
   restoration. Do not use `set_value` for interactive commands: it resets native
   history. JSON deliberately disables comment toggling.
+- Kit 0.7.1 normalizes `set_selected_range(end..start)` to an empty range. The
+  approved Source compatibility policy restores an ascending range after line
+  edits. The keyboard-created reverse CRLF/Unicode regression verifies exact
+  text, selected bounds, forward caret and repeat toggling; no toolkit fork.
 - gpui-kit 0.6.1 block indentation includes the line at an exclusive column-zero
   selection end. Source uses shared line bounds for indentation, comments, moves,
   duplication, and deletion; plain Tab and completion acceptance remain native.

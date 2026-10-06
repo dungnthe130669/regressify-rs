@@ -18,7 +18,7 @@ function Test-ErrorImageFlows {
             }
         })
     }
-    $errorImage = Join-Path $repository 'src/snapshot/data/error-icon.png'
+    $errorImage = Join-Path $repository 'src/test/data/error-icon.png'
     $legacyImage = Join-Path $failedRun 'failed.png'
     Write-TestImage $legacyImage ([System.Drawing.Color]::Red)
     Write-JsonFixture "$legacyImage.error.json" @{ error = $true; message = 'Capture failed: missing selector #pay' }

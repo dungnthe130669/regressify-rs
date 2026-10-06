@@ -19,6 +19,53 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[gpui_kit::test]
+fn git_activity_refresh_preserves_editing_focus(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().canonicalize().unwrap());
+                panel.install_snapshot(snapshot, window, cx);
+                panel.edit_remote(super::RemoteEdit::Add, window, cx);
+            });
+            this.select_view(3, window, cx);
+        });
+        let panel = view.read(cx).git.clone();
+        let inputs = [
+            panel.read(cx).remote_name.read(cx).focus_handle(cx),
+            panel.read(cx).remote_url.read(cx).focus_handle(cx),
+            panel.read(cx).message.read(cx).focus_handle(cx),
+        ];
+        for follow in [false, true] {
+            for (index, focus) in inputs.iter().enumerate() {
+                window.focus(focus, cx);
+                window.render_frame(cx);
+                panel.update(cx, |panel, cx| {
+                    panel.activity_follow = follow;
+                    panel
+                        .activity_history
+                        .push_back(format!("Refresh {follow} {index}"));
+                    panel.sync_activity_log(window, cx);
+                });
+                assert!(focus.is_focused(window), "follow={follow}, input={index}");
+                assert!(
+                    panel
+                        .read(cx)
+                        .activity_log
+                        .read(cx)
+                        .value()
+                        .contains("Refresh")
+                );
+            }
+        }
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn remote_management_forms_menu_confirmation_and_logs_work_in_app(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let first = tempfile::tempdir().unwrap();

@@ -584,7 +584,6 @@ impl Workbench {
         }
         let text = state.value().to_string();
         let selection = state.selected_range();
-        let reversed = !selection.is_empty() && state.cursor() == selection.start;
         if action.operation == LineOperation::ToggleComment
             && self.session.open.as_ref().unwrap().document.format != Format::Yaml
         {
@@ -605,14 +604,8 @@ impl Workbench {
                 window,
                 cx,
             );
-            state.set_selected_range(
-                if reversed {
-                    edit.selection.end..edit.selection.start
-                } else {
-                    edit.selection
-                },
-                cx,
-            );
+            // Kit 0.7.1 collapses reversed ranges; keep the edited selection forward.
+            state.set_selected_range(edit.selection, cx);
         });
     }
 

@@ -150,7 +150,8 @@ function Test-DeploymentFlows {
     Wait-Control 'Deployment log' | Out-Null
     if ($null -ne (Find-Control 'Scenarios / viewports: 0')) { throw 'Deployment activity must not show scenario counters.' }
     if ($null -ne (Find-Control 'Refresh saved captures')) { throw 'Deployment activity must not show the suite statistics row.' }
-    Wait-SourceText 'No saved deployment token' 'Deployment log text'
+    Wait-Control 'Cannot load the deployment token: No saved deployment token. Edit the target and enter its deployment token' | Out-Null
+    Wait-SourceText 'outcome=Failure' 'Deployment log text'
     $deploymentLog = Read-ControlText 'Deployment log text'
     Test-DeploymentCopy 'Copy deployment log' $deploymentLog
     Test-DeploymentCopy 'Deployment log text' $deploymentLog -SelectAll
@@ -162,7 +163,7 @@ function Test-DeploymentFlows {
         Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant() + '-compact')
     }
     Invoke-Control 'View Log'
-    Wait-SourceText 'No saved deployment token' 'Run log'
+    Wait-SourceText 'outcome=Failure' 'Run log'
     Capture-Window 'deploy-missing-token'
     Invoke-Control 'Deployment targets'
     Wait-Control 'QA reports' | Out-Null
@@ -249,9 +250,10 @@ function Test-DeploymentFlows {
     Wait-Control 'Deployment failed' | Out-Null
     Wait-Control 'Report deployment' | Out-Null
     Wait-Control 'Deployment log' | Out-Null
+    Wait-Control 'Cannot load the deployment token: No saved deployment token. Edit the target and enter its deployment token' | Out-Null
     Capture-Window 'deploy-netlify-outcome'
     Invoke-Control 'View Log'
-    Wait-SourceText 'No saved deployment token' 'Run log'
+    Wait-SourceText 'outcome=Failure' 'Run log'
     Capture-Window 'deploy-netlify-missing-token'
     Invoke-Control 'Deployment targets'
     Invoke-Control 'Edit target'

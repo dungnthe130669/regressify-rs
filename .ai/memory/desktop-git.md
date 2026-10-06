@@ -1,6 +1,6 @@
 # Desktop Git
 
-Verified: 2026-09-27
+Verified: 2026-10-06
 
 - [The Git model](../../src/desktop/git.rs) stores active remote selection in
   repository-local `regressify.remote`. Its configuration hash covers that key,
@@ -24,9 +24,13 @@ Verified: 2026-09-27
 - Remote-management native smoke passed on 2026-09-24, using local repositories
   and light/dark compact/wide screenshots. Two 2026-09-27 native Git reruns passed
   the text-diff, exact-copy, malformed-JSON, and selected-comparison-commit checks,
-  capturing both themes and window sizes. The full flow still stopped later at
-  remote-form text entry; see [validation notes](../../OUTSTANDING_ISSUES.md#validation-notes-2026-09-27).
-  Cleanup restored the original preferences after both attempts.
+  but stopped at remote-form text entry. This is resolved on 2026-10-06:
+  `set_cursor_position` focuses its editor, so activity refresh now positions
+  a non-focusing empty range. The new `git_activity_refresh_preserves_editing_focus`
+  test failed before the fix and passes for name/URL/commit inputs with Follow
+  on/off. Full local-repository Git smoke passes and restores preferences.
+  Asynchronous copy checks wait for exact clipboard contents, and text reviews
+  assert the current split view rather than the obsolete raw-diff editor.
   Activity belongs below the diff pane: placing it below both panes collapsed
   comparison rows at 1080x720. The layout test now includes those rows and clicks
   a comparison checkbox with activity expanded. Fixture commits made immediately

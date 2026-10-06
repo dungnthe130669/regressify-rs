@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning reviewed and approved. Pre-upgrade baseline in progress;
-no component implementation is claimed.
+Status: Planning committed; task 001 is verified on Windows with the explicitly
+approved Linux baseline exception. Component-adoption tasks have not started.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -11,7 +11,7 @@ This bundle translates the approved decisions in the [refined plan](../gpui-comp
 - The user's interview explicitly authorizes one local commit per completed, verified task, including planning and final acceptance documentation. No branch, push, release, credential change, live remote operation, toolkit edit, vendoring, fork, or plan deletion is authorized.
 - Delegation of independent work is approved, but shared files must be serialized and builds/commits must be serialized. An implementation blocker still requires the decision process in the implement-plan skill.
 - Keep this bundle and the refined plan. The main agent owns integration and commits.
-- Start implementation at 001. Storage has been recovered and its pre-upgrade baseline is running; no component task may start until the Windows upgrade gates pass. Unavailable local Linux verification may remain explicitly pending for CI as approved.
+- Task 001 is under validation after storage recovery; no component task may start until the Windows upgrade gates pass. Unavailable local Linux verification may remain explicitly pending for CI as approved.
 
 ## Baseline Evidence
 
@@ -20,8 +20,9 @@ Baseline revision: `be843359a593b19d155c82bdcea0ee163e015423`.
 - `cargo test --locked --features gui-tests --all-targets -- --test-threads=1`: compilation failed before any tests ran due to disk exhaustion, OS error 112. No pass count or test count.
 - `cargo check --locked --features gui --bin regressify-desktop`: failed during PDB link with `LNK1201` / OS error 112. No successful GUI compile.
 - Storage recovery: the user authorized removal of unneeded build artifacts. Only the regenerable incremental cache was removed, recovering about 48.6 GiB of free space; binaries, fixtures, smoke artifacts, and screenshots were preserved. Use ephemeral `CARGO_INCREMENTAL=0` for this migration's build commands.
-- Retried `cargo check --locked --features gui --bin regressify-desktop` with `CARGO_INCREMENTAL=0`: passed on 0.6.1. Full GUI baseline retry is in progress; final test counts are not yet available.
-- Toolkit version: current dependency is 0.6.1; the approved target is frozen at exact published 0.7.1. Do not chase newer releases.
+- Retried `cargo check --locked --features gui --bin regressify-desktop` with `CARGO_INCREMENTAL=0`: passed on 0.6.1. Full GUI baseline displayed a schema visibility failure; the terminal's final aggregate summary was not retained, so no aggregate pass count is claimed.
+- The retained 0.6.1 test executable independently reproduced `schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard`: 0 passed, 1 failed, with diagnostic 3 offscreen. The 0.7.1 executable failed identically. The user authorized a test-only scroll repair that preserves every existing assertion.
+- The approved target is frozen at exact published 0.7.1. Do not chase newer releases.
 - Refined-plan lint: `rumdl check --no-exclude plan/gpui-component-reuse.md` passed with a pre-existing warning: MD004 has unknown option `after-marker`. No suppression/config change was made.
 
 These are baseline facts, not evidence that a runtime test passed or that the planned migration compiles. Task 001 must record the remaining baseline outcomes and complete the Windows upgrade gates before any presentation migration.
@@ -69,8 +70,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 
 ## Implementation Checklist
 
-- [x] 000 Planning: 36-answer interview, release/source review, requirement coverage, dependencies, and all 20 tasks reconciled; scoped Markdown checks pass. Local commit pending.
-- [ ] 001 Upgrade and root API: pre-upgrade baseline in progress; storage recovered, GUI check passed, full GUI tests pending.
+- [x] 000 Planning: 36-answer interview, release/source review, requirement coverage, dependencies, and all 20 tasks reconciled; scoped Markdown checks pass. Committed as `278be67`.
+- [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Local commit pending.
 - [ ] 002 Progress and binary checkbox: not started; blocked by 001.
 - [ ] 003 Numeric fields: not started; blocked by 001.
 - [ ] 004 Forms: not started; blocked by 001.
@@ -95,7 +96,76 @@ When a task changes state, record the exact focused command, exact outcome and n
 
 ## Verification Evidence
 
-Initial evidence is limited to the baseline table above. No task implementation, passing test count, smoke flow, screenshot, Linux verification, or post-upgrade binary measurement is claimed. Add dated, exact command/result evidence here as tasks complete. Task 001 owns fresh pre-upgrade checks and all upgrade gates; task 020 owns fresh full acceptance reconciliation.
+### Task 001 Verification
+
+- `cargo check --locked --features gui --bin regressify-desktop`: passes with
+  Kit/Base/Component 0.7.1 and GPUI Pre 0.3.8 after correcting the helper's
+  result handling. No optional feature boundary was changed.
+- `cargo test --locked --features gui-tests --lib root_overlay_ -- --test-threads=1`:
+  2 passed, 0 failed; covers content identity, unique dialog mounting,
+  pointer/Escape dismissal, focus restoration and owner release.
+- `cargo test --locked --features gui-tests --lib schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard -- --test-threads=1`:
+  1 passed after the authorized scrolling repair. Before repair it failed on
+  both 0.6.1 and 0.7.1; no behavioral assertion was removed.
+- `cargo fmt --all -- --check`: passed after scoped root/fixture formatting.
+- `cargo tree --locked --features gui -i gpui-pre-wgpu`: no active dependency
+  path on the Windows target; the lockfile entry does not enable that backend.
+- The first full GUI run reported 1,079 passed, 1 failed, 32 ignored. Its one
+  failure exposed 0.7.1 collapsing reverse ranges in `set_selected_range`.
+  After a keyboard-driven reproduction, the owner approved forward-oriented
+  selections after line commands while preserving selected text and exact
+  CRLF/Unicode edits. The focused regression and final full rerun now pass.
+- Native Git smoke exposed activity refresh focusing its read-only log. The
+  owner approved a production fix: non-focusing range positioning. New
+  `git_activity_refresh_preserves_editing_focus` failed before the fix and
+  passes for name/URL/commit inputs with Follow on and off. Full Git smoke passes.
+- `cargo test --locked --all-targets -- --quiet`: 524 passed, 23 ignored.
+- `cargo test --locked --features desktop --lib -- --quiet` on Windows:
+  863 passed, 31 ignored.
+- Production GUI Clippy with `-D warnings` and desktop build passed, including
+  final lint after the Git focus fix and removal of a redundant conversion.
+- Headless smoke checks pass: 18 modules, 46 helpers, 45 dispatch/cleanup cases.
+  Guidance self-tests: 10 passed. Guidance validation passes for 46 skills after
+  correcting four pre-existing links to the moved plan directory.
+- Native Windows default, Artifact, Schema, Comparison, Git, Publishing and
+  Deployment flows all passed with the current upgrade binary. Authorized
+  harness repairs use the current capture error artwork, bounded exact-clipboard
+  waits, split Git diff assertions, and separate deployment error-banner versus
+  structured archive assertions. One deployment attempt encountered clipboard
+  restoration contention; subsequent complete flow passed with cleanup.
+- Inspected compact/large light/dark Source and overview screenshots, compact
+  schema/error dialogs, Git split diff, and landing forms. No blank rendering or
+  new overlap found in those views. Stock theme/normal sizing remains task 019.
+- Final `cargo test --locked --features gui-tests --all-targets -- --test-threads=1 --quiet`:
+  1,081 library tests passed, 32 ignored; 11 worker tests passed, 4 ignored.
+  The later Clippy-only removal of a same-type conversion passed production
+  lint and the focused Git regression again; it changes no behavior.
+- Code accounting: three explicit overlay-mount calls and manual Root wrapping
+  were removed; fixture content capture now comes from Kit's return value.
+  Reverse-selection branching was removed under the approved policy. Added
+  state/subscriptions: none. Three native lifecycle/focus regressions and
+  existing-test/smoke repairs are coverage, not counted as code savings.
+- Task 001 is ready for its authorized local commit. Linux is not claimed green.
+
+### Approved Linux Baseline Exception
+
+The owner explicitly approved continuing Windows implementation with these
+separately tracked Linux baseline failures; this is not a passing Linux gate.
+Ubuntu's existing Git is 2.34.1. No toolchain/Git upgrade or system changes made.
+
+- Current Linux `cargo test --locked --features desktop --lib -- --quiet`:
+  859 passed, 6 failed, 31 ignored.
+- Isolated export of pre-upgrade commit `278be67`, same command/environment:
+  858 passed, 7 failed, 31 ignored.
+- Both fail `remote_management_preserves_files_index_and_other_remotes`,
+  `remote_selection_removal_and_missing_tracking_never_switch_destinations`,
+  `remote_selection_routes_push_fetch_and_pull_to_the_selected_local_remote`
+  with Git remote rename/remove usage errors, and the browser installation
+  complete-archive test with a zero-second lock timeout. Update scheduling
+  clock/cache assertions also fail variably in both runs.
+- Keep these in the issue list and require current Linux CI verification before
+  release. Do not repair unrelated model behavior or claim Windows as Linux
+  coverage. Task 020 must carry this exception forward until separately resolved.
 
 ## Approved Decisions
 

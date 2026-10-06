@@ -1,7 +1,7 @@
 # 001: Upgrade Kit And Migrate Window Root
 
-Status: Pre-upgrade baseline in progress after storage recovery. Depends on 000.
-The Windows upgrade gates must pass before any component migration.
+Status: Verified on Windows; see README for exact results and the approved
+non-green Linux baseline exception. Depends on 000. Local commit pending.
 
 ## Scope
 
@@ -62,7 +62,9 @@ Run the headless smoke harness, then guarded native default, `-ArtifactFlows`,
 Honor unlocked-desktop/no-other-instance guards and preserve user windows.
 Use an existing Linux environment for headless models or explicitly leave Linux
 pending for CI. That approved exception does not block Windows implementation;
-other unavailable or failed upgrade gates do.
+the separately approved Linux baseline-failure exception in README also permits
+continuation without claiming a green Linux gate. Other unavailable or failed
+upgrade gates block dependent work.
 
 ## Maintenance And Boundary
 

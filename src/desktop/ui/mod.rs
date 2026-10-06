@@ -2719,7 +2719,7 @@ impl Workbench {
 }
 
 impl Render for Workbench {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.results
             .update(cx, |panel, cx| panel.set_visible(self.main_tab == 2, cx));
         let editor = if self.main_tab == 3 {
@@ -2852,9 +2852,6 @@ impl Render for Workbench {
             .child(self.render_header(cx))
             .children(self.render_update_banner(cx))
             .child(div().flex_1().min_h_0().child(layout))
-            .children(Root::render_dialog_layer(window, cx))
-            .children(Root::render_sheet_layer(window, cx))
-            .children(Root::render_notification_layer(window, cx))
     }
 }
 
@@ -2875,68 +2872,76 @@ pub fn launch(instance: Option<DesktopInstance>) {
             bind_keys(cx);
             let bounds = Bounds::centered(None, size(px(1320.), px(840.)), cx);
             cx.spawn(async move |cx| {
-                let result = cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(bounds)),
-                        window_min_size: Some(size(px(1000.), px(640.))),
-                        titlebar: Some(TitlebarOptions {
-                            title: Some("Regressify Desktop".into()),
-                            ..TitleBar::title_bar_options()
-                        }),
-                        ..TitleBar::window_options()
-                    },
-                    |window, cx| {
-                        let view = cx.new(|cx| Workbench::new(window, cx));
-                        #[cfg(target_os = "windows")]
-                        match super::jump_list::initialize_window(window) {
-                            Ok(taskbar) => view.update(cx, |this, _| this.taskbar = Some(taskbar)),
-                            Err(error) => crate::diagnostics::startup::warning(
-                                crate::diagnostics::record::SafeValue::Shell,
-                                &error,
-                            ),
-                        }
-                        let weak = view.downgrade();
-                        window.on_window_should_close(cx, move |window, cx| {
-                            weak.update(cx, |this, cx| {
-                                if this.busy {
-                                    if this.git.read(cx).active() {
-                                        this.git.update(cx, |panel, cx| panel.cancel_operation(cx));
+                let result = cx.update(|cx| {
+                    gpui_kit::open_window(
+                        WindowOptions {
+                            window_bounds: Some(WindowBounds::Windowed(bounds)),
+                            window_min_size: Some(size(px(1000.), px(640.))),
+                            titlebar: Some(TitlebarOptions {
+                                title: Some("Regressify Desktop".into()),
+                                ..TitleBar::title_bar_options()
+                            }),
+                            ..TitleBar::window_options()
+                        },
+                        cx,
+                        |window, cx| {
+                            let view = cx.new(|cx| Workbench::new(window, cx));
+                            #[cfg(target_os = "windows")]
+                            match super::jump_list::initialize_window(window) {
+                                Ok(taskbar) => {
+                                    view.update(cx, |this, _| this.taskbar = Some(taskbar))
+                                }
+                                Err(error) => crate::diagnostics::startup::warning(
+                                    crate::diagnostics::record::SafeValue::Shell,
+                                    &error,
+                                ),
+                            }
+                            let weak = view.downgrade();
+                            window.on_window_should_close(cx, move |window, cx| {
+                                weak.update(cx, |this, cx| {
+                                    if this.busy {
+                                        if this.git.read(cx).active() {
+                                            this.git
+                                                .update(cx, |panel, cx| panel.cancel_operation(cx));
+                                            this.status =
+                                                "Cancelling Git; close again after it finishes"
+                                                    .into();
+                                        } else {
+                                            this.status =
+                                                "Finish the current operation before closing"
+                                                    .into();
+                                        }
+                                        cx.notify();
+                                        false
+                                    } else if this.runs.read(cx).running() {
+                                        this.runs.update(cx, |panel, cx| panel.cancel(cx));
                                         this.status =
-                                            "Cancelling Git; close again after it finishes".into();
-                                    } else {
-                                        this.status =
-                                            "Finish the current operation before closing".into();
-                                    }
-                                    cx.notify();
-                                    false
-                                } else if this.runs.read(cx).running() {
-                                    this.runs.update(cx, |panel, cx| panel.cancel(cx));
-                                    this.status =
                                         "Cancelling the active run; close again after it finishes"
                                             .into();
-                                    cx.notify();
-                                    false
-                                } else if this.guard_landing_close(window, cx) {
-                                    false
-                                } else if this.unsaved() {
-                                    this.guard(files::Pending::Close, window, cx);
-                                    false
-                                } else {
-                                    this.finish_close(cx);
-                                    false
-                                }
-                            })
-                            .unwrap_or(true)
-                        });
-                        if let Some(instance) = instance {
-                            view.update(cx, |this, cx| {
-                                this.load_owned_workspace(instance, window, cx)
+                                        cx.notify();
+                                        false
+                                    } else if this.guard_landing_close(window, cx) {
+                                        false
+                                    } else if this.unsaved() {
+                                        this.guard(files::Pending::Close, window, cx);
+                                        false
+                                    } else {
+                                        this.finish_close(cx);
+                                        false
+                                    }
+                                })
+                                .unwrap_or(true)
                             });
-                        }
-                        view.update(cx, |this, cx| this.check_updates(window, cx));
-                        cx.new(|cx| Root::new(view, window, cx))
-                    },
-                );
+                            if let Some(instance) = instance {
+                                view.update(cx, |this, cx| {
+                                    this.load_owned_workspace(instance, window, cx)
+                                });
+                            }
+                            view.update(cx, |this, cx| this.check_updates(window, cx));
+                            view
+                        },
+                    )
+                });
                 if let Err(error) = result {
                     crate::diagnostics::startup::warning(
                         crate::diagnostics::record::SafeValue::Window,

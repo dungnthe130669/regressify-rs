@@ -36,11 +36,12 @@ and build-time effects would need separate measurement.
 
 ## Review Baseline
 
-- Current Regressify revision: `be843359a593b19d155c82bdcea0ee163e015423`.
+- Pre-implementation Regressify revision: `be843359a593b19d155c82bdcea0ee163e015423`.
 - Original proposal revision: `5802db8e68231d1e0f10422b39c176ff197f70f3`
   (historical, not the current implementation baseline).
-- [Cargo.toml](../Cargo.toml#L38) pins `gpui-kit = "=0.6.1"`. The inspected
-  lockfile resolves Kit, Component, and Base to 0.6.1, and GPUI Pre to 0.3.4.
+- Before implementation, [Cargo.toml](../Cargo.toml#L38) pinned `gpui-kit = "=0.6.1"`
+  and the lockfile resolved Kit/Component/Base 0.6.1 with GPUI Pre 0.3.4.
+  Current implementation and gate status live in the task bundle.
 - The read-only GPUI Kit clone HEAD was
   `c0bebdc8a8cf9a74f9f52feaca278a52a9cfcca2`.
 - Also compared the relevant source paths with release tag `v0.7.1`, commit
@@ -726,6 +727,10 @@ single dispatch. This is a pilot gate, not a confirmed API defect.
   column-zero exclusive end line. No matching built-in comment/move/duplicate
   line action was found in the inspected input action implementation. Retain
   strict JSON behavior, CRLF/Unicode handling, focus guards, and native history.
+  Task 001 exposed a published setter regression: reverse ranges collapse.
+  The owner explicitly approved restoring forward-oriented selections after
+  line commands, preserving selected text and exact edits. Use ascending ranges
+  and retain a keyboard-created reverse-selection regression; no toolkit edit.
 - [Run logs](../src/desktop/ui/runs/log.rs), deployment logs, and Git activity
   already use read-only `CodeEditor`. Their filters, full-text copying, archive
   completeness, follow-tail behavior, and bounded loading remain application work.
@@ -866,6 +871,14 @@ no-other-instance guards; never close user windows. On Linux, use an existing
 local environment if available; otherwise leave the Linux gate explicitly
 pending for CI. Do not install WSL or report Windows as Linux verification.
 
+Implementation follow-up decisions are recorded in the task ledger. The owner
+approved forward-oriented Source selections after line commands because the
+0.7.1 setter collapses reverse ranges, the bounded schema/smoke baseline repairs,
+and preserving input focus during Git activity refresh. Linux baseline failures
+reproduced on the pre-upgrade export are explicitly allowed to remain separately
+tracked while Windows migration continues; current Linux CI is required before
+release, and the local Linux gate remains non-green.
+
 ## Verification Plan
 
 The commands below are future implementation gates, not test runs claimed by
@@ -917,12 +930,10 @@ bypass its guards or close the user's windows. Use `-SkipBuild` only with a
 current binary. Browser/Playwright tests are not a substitute for native GPUI
 interaction tests, and live publishing is not required for this migration.
 
-Planning changed this document and created the task bundle. Pre-upgrade checks
-initially failed because the build disk was full. After authorized removal of
-the regenerable incremental cache, the 0.6.1 GUI compile passed with
-`CARGO_INCREMENTAL=0`; the full GUI baseline is in progress. The task bundle
-records subsequent outcomes. No upgraded build, smoke flow, screenshot, or
-binary-size measurement is claimed by this review.
+Planning and interview work was committed as `278be67`. Task 001 has a compiled
+0.7.1 candidate, focused native regressions and passing Windows smoke flows;
+the task bundle records exact outcomes, approved exceptions and remaining gates.
+Component adoption has not started. No binary-size measurement is claimed.
 
 [kit-registry]: https://crates.io/api/v1/crates/gpui-kit
 [kit-window]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/kit/src/lib.rs#L149

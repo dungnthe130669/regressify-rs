@@ -11,7 +11,7 @@ description: 'Use when creating, updating, or reviewing AGENTS.md, shared AI mem
 
 ## Procedure
 
-1. Verify the affected source, nearby tests, maintained docs, and CI before recording a rule. [docs/plan](../../../docs/plan) contains historical plans that may be outdated; do not turn them, hypotheses, old reviews, or memory notes into current guarantees without verification.
+1. Verify the affected source, nearby tests, maintained docs, and CI before recording a rule. [plan](../../../plan) contains historical plans that may be outdated; do not turn them, hypotheses, old reviews, or memory notes into current guarantees without verification.
 1. Keep AGENTS.md under 90 lines and each skill under 120 lines. Use one concrete task per skill with entry points, a procedure, invariants, checks, and doc owners.
 1. Include YAML `name` matching the directory and a quoted, keyword-rich `description` explaining when to load the skill. Keep automatic invocation enabled. Reference bundled resources with `./` and repository files relatively.
 1. Keep mandatory comments, comprehensive behavior tests, documentation, and same-change guidance maintenance in the shared guide. Explain non-obvious reasons in code; do not demand narration of self-explanatory statements.

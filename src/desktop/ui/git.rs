@@ -646,7 +646,9 @@ impl GitPanel {
                     state.cursor_position()
                 };
                 state.set_value(text.clone(), window, cx);
-                state.set_cursor_position(position, window, cx);
+                let offset = state.text().position_to_offset(&position);
+                // Background log updates must not focus the read-only editor.
+                state.set_selected_range(offset..offset, cx);
             });
             self.activity_text = text;
         }

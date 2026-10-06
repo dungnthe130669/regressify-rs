@@ -12,6 +12,7 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 ## Procedure and Invariants
 
 1. Follow the pinned gpui-kit patterns, icons, themes, and existing control density. Keep blocking work in background tasks and notify dependent views deliberately.
+1. GPUI Kit 0.7.1 windows use `gpui_kit::open_window` after `init`; return content, not another Root. Call it inside `cx.update` from async contexts. Base Root mounts component overlays once; do not manually render dialog/sheet/notification layers. Fixtures retain the returned content entity and checked Base-root handle. Keep application close guards and cover overlay focus/release with `root_overlay_` tests.
 1. Preserve unsaved-draft guards, tab identity, focus, keyboard selection, and disabled/confirmation states. Stable test IDs may need an outer wrapper when scrollbar helpers replace an element ID.
 1. Workspace text files use Source only, including breadcrumb navigation and Save As. Clear schema providers and switch to the toolkit's `text` highlighter when leaving YAML/JSON; keep binary rows disabled for pointer and keyboard activation. Cover this with the `workspace_files_` native tests.
 1. Keep [Source line commands](../../../src/desktop/ui/source.rs) scoped to `RegressifySource > Input` and the actual source focus handle. Menus restore that handle through `action_context`. Preserve Tab completion, native undo/redo, exclusive end-line bounds, reversed selections, and JSON's no-comments rule. Test disabled menu items by pointer behavior; their wrapper may not expose a disabled-state value.
@@ -31,6 +32,7 @@ description: 'Use when changing GPUI desktop widgets, editor tabs, native dialog
 1. Report and landing deployment dialogs expose the selected target's saved URL through `deploy-open-published` and `deploy-copy-published`. Use the native link style without an external icon, content-sized and left-aligned, with Copy beside it and visible for long URLs. Omit report suite listings but retain subset confirmation. Test disk reload, provider switching, pointer copy, and compact light/dark layouts.
 1. Cloudflare target routing defaults to Public (production). Preserve advanced HTML/date/exclusion settings and masked credentials across edits. Keep expanded asset settings scrollable without losing the outer dialog accessibility ID; GPUI's scrollbar wrapper changes element type. `label()` in native tests reads the accessibility name when one overrides visible text. Hide public-link controls for successful private deployments.
 1. Deployment activity uses the shared read-only log editor at full remaining height, not static tail lines. Keep the suite summary ellipsized and hide its capture-statistics row. Test native selection/copy with a clipboard sentinel, long lines, compact/large windows, and a distinct editor accessibility name. Runs Open Site belongs beside Open Report and resolves saved publication membership by output ID, not display name.
+1. Background Git activity refresh must position the log with a non-focusing range update; `set_cursor_position` focuses the editor and can steal remote/commit input. In smoke, synchronize asynchronous copy through bounded exact-content checks; inspect the current split diff, not the obsolete raw-editor control. Deployment failure details belong to its error banner; archived logs carry structured outcomes.
 
 ## Checks
 
@@ -38,6 +40,7 @@ For smoke harness edits, run `./ci/test-desktop-smoke.ps1` in PowerShell 7 first
 
 ```sh
 cargo test --features gui-tests --lib suite_name_dialog_ -- --test-threads=1
+cargo test --features gui-tests --lib root_overlay_ -- --test-threads=1
 cargo test --features gui-tests --lib source_line_commands -- --test-threads=1
 cargo test --features gui-tests --lib external_reload -- --test-threads=1
 cargo test --features gui-tests --lib deployment_activity_ -- --test-threads=1

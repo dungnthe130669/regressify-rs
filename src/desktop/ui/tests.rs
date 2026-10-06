@@ -1,11 +1,73 @@
 use std::{path::Path, time::Duration};
 
-use gpui_kit::component::Root;
+use gpui_kit::base::Root;
 use gpui_kit::test::{TestAppContextExt, TestWindowExt};
-use gpui_kit::{AppContext, Entity, Focusable, TestAppContext, WindowHandle, px, size};
+use gpui_kit::{
+    AppContext, Bounds, Entity, Focusable, Point, TestAppContext, WindowBounds, WindowHandle,
+    WindowOptions, px, size,
+};
 
 use super::Workbench;
 use crate::desktop::session::Selection;
+
+#[gpui_kit::test]
+async fn root_overlay_mounts_dialog_once_and_restores_content_focus(cx: &mut TestAppContext) {
+    use gpui_kit::component::{WindowExt, button::Button};
+    use gpui_kit::{InteractiveElement, ParentElement, TestSupportExt};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    for keyboard in [false, true] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(Root::read(window, cx).view().entity_id(), view.entity_id());
+            let focus = view.read(cx).focus.clone();
+            window.focus(&focus, cx);
+            window.open_dialog(cx, |dialog, _, _| {
+                dialog.title("Root overlay").child(
+                    gpui_kit::div()
+                        .id("root-overlay-content")
+                        .test_support()
+                        .child(
+                            Button::new("root-overlay-close")
+                                .label("Close")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        ),
+                )
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window
+                .try_find("root-overlay-content")
+                .is_some_and(|element| element.visible())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            if keyboard {
+                window.press("escape", cx);
+            } else {
+                window.click("root-overlay-close", cx);
+            }
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.try_find("root-overlay-content").is_none()
+                && window.focused(cx) == Some(view.read(cx).focus.clone())
+        })
+        .await;
+    }
+}
+
+#[gpui_kit::test]
+fn root_overlay_releases_workbench_when_window_closes(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let weak = view.downgrade();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| assert!(weak.upgrade().is_none()));
+}
 
 #[gpui_kit::test]
 async fn log_health_warning_partial_archive_keeps_pass_badge(cx: &mut TestAppContext) {
@@ -1905,6 +1967,13 @@ async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
             assert_eq!(view.read(cx).tab, 1);
             assert_eq!(view.read(cx).source.read(cx).value().as_ref(), draft);
             for (index, line) in [3, 5, 7].into_iter().enumerate() {
+                if !window.find(("source-diagnostic", index)).visible() {
+                    window.scroll(
+                        "source-issues-table",
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-160.))),
+                        cx,
+                    );
+                }
                 window.click(("source-diagnostic", index), cx);
                 assert_eq!(view.read(cx).source.read(cx).cursor_position().line, line);
             }
@@ -5721,23 +5790,34 @@ fn source_line_commands_preserve_native_unicode_crlf_and_reversed_selection(
             assert!(this.select_editor_tab(1, window, cx));
             this.source.update(cx, |state, cx| {
                 state.set_value(original, window, cx);
-                state.set_selected_range(end..0, cx);
+                state.set_selected_range(end..end, cx);
                 window.focus(&state.focus_handle(cx), cx);
             });
         });
         window.render_frame(cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-shift-up"
+            } else {
+                "ctrl-shift-home"
+            },
+            cx,
+        );
+        assert_eq!(view.read(cx).source.read(cx).selected_range(), 0..end);
+        assert_eq!(view.read(cx).source.read(cx).cursor(), 0);
         window.press(&format!("{modifier}-/"), cx);
         let source = view.read(cx).source.read(cx);
         assert_eq!(
             source.value().as_ref(),
             "# label: caf\u{e9} \u{1f680}\r\n# debug: true\r\nscenarios: []\r\n"
         );
-        assert_eq!(source.cursor(), source.selected_range().start);
+        assert_eq!(source.selected_range(), 2..end + 4);
+        assert_eq!(source.cursor(), source.selected_range().end);
         window.press(&format!("{modifier}-/"), cx);
         let source = view.read(cx).source.read(cx);
         assert_eq!(source.value().as_ref(), original);
         assert_eq!(source.selected_range(), 0..end);
-        assert_eq!(source.cursor(), 0);
+        assert_eq!(source.cursor(), end);
     })
     .unwrap();
 }
@@ -6278,32 +6358,49 @@ pub(super) fn editor_at_size(
     cx.update(gpui_kit::init);
     cx.update(|cx| super::design::apply_theme(false, None, cx));
     cx.update(super::bind_keys);
-    let mut created = None;
-    let handle = cx.open_window(dimensions, |window, cx| {
-        let view = cx.new(|cx| Workbench::new(window, cx));
-        view.update(cx, |this, cx| {
-            this.preferences = crate::desktop::workspace::Preferences::default();
-            this.preferences_path = Some(root.join("desktop-preferences.json"));
-            this.apply_editor_display(window, cx);
-            this.session.connect(root).unwrap();
-            this.runs.update(cx, |panel, cx| {
-                panel.set_workspace(root.canonicalize().unwrap(), window, cx)
-            });
-            let open = this
-                .session
-                .workspace
-                .as_ref()
-                .unwrap()
-                .create_suite("ui-test")
-                .unwrap();
-            this.session.install_document(open).unwrap();
-            this.sync_suites(cx);
-            this.select(Selection::Scenario(0), window, cx);
-        });
-        created = Some(view.clone());
-        Root::new(view, window, cx)
-    });
-    (handle, created.unwrap())
+    let (handle, view) = cx
+        .update(|cx| {
+            gpui_kit::open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds {
+                        origin: Point::default(),
+                        size: dimensions,
+                    })),
+                    ..Default::default()
+                },
+                cx,
+                |window, cx| {
+                    let view = cx.new(|cx| Workbench::new(window, cx));
+                    view.update(cx, |this, cx| {
+                        this.preferences = crate::desktop::workspace::Preferences::default();
+                        this.preferences_path = Some(root.join("desktop-preferences.json"));
+                        this.apply_editor_display(window, cx);
+                        this.session.connect(root).unwrap();
+                        this.runs.update(cx, |panel, cx| {
+                            panel.set_workspace(root.canonicalize().unwrap(), window, cx)
+                        });
+                        let open = this
+                            .session
+                            .workspace
+                            .as_ref()
+                            .unwrap()
+                            .create_suite("ui-test")
+                            .unwrap();
+                        this.session.install_document(open).unwrap();
+                        this.sync_suites(cx);
+                        this.select(Selection::Scenario(0), window, cx);
+                    });
+                    view
+                },
+            )
+        })
+        .unwrap();
+    (
+        handle
+            .downcast::<Root>()
+            .expect("Kit windows use the Base root"),
+        view,
+    )
 }
 
 #[gpui_kit::test]

@@ -40,10 +40,14 @@ function Test-GitFlows {
     Invoke-Control "Review $reviewSuite"
     Wait-Control 'Copy last committed file' | Out-Null
     Wait-Control 'Copy saved file' | Out-Null
-    Invoke-Control 'Copy last committed file'
-    if ((Get-Clipboard -Raw) -cne $reviewBefore) { throw 'Git comparison did not copy the exact committed text.' }
-    Invoke-Control 'Copy saved file'
-    if ((Get-Clipboard -Raw) -cne $reviewAfter) { throw 'Git comparison did not copy the exact saved text.' }
+    Wait-WindowState {
+        Invoke-Control 'Copy last committed file'
+        (Get-Clipboard -Raw) -ceq $reviewBefore
+    } 'Git comparison did not copy the exact committed text.'
+    Wait-WindowState {
+        Invoke-Control 'Copy saved file'
+        (Get-Clipboard -Raw) -ceq $reviewAfter
+    } 'Git comparison did not copy the exact saved text.'
     Invoke-Control 'Next change'
     foreach ($theme in @('Light', 'Dark')) {
         Select-Theme $theme
@@ -170,7 +174,11 @@ function Test-GitFlows {
     Wait-Control 'Review nested/selected.txt' | Out-Null
     Capture-Window 'git-change-tree'
     Invoke-Control 'Review nested/selected.txt'
-    Wait-SourceText '+reviewed local change' 'Git diff'
+    Wait-Control 'Copy last committed file' | Out-Null
+    Wait-WindowState {
+        Invoke-Control 'Copy saved file'
+        (Get-Clipboard -Raw) -ceq "reviewed local change`n"
+    } 'Split Git comparison did not show the exact saved file.'
     Capture-Window 'git-diff-review'
     Invoke-Control 'Select nested/selected.txt'
     Write-FixtureControlText 'Git commit message' 'Commit selected fixture change'

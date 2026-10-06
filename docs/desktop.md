@@ -24,6 +24,12 @@ Omit the workspace argument to use the native folder picker. The default
 `cargo build` and `cargo run -- test` remain CLI-only. Feature `desktop` builds
 headless models; `gui` adds native widgets; `gui-tests` adds UI instrumentation.
 
+The native UI pins GPUI Kit 0.7.1 through the single optional `gpui-kit`
+dependency. Production windows and native test fixtures use
+`gpui_kit::open_window`; its Base root owns dialog, sheet and notification
+layers. Application close, cancellation and unsaved-document guards remain
+owned by the workbench.
+
 For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
 The desktop executable contains the engine; no separate `regressify` binary or
 executable picker is needed. It launches itself in a private headless worker mode
@@ -1426,8 +1432,9 @@ and text-size changes preserve source and undo history.
 
 Line commands operate on the current line or all lines touched by the selection.
 A selection ending at the start of the next line leaves that line untouched.
-Commands preserve indentation, Unicode, line endings, and selection direction;
-each command is one native undo step. They also work on invalid drafts without
+Commands preserve indentation, Unicode, line endings, and selected text; after
+a line command, the selection is forward-oriented with the caret at its end.
+Each command is one native undo step. They also work on invalid drafts without
 bypassing save validation. Comment toggling uses YAML `#` comments and is disabled
 for strict JSON. Effective, logs, and Git diffs remain read-only.
 

@@ -2,6 +2,37 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## GPUI Upgrade Baseline (2026-10-06)
+
+- Resolved in the native test: the schema jump/hover/save-guard test clicked its
+  third diagnostic without scrolling it into view. The retained GPUI Kit 0.6.1
+  executable and the 0.7.1 candidate fail identically on invisible
+  `source-diagnostic` 2. The authorized fixture repair scrolls before clicking;
+  all existing cursor, hover, draft and save-guard assertions remain and pass.
+- GPUI Kit 0.7.1 production compilation and the two new root-overlay lifecycle
+  tests pass. Native Windows default, Artifact, Schema, Comparison, Git,
+  Publishing and Deployment flows pass. Final GUI/library gate: 1,081 passed,
+  32 ignored; worker gate: 11 passed, 4 ignored. Production lint and build pass.
+  The owner approved forward-oriented selections after line commands because
+  the release collapses reverse setter ranges. Exact selected text and native
+  keyboard-created CRLF/Unicode repeat-toggle behavior are retained and tested.
+  Git activity refresh no longer focuses its read-only log; a regression failed
+  before the fix and passes for all three editable Git inputs. The
+  [migration ledger](plan/gpui-component-reuse-tasks/README.md) tracks completion.
+
+## Linux Baseline Verification (2026-10-06)
+
+- Existing Ubuntu Git 2.34.1 reports usage errors in three remote rename/remove
+  model tests. The browser installation complete-archive test times out on a
+  zero-second cache-lock wait, and update scheduling/cache clock assertions vary.
+- Current headless-model run: 859 passed, 6 failed, 31 ignored. An isolated
+  pre-upgrade export at `278be67` reproduced the same categories: 858 passed,
+  7 failed, 31 ignored. These are not established as GPUI upgrade regressions.
+- The owner approved separately tracking this non-green local Linux baseline
+  while Windows migration continues. Current Linux CI verification remains
+  required before release; no system Git/toolchain upgrade or model repair was
+  performed as part of the UI migration.
+
 ## MCP QA Findings (2026-10-06)
 
 - Resolved in source: singular scenario `selector: viewport` and `save` with
@@ -167,7 +198,7 @@ Issues identified during adversarial review that remain after the September 2026
 - The exact test fails identically with the new logging subscriber hooks removed
   from the worker. The other ten non-ignored worker integration cases passed.
   This is a pre-existing test gap, not a subscriber-induced asset change.
-- Resolved by [logging packaging Task 027](docs/plan/log-revamp-tasks/027-snapshot-log-packaging-inventory.md):
+- Resolved by [logging packaging Task 027](plan/log-revamp-tasks/027-snapshot-log-packaging-inventory.md):
   the assertion now compares the exact referenced original/preview image set
   rather than assuming two files. A separate exact ZIP inventory test covers
   selected-only log chunks and excludes raw journals and unselected captures.
