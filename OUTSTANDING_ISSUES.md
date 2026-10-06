@@ -2,6 +2,34 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## MCP Knowledge Accuracy Review (2026-10-06)
+
+- Resolved in source: MCP guides, examples, and schema help contradicted the
+  runtime. `wait` with `url` was described as using the number as the URL
+  timeout (the example slept 10 seconds after matching); troubleshooting cited a
+  nonexistent `tests/<run-id>` capture folder; inherited `needs` saves were said
+  to suppress final captures; `remove` was said to delete DOM nodes; CSS hooks,
+  `delay`, `postInteractionWait`, and lazy-load scrolling had wrong timing.
+- Added verified selector-engine limits, a parser-checked `recipes` topic, the
+  setting scope matrix, report fields and messages, capture-record reading
+  (`ActionIndex`, `Condition`, local SHA-256 matching), run-ID reuse/selection,
+  literal action values, and viewport emulation limits. Catalog tests now parse
+  and schema-check every guide YAML fence; the exported package checks pass.
+- Remaining gap: page-level failure detail is reduced to a keyword category in
+  reports, error markers, and console records. A missing screenshot selector is
+  `Unknown failure`, Node hook stderr never surfaces, and an unknown-field
+  preflight error printed `cause=Timeout` because its field list contains
+  `readyTimeout`. Agents must infer causes from stage and `Condition` fields.
+- Remaining docs drift: [create-action](docs/create-action.md) still says frames
+  must be same-origin, though its introduction and the runtime support
+  cross-origin frames. [create-scenario](docs/create-scenario.md) says legacy
+  `clickSelector` runs after `actions` and `clickSelectors` is unimplemented
+  (both convert only when `actions` is omitted), and that initial navigation is
+  bounded by `elementTimeout` rather than `gotoParameters.timeout`.
+- Schemas cannot express exclusive `input` value/file or `select` value/label
+  pairs; violations fail when the action runs. This is documented, not enforced.
+  The hosted Worker needs regeneration and redeployment to serve these changes.
+
 ## Windows Installer Smoke Completion (2026-10-06)
 
 - Resolved in source: the smoke helper waited only for Inno's first-phase

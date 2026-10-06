@@ -25,7 +25,7 @@ pub enum TestSuiteFormat {
 pub struct TestSuite {
     /// Diagnostic display level. Inherits workspace logLevel; does not filter archived records.
     pub log_level: Option<crate::diagnostics::record::Severity>,
-    /// Stable suite identifier used for report and screenshot folders. Normally generated from the suite filename.
+    /// Output identifier for report and screenshot folders, also used by compare, approve, and snapshot filters. Defaults to the lowercase suite filename stem (Shop.tests.yaml becomes shop); changing it moves baselines.
     pub id: Option<String>,
 
     /// Human-readable suite name shown in the desktop app and reports. Does not change the filename or output identifier.
@@ -33,7 +33,7 @@ pub struct TestSuite {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
 
-    /// Run timestamp recorded by Regressify. Normally leave this unset when authoring tests.
+    /// Runtime metadata: Regressify replaces it with the current run ID. Do not set it when authoring tests.
     pub test_date: Option<String>,
 
     /// Maximum simultaneous browser captures. Positive whole number; inherits the workspace setting (default: 5).
@@ -57,14 +57,14 @@ pub struct TestSuite {
     #[schemars(example = "common/_cookies.yaml")]
     pub cookie_path: Option<String>,
 
-    /// CSS file injected before capture. Inherits the workspace setting; useCssOverride controls whether it is applied.
+    /// CSS file injected into every page document before actions and capture. Inherits the workspace setting; useCssOverride controls whether it is applied.
     #[schemars(example = "common/_override.css")]
     pub css_override_path: Option<String>,
 
     /// Show the browser while capturing (default: false). Always disabled in CI environments without a display.
     pub debug: Option<bool>,
 
-    /// CSS selectors to hide before capture while keeping their layout space. A list is required, even for one selector.
+    /// Standard CSS selectors hidden with visibility: hidden (layout kept) in every document before actions and capture; selectors matching nothing are ignored. A list is required, even for one selector.
     #[schemars(example = vec![".timestamp", ".cookie-banner"])]
     pub hide_selectors: Option<Vec<String>>,
 
@@ -83,11 +83,11 @@ pub struct TestSuite {
     #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
     pub pixel_match_threshold: Option<f64>,
 
-    /// Milliseconds to wait after interactions before capturing. Non-negative; inherits the workspace setting (default: 1000).
+    /// Milliseconds to wait after all actions and onReadyScript, before the final captures (not before save checkpoints). Non-negative; inherits the workspace setting (default: 1000).
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
 
-    /// CSS selectors to remove from the page before capture, including their layout space. A list is required.
+    /// Standard CSS selectors set to display: none in every document before actions and capture; selectors matching nothing are ignored. A list is required.
     #[schemars(example = vec![".advertisement"])]
     pub remove_selectors: Option<Vec<String>>,
 
@@ -95,14 +95,14 @@ pub struct TestSuite {
     #[schemars(example = serde_json::json!([{"url": "https://example.com", "label": "Home page"}]))]
     pub scenarios: Vec<TestScenario>,
 
-    /// Saved browser state name or list of names, without .json. Loaded from the active output directory's states folder.
+    /// Saved browser state name or list of names, without .json, loaded from the active output directory's states folder. Replaces workspace state; files must exist before the run starts.
     #[schemars(example = "signed-in")]
     pub state: Option<Needs>,
 
-    /// URL replacement rules applied in order. Each object requires ref (text to match) and test (replacement).
+    /// URL replacement rules for test captures, applied in order after the replacement profile and workspace rules. Each object requires ref (text to match) and test (replacement).
     pub url_replacements: Option<Vec<UrlReplacement>>,
 
-    /// Apply the CSS override file before capture. Inherits the workspace setting (default: true).
+    /// Apply the CSS override file to each page document. hideSelectors and removeSelectors still apply when false. Inherits the workspace setting (default: true).
     pub use_css_override: Option<bool>,
 
     /// Viewport label or list of labels from the viewport file. Matching ignores case; an empty list selects all viewports.
@@ -155,7 +155,7 @@ pub struct TestScenario {
     pub key_press_selectors: Option<Vec<KeyPressSelector>>,
     /// Legacy CSS selector to scroll into view. Prefer an explicit scroll action.
     pub scroll_to_selector: Option<String>,
-    /// CSS selector to wait for after navigation, before interactions. Use readyTimeout to override its timeout.
+    /// Element selector that must exist and be visible after the initial navigation, before CSS/on-ready hooks, lazy-load scrolling, and actions. Use readyTimeout to override its timeout.
     #[schemars(example = &"main")]
     pub ready_selector: Option<String>,
     /// Whole milliseconds to wait for readySelector. Omit or use zero to inherit elementTimeout (default: 30000); readiness runs before dependency and scenario actions.
@@ -183,22 +183,22 @@ pub struct TestScenario {
     #[schemars(example = "common/_cookies.yaml")]
     pub cookie_path: Option<String>,
 
-    /// CSS file injected before capture. Inherits the suite or workspace setting.
+    /// CSS file injected into every page document before actions and capture. Inherits the suite or workspace setting.
     #[schemars(example = "common/_override.css")]
     pub css_override_path: Option<String>,
 
-    /// Milliseconds to wait before capture. Non-negative; inherits the workspace setting (default: 1000).
+    /// Milliseconds to wait before each save checkpoint and before the final captures. Non-negative; inherits the workspace setting (default: 1000); 0 skips it.
     #[schemars(range(min = 0.0), example = 1000)]
     pub delay: Option<f64>,
 
     /// Free-text notes about what this scenario covers.
     pub description: Option<String>,
 
-    /// CSS selectors to hide without removing layout space. A list is required; replaces inherited hideSelectors.
+    /// Standard CSS selectors hidden with visibility: hidden (layout kept) in every document before actions and capture. A list is required; replaces inherited hideSelectors.
     #[schemars(example = vec![".timestamp"])]
     pub hide_selectors: Option<Vec<String>>,
 
-    /// Unique identifier used by needs and reports. Omit to generate it from the label or URL.
+    /// Unique ID (case-insensitive) used by needs, --scenario filters, and screenshot filenames; a portable path component of at most 80 bytes. Omit to use a slug of label, or a URL hash when label is also omitted.
     #[schemars(example = "sign-in")]
     pub id: Option<String>,
 
@@ -218,35 +218,35 @@ pub struct TestScenario {
     #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
     pub pixel_match_threshold: Option<f64>,
 
-    /// ID or list of IDs of other scenarios in this suite whose actions run first. Do not reference this scenario or create cycles.
+    /// ID or list of IDs of other scenarios in this suite whose actions are replayed first inside this scenario's own browser. Not run order or a shared session; do not reference this scenario or create cycles.
     #[schemars(example = "sign-in")]
     pub needs: Option<Needs>,
 
-    /// Skip the automatic page scroll used to load lazy content before capture. Inherits the workspace setting (default: false).
+    /// Skip the one-time lazy-load scroll that runs after navigation and before actions. Inherits the workspace setting (default: false).
     pub no_scroll_top: Option<bool>,
 
-    /// Milliseconds to wait after interactions before capture. Non-negative; inherits the suite or workspace setting (default: 1000).
+    /// Milliseconds to wait after all actions and onReadyScript, before the final captures (not before save checkpoints). Non-negative; inherits the suite or workspace setting (default: 1000).
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
 
-    /// CSS selectors to remove, including layout space. A list is required; replaces inherited removeSelectors.
+    /// Standard CSS selectors set to display: none in every document before actions and capture. A list is required; replaces inherited removeSelectors.
     #[schemars(example = vec![".advertisement"])]
     pub remove_selectors: Option<Vec<String>>,
 
     /// Login requirement flag exposed to ready scripts. This does not perform a login automatically.
     pub required_login: Option<bool>,
 
-    /// Saved state name or list of names to restore in addition to inherited state. Created by the persist action.
+    /// Saved state name or list of names to restore in addition to inherited state. Created by the persist action; files must exist before the run starts.
     #[schemars(example = "signed-in")]
     pub restore: Option<Needs>,
 
-    /// CSS selector for the FINAL screenshot only. Omit to capture the whole page; cannot be combined with selectors. A last applicable save skips this capture.
+    /// Standard CSS selector for the FINAL screenshot only: the first match in the selected tab's main document, which must be visible. Omit to capture the whole page; cannot be combined with selectors. A last applicable save skips this capture.
     #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#content")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
 
-    /// CSS selectors to capture instead of the full page. Use "viewport" for
-    /// the visible viewport; each selector produces an independent screenshot,
+    /// Standard CSS selectors to capture instead of the full page. Use "viewport" for
+    /// the currently visible viewport; each selector produces an independent screenshot,
     /// even when the last applicable action is save. Cannot be combined with selector.
     /// A list must contain at least one target; blank selectors are invalid. Omit or use null for the automatic full-page capture.
     #[schemars(example = &"viewport", example = vec!["main", ".summary"])]
@@ -258,11 +258,11 @@ pub struct TestScenario {
     ))]
     pub selectors: Option<Selectors>,
 
-    /// Required page URL to open before actions, for example https://example.com. URL replacement rules are applied before navigation.
+    /// Required page URL opened before actions, for example https://example.com. Test captures apply URL replacement rules first; reference captures use it as written.
     #[schemars(length(min = 1), example = "https://example.com")]
     pub url: String,
 
-    /// Apply the CSS override file before capture. Inherits the suite or workspace setting (default: true).
+    /// Apply the CSS override file to each page document. hideSelectors and removeSelectors still apply when false. Inherits the suite or workspace setting (default: true).
     pub use_css_override: Option<bool>,
 
     /// Viewport label or list of labels from the viewport file. Replaces inherited selection; an empty list selects all viewports.
@@ -385,12 +385,12 @@ impl BasicAuthConfig {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct UrlReplacement {
-    /// Text to find in the URL, or a regular expression when regex is true.
+    /// Text to find in the URL (every occurrence), or a Rust regular expression when regex is true; look-around and backreferences are unsupported.
     #[serde(rename = "ref")]
     #[schemars(example = "https://production.example.com")]
     pub ref_pattern: String,
 
-    /// Replacement text. May contain capture references such as $1 when regex is true.
+    /// Replacement text. With regex, use ${1} or ${name} for capture groups: a bare $1 followed by a letter, digit, or underscore is read as a longer group name.
     #[schemars(example = "https://staging.example.com")]
     pub test: String,
 

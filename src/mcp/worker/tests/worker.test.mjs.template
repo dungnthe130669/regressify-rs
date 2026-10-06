@@ -84,7 +84,8 @@ test("diagnostic and hook guidance is discoverable without workspace uploads", a
   const { tools } = await client.listTools();
   const guide = tools.find((tool) => tool.name === "get_authoring_guide");
   assert.match(guide.description, /diagnos/i);
-  for (const topic of ["hooks", "troubleshooting"]) {
+  assert.match(guide.description, /recipes/);
+  for (const topic of ["hooks", "troubleshooting", "recipes"]) {
     const result = await client.callTool({ name: "get_authoring_guide", arguments: { topic } });
     assert.equal(result.isError, undefined);
     assert.ok(result.content[0].text.includes(catalog.guides[topic].content));

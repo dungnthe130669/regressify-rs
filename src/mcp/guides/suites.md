@@ -7,6 +7,13 @@ are allowed. Do not author duplicate files for the same suite name. Discovery
 prefers YAML over YML over JSON, and same-priority duplicate names are ambiguous,
 including duplicates in different subdirectories.
 
+The suite name is the file name before `.tests.`, lowercased. Folders are not
+part of it: `visual_tests/checkout/Flow.tests.yaml` is suite `flow`. Capture
+commands select suites by this name; `--test-suite` accepts exact names or glob
+patterns such as `'shop*'`, may be repeated, and `all`, `*`, or omission select
+every suite. A selection that matches nothing fails with
+`No matching test suites found`.
+
 ```yaml
 displayName: Customer checkout
 scenarios:
@@ -21,8 +28,10 @@ scenarios:
 For a file named `visual_tests/shop.tests.yaml`, use `--test-suite shop`.
 `displayName` changes only presentation in the desktop app and reports. It does
 not change CLI filters, filenames, output directories, or report identity.
-Suite `id` is normally generated from the filename; avoid setting it without a
-specific identity requirement. Leave `testDate` unset; it is runtime metadata.
+Suite `id` defaults to the lowercase suite name and names the output folder
+`<output>/<id>/`; `compare`, `approve`, and `snapshot` select suites by this
+output ID. Avoid setting `id` without a specific identity requirement, because
+changing it moves baselines. Leave `testDate` unset; it is runtime metadata.
 
 ## Configuration Scope
 
@@ -60,14 +69,17 @@ Both use the scale 0 through 100, not fractions from 0 through 1.
   dots, control characters, or Windows device names such as `CON` or `LPT1`.
 - Changing IDs or filenames can change screenshot and reference identity. Do not
   rename them as a presentation-only edit; use `displayName` or `label` instead.
-- Scenarios run independently and may run concurrently. Do not rely on list order
-  or a previous scenario's cookies, DOM, or browser session.
+- Scenarios run independently and may run concurrently, up to
+  `asyncCaptureLimit` per suite and `--async-capture-limit` overall (default 5
+  each). Do not rely on list order or a previous scenario's cookies, DOM, or
+  browser session. Lower the limits when the site rate-limits parallel visits.
 - `needs` names scenarios in this same suite and replays their actions inside
   the consuming scenario. It is not scheduling. Consult the scenarios guide.
 - All scenario/viewport/checkpoint/selector screenshot names must be unique,
   including case-insensitive collisions. Regressify checks this before capture.
 
 Use `get_example(task="minimal-suite")`, `minimal-suite-json`,
-`responsive-checkout`, or `reuse-actions` for complete synthetic suite files.
+`responsive-checkout`, or `reuse-actions` for complete synthetic suite files, and
+`get_authoring_guide(topic="recipes")` for common page patterns.
 Keep only one format for a given suite. A file with a different unrecognized
 extension is not a discovered test suite.

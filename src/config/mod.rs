@@ -45,22 +45,22 @@ pub struct WorkspaceConfig {
     /// Default cookie YAML or JSON file loaded before navigation.
     #[schemars(example = "common/_cookies.yaml")]
     pub cookie_path: Option<String>,
-    /// Default CSS override file injected before screenshots.
+    /// Default CSS override file injected into every page document before actions and capture.
     #[schemars(example = "common/_override.css")]
     pub css_override_path: Option<String>,
     /// Show the browser while capturing (default: false). Always disabled in CI environments without a display.
     pub debug: Option<bool>,
-    /// Default delay before capture in milliseconds. Non-negative; default: 1000.
+    /// Default delay in milliseconds before each save checkpoint and before the final captures. Non-negative; default: 1000.
     #[schemars(range(min = 0.0), example = 1000)]
     pub delay: Option<f64>,
-    /// Freeze active CSS and Web Animations before capture. Default: true.
+    /// Complete finite and pause infinite CSS/Web Animations before actions and before each capture. Default: true.
     pub freeze_animations: Option<bool>,
-    /// CSS selectors to hide while preserving layout space. Supply a list, even for one selector.
+    /// Standard CSS selectors hidden in every document while preserving layout space; selectors matching nothing are ignored. Supply a list, even for one selector.
     #[schemars(example = vec![".timestamp"])]
     pub hide_selectors: Option<Vec<String>>,
     /// Ignore HTTPS certificate errors (default: false).
     pub ignore_ssl_errors: Option<bool>,
-    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; defaults to common/_on-ready.js.
+    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions; it may return a promise, and errors fail the capture. Not a Node hook; defaults to common/_on-ready.js.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
     /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
@@ -69,12 +69,12 @@ pub struct WorkspaceConfig {
     /// Per-pixel color tolerance from 0 to 100. Lower values highlight subtler color changes; this is not the allowed percentage of different pixels. Default: 5.
     #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
     pub pixel_match_threshold: Option<f64>,
-    /// Skip the automatic page scroll used to load lazy content (default: false).
+    /// Skip the one-time lazy-load scroll after navigation, before actions (default: false).
     pub no_scroll_top: Option<bool>,
-    /// Delay after interactions in milliseconds. Non-negative; default: 1000.
+    /// Milliseconds to wait after actions and onReadyScript, before the final captures only. Non-negative; default: 1000.
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
-    /// CSS selectors to remove, including their layout space. Supply a list, even for one selector.
+    /// Standard CSS selectors set to display: none in every document; selectors matching nothing are ignored. Supply a list, even for one selector.
     #[schemars(example = vec![".advertisement"])]
     pub remove_selectors: Option<Vec<String>>,
     /// Login requirement flag exposed to ready scripts. Does not log in automatically (default: false).
@@ -93,7 +93,7 @@ pub struct WorkspaceConfig {
     pub state: Option<Needs>,
     /// URL replacement rules applied in order. Each entry requires ref and test; regex and flags are optional.
     pub url_replacements: Option<Vec<UrlReplacement>>,
-    /// Apply the CSS override file before capture (default: true).
+    /// Apply the CSS override file to each page document (default: true). hideSelectors and removeSelectors still apply when false.
     pub use_css_override: Option<bool>,
     /// Viewport label or list of labels. Matching ignores case; omit or use an empty list to capture all configured viewports.
     #[schemars(example = vec!["phone", "desktop"])]
@@ -101,15 +101,15 @@ pub struct WorkspaceConfig {
     /// Workspace-relative viewport YAML file. Default: common/_viewports.yaml. An explicit path must exist inside the workspace.
     #[schemars(example = "common/_viewports.yaml")]
     pub viewports_path: Option<String>,
-    /// Positive whole milliseconds for element existence waits and document/Node hooks. Default: 30000; zero is invalid.
+    /// Positive whole milliseconds for element and frame existence, selector waits and readySelector visibility, URL waits, goto, select retries, switchTab, and document/Node hooks. Default: 30000; zero is invalid.
     #[schemars(range(min = 1), example = 30000)]
     pub element_timeout: Option<u64>,
     /// Positive whole milliseconds for visibility, stability, enabled, and unobscured-target checks. Default: 5000; zero is invalid.
     #[schemars(range(min = 1), example = 5000)]
     pub actionability_timeout: Option<u64>,
-    /// Max time in ms to wait for the page to settle (fonts ready, layout/DOM
-    /// quiet) right before capturing the screenshot. `0` disables the settle
-    /// wait. Default: 5000.
+    /// Whole milliseconds to wait before each capture for fonts, images, and DOM/layout quiet.
+    /// Best effort: expiry is logged and capture continues. 0 disables settling. Default: 5000.
+    #[schemars(example = 5000)]
     pub settle_timeout: Option<u64>,
     /// Positive whole milliseconds for one complete scenario/viewport capture, including actions and hooks. Default: 600000 (ten minutes); zero is invalid.
     #[schemars(range(min = 1), example = 600000)]

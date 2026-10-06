@@ -26,9 +26,10 @@ pub use test_suites::exec_test_suites;
 pub(crate) use test_suites::discover_test_suites;
 
 #[cfg(feature = "desktop")]
-pub(crate) use test_suites::{
-    ActionViewportNameError, validate_action_viewport_names, validate_scenario_dependencies,
-};
+pub(crate) use test_suites::{ActionViewportNameError, validate_action_viewport_names};
+
+#[cfg(any(feature = "desktop", test))]
+pub(crate) use test_suites::validate_scenario_dependencies;
 
 #[cfg(feature = "desktop")]
 pub(crate) use test_suite::assign_scenario_ids;

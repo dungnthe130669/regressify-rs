@@ -43,6 +43,11 @@ pub(super) fn build() -> Result<Value> {
             include_str!("guides/actions.md"),
         ),
         (
+            "recipes",
+            "Complete suites for common page patterns",
+            include_str!("guides/recipes.md"),
+        ),
+        (
             "workspace",
             "Workspace configuration and precedence",
             include_str!("guides/workspace.md"),
@@ -80,7 +85,7 @@ pub(super) fn build() -> Result<Value> {
             "responsive-checkout",
             "suite",
             "visual_tests/checkout.tests.yaml",
-            "A complete suite using the phone and desktop labels from the viewports example. Replace selectors with verified page selectors.",
+            "A complete suite using the phone and desktop labels from the viewports example. The final save replaces the automatic final screenshot. Replace selectors with verified page selectors.",
             json!({"displayName": "Checkout", "viewportNames": ["phone", "desktop"], "scenarios": [{"id": "checkout", "label": "Checkout form", "url": "https://example.com/checkout", "actions": [{"click": "#mobile-menu", "viewportNames": "phone"}, {"input": "#email", "value": "qa@example.com"}, {"check": "#terms"}, {"click": "#submit"}, {"wait": "#confirmation"}, {"save": "confirmation", "selector": "#confirmation"}]}]}),
         ),
         (
@@ -165,7 +170,10 @@ pub(super) fn build() -> Result<Value> {
         ("scroll", json!({"scroll": "#footer"})),
         ("switchTab", json!({"switchTab": "new", "url": "**/quote"})),
         ("uncheck", json!({"uncheck": "#newsletter"})),
-        ("wait", json!({"wait": 10000, "url": "**/dashboard"})),
+        (
+            "wait",
+            json!({"wait": "#dashboard", "url": "**/dashboard*"}),
+        ),
     ];
     let mut action_names = Vec::new();
     for (name, value) in actions {
@@ -209,7 +217,7 @@ pub(super) fn build() -> Result<Value> {
     Ok(json!({
         "formatVersion": 1,
         "regressifyVersion": env!("CARGO_PKG_VERSION"),
-        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files. Use topic troubleshooting for failed tests, logs, or setup issues, and topic hooks before writing browser/Node hooks. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
+        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files, and topic recipes for complete common-page patterns. Use topic troubleshooting for failed tests, reports, logs, or setup issues, and topic hooks before writing browser/Node hooks. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
         "schemaKinds": schemas.keys().collect::<Vec<_>>(),
         "schemas": schemas,
         "guides": guides,
@@ -456,12 +464,177 @@ mod tests {
             "partial",
             "AGENTS.md",
             "--fetch-browser false",
+            "<output>/<suite-id>/bitmaps_test/<run-id>/",
+            "Reference image not found",
+            "Dimensions differ",
+            "ActionIndex",
+            "Unobscured",
+            "sha256:",
+            "lexicographically greatest",
+            "data did not match any variant of untagged enum TestAction",
         ] {
             assert!(
                 troubleshooting.contains(contract),
                 "Missing diagnostic contract: {contract}"
             );
         }
+        // Captures and reports share the run directory; there is no tests/<run-id> folder.
+        assert!(!troubleshooting.contains("/tests/<run-id>"));
+        let actions = catalog["guides"]["actions"]["content"].as_str().unwrap();
+        for contract in [
+            "text=",
+            "xpath=",
+            "standard CSS only",
+            "URL must match first",
+            "case-sensitive",
+            "never substitutes environment variables",
+        ] {
+            assert!(
+                actions.contains(contract),
+                "Missing action contract: {contract}"
+            );
+        }
+        assert!(!actions.contains("supplies its timeout"));
+        for contract in [
+            "Capture Lifecycle",
+            "never suppress the final capture",
+            "1920x1080",
+            "always fails",
+        ] {
+            assert!(
+                scenarios.contains(contract),
+                "Missing scenario contract: {contract}"
+            );
+        }
+        let recipes = catalog["guides"]["recipes"]["content"].as_str().unwrap();
+        for contract in [
+            "removeSelectors",
+            "switchTab: new",
+            "persist: signed-in",
+            "frame:",
+            "process.env",
+        ] {
+            assert!(recipes.contains(contract), "Missing recipe: {contract}");
+        }
+        assert!(hooks.contains("process.env"));
+        assert!(
+            catalog["guides"]["overview"]["content"]
+                .as_str()
+                .unwrap()
+                .contains("topic=\"recipes\"")
+        );
+    }
+
+    fn yaml_blocks(markdown: &str) -> Vec<String> {
+        let mut blocks = Vec::new();
+        let mut current: Option<String> = None;
+        for line in markdown.lines() {
+            match current.as_mut() {
+                None if line == "```yaml" => current = Some(String::new()),
+                None => assert!(
+                    !line.trim_start().starts_with("```yaml"),
+                    "Indented YAML fences are not validated: {line}"
+                ),
+                Some(_) if line == "```" => blocks.extend(current.take()),
+                Some(block) => {
+                    block.push_str(line);
+                    block.push('\n');
+                }
+            }
+        }
+        assert!(current.is_none(), "Unterminated YAML fence");
+        blocks
+    }
+
+    #[test]
+    fn guide_yaml_blocks_are_complete_valid_files() {
+        let catalog = build().unwrap();
+        let mut validated = 0;
+        for (topic, guide) in catalog["guides"].as_object().unwrap() {
+            for block in yaml_blocks(guide["content"].as_str().unwrap()) {
+                let value: Value = serde_yaml::from_str(&block)
+                    .unwrap_or_else(|error| panic!("{topic}: {error}\n{block}"));
+                let kind = if value.get("scenarios").is_some() {
+                    "suite"
+                } else if value.get("profiles").is_some() {
+                    "replacement-profiles"
+                } else if value.is_array() {
+                    "viewports"
+                } else {
+                    "workspace"
+                };
+                let validator = jsonschema::validator_for(&catalog["schemas"][kind]).unwrap();
+                assert!(
+                    validator.is_valid(&value),
+                    "{topic} {kind}: {:?}\n{block}",
+                    validator.iter_errors(&value).collect::<Vec<_>>()
+                );
+                match kind {
+                    "suite" => {
+                        let suite: TestSuite = serde_json::from_value(value).unwrap();
+                        let input = crate::types::TestSuiteInput {
+                            name: topic.clone(),
+                            path: Default::default(),
+                            format: crate::types::TestSuiteFormat::Yaml,
+                        };
+                        crate::test::validate_scenario_dependencies(&input, &suite)
+                            .unwrap_or_else(|error| panic!("{topic}: {error}\n{block}"));
+                        for scenario in &suite.scenarios {
+                            // Guide snippets model the recommended explicit identities.
+                            assert!(scenario.id.is_some(), "{topic}: missing id\n{block}");
+                            crate::test::capture::validate_scenario_capture_names(scenario)
+                                .unwrap_or_else(|error| panic!("{topic}: {error}\n{block}"));
+                        }
+                    }
+                    "replacement-profiles" => {
+                        let profiles: ReplacementProfilesFile =
+                            serde_json::from_value(value).unwrap();
+                        for rules in profiles.profiles.values() {
+                            crate::config::replacements::validate_replacements(rules, topic)
+                                .unwrap();
+                        }
+                    }
+                    "viewports" => {
+                        let viewports: Vec<ViewportDef> = serde_json::from_value(value).unwrap();
+                        crate::config::viewports::validate_viewports(
+                            &viewports,
+                            std::path::Path::new(topic),
+                        )
+                        .unwrap();
+                    }
+                    _ => {
+                        serde_json::from_value::<WorkspaceConfig>(value).unwrap();
+                    }
+                }
+                validated += 1;
+            }
+        }
+        assert!(
+            validated >= 20,
+            "Only {validated} guide YAML blocks were validated"
+        );
+    }
+
+    #[test]
+    fn wait_help_describes_url_matching_before_the_wait() {
+        let catalog = build().unwrap();
+        let wait = &catalog["schemas"]["action"]["$defs"]["WaitAction"]["properties"];
+        let value = wait["wait"]["description"].as_str().unwrap();
+        assert!(value.contains("the URL is matched first"), "{value}");
+        assert!(!value.contains("URL timeout"), "{value}");
+        assert!(
+            wait["url"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("within elementTimeout")
+        );
+        let example: Value = serde_yaml::from_str(
+            catalog["examples"]["action-wait"]["content"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(example["wait"].is_string(), "{example}");
     }
 
     #[test]

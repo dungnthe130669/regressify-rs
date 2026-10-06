@@ -2,7 +2,8 @@
 
 This standalone Cloudflare Worker serves versioned public instructions for
 authoring Regressify suites, scenarios, actions, workspace configuration, and
-predefined files, plus lifecycle-hook contracts and failure diagnosis. Its complete knowledge bundle is generated from the installed
+predefined files, plus common scenario recipes, lifecycle-hook contracts, and
+failure diagnosis. Its complete knowledge bundle is generated from the installed
 CLI and embedded in this project. It does not need the Regressify source
 repository, Rust, Chromium, an LLM API key, or access to a user's test workspace.
 
@@ -10,8 +11,9 @@ The MCP endpoint is `/mcp` using Streamable HTTP. It exposes three read-only too
 `get_authoring_guide`, `get_schema`, and `get_example`; discoverable guide/schema
 resources; and the `author_regressify` prompt. Agents edit local files using their
 own authorized tools. This server cannot execute tests or approve references.
-Use the `hooks` topic before writing scripts and `troubleshooting` for local
-reports, logs, configuration/capture failures, and MCP connection problems.
+Use the `recipes` topic for complete common-page suites, `hooks` before writing
+scripts, and `troubleshooting` for local reports, logs, configuration/capture
+failures, and MCP connection problems.
 Diagnostic lookups never upload workspace contents or private logs.
 
 ## Local Verification

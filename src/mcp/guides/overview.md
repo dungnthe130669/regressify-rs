@@ -15,9 +15,15 @@ server's version; do not assume newer fields work in an older installed CLI.
 ## Finding the Right Instructions
 
 - `get_authoring_guide(topic="suites")`: suite discovery, identity, and structure.
-- `get_authoring_guide(topic="scenarios")`: scenario reuse, state, and screenshots.
-- `get_authoring_guide(topic="actions")`: action syntax, frames, waits, and tabs.
-- `get_authoring_guide(topic="workspace")`: defaults and configuration precedence.
+- `get_authoring_guide(topic="scenarios")`: capture lifecycle, reuse, state,
+  screenshot targets, and file names.
+- `get_authoring_guide(topic="actions")`: action syntax, selector engines,
+  frames, waits, typing, and tabs.
+- `get_authoring_guide(topic="recipes")`: complete patterns for dynamic content,
+  consent banners, forms, sign-in, popups, iframes, responsive menus, components,
+  and staging URLs.
+- `get_authoring_guide(topic="workspace")`: defaults, setting scopes, and
+  configuration precedence.
 - `get_authoring_guide(topic="files")`: shared files, scripts, and artifact ownership.
 - `get_authoring_guide(topic="hooks")`: browser/Node hook contracts, lifecycle,
   arguments, timeouts, and working examples.
@@ -30,6 +36,25 @@ server's version; do not assume newer fields work in an older installed CLI.
   Inspect its target path and description. Action and scenario examples are
   fragments; suite examples are complete files. Replace example URLs and
   selectors with values verified against the user's application.
+
+## Essential Rules
+
+- Each scenario/viewport pair runs in a fresh browser, possibly in parallel:
+  never rely on another scenario's session, order, or side effects.
+- Use one action key per list item and quote YAML selectors that start with `#`.
+- Element selectors in actions accept CSS, `text=`, `xpath=`, and `>>` chains;
+  `hide`/`remove`, `hideSelectors`/`removeSelectors`, and screenshot selectors
+  are standard CSS only.
+- Interactive actions wait for a visible, stable, enabled, uncovered target.
+  After navigation or client-side updates, wait for a URL and a visible element
+  instead of sleeping.
+- Action values, URLs, and cookies are literal; only `basicAuth` expands
+  environment variables. Keep secrets out of suites.
+- A test image whose dimensions differ from its reference always fails, so
+  prefer component `selectors` when unrelated page height may change.
+- A last `save` among a scenario's own actions replaces its automatic final
+  screenshot; explicit `selectors` are still captured.
+- Mask only nondeterministic regions, never the behavior under test.
 
 ## Safe Authoring Workflow
 
@@ -73,9 +98,11 @@ and other VS Code settings remain explicit-init features. Run initialization
 only when these writes are intended. Read the files guide for preservation and
 failure rules. `ref` creates or updates successful
 references; failed captures do not replace good references. A later `test` makes
-new captures and comparisons. `snapshot` generates the report website. After
-review, an explicitly authorized `regressify approve --test-suite home` promotes
-successful test captures. These commands may modify local output and baselines.
+new captures and comparisons. `ref` and `test` also regenerate the report
+website at `<output>/index.html`, and `snapshot` rebuilds it alone; serve the
+output folder over HTTP to view it. After review, an explicitly authorized
+`regressify approve --test-suite home` promotes successful test captures from
+the latest run. These commands may modify local output and baselines.
 
 The root option precedes the command, for example
 `regressify --root ./visual-workspace test --test-suite home`.

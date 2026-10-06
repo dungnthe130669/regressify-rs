@@ -7,10 +7,23 @@ Verified: 2026-10-06
   new directory under an existing parent, with no-clobber file publication.
   Failures may leave a partial export; there is no automatic recursive cleanup.
 - [The catalog](../../src/mcp/catalog.rs) derives six schemas from real Rust
-  types, embeds eight guides, and includes 31 synthetic examples. The hooks and
-  troubleshooting topics cover script contracts, local evidence, and safe repair.
-  Tests check real parsers, local schema references, every property having direct
-  or referenced help, action coverage, and local negative/boundary constraints.
+  types, embeds nine guides (including `recipes`), and includes 31 synthetic
+  examples. The hooks and troubleshooting topics cover script contracts, local
+  evidence, and safe repair. Tests check real parsers, local schema references,
+  every property having direct or referenced help, action coverage, local
+  negative/boundary constraints, and every guide YAML fence as a complete file.
+- Runtime facts verified for the guides: `wait` with `url` matches the URL within
+  `elementTimeout` first, then sleeps or waits for the selector; action selectors
+  use the bundled Playwright engines, but hide/remove and screenshot selectors
+  are plain CSS in the main document; captures and `report.json` share
+  `<output>/<suite>/bitmaps_test/<run>/` (there is no `tests/<run>` folder).
+- Page-level failure markers, `engineErrorMsg`, and console/journal causes keep
+  only a keyword-derived category; agents locate failures via `ActionIndex`,
+  `Condition`, and stage records. Identity fields are unsalted `sha256:` of the
+  exact text, so local candidates can be hashed to confirm a match.
+- New guide topics are discovered through the overview served by the same Worker
+  version. The CLI-managed `AGENTS.md` section was left unchanged so a newer CLI
+  cannot name a topic that an older hosted Worker rejects.
 - Node examples and a companion suite use six-argument ESM hooks at `.mjs` target
   paths. [Worker tests](../../src/mcp/worker/tests/worker.test.mjs.template) import
   the exported modules and exercise them with stub pages; this is not browser

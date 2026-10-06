@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use crate::types::Selectors;
 
 /// One browser action per list item. Actions run in order; a failure stops the current scenario.
+/// Element selectors accept CSS plus text=, xpath=, :has-text(), and >> chains; hide, remove,
+/// and screenshot selectors are standard CSS only.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 #[derive(schemars::JsonSchema)]
@@ -71,8 +73,9 @@ impl TestAction {
     }
 }
 
-/// Optional iframe CSS selector, or a list of selectors from outermost to innermost frame.
-/// Omit to target the main page. Quote selectors beginning with # in YAML.
+/// Optional iframe selector, or a list of selectors from outermost to innermost frame.
+/// Same-origin and cross-origin frames work; each selector must match an iframe or frame
+/// element. Omit to target the main page. Quote selectors beginning with # in YAML.
 #[derive(Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 #[derive(schemars::JsonSchema)]
@@ -106,7 +109,7 @@ pub enum SelectValue {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct CheckAction {
-    /// CSS selector of a checkbox or radio button. Clicks only when not already checked; waits for visibility and an unobscured, enabled target.
+    /// Selector of a native checkbox or radio button. Clicks only when not already checked; waits for visibility and an unobscured, enabled target. Click the visible label instead when the native input is visually hidden.
     #[schemars(example = "#accept-terms")]
     pub check: String,
     pub frame: Option<Frame>,
@@ -120,7 +123,7 @@ pub struct CheckAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct ClickAction {
-    /// CSS selector to click. Scrolls into view and waits until visible, stable, enabled, and not covered by another element.
+    /// Element selector to click. Scrolls into view and waits until visible, stable, enabled, and not covered by another element. Navigation that starts immediately is awaited; add a wait for later or client-side changes.
     #[schemars(example = "#submit")]
     pub click: String,
     pub frame: Option<Frame>,
@@ -134,7 +137,7 @@ pub struct ClickAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct FocusAction {
-    /// CSS selector of the element to focus. Scrolls into view and checks that it is interactable.
+    /// Selector of the element to focus. Scrolls into view, checks that it is interactable, and fails unless it becomes the active element.
     #[schemars(example = "#email")]
     pub focus: String,
     pub frame: Option<Frame>,
@@ -148,7 +151,7 @@ pub struct FocusAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct GotoAction {
-    /// Navigate to this URL before continuing. No element selector is needed.
+    /// Navigate the page (or frame) to this URL and wait until the document is interactive. Test captures apply URL replacements; reference captures use it as written.
     #[schemars(example = "https://example.com")]
     pub goto: String,
     pub frame: Option<Frame>,
@@ -162,7 +165,7 @@ pub struct GotoAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct HideAction {
-    /// CSS selector of elements to hide while retaining their layout space. Useful for changing content such as timestamps.
+    /// Standard CSS selector of elements to hide with visibility: hidden in the current document, keeping their layout space. Waits up to elementTimeout for a match and fails if none appears; use hideSelectors for optional elements.
     #[schemars(example = ".timestamp")]
     pub hide: String,
     pub frame: Option<Frame>,
@@ -176,7 +179,7 @@ pub struct HideAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct HoverAction {
-    /// CSS selector to hover using the real mouse pointer. Scrolls into view and waits for an interactable target.
+    /// Element selector to hover using the real mouse pointer. Scrolls into view and waits for an interactable target.
     #[schemars(example = "#navigation-menu")]
     pub hover: String,
     pub frame: Option<Frame>,
@@ -190,7 +193,7 @@ pub struct HoverAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct RemoveAction {
-    /// CSS selector of elements to remove from the DOM, including their layout space.
+    /// Standard CSS selector of elements to hide with display: none in the current document; they stay in the DOM but take no layout space. Waits up to elementTimeout for a match and fails if none appears; use removeSelectors for optional elements.
     #[schemars(example = ".advertisement")]
     pub remove: String,
     pub frame: Option<Frame>,
@@ -204,17 +207,17 @@ pub struct RemoveAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct InputAction {
-    /// CSS selector of the input, textarea, or editable element. Supply value for text or file for an upload.
+    /// Selector of the input, textarea, or contenteditable element. Supply exactly one of value (text) or file (upload); neither or both fails when the action runs.
     #[schemars(example = "#email")]
     pub input: String,
-    /// Text to enter. Quote numbers, true, and false when they are text. Use an empty quoted string to clear the field.
+    /// Literal text typed with keyboard events after the existing text is selected and deleted (unless append is true). No environment variables are substituted. Quote numbers, true, and false when they are text. Use an empty quoted string to clear the field.
     #[schemars(example = "qa@example.com", example = &"")]
     pub value: Option<String>,
     /// Append to existing text instead of clearing it first (default: false).
     pub append: Option<bool>,
-    /// File path or list of file paths, relative to visual_tests/. Use with a file input; do not put file contents here.
+    /// File path or list of file paths, relative to visual_tests/. Without useFileChooser the target must be a visible input type=file; do not put file contents here.
     pub file: Option<FileInput>,
-    /// Open a file chooser by clicking the target, then supply file (default: false).
+    /// Click the target (for example a visible upload button) to open a file chooser, then supply file (default: false).
     pub use_file_chooser: Option<bool>,
     pub frame: Option<Frame>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
@@ -227,7 +230,7 @@ pub struct InputAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct PersistAction {
-    /// Save cookies and localStorage under this name, without .json. Restore with state or restore in later captures.
+    /// State name without .json. Writes cookies and origin-scoped localStorage to the output directory's states/<name>.json; load it with state or restore in a later run. The file holds session secrets.
     #[schemars(example = "signed-in")]
     pub persist: String,
     pub frame: Option<Frame>,
@@ -241,10 +244,10 @@ pub struct PersistAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct PressAction {
-    /// CSS selector of the element that receives the key. The key property is also required.
+    /// Selector of the element that receives the key. The key property is also required.
     #[schemars(example = "#search")]
     pub press: String,
-    /// Keyboard key or combination: Enter, Tab, Escape, ArrowDown, Ctrl+A, or Shift+Tab, for example.
+    /// Case-sensitive key name or combination with one non-modifier key: Enter, Tab, Escape, ArrowDown, Ctrl+A, Shift+Tab, or ControlOrMeta+A, for example. Unknown keys fail when the action runs.
     #[schemars(example = &"Enter", example = &"Tab", example = "Ctrl+A", example = "Shift+Tab")]
     pub key: String,
     pub frame: Option<Frame>,
@@ -258,10 +261,10 @@ pub struct PressAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct SaveAction {
-    /// Screenshot checkpoint name. A last applicable save replaces the automatic final screenshot, but explicit scenario selectors are still captured.
+    /// Checkpoint name saved as <scenario-id>[_<viewport>]__$<name>.png: at most 100 bytes, no path separators, not ending in _diff. A last applicable save among the scenario's own actions replaces the automatic final screenshot, but explicit scenario selectors are still captured.
     #[schemars(example = "after-login")]
     pub save: String,
-    /// CSS selector to capture instead of the whole page. Independent of the scenario's final selector.
+    /// Standard CSS selector to capture instead of the whole page: the first match in the selected tab's main document, which must be visible. Independent of the scenario's final selector.
     #[schemars(length(min = 1), regex(pattern = r"\S"), example = "#confirmation")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub selector: Option<String>,
@@ -276,7 +279,7 @@ pub struct SaveAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct ScrollAction {
-    /// CSS selector to scroll into view. Does not click or focus the element.
+    /// Element selector to scroll into view. Does not click or focus the element.
     #[schemars(example = "#footer")]
     pub scroll: String,
     pub frame: Option<Frame>,
@@ -290,10 +293,10 @@ pub struct ScrollAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct SelectAction {
-    /// CSS selector of a select element. Supply value to match option values, or label to match visible option text.
+    /// Selector of a native select element. Supply exactly one of value (option values) or label (visible option text).
     #[schemars(example = "#country")]
     pub select: String,
-    /// Option value, or list of values for a multiple select. Fails when no option matches.
+    /// Option value, or list of values for a multiple select. Retries while options are missing or disabled, then fails after elementTimeout.
     pub value: Option<SelectValue>,
     /// Visible option text to select instead of matching by value.
     #[schemars(example = &"Sweden")]
@@ -309,7 +312,7 @@ pub struct SelectAction {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct UncheckAction {
-    /// CSS selector of a checked checkbox to clear. Does nothing when already unchecked; cannot clear a selected radio button.
+    /// Selector of a checked checkbox to clear. Does nothing when already unchecked; cannot clear a selected radio button.
     #[schemars(example = "#newsletter")]
     pub uncheck: String,
     pub frame: Option<Frame>,
@@ -325,7 +328,7 @@ pub struct UncheckAction {
 pub struct SwitchTabAction {
     /// Select a new tab opened by the current page, the previously selected tab, or the scenario's original tab. Subsequent actions and screenshots use the selected tab.
     pub switch_tab: TabTarget,
-    /// Optional URL or glob for a new tab. Waits for its navigation to match; * stays within one path segment and ** matches across segments. Only valid with switchTab: new.
+    /// Optional URL or glob for a new tab. Waits for its navigation to match; * stays within one path segment and ** matches across segments. Only valid with switchTab: new; test captures apply URL replacements.
     #[schemars(example = "**/quote")]
     pub url: Option<String>,
     /// Restrict this action to one viewport label or a list of labels (case-insensitive).
@@ -347,10 +350,10 @@ pub enum TabTarget {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[derive(schemars::JsonSchema)]
 pub struct WaitAction {
-    /// Whole milliseconds to pause, or a CSS selector to wait for. When url is supplied, a numeric wait is the URL timeout in milliseconds.
+    /// Whole milliseconds to pause, or an element selector that must exist and become visible within elementTimeout. With url, the URL is matched first; this pause or selector wait runs afterwards.
     #[schemars(example = 1000, example = "#ready")]
     pub wait: Wait,
-    /// URL or glob to wait for. * matches within one path segment; ** matches across path segments.
+    /// URL or glob the page or frame URL must match within elementTimeout before the wait continues. * matches within one path segment, ** across segments, {a,b} lists alternatives, and ? is literal. Test captures apply URL replacements.
     #[schemars(example = "**/dashboard")]
     pub url: Option<String>,
     pub frame: Option<Frame>,

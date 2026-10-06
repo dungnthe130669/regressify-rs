@@ -13,41 +13,125 @@ and `append: true` for equivalent typing, or `press` with `key` for keyboard eve
 
 Use `get_schema(kind="action", action="click")` for one action's exact schema,
 or omit `action` for the complete union. Every action has a synthetic example
-named `action-<name>`, such as `get_example(task="action-input")`.
+named `action-<name>`, such as `get_example(task="action-input")`. The `recipes`
+topic combines actions into complete scenarios for common page patterns.
+
+## Selector Syntax
+
+Element selectors in interactive actions, `scroll`, selector `wait`,
+`readySelector`, and `frame` accept CSS plus Playwright-style engines:
+`text=Sign in`, `xpath=//main//button`, `button:has-text("Sign in")`, and `>>`
+chains such as `css=#cart >> text=Checkout`. CSS and text matching search open
+shadow roots; closed shadow roots are unreachable. The first match is used.
+
+`hide` and `remove` actions, `hideSelectors`, `removeSelectors`, and screenshot
+selectors (`selector`, `selectors`, `save.selector`) become CSS rules or
+`document.querySelector` calls, so they accept standard CSS only. A `text=`
+target can pass the `hide` existence check yet produce an ignored CSS rule.
+Screenshot selectors search only the selected tab's main document, not iframes
+or shadow roots.
+
+Prefer stable hooks such as `[data-testid=...]`, IDs, form names, or accessible
+labels over layout paths like `div:nth-child(3)`. Inspect the real page before
+writing a selector; never copy one from an example without verifying it. Quote
+YAML selectors that begin with `#`; unquoted, YAML reads them as comments.
 
 ## Action Reference
 
-| Action      | Required Value and Behavior                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `click`     | CSS selector. Scrolls and waits for a stable, visible, enabled, unobscured target before a real pointer click.             |
-| `hover`     | CSS selector. Moves the real pointer to an actionable target.                                                              |
-| `check`     | Checkbox or radio selector. Checks only if not already checked.                                                            |
-| `uncheck`   | Checkbox selector. Clears only if checked; cannot clear a selected radio.                                                  |
-| `focus`     | CSS selector. Focuses an interactable element.                                                                             |
-| `input`     | CSS selector plus `value` for text or `file` for uploads. Text replaces existing content unless `append: true`.            |
-| `press`     | CSS selector plus required `key`, such as `Enter`, `Tab`, `Escape`, or `Ctrl+A`.                                           |
-| `select`    | Native select selector plus `value` or visible option `label`. Multiple values require a multiple-select element.          |
-| `scroll`    | CSS selector to scroll into view. Does not click or focus it.                                                              |
-| `goto`      | URL to navigate to before continuing.                                                                                      |
-| `wait`      | Whole milliseconds or a CSS selector. An optional `url` waits for a URL pattern; numeric `wait` then supplies its timeout. |
-| `hide`      | CSS selector of elements to hide while retaining layout space.                                                             |
-| `remove`    | CSS selector of elements to remove, including layout space.                                                                |
-| `save`      | Portable checkpoint name; optional `selector` crops this screenshot.                                                       |
-| `persist`   | Portable state name without `.json`; stores cookies and localStorage in the active output's states folder.                 |
-| `switchTab` | `new`, `previous`, or `original`. Subsequent actions and screenshots use that selected tab.                                |
+- `click`: element selector. Scrolls into view and waits for a stable, visible,
+  enabled, unobscured target, then clicks its center with the real pointer.
+- `hover`: element selector. Moves the real pointer to an actionable target.
+- `check`: native checkbox or radio selector. Clicks only if not already checked.
+- `uncheck`: checkbox selector. Clicks only if checked; cannot clear a radio.
+- `focus`: element selector. Fails unless the target becomes the active element.
+- `input`: element selector plus exactly one of `value` (text) or `file` (upload).
+- `press`: element selector plus required `key`, such as `Enter` or `Ctrl+A`.
+- `select`: native `<select>` selector plus exactly one of `value` or `label`.
+  Multiple values require a multiple-select element.
+- `scroll`: element selector to scroll into view; it does not click or focus.
+- `goto`: URL. Navigates the page or frame and waits until it is interactive.
+- `wait`: whole milliseconds or an element selector, with an optional `url`.
+- `hide`: standard CSS; matches get `visibility: hidden`, keeping layout space.
+- `remove`: standard CSS; matches get `display: none` and lose layout space.
+  Elements stay in the DOM.
+- `save`: portable checkpoint name; optional `selector` crops this screenshot.
+- `persist`: state name without `.json`; stores cookies and origin-scoped
+  localStorage in the active output's `states/` folder.
+- `switchTab`: `new`, `previous`, or `original`; later steps use that tab.
 
-Quote selectors beginning with `#` in YAML. Text inputs such as `"123"`,
-`"true"`, and `"false"` must remain strings. Use `value: ""` to clear an input.
+Finding an element uses `elementTimeout`; visibility, stability, coverage, and
+enabled checks use `actionabilityTimeout`. `hide`, `remove`, and `scroll` only
+wait for the element to exist, but fail when it never appears, so use
+`hideSelectors` or `removeSelectors` for elements that may be absent. Action
+CSS rules apply to the current document only; configured selector lists apply
+to every document. Never hide an element that a later action must use.
+
+## Waiting and Navigation
+
+`click`, `check`, `uncheck`, `press`, `input`, and `select` await a document
+navigation that starts immediately after the action, until the new page fires
+`load` (bounded by `elementTimeout`). Client-side transitions and navigation
+started later are not awaited; follow them with a `wait`.
+
+A numeric `wait` sleeps. A selector `wait` waits until the element exists and
+is visible, each phase within `elementTimeout`. With `url`, the current page or
+frame URL must match first, within `elementTimeout`; the sleep or selector wait
+runs afterwards. URL patterns are exact URLs or globs: `*` stays within one path
+segment, `**` spans segments, `{login,dashboard}` lists alternatives, and `?` is
+a literal character. Query strings and fragments are part of the URL, so use
+`**/dashboard*` when a query may follow. Prefer
+`{wait: "#dashboard", url: "**/dashboard*"}` to a long fixed sleep. There is no
+wait-until-hidden action; remove transient overlays with `removeSelectors`.
+
+In `test` captures, URL replacement rules also apply to `goto`, `wait.url`, and
+`switchTab.url`; `ref` captures use them as written. Initial navigation has
+separate settings under `engineOptions.gotoParameters`, not action fields.
+
+A link opening a popup does not select it. After the click, add
+`switchTab: new`; an optional `url` picks the intended popup, and more than one
+matching new tab fails. `previous` returns to the previously selected tab and
+`original` to the scenario's first tab; neither accepts `url` or `frame`. Tab
+selection is bounded by `elementTimeout`.
+
+## Typing, Keys, and Uploads
+
+`input.value` focuses the target, selects and deletes its existing text unless
+`append: true`, types each character with keyboard events, and fires `change`
+on native inputs. Read-only and non-editable targets fail. Values are literal:
+Regressify never substitutes environment variables in actions, so do not place
+real passwords in suite files. Quote text such as `"123"`, `"true"`, and
+`"false"`; use `value: ""` to clear a field.
+
+`press.key` names are case-sensitive US-keyboard names such as `Enter`, `Tab`,
+`Escape`, `ArrowDown`, `PageDown`, `F5`, `a`, or `A`, optionally prefixed by
+`Ctrl`/`Control`, `Alt`/`Option`, `Shift`, `Meta`/`Cmd`/`Command`, or
+`ControlOrMeta` and joined with `+`. Use one non-modifier key per action.
+
 Upload `file` paths are relative to `visual_tests/`, not the workspace root,
 and must remain inside that directory. Supply a file path or list, never file
-contents. `useFileChooser: true` clicks the input target to open a chooser.
-Do not supply conflicting text/file or select value/label alternatives.
+contents. Without `useFileChooser`, the target must be a visible
+`<input type="file">`; when the site hides that input, set
+`useFileChooser: true` and target the visible button that opens the chooser.
+
+## Runtime-Only Checks
+
+Preflight rejects unknown fields, unknown viewport labels, invalid save, state,
+and restore names, and colliding screenshot names before any browser starts.
+Some combinations pass schema validation but fail when the action runs, as a
+page failure: `input` with neither or both of `value` and `file`, `select` with
+neither or both of `value` and `label`, `check` on a non-checkbox target,
+`switchTab.url` with `previous` or `original`, an invalid `persist` name, and an
+unknown `press` key.
 
 ## Frames and Responsive Actions
 
-All actions except `switchTab` support optional `frame`: one iframe CSS selector
-or an array ordered from the outermost to innermost frame. Omit it for the main
-document. Interactive actions also check targeting within the selected frame.
+All actions except `switchTab` support optional `frame`: one iframe selector
+or an array ordered from the outermost to innermost frame. Same-origin and
+cross-origin frames work; each selector must match an `<iframe>` or `<frame>`,
+which may take up to `elementTimeout` to appear and load. Interactive actions
+also check that parent frames are visible and uncovered at the target point,
+and `goto` or URL waits with `frame` act on that frame. Omit `frame` for the
+main document.
 
 ```yaml
 scenarios:
@@ -72,22 +156,19 @@ match case-insensitively and must be inside the consumer's effective viewport
 set. Blank, unknown, or out-of-scope labels fail before browser capture. Define
 the example's phone/desktop labels in the viewport file before using it.
 
-## Navigation and Checkpoints
-
-URL waits and `switchTab: new` URL filters accept exact URLs or globs. `*` stays
-within one path segment; `**` can span segments. Prefer state-based waits to
-arbitrary long sleeps. Initial navigation has separate settings under
-`engineOptions.gotoParameters`, not action-level timeout fields.
-
-A link opening a popup does not select it automatically. After the click, add
-`switchTab: new`; an optional `url` matches the intended popup's navigation.
-Only `new` accepts a URL filter. `previous` selects the previously selected tab;
-`original` returns to the scenario's original tab. Neither accepts `frame`.
+## Checkpoints and State
 
 `save.selector` crops that checkpoint independently of scenario final capture
-options. A last applicable `save` replaces the automatic final full-page or
-singular-selector capture, but explicit scenario `selectors` still produce
-captures. State and checkpoint names are not arbitrary filesystem paths.
+options. A last applicable `save` among the scenario's own actions replaces the
+automatic final full-page or singular-selector capture, but explicit scenario
+`selectors` still produce captures. Saves inherited through `needs` still create
+checkpoints, named with the consuming scenario's ID, without suppressing its
+final capture. Each checkpoint waits `delay` and settles like a final capture.
+
+`persist` writes `<output>/states/<name>.json` when it runs. Saved state is
+validated before a run starts, so load it with `state` or `restore` in a later
+run, not in a scenario captured concurrently. State and checkpoint names are
+portable file names, not arbitrary paths.
 
 Only Chromium is supported. Browser actions are performed by Regressify running
 locally, never by this read-only MCP Worker. Do not execute hooks, upload files,

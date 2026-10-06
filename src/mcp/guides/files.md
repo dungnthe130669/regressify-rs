@@ -27,21 +27,29 @@ may lack automatic desktop setup; compare CLI and server versions when diagnosin
 
 ## User-Authored Runtime Files
 
-| Path                                                             | Contents and Loading                                                                                               |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `regressify.yaml` or `regressify.yml`                            | Workspace YAML object; `{}` inherits defaults. Existing `.yml` is preserved by initialization.                     |
-| `visual_tests/<name>.tests.yaml`, `.tests.yml`, or `.tests.json` | Suite object containing `scenarios`. Use one format per suite name.                                                |
-| `common/_viewports.yaml`                                         | Top-level list of `{label, width, height}` objects. Default viewport file; override with `viewportsPath`.          |
-| `common/_cookies.yaml`                                           | Top-level cookie list; initialized as `[]`. Override with `cookiePath`, including an explicit JSON file.           |
-| `common/_replacement-profiles.yaml` or `.yml`                    | Object with `profiles`, mapping names to ordered replacement-rule lists. Initialized as `profiles: {default: []}`. |
-| `common/_override.css`                                           | Browser CSS injected before capture when `useCssOverride` is true; override with `cssOverridePath`.                |
-| `common/_on-ready.js`                                            | Browser-side JavaScript applied once per document before capture; override with `jsOnReadyPath`.                   |
+- `regressify.yaml` or `regressify.yml`: workspace YAML object; `{}` inherits
+  defaults. An existing `.yml` is preserved by initialization.
+- `visual_tests/<name>.tests.yaml`, `.tests.yml`, or `.tests.json`: suite object
+  containing `scenarios`. Use one format per suite name.
+- `common/_viewports.yaml`: top-level list of `{label, width, height}` objects.
+  Default viewport file; override with `viewportsPath`.
+- `common/_cookies.yaml`: top-level cookie list, initialized as `[]`. Override
+  with `cookiePath`, including an explicit JSON file.
+- `common/_replacement-profiles.yaml` or `.yml`: object with `profiles`,
+  mapping names to ordered replacement-rule lists. Initialized as
+  `profiles: {default: []}`.
+- `common/_override.css`: browser CSS injected into every page document before
+  actions and capture when `useCssOverride` is true; override with
+  `cssOverridePath`.
+- `common/_on-ready.js`: browser-side JavaScript run once per page document
+  before actions; override with `jsOnReadyPath`.
 
 Configured paths must remain inside the canonical workspace and be regular
 files. Explicit missing paths are errors. The default cookie/CSS/ready files are
 optional when absent, but validated when present. A missing default viewport
-file permits an unnamed default capture; an explicit missing viewport file is an
-error. No named viewport filter can select labels from an absent file.
+file, or one containing an empty list, means one unnamed capture per scenario at
+1920x1080 CSS pixels; an explicit missing viewport file is an error. Named
+`viewportNames` filters are then ignored, and action filters must be empty.
 
 ## Viewport and Profile Formats
 
@@ -58,6 +66,9 @@ Viewport dimensions are positive whole CSS-pixel values. Labels must be nonblank
 case-insensitively unique, and produce distinct screenshot suffixes of at most
 48 bytes. Distinct text can normalize to the same suffix, so avoid punctuation
 variants. `viewportNames` values select these labels, not device types or sizes.
+A viewport sets only the CSS size at device scale factor 1: there is no mobile
+user agent, touch emulation, or high-density rendering, so sites that choose
+layouts by user agent show their desktop markup at phone widths.
 
 ```yaml
 profiles:
@@ -91,11 +102,15 @@ uses the runtime parser, not an independently maintained JSON Schema here.
 ## CSS and JavaScript
 
 CSS overrides are ordinary CSS, not YAML. Hide only approved nondeterministic
-regions; do not conceal the behavior under test. Ready JavaScript executes in
-the page, with DOM APIs and `window.__REGRESSIFY__` / `window.regressify` context.
-The context includes the scenario's identity, URL, and `requiredLogin` flag.
-CSS/ready hooks apply once for each document, including subsequent navigation.
-Errors fail the capture; do not assume a failed script was applied.
+regions; do not conceal the behavior under test. `hideSelectors` and
+`removeSelectors` are appended to this CSS as `visibility: hidden` and
+`display: none` rules, even when `useCssOverride` is false. Ready JavaScript
+executes in the page, with DOM APIs and `window.__REGRESSIFY__` /
+`window.regressify` context. The context includes the scenario's identity, URL,
+and `requiredLogin` flag. CSS/ready hooks apply once for each document,
+including subsequent navigation, before the next action or capture. A script may
+return a promise. Errors fail the capture; do not assume a failed script was
+applied.
 
 These browser scripts do not have Node's filesystem or `require`. The separate
 scenario `onBeforeScript` and `onReadyScript` options invoke Node hooks and need
@@ -115,11 +130,14 @@ extension recommendations are editor integration, not suite fields.
 
 The default output directory is `.regressify/`; `--site-env` selects
 `.regressify__<environment>/`, and `--regressify-dir` overrides the output root.
-These root options precede the command. Its `states/<name>.json` files contain
-sensitive browser state generated by `persist`. Do not hand-author, publish, or
-upload them. Reference/test PNGs, reports, manifests, and diagnostic journals
-are generated output, not test configuration. Preserve baselines until the
-user explicitly authorizes reference capture or approval.
+These root options precede the command. Each suite writes
+`<output>/<suite-id>/bitmaps_test/<run-id>/` for every capture run (including
+`ref` runs) and `<output>/<suite-id>/bitmaps_reference/` for approved baselines;
+the snapshot website is `<output>/index.html`. `states/<name>.json` files
+contain sensitive browser state generated by `persist`. Do not hand-author,
+publish, upload, or commit them. Reference/test PNGs, reports, manifests, and
+diagnostic journals are generated output, not test configuration. Preserve
+baselines until the user explicitly authorizes reference capture or approval.
 Retrieve `get_authoring_guide(topic="troubleshooting")` for concrete report paths,
 capture-error/log sidecars, operation journals, and missing-log interpretation.
 

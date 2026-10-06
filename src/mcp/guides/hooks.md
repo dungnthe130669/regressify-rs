@@ -22,11 +22,14 @@ scripts use DOM APIs, not Node imports, `require`, or filesystem APIs.
 1. Create the scenario page, apply browser/viewport settings, and install state
    restoration and cookies.
 1. Run `onBeforeScript` on the page before its initial navigation.
-1. Navigate using `engineOptions.gotoParameters`, then wait for `readySelector`.
-1. Apply browser CSS/ready scripts, settle lazy content, and prepare for actions.
+1. Navigate using `engineOptions.gotoParameters`, then wait until
+   `readySelector` exists and is visible.
+1. Apply the CSS override, `hideSelectors`/`removeSelectors`, and the browser
+   ready script; freeze animations and scroll once for lazy content.
 1. Run inherited `needs` actions, then scenario `actions`, or legacy shortcuts
-  when `actions` is omitted. Each applicable `save` captures at its position.
-1. Run `onReadyScript`, then perform any remaining final captures.
+   when `actions` is omitted. Each applicable `save` captures at its position.
+1. Run `onReadyScript`. If final captures remain, wait `postInteractionWait`
+   and `delay`, settle, and capture them.
 
 `readySelector` is checked before browser ready scripts and actions. Do not point
 it at content that those later steps create. `onReadyScript` cannot prepare an
@@ -42,7 +45,11 @@ Node hooks need local Node.js and a workspace installation of `playwright` or
 `playwright-core`. With permission, `npm install --save-dev playwright-core`
 provides the attachment library; it does not replace Regressify's Chromium setup.
 Use `.mjs` with a default export, or `.cjs` with `module.exports = async function`.
-A named-only export is not accepted. Hooks are awaited and must finish.
+A named-only export is not accepted. A `.js` file follows the workspace
+`package.json` module type, so prefer an explicit extension. Hooks are awaited
+and must finish. The hook process starts in the workspace root and inherits the
+CLI's environment variables, so it can read credentials from `process.env`
+instead of storing them in suite files.
 
 ```javascript
 export default async function onReady(page, scenario, viewport, isReference, context, config) {
@@ -70,8 +77,11 @@ pages; never depend on their execution order or mutate a sibling's session.
 Node execution, including attachment/import, is bounded by workspace
 `elementTimeout` (default 30000 ms); the overall `scenarioTimeout` also applies.
 Throw an error when the intended operation fails. Standard output is discarded;
-retained standard error is bounded and contributes to hook failures. Never log
-credentials, cookies, input values, or private response bodies.
+retained standard error is bounded and contributes to hook failures. Reports
+and capture logs keep only an error category for a failed hook, not its message.
+While diagnosing, temporarily append sanitized progress notes to a local,
+version-control-ignored file from the hook and remove that code afterwards.
+Never log credentials, cookies, input values, or private response bodies.
 
 Retrieve `get_example(task="node-before-hook")`, `node-ready-hook`, and
 `hooked-suite` together for a complete setup. The first hook sets a synthetic

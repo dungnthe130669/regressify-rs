@@ -15,16 +15,29 @@ workspace, then built-in defaults. Omitted/null optional values inherit. Explici
 `removeSelectors`, and viewport selections replace rather than append lists.
 An empty viewport selection means all configured viewports, not no viewports.
 
-Do not assume every field exists at every scope. Examples:
+Do not assume every field exists at every scope:
 
-- `delay`, `noScrollTop`, and `requiredLogin` have workspace/scenario settings,
-  not suite settings. The global `--required-login` flag can force the login flag.
-- `freezeAnimations`, element/actionability/settle/scenario timeouts, and report
-  title/heading/subheading settings are workspace-only.
-- `viewportsPath` exists at workspace and suite scopes; the scenario chooses
-  labels through `viewportNames` instead.
-- `selector`, `selectors`, and `save.selector` are separate capture options, not
-  inherited workspace configuration.
+- Workspace, suite, and scenario: `logLevel`, `basicAuth`, `bypassCsp`,
+  `cookiePath`, `cssOverridePath`, `jsOnReadyPath`, `useCssOverride`,
+  `hideSelectors`, `removeSelectors`, `misMatchThreshold`,
+  `pixelMatchThreshold`, `postInteractionWait`, and `viewportNames`.
+- Workspace and scenario only: `delay`, `noScrollTop`, and `requiredLogin`.
+  The global `--required-login` flag can force the login flag.
+- Workspace and suite only: `asyncCaptureLimit`, `asyncCompareLimit`,
+  `browser`, `debug`, `ignoreSslErrors`, `viewportsPath`, `state`, and
+  `urlReplacements`.
+- Workspace only: `freezeAnimations`, `elementTimeout`, `actionabilityTimeout`,
+  `settleTimeout`, `scenarioTimeout`, `snapshotTitle`, `snapshotHeading`, and
+  `snapshotSubheading`.
+- Suite only: required `scenarios`, `displayName`, and `id`; `testDate` is
+  runtime metadata that Regressify overwrites.
+- Scenario only: required `url`, `id`, `label`, `description`, `actions`,
+  `needs`, `restore`, `readySelector`, `readyTimeout`, `engineOptions`,
+  `onBeforeScript`, `onReadyScript`, `selector`, `selectors`, and legacy
+  selector shortcuts.
+
+Inheritance exceptions:
+
 - `basicAuth` entries for the same origin override inherited credentials; other
   origins remain inherited. Origin matching prevents sending credentials to an
   unrelated redirect or a proxy.
@@ -36,25 +49,36 @@ Do not assume every field exists at every scope. Examples:
   before the file cascade. It changes display only, not archived collection.
 - Snapshot command title/heading/subheading options override the corresponding
   workspace report text. Suite/scenario overrides do not apply to report text.
+- Comparison thresholds and page URLs are recorded per capture when a run
+  starts. Standalone `compare` reuses them, so threshold changes need a new
+  capture before they affect results.
 
 ## Units and Defaults
 
-| Setting                                                                 | Default and Meaning                                                     |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| `browser`                                                               | `chromium`; Firefox and WebKit are unsupported.                         |
-| `asyncCaptureLimit`                                                     | 5; positive whole number, also bounded by the CLI's global capture cap. |
-| `asyncCompareLimit`                                                     | 2; positive whole number.                                               |
-| `misMatchThreshold`                                                     | 0.1; allowed percentage of differing pixels, from 0 to 100.             |
-| `pixelMatchThreshold`                                                   | 5; per-pixel color tolerance on a separate 0 to 100 scale.              |
-| `delay`                                                                 | 1000 milliseconds before capture; non-negative.                         |
-| `postInteractionWait`                                                   | 1000 milliseconds; non-negative.                                        |
-| `elementTimeout`                                                        | 30000 milliseconds for element existence waits.                         |
-| `actionabilityTimeout`                                                  | 5000 milliseconds for interaction checks.                               |
-| `settleTimeout`                                                         | 5000 milliseconds; zero disables screenshot settling.                   |
-| `scenarioTimeout`                                                       | 600000 milliseconds for a complete scenario/viewport capture.           |
-| `freezeAnimations`                                                      | true before capture.                                                    |
-| `useCssOverride`                                                        | true; applies the configured CSS override file.                         |
-| `debug`, `bypassCsp`, `ignoreSslErrors`, `noScrollTop`, `requiredLogin` | false. Headed debug mode is disabled in CI without a display.           |
+- `browser`: `chromium`; Firefox and WebKit are unsupported.
+- `asyncCaptureLimit`: 5; positive whole number, also bounded by the global
+  `--async-capture-limit` (default 5), which ramps up one slot per second.
+- `asyncCompareLimit`: 2; positive whole number.
+- `misMatchThreshold`: 0.1; allowed percentage of differing pixels, from 0 to
+  100. A capture passes only when its mismatch is at most this value and its
+  dimensions equal the reference.
+- `pixelMatchThreshold`: 5; per-pixel color tolerance on a separate 0 to 100
+  scale. Lower values flag subtler color changes.
+- `delay`: 1000 milliseconds before each save checkpoint and final capture.
+- `postInteractionWait`: 1000 milliseconds after actions and `onReadyScript`,
+  before final captures only.
+- `elementTimeout`: 30000 milliseconds for finding elements and frames,
+  selector and URL waits, `goto`, `select`, `switchTab`, and hooks.
+- `actionabilityTimeout`: 5000 milliseconds for visibility, stability,
+  coverage, and enabled checks.
+- `settleTimeout`: 5000 milliseconds of best-effort font, image, and layout
+  settling before each capture; expiry is logged, not fatal.
+- `scenarioTimeout`: 600000 milliseconds for a complete scenario/viewport capture.
+- `freezeAnimations`: true; completes finite and pauses infinite CSS/Web
+  Animations before actions and each capture.
+- `useCssOverride`: true; applies the configured CSS override file.
+- `debug`, `bypassCsp`, `ignoreSslErrors`, `noScrollTop`, `requiredLogin`:
+  false. Headed debug mode is disabled in CI without a display.
 
 Thresholds and timing values must be finite; do not use negative delays or zero
 concurrency. `elementTimeout`, `actionabilityTimeout`, and `scenarioTimeout` must
@@ -63,14 +87,17 @@ document and Node hooks. `settleTimeout: 0` disables settling, not all waits or
 animation freezing. A scenario's initial navigation timeout lives under
 `engineOptions.gotoParameters.timeout`; omitted or zero means 60000 milliseconds,
 independent of `elementTimeout`. `waitUntil` is `commit`, `domcontentloaded`,
-`load` (default), or `networkidle`. The overall scenario timeout still applies.
-Omitted/zero scenario `readyTimeout` inherits `elementTimeout`. Use the hooks
-topic for script timing and troubleshooting for interpreting timeout failures.
+`load` (default), or `networkidle`, which needs 500 ms without network activity
+and may never arrive on continuously polling pages. The overall scenario
+timeout still applies. Omitted/zero scenario `readyTimeout` inherits
+`elementTimeout`. Use the hooks topic for script timing and troubleshooting for
+interpreting timeout failures.
 
 ## Files, Replacements, and Credentials
 
-`cookiePath`, `cssOverridePath`, `jsOnReadyPath`, and `viewportsPath` resolve from
-the workspace root, not from the suite's folder. Explicit configured paths must
+`cookiePath`, `cssOverridePath`, `jsOnReadyPath`, `viewportsPath`,
+`onBeforeScript`, and `onReadyScript` resolve from the workspace root, not from
+the suite's folder. Explicit configured paths must
 exist as regular files inside the canonical workspace, including after symlink
 resolution. An absolute path is allowed only if it remains inside that workspace.
 Missing optional defaults differ from explicit missing paths; consult the files
@@ -78,15 +105,22 @@ guide before assuming a default file is required.
 
 `ref` captures raw reference URLs. `test` applies URL replacement rules in order,
 including supported navigation and URL-wait targets. Each rule has `ref` and
-`test` strings; `regex: true` enables Rust regular expressions. Optional flags
-are `g`, `i`, `m`, `s`, and `u`; invalid/repeated flags or flags without regex fail.
-Do not assume JavaScript-only regex features such as lookaround work.
-`--replacement-profile` overrides `REPLACEMENT_PROFILE`, otherwise `default` is
-selected from the replacement-profile file. Invalid selected profiles fail.
+`test` strings; literal rules replace every occurrence, and `regex: true` enables
+Rust regular expressions. Optional flags are `g`, `i`, `m`, `s`, and `u`;
+invalid/repeated flags or flags without regex fail. Do not assume
+JavaScript-only regex features such as look-around or backreferences work. In
+`test`, write capture groups as `${1}` when a letter, digit, or underscore
+follows, because `$1a` names a group `1a`.
+`--replacement-profile` overrides `REPLACEMENT_PROFILE`; otherwise the `default`
+profile applies when present. An explicitly selected profile, or its file, must
+exist; an absent implicit `default` simply adds no rules. `ref` ignores the
+profile option with a warning.
 
 For HTTP Basic Auth, supply an object or array of objects with `origin`,
-`username`, and `password`. Use `${VARIABLE}` or `$VARIABLE` placeholders, resolved
-locally at execution. Missing/empty environment values fail validation. Never
-commit literal passwords or send resolved values to the MCP server. Cookies,
-persisted state, and Basic Auth are separate mechanisms; none is an automatic
-application-specific login workflow.
+`username`, and `password`. Use `${VARIABLE}` or `$VARIABLE` placeholders,
+resolved locally at execution; `$NAME` directly after a letter, digit, or
+underscore stays literal. Missing/empty environment values fail validation.
+Basic Auth is the only configuration with environment substitution: URLs,
+cookies, and action values are literal. Never commit literal passwords or send
+resolved values to the MCP server. Cookies, persisted state, and Basic Auth are
+separate mechanisms; none is an automatic application-specific login workflow.

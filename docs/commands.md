@@ -250,11 +250,15 @@ Normal CLI startup/command diagnostics still follow the diagnostic settings.
 The generated project contains a Worker entry point, Wrangler configuration,
 package and lockfile, TypeScript configuration, tests, README, and a versioned
 content catalog with standalone guides, JSON Schemas, and synthetic examples.
-Guides cover suite discovery/identity, scenario reuse and captures, every action,
-configuration precedence/defaults, predefined file formats, browser/Node hook
-contracts, and troubleshooting. Hook examples include complete suite wiring and
-six-argument ESM scripts. Diagnostic guidance covers focused reruns, actual report
-paths, capture-error/log sidecars, journal health, and common corrective checks. Cookie/CSS/JS
+Guides cover suite discovery/identity, the scenario capture lifecycle and
+screenshot naming, every action and selector engine, configuration scopes,
+precedence, and defaults, predefined file formats, browser/Node hook contracts,
+complete recipes for common page patterns, and troubleshooting. Hook examples
+include complete suite wiring and six-argument ESM scripts. Diagnostic guidance
+covers focused reruns, preflight messages, actual report paths and fields,
+capture-error/log sidecars, reading category-only capture records, journal
+health, and common corrective checks. Every YAML block in the guides is parsed
+and schema-checked by the catalog tests. Cookie/CSS/JS
 formats use explicit guidance; JSON Schemas do not replace runtime cross-file,
 filesystem, authentication, or browser validation.
 
@@ -276,7 +280,8 @@ Connect an HTTP MCP client to the resulting
 `https://<worker>.<account-subdomain>.workers.dev/mcp` URL. The generated README
 includes a VS Code connection example. Start by calling `get_authoring_guide`
 with `topic: overview`; use `get_schema` for exact fields and `get_example` for
-synthetic templates. Select `topic: troubleshooting` for failures and local evidence,
+synthetic templates. Select `topic: recipes` for complete common-page suites,
+`topic: troubleshooting` for failures and local evidence,
 or `topic: hooks` before writing lifecycle scripts. Schema tests enforce positive
 workspace timeouts and nonempty capture selectors while allowing empty viewport
 selections and the documented zero-timeout fallbacks. Guides/schemas are also MCP resources, and the

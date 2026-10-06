@@ -11,7 +11,8 @@ use crate::helpers::slugify;
 
 const MAX_CAPTURE_NAME_BYTES: usize = 48;
 
-/// A viewport definition with label and dimensions.
+/// A named CSS viewport size. Captures use device scale factor 1 without mobile
+/// user-agent or touch emulation.
 #[derive(Deserialize, Clone, Debug, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ViewportDef {
