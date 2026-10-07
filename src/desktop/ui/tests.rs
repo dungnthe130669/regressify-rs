@@ -10165,6 +10165,12 @@ async fn results_show_scenario_names_instead_of_generated_capture_and_run_ids(
             window.find("capture-heading").label(),
             Some("Payment at capture time")
         );
+        window.click("copy-capture-details", cx);
+        let changed_summary = cx.read_from_clipboard().unwrap().text().unwrap();
+        assert!(changed_summary.contains("Scenario: Payment at capture time"));
+        assert!(changed_summary.contains("Capture ID: 8ac900fea19642cc0000_phone__$receipt"));
+        assert!(!changed_summary.contains("Scenario: Payment confirmation"));
+        assert_ne!(summary, changed_summary);
         window.click("capture-search", cx);
         window.input("8ac900", cx);
     })

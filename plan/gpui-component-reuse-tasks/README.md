@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-008 committed. Task 009's selectors pass acceptance;
-the authorized local commit is pending. The approved Linux
+Status: Planning and tasks 001-009 committed. Task 010's Clipboard controls pass
+acceptance and await their authorized local commit. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -84,8 +84,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
   committed as `065c0df`.
 - [x] 008 Context menus: suite/image parity, guarded dismissal and final native gates pass;
   committed as `fa13c04`.
-- [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; commit pending.
-- [ ] 010 Clipboard: not started.
+- [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; committed as `b77d5a6`.
+- [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; commit pending.
 - [ ] 011 Log navigation: not started.
 - [ ] 012 Application menus: not started.
 - [ ] 013 Collapsible groups: not started; form prerequisite satisfied.
@@ -428,8 +428,32 @@ When a task changes state, record the exact focused command, exact outcome and n
 - Production accounting is +791/-201 (net +590), GUI tests +1844/-92, native
   flows +14/-6. Item caches, retained entities and guarded subscriptions replace
   manual menu plumbing; correctness/maintainability was explicitly prioritized
-  over net source reduction. Task 009 awaits its authorized local commit.
+  over net source reduction. Task 009 is committed as `b77d5a6`.
   No new deferral; the Linux exception is unchanged.
+
+### Task 010 Verification
+
+- Toolkit Clipboard now handles saved deployment URLs, Git activity and both
+  source-diff sides, update failure details and capture summaries. `CopyText`
+  keys feedback by exact-value generation without text-bearing IDs; it retains
+  stable observation/name, size, summary tooltip and weak copied-status callback.
+- Gated empty/incomplete run/deployment/capture log copies/exports and Results
+  URL/menu copies remain guarded Buttons because Clipboard lacks disabled state.
+  No availability guard or secret boundary changed.
+- Focused checks pass: saved URLs (1), `clipboard_copy_` (1), Git text diff (3),
+  update error details (1), capture summary/name (1), source line commands (12),
+  image previews (3), run logs (7), deployment activity (2), Git remote/activity
+  workflow (1). Tests exercise keyboard/pointer, exact/changed/revisited text,
+  unchanged suppression, missing URLs, and preserved error/export guards.
+- Production GUI Clippy/build, Rustfmt, diagnostics and headless harness pass.
+  Native Deployment, Git, Comparison and offline Update pass with restored
+  preferences/clipboard and unchanged assertions. Update failure copy bytes are
+  covered by the GUI test; no live update/install or remote publication occurred.
+  Reviewed compact saved-URL and both diff-side controls fit without overlap.
+- Production +98/-61 (net +37), including the 72-line CopyText wrapper; GUI tests
+  +103. Feedback/timers remain toolkit-owned; guards remain application-owned.
+  Task 010 is ready for its local commit after final maintenance checks, with
+  no new deferral. The approved Linux exception and task 020 remain.
 
 ### Approved Linux Baseline Exception
 

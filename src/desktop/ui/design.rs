@@ -1,6 +1,78 @@
 use super::*;
 
 use crate::desktop::workspace::ThemePreference;
+use gpui_kit::component::Size;
+
+type CopiedCallback = Box<dyn Fn(&mut App)>;
+
+#[derive(IntoElement)]
+pub(super) struct CopyText {
+    id: ElementId,
+    value: SharedString,
+    label: SharedString,
+    size: Size,
+    tooltip: Option<SharedString>,
+    on_copied: Option<CopiedCallback>,
+}
+
+impl CopyText {
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        value: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            value: value.into(),
+            label: label.into(),
+            size: Size::Medium,
+            tooltip: None,
+            on_copied: None,
+        }
+    }
+
+    pub(super) fn tooltip(mut self, tooltip: impl Into<SharedString>) -> Self {
+        self.tooltip = Some(tooltip.into());
+        self
+    }
+
+    pub(super) fn on_copied(mut self, callback: impl Fn(&mut App) + 'static) -> Self {
+        self.on_copied = Some(Box::new(callback));
+        self
+    }
+}
+
+impl Sizable for CopyText {
+    fn with_size(mut self, size: impl Into<Size>) -> Self {
+        self.size = size.into();
+        self
+    }
+}
+
+impl RenderOnce for CopyText {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let identity =
+            window.use_keyed_state(self.id.clone(), cx, |_, _| (SharedString::default(), 0_u64));
+        let generation = identity.update(cx, |(value, generation), _| {
+            if value != &self.value {
+                *value = self.value.clone();
+                *generation += 1;
+            }
+            *generation
+        });
+        // Feedback suppresses repeated copies; changed text gets a fresh key without putting text in IDs.
+        div().id(self.id).test_support().flex_shrink_0().child(
+            gpui_kit::component::clipboard::Clipboard::new(("clipboard-value", generation))
+                .value(self.value)
+                .tooltip(self.tooltip.unwrap_or_else(|| self.label.clone()))
+                .accessibility_label(self.label)
+                .with_size(self.size)
+                .when_some(self.on_copied, |clipboard, callback| {
+                    clipboard.on_copied(move |_, _, cx| callback(cx))
+                }),
+        )
+    }
+}
 
 pub(super) fn restore_managed_menu_focus<View: 'static>(
     owner: WeakEntity<View>,

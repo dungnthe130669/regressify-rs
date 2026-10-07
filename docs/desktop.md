@@ -1277,6 +1277,13 @@ without creating overrides; explicitly confirming a value creates an override.
 Reset removes the override and updates the displayed inherited selection.
 Unsupported values remain visible until explicitly replaced or reset.
 
+Copy controls for saved deployment URLs, Git logs and source diffs, update errors,
+and capture summaries briefly show a check after copying. Repeated copies of
+unchanged text are suppressed for two seconds; changed content can be copied
+immediately. Copies preserve the full text, not truncated labels or line numbers.
+Unavailable URLs and incomplete or empty log pages retain their existing copy
+and export restrictions.
+
 Pixel color threshold (`pixelMatchThreshold`) is available in the Capture group
 for workspace, suite, and scenario Fields, without enabling Advanced. It ranges
 from `0` to `100`, defaults to `5`, and steps by `0.1`. Lower values highlight

@@ -265,16 +265,11 @@ impl Workbench {
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .when(state.failed, |footer| {
-                            footer.child(
-                                Button::new("update-copy-details")
-                                    .icon(gpui_kit::assets::IconName::Copy)
-                                    .label("Copy details")
-                                    .on_click(window.listener_for(&view, |this, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            this.updates.read(cx).message.clone(),
-                                        ));
-                                    })),
-                            )
+                            footer.child(design::CopyText::new(
+                                "update-copy-details",
+                                state.message.clone(),
+                                "Copy details",
+                            ))
                         })
                         .when_some(state.download.as_ref(), |footer, control| {
                             footer.child(
@@ -1369,6 +1364,22 @@ mod tests {
                         assert!(bounds.origin.x + bounds.size.width <= px(width));
                         assert!(bounds.origin.y + bounds.size.height <= px(height));
                     }
+                    let message = view.read(cx).updates.read(cx).message.clone();
+                    window.click("update-copy-details", cx);
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some(message.as_str())
+                    );
+                    let changed = format!("{message}\r\nAdditional failure detail");
+                    view.read(cx).updates.clone().update(cx, |state, cx| {
+                        state.message = changed.clone();
+                        cx.notify();
+                    });
+                    window.click("update-copy-details", cx);
+                    assert_eq!(
+                        cx.read_from_clipboard().unwrap().text().as_deref(),
+                        Some(changed.as_str())
+                    );
                     window.click("update-close", cx);
                 })
                 .unwrap();

@@ -854,13 +854,6 @@ impl GitPanel {
         cx.notify();
     }
 
-    fn copy_diff(&self, after: bool, cx: &mut Context<Self>) {
-        if let Some(Ok(review)) = &self.text_review {
-            let lines = if after { &review.after } else { &review.before };
-            cx.write_to_clipboard(ClipboardItem::new_string(lines.concat()));
-        }
-    }
-
     fn move_diff_change(&mut self, forward: bool, cx: &mut Context<Self>) {
         let Some(Ok(review)) = &self.text_review else {
             return;

@@ -538,9 +538,7 @@ impl Workbench {
                             .on_click(window.listener_for(&view, move |this, _, _, cx| {
                                 if let Err(error) = open::that_detached(&open_url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
                             })))
-                        .child(Button::new("deploy-copy-published").small().ghost().flex_shrink_0()
-                            .icon(gpui_kit::assets::IconName::Copy).tooltip("Copy deployed URL").accessibility_label("Copy deployed URL")
-                            .on_click(move |_, _, cx| cx.write_to_clipboard(ClipboardItem::new_string(url.clone())))));
+                        .child(design::CopyText::new("deploy-copy-published", url, "Copy deployed URL").small()));
                 }
                 if let Some(landing) = &state.landing {
                     body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(landing.app.heading.clone()))
@@ -1161,6 +1159,87 @@ mod tests {
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    async fn clipboard_copy_keeps_exact_text_and_refreshes_value_identity(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        let first = "https://reports.example/odd%20name/%E6%B5%8B/";
+        let second = "https://reports.example/another%20target/";
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.settings = serde_json::from_value(serde_json::json!({
+                    "targets": [{"id": "copy", "name": "Copy fixture", "publishedUrl": first}],
+                    "selected": "copy"
+                }))
+                .unwrap();
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for _ in 0..24 {
+                if window
+                    .within("deploy-copy-published")
+                    .find(("clipboard-value", 1_u64))
+                    .focused()
+                    == Some(true)
+                {
+                    break;
+                }
+                window.press("tab", cx);
+                window.render_frame(cx);
+            }
+            assert_eq!(
+                window
+                    .within("deploy-copy-published")
+                    .find(("clipboard-value", 1_u64))
+                    .focused(),
+                Some(true)
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "synthetic-sentinel".into(),
+            ));
+            window.press("space", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some(first)
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+                "unchanged-copy-suppressed".into(),
+            ));
+            window.click("deploy-copy-published", cx);
+            assert_eq!(
+                cx.read_from_clipboard().unwrap().text().as_deref(),
+                Some("unchanged-copy-suppressed")
+            );
+            for value in [second, first] {
+                view.read(cx).deployment.clone().update(cx, |state, cx| {
+                    state.settings.targets[0].published_url = Some(value.into());
+                    cx.notify();
+                });
+                window.click("deploy-copy-published", cx);
+                assert_eq!(
+                    cx.read_from_clipboard().unwrap().text().as_deref(),
+                    Some(value)
+                );
+            }
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.settings.targets[0].published_url = None;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-copy-published").is_none());
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     async fn value_selector_deployment_provider_and_token_source_keep_guarded_drafts(

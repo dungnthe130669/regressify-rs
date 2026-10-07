@@ -25,6 +25,10 @@ Verified: 2026-10-07
 - Native token screenshots wait for Add named token, not the Publish menu's
   identically named entry. Reviewed light/dark compact/large captures show the
   bounded saved-token selector and its Add/Edit/Remove/Close actions intact.
+- Saved URL copies use value-generation Clipboard feedback. The pointer/keyboard
+  regression preserves encoded URL bytes, allows changed/revisited values during
+  feedback, suppresses unchanged repeats and removes unavailable copies. Native
+  deployment smoke preserves clipboard backup/restore and adjacent Copy layout.
 - [Target settings](../../src/desktop/deployment.rs) retain optional `publishedUrl`
   per ID for reports and landing apps. Only successful publication updates it;
   destination edits (including Azure token replacement) clear it. The runner saves

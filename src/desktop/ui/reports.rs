@@ -2075,30 +2075,19 @@ impl ResultsPanel {
                                     cx.notify();
                                 })))
                             .child(
-                                Button::new("copy-capture-details")
-                                    .ghost()
+                                design::CopyText::new("copy-capture-details", test.copy_summary(), "Copy capture details")
                                     .xsmall()
-                                    .icon(IconName::Copy)
                                     .tooltip(format!(
                                         "Copy capture details\n\n{}",
                                         test.copy_summary()
                                     ))
-                                    .accessibility_label("Copy capture details")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        if let Some(test) =
-                                            this.selected_report().and_then(|report| {
-                                                this.capture.and_then(|index| {
-                                                    report.report.tests.get(index)
-                                                })
-                                            })
-                                        {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                test.copy_summary(),
-                                            ));
+                                    .on_copied({
+                                        let panel = cx.entity().downgrade();
+                                        move |cx| { let _ = panel.update(cx, |this, cx| {
                                             this.status = "Capture details copied".into();
                                             cx.notify();
-                                        }
-                                    })),
+                                        }); }
+                                    }),
                             )
                             .child(
                                 Button::new("edit-capture-suite")

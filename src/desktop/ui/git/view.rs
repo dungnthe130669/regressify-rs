@@ -389,18 +389,11 @@ impl GitPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(
-                        Button::new("git-log-copy")
-                            .ghost()
-                            .icon(gpui_kit::assets::IconName::Copy)
-                            .tooltip("Copy Git logs")
-                            .accessibility_label("Copy Git logs")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    this.activity_text.clone(),
-                                ))
-                            })),
-                    )
+                    .child(design::CopyText::new(
+                        "git-log-copy",
+                        self.activity_text.clone(),
+                        "Copy Git logs",
+                    ))
                     .child(
                         Button::new("git-log-clear")
                             .ghost()
@@ -1379,22 +1372,19 @@ impl GitPanel {
                                         "Last Commit"
                                     }))
                                     .child(
-                                        Button::new(SharedString::from(format!("git-copy-{side}")))
-                                            .ghost()
-                                            .icon(IconName::Copy)
-                                            .tooltip(if after {
+                                        design::CopyText::new(
+                                            SharedString::from(format!("git-copy-{side}")),
+                                            if after {
+                                                review.after.concat()
+                                            } else {
+                                                review.before.concat()
+                                            },
+                                            if after {
                                                 "Copy saved file"
                                             } else {
                                                 "Copy last committed file"
-                                            })
-                                            .accessibility_label(if after {
-                                                "Copy saved file"
-                                            } else {
-                                                "Copy last committed file"
-                                            })
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.copy_diff(after, cx);
-                                            })),
+                                            },
+                                        ),
                                     ),
                                 )),
                         )

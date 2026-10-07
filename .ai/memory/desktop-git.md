@@ -10,6 +10,10 @@ Verified: 2026-10-07
   unchanged snapshots and shows a removed selected name as unavailable. It calls
   the existing guarded request path; `remote_select_` and the real typed-search
   workflow pass, as does the full 18-test Git UI module.
+- Git activity and both valid source-diff sides use
+  [CopyText](../../src/desktop/ui/design.rs) for toolkit Clipboard feedback.
+  Diff values concatenate original lines without numbers; changed text gets a
+  fresh generation. Focused diff/activity checks and native Git smoke pass.
 - Remote form drafts in [the UI](../../src/desktop/ui/git.rs) keep the opening
   snapshot. A newer periodic status must not silently authorize an old URL edit.
   Named remotes support add/select/update/rename/remove; fetch and push URL edits
