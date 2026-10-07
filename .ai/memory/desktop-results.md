@@ -1,7 +1,20 @@
 # Results Review
 
-Verified: 2026-10-01
+Verified: 2026-10-07
 
+- Capture information in [Results](../../src/desktop/ui/reports.rs) uses an
+  unbordered one-column DescriptionList while retaining stable custom URL
+  children. The existing metadata GUI regression verifies raw reference/test
+  URLs, exact copy values, signed dimensions, unavailable fields, and rejects
+  javascript/data schemes before either open or copy.
+- Capture/approval error bands retain their named Role::Alert wrapper around
+  presentational Kit Marker content. Styled Alert plus a neutral wrapper lost
+  the error name in native UIA; the full `-ComparisonFlows` smoke passes with the
+  named wrapper, exact URL copies, and error images at both sizes/themes.
+- Empty preview IDs include the pane index. A shared `capture-preview-empty`
+  ID caused a native duplicate-a11y-node panic on an empty side-by-side suite.
+  `results_suite_navigation_is_isolated_and_preserves_drafts_during_refresh`
+  covers distinct pane IDs; native comparison smoke now completes that transition.
 - Native fixtures calling `ResultsPanel::show_run` directly must first supply
   discovered suites through `set_suites`. A report can load into the catalog but
   remain unselectable without its source-suite match. The `results_capture_log_view`

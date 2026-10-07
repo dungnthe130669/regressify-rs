@@ -119,6 +119,8 @@ using System.Collections.Generic;
 public static class $pointerTypeName {
     public static readonly List<string> Events = new List<string>();
     public static bool FailPressedFrame;
+    public static uint ClipboardSequence;
+    public static uint GetClipboardSequenceNumber() { return ClipboardSequence; }
     private static bool pressed;
     public static void Reset(bool fail) { Events.Clear(); pressed = false; FailPressedFrame = fail; }
     public static bool SetWindowPos(IntPtr window, IntPtr after, int x, int y, int width, int height, uint flags) {
@@ -128,9 +130,9 @@ public static class $pointerTypeName {
         Events.Add("move:" + x + ":" + y); return true;
     }
     public static void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra) {
-        if (flags != 2 && flags != 4) throw new InvalidOperationException("Unexpected pointer event");
-        pressed = flags == 2;
-        Events.Add(pressed ? "down" : "up");
+        if (flags != 2 && flags != 4 && flags != 8 && flags != 16) throw new InvalidOperationException("Unexpected pointer event");
+        pressed = flags == 2 || flags == 8;
+        Events.Add((flags == 8 || flags == 16 ? "right-" : "") + (pressed ? "down" : "up"));
     }
     public static int DwmFlush() {
         Events.Add("frame");
@@ -143,9 +145,11 @@ $pointerProbe = $definitions['Invoke-Control'].Extent.Text.
     Replace('function Invoke-Control(', 'function Invoke-SmokePointerProbe(').
     Replace('[RegressifySmokeNative]', "[$pointerTypeName]").
     Replace('[RegressifySmokePointer]', "[$pointerTypeName]")
+$clickProbe = $definitions['Send-FixturePointerClick'].Extent.Text.Replace('[RegressifySmokeNative]', "[$pointerTypeName]")
 
 function Test-SmokePointerClick([bool]$FailPressedFrame) {
     . ([scriptblock]::Create($pointerProbe))
+    . ([scriptblock]::Create($clickProbe))
     function Wait-Control {
         [pscustomobject]@{ Current = [pscustomobject]@{
             BoundingRectangle = [pscustomobject]@{ Left = 10; Top = 20; Width = 100; Height = 40 }
@@ -166,6 +170,76 @@ function Test-SmokePointerClick([bool]$FailPressedFrame) {
 }
 Test-SmokePointerClick $false
 Test-SmokePointerClick $true
+
+foreach ($failPressedFrame in @($false, $true)) {
+    & {
+        . ([scriptblock]::Create($clickProbe))
+        $pointerType::Reset($failPressedFrame)
+        $failure = $null
+        try { Send-FixturePointerClick -Right } catch { $failure = $_.Exception.GetBaseException().Message }
+        $expected = @('frame', 'right-down', 'frame', 'right-up')
+        if (-not $failPressedFrame) { $expected += 'frame' }
+        Assert-SmokeEqual @($pointerType::Events) $expected 'Right clicks must settle and always release'
+        Assert-SmokeEqual $failure $(if ($failPressedFrame) { 'Synthetic compositor failure' } else { $null }) 'Right-click frame failures must propagate'
+    }
+}
+
+$clipboardProbe = $definitions['Invoke-FixtureClipboard'].Extent.Text.Replace('[RegressifySmokeNative]', "[$pointerTypeName]")
+& {
+    . ([scriptblock]::Create($clipboardProbe))
+    $pointerType::Reset($false)
+    $attempts = [System.Collections.Generic.List[int]]::new()
+    $snapshot = [pscustomobject]@{ Fixture = 'opaque clipboard snapshot' }
+    $actual = Invoke-FixtureClipboard {
+        $attempts.Add(1)
+        if ($attempts.Count -lt 3) { throw [System.Runtime.InteropServices.ExternalException]::new('Synthetic clipboard busy', -2147221040) }
+        $snapshot
+    }
+    Assert-SmokeEqual $attempts.Count 3 'Busy clipboard access must retry before success'
+    if (-not [object]::ReferenceEquals($actual, $snapshot)) { throw 'Clipboard retries must preserve the original data object.' }
+    foreach ($busy in @($false, $true)) {
+        $attempts.Clear()
+        $failure = $null
+        $timeout = if ($busy) { 0 } else { 2000 }
+        try {
+            Invoke-FixtureClipboard -TimeoutMilliseconds $timeout -Operation {
+                $attempts.Add(1)
+                if ($busy) { throw [System.Runtime.InteropServices.ExternalException]::new('Synthetic clipboard busy', -2147221040) }
+                throw [System.InvalidOperationException]::new('Synthetic clipboard permanent failure')
+            }
+        } catch { $failure = $_.Exception.GetBaseException().Message }
+        Assert-SmokeEqual $attempts.Count 1 'Expired or non-busy clipboard failures must not retry'
+        Assert-SmokeEqual $failure $(if ($busy) { 'Synthetic clipboard busy' } else { 'Synthetic clipboard permanent failure' }) 'Clipboard failure details must propagate'
+    }
+}
+
+$sequenceProbe = $definitions['Wait-FixtureClipboardText'].Extent.Text.Replace('[RegressifySmokeClipboard]', "[$pointerTypeName]")
+foreach ($mode in @('success', 'wrong-text', 'no-write')) {
+    & {
+        . ([scriptblock]::Create($sequenceProbe))
+        $events = [System.Collections.Generic.List[string]]::new()
+        $pointerType::ClipboardSequence = 10
+        function Wait-WindowState([scriptblock]$Match, [string]$Failure) {
+            Assert-SmokeEqual (& $Match) $false 'Clipboard read must wait while the sequence is unchanged'
+            Assert-SmokeEqual $events.Count 0 'Waiting must not open the clipboard'
+            if ($mode -eq 'no-write') { throw $Failure }
+            $pointerType::ClipboardSequence = 11
+            Assert-SmokeEqual (& $Match) $true 'A completed write must advance the clipboard sequence'
+            $events.Add('changed')
+        }
+        function Invoke-FixtureClipboard([scriptblock]$Operation) {
+            $events.Add('read')
+            if ($mode -eq 'wrong-text') { return 'different synthetic text' }
+            'exact synthetic text'
+        }
+        $failure = $null
+        try { Wait-FixtureClipboardText 10 'exact synthetic text' 'Synthetic exact-copy failure' } catch {
+            $failure = $_.Exception.GetBaseException().Message
+        }
+        Assert-SmokeEqual @($events) $(if ($mode -eq 'no-write') { @() } else { @('changed', 'read') }) 'Clipboard reads must follow completed writes only'
+        Assert-SmokeEqual $failure $(if ($mode -eq 'success') { $null } else { 'Synthetic exact-copy failure' }) 'Wrong or missing clipboard writes must fail'
+    }
+}
 
 $lifecycle = @($entry.EndBlock.Statements | Where-Object { $_ -is [System.Management.Automation.Language.TryStatementAst] })
 Assert-SmokeEqual $lifecycle.Count 1 'The entry point must own the run/cleanup boundary'

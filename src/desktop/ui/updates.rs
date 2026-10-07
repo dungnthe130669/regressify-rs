@@ -156,52 +156,60 @@ impl Workbench {
                 .role(Role::Status)
                 .aria_label(format!("{title}. {detail}"))
                 .test_support()
-                .flex()
-                .items_center()
                 .gap_3()
                 .w_full()
-                .min_h(px(64.))
                 .flex_shrink_0()
-                .px_4()
-                .py_3()
-                .bg(cx.theme().primary)
-                .text_color(cx.theme().primary_foreground)
                 .child(
-                    Icon::new(gpui_kit::assets::IconName::Download)
-                        .size_5()
-                        .flex_shrink_0(),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .gap_1()
+                    gpui_kit::component::marker::Marker::new()
+                        .w_full()
+                        .min_h(px(64.))
+                        .items_center()
+                        .gap_3()
+                        .px_4()
+                        .py_3()
+                        .bg(cx.theme().primary)
+                        .text_color(cx.theme().primary_foreground)
                         .child(
-                            div()
-                                .id("update-banner-title")
-                                .test_support()
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .child(title),
+                            Icon::new(gpui_kit::assets::IconName::Download)
+                                .size_5()
+                                .flex_shrink_0(),
                         )
                         .child(
                             div()
-                                .id("update-banner-detail")
-                                .test_support()
-                                .text_xs()
-                                .whitespace_normal()
-                                .child(detail),
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .gap_1()
+                                .child(
+                                    div()
+                                        .id("update-banner-title")
+                                        .test_support()
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .child(title),
+                                )
+                                .child(
+                                    div()
+                                        .id("update-banner-detail")
+                                        .test_support()
+                                        .text_xs()
+                                        .whitespace_normal()
+                                        .child(detail),
+                                ),
+                        )
+                        .child(
+                            Button::new("update-banner-action")
+                                .small()
+                                .flex_shrink_0()
+                                .icon(gpui_kit::assets::IconName::RotateCw)
+                                .label("Install update")
+                                .disabled(self.busy)
+                                .on_click(
+                                    cx.listener(|this, _, window, cx| {
+                                        this.open_updates(window, cx)
+                                    }),
+                                ),
                         ),
-                )
-                .child(
-                    Button::new("update-banner-action")
-                        .small()
-                        .flex_shrink_0()
-                        .icon(gpui_kit::assets::IconName::RotateCw)
-                        .label("Install update")
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| this.open_updates(window, cx))),
                 )
                 .into_any_element(),
         )

@@ -4,6 +4,7 @@ use std::{ops::Range, rc::Rc, sync::Arc};
 
 use gpui_kit::component::{
     input::{CompletionProvider, HoverProvider, Rope},
+    status_bar::StatusBar,
     text::{SelectionFormat, TextView},
 };
 use lsp_types::{
@@ -904,8 +905,12 @@ impl Workbench {
                                     .id(("source-diagnostic-dot", index))
                                     .test_support()
                                     .size(px(8.))
-                                    .rounded_full()
-                                    .bg(color),
+                                    .child(
+                                        gpui_kit::component::badge::Badge::new()
+                                            .dot()
+                                            .color(color)
+                                            .child(div().size(px(8.))),
+                                    ),
                             ),
                     )
                     .child(
@@ -1125,7 +1130,11 @@ impl Workbench {
                                 this.request_completion(&CompleteSource, window, cx)
                             })),
                     )
-                    .child(div().w(px(1.)).h_4().mx_2().bg(cx.theme().border))
+                    .child(
+                        gpui_kit::component::separator::Separator::vertical()
+                            .h_4()
+                            .mx_2(),
+                    )
                     .child(
                         Checkbox::new("source-wrap")
                             .label("Wrap")
@@ -1214,18 +1223,9 @@ impl Workbench {
                 ),
             )
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_4()
-                    .h(px(30.))
+                StatusBar::new()
                     .flex_shrink_0()
-                    .border_t_1()
-                    .border_color(cx.theme().border)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(
+                    .left(
                         div()
                             .id("source-language")
                             .role(Role::Status)
@@ -1243,7 +1243,7 @@ impl Workbench {
                     )
                     .child(div().flex_1())
                     .when_some(suggestions, |bar, suggestions| {
-                        bar.child(
+                        bar.right(
                             div()
                                 .id("source-completion-status")
                                 .role(Role::Status)
@@ -1253,7 +1253,7 @@ impl Workbench {
                         )
                     })
                     .when(self.diagnostic.is_some(), |bar| {
-                        bar.child(
+                        bar.right(
                             Button::new("source-issue")
                                 .ghost()
                                 .xsmall()
@@ -1276,7 +1276,7 @@ impl Workbench {
                         )
                     })
                     .when(self.diagnostic.is_none(), |bar| {
-                        bar.child(
+                        bar.right(
                             Icon::new(gpui_kit::assets::IconName::CircleCheck)
                                 .xsmall()
                                 .text_color(cx.theme().success),

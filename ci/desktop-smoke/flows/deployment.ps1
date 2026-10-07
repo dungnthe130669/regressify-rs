@@ -50,17 +50,20 @@ function Clear-DeploymentFixtureSelection {
 }
 
 function Test-DeploymentCopy([string]$Control, [string]$Expected, [switch]$SelectAll) {
-    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
     try {
-        [System.Windows.Forms.Clipboard]::SetText('No deployment text copied')
+        Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('No deployment text copied') }
+        $clipboardSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
         Invoke-Control $Control -Pointer
         if ($SelectAll) {
             Send-FixtureKeys A -Control
             Send-FixtureKeys C -Control
         }
-        Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -ceq $Expected } "Incorrect copied text from '$Control'."
+        Wait-FixtureClipboardText $clipboardSequence $Expected "Incorrect copied text from '$Control'."
     } finally {
-        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        Invoke-FixtureClipboard {
+            if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        }
     }
 }
 

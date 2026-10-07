@@ -556,6 +556,10 @@ because they save fewer lines than the first batch.
   no general action-content slot, so use R8's Marker/container approach for
   update-install and external-reload notices, retaining their action buttons.
   Keep diagnostics and log health separate from test outcomes.
+  Task 005's owner-approved exception uses presentational Marker inside the
+  existing named `Role::Alert` wrapper for capture/approval errors: the published
+  Alert plus a neutral wrapper lost the native accessible error name. Preserve
+  one assertive region; full native comparison smoke verifies the replacement.
 - **Capture metadata:** adopt [DescriptionList][kit-description] for matching
   label/value layout in [capture information](../src/desktop/ui/reports.rs#L1724).
   Use its stock styling and custom value elements for URL/copy controls.

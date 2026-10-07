@@ -188,8 +188,14 @@ impl RunPanel {
                     .role(Role::Status)
                     .aria_label("No matching run settings")
                     .test_support()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No matching run settings"),
+                    .flex()
+                    .w_full()
+                    .min_h(px(160.))
+                    .child(
+                        gpui_kit::component::empty::Empty::new()
+                            .text_color(cx.theme().muted_foreground)
+                            .child("No matching run settings"),
+                    ),
             );
         }
         div()

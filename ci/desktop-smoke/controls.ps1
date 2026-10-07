@@ -74,6 +74,14 @@ function Wait-Control([string]$Name, [string]$Within = '', [int]$TimeoutSeconds 
         if ($process.HasExited) { throw "Desktop exited with code $($process.ExitCode)." }
         [RegressifySmokeNative]::DwmFlush() | Out-Null
     } while ($deadline.Elapsed.TotalSeconds -lt $TimeoutSeconds)
+    $pointer = [RegressifySmokePointer+Point]::new()
+    if ([RegressifySmokePointer]::GetPhysicalCursorPos([ref]$pointer)) {
+        Write-Output "Pointer at ($($pointer.X), $($pointer.Y)); fixture foreground: $([RegressifySmokeFocus]::GetForegroundWindow() -eq $script:window)."
+        foreach ($target in @('Scenario information', 'Scenario information details')) {
+            $control = Find-Control $target
+            if ($null -ne $control) { Write-Output "Hover target '$target': $($control.Current.BoundingRectangle)." }
+        }
+    }
     Capture-Window 'missing-control'
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
     $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
@@ -93,6 +101,39 @@ function Test-MenuActionEnabled([string]$Name) {
     $element.Current.ControlType -eq [System.Windows.Automation.ControlType]::MenuItem -and $element.Current.IsEnabled
 }
 
+function Send-FixturePointerClick([switch]$Right) {
+    $down = if ($Right) { 8 } else { 2 }
+    $up = if ($Right) { 16 } else { 4 }
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+    [RegressifySmokeNative]::mouse_event($down, 0, 0, 0, [UIntPtr]::Zero)
+    try {
+        [RegressifySmokeNative]::DwmFlush() | Out-Null
+    } finally {
+        [RegressifySmokeNative]::mouse_event($up, 0, 0, 0, [UIntPtr]::Zero)
+    }
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
+}
+
+function Invoke-FixtureClipboard([scriptblock]$Operation, [ValidateRange(0, 10000)][int]$TimeoutMilliseconds = 2000) {
+    $deadline = [System.Diagnostics.Stopwatch]::StartNew()
+    do {
+        try { return (& $Operation) } catch {
+            $cause = $_.Exception.GetBaseException()
+            if ($cause -isnot [System.Runtime.InteropServices.ExternalException] -or
+                $cause.HResult -ne -2147221040 -or
+                $deadline.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+        }
+    } while ($true)
+}
+
+function Wait-FixtureClipboardText([uint32]$PreviousSequence, [string]$Expected, [string]$Failure) {
+    Wait-WindowState {
+        [RegressifySmokeClipboard]::GetClipboardSequenceNumber() -ne $PreviousSequence
+    } $Failure
+    if ((Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -cne $Expected) { throw $Failure }
+}
+
 function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
     $element = Wait-Control $Name $Within
     $pattern = $null
@@ -109,14 +150,8 @@ function Invoke-Control([string]$Name, [switch]$Pointer, [string]$Within = '') {
         if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($bounds.Left + $bounds.Width / 2), [int]($bounds.Top + $bounds.Height / 2))) {
             throw "Cannot position the mouse over '$Name'."
         }
-        # Let native hit-testing and pressed state settle between pointer events.
-        [RegressifySmokeNative]::DwmFlush() | Out-Null
-        [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-        try {
-            [RegressifySmokeNative]::DwmFlush() | Out-Null
-        } finally {
-            [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
-        }
+        Send-FixturePointerClick
+        return
     }
     [RegressifySmokeNative]::DwmFlush() | Out-Null
 }

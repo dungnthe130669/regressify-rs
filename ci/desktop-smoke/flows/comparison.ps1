@@ -237,8 +237,7 @@ public static class RegressifySmokeZoomKeys {
             Invoke-Control 'Fit area'
             foreach ($pane in @('Reference', 'Test', 'Diff')) {
                 Move-ComparisonPointer $pane | Out-Null
-                [RegressifySmokeNative]::mouse_event(2, 0, 0, 0, [UIntPtr]::Zero)
-                [RegressifySmokeNative]::mouse_event(4, 0, 0, 0, [UIntPtr]::Zero)
+                Send-FixturePointerClick
                 Wait-Control "$pane image preview" | Out-Null
                 foreach ($other in @('Reference', 'Test', 'Diff') | Where-Object { $_ -ne $pane }) {
                     if ($null -ne (Find-Control "$other image preview")) { throw "Clicking $pane did not open its tab." }

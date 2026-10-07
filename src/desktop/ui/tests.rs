@@ -5974,6 +5974,7 @@ fn source_line_commands_toggle_selected_yaml_comments(cx: &mut TestAppContext) {
             0..original.find("scenarios").unwrap()
         );
         window.render_frame(cx);
+        assert_eq!(window.find("source-language").label(), Some("YAML"));
         assert_eq!(window.find("source-position").label(), Some("Ln 3, Col 1"));
         window.press(&format!("{modifier}-/"), cx);
         assert_eq!(
@@ -6894,6 +6895,12 @@ async fn overview_suite_columns_align_with_headers_at_both_sizes(cx: &mut TestAp
                 window.render_frame(cx);
                 let suite_count = view.read(cx).session.suites.len();
                 assert_eq!(suite_count, 2);
+                for index in 0..suite_count {
+                    assert_eq!(
+                        window.find(("overview-status", index)).label(),
+                        Some("Ready")
+                    );
+                }
                 let mut report_buttons = 0;
                 for index in 0..suite_count {
                     for (heading, cell) in [
@@ -6926,6 +6933,27 @@ async fn overview_suite_columns_align_with_headers_at_both_sizes(cx: &mut TestAp
         })
         .unwrap();
     }
+}
+
+#[gpui_kit::test]
+fn overview_empty_state_preserves_open_workspace_action(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.overview = true;
+            this.session.workspace = None;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("overview-empty").label(),
+            Some("No workspace open")
+        );
+        assert_eq!(window.find("overview-open").label(), Some("Open workspace"));
+        assert!(window.find("overview-open").visible());
+    })
+    .unwrap();
 }
 
 #[gpui_kit::test]
@@ -7965,6 +7993,20 @@ async fn run_settings_are_available_before_execution_and_validate_only_relevant_
         });
         window.click("run-settings-search", cx);
         window.press("ctrl-a", cx);
+        window.input("no matching setting", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("run-settings-empty").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("run-settings-empty").label(),
+            Some("No matching run settings")
+        );
+        window.click("run-settings-search", cx);
+        window.press("ctrl-a", cx);
         window.input("browser download", cx);
     })
     .unwrap();
@@ -8152,8 +8194,8 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
             "id": "ui-test", "tests": [
                 {"status": "fail", "pair": {"scenarioLabel": "Carousel", "selector": "body .carousel", "referenceUrl": "https://production.example.test/start", "url": "https://staging.example.test/start", "diff": {"misMatchPercentage": "4.20", "dimensionDifference": {"width": -20, "height": 40}}}},
                 {"status": "pass", "pair": {"scenarioLabel": "Whole document", "selector": "document", "referenceUrl": "https://example.test/", "url": "https://example.test/", "diff": {"rawMisMatchPercentage": 0.0, "dimensionDifference": {"width": 0, "height": 0}}}},
-                {"status": "fail", "pair": {"label": "Legacy capture"}},
-                {"status": "pass", "pair": {"scenarioLabel": "Long URL capture", "selector": "document", "referenceUrl": long_url, "url": long_url}}
+                {"status": "fail", "pair": {"scenarioLabel": "Legacy capture", "referenceUrl": "javascript:alert(1)", "url": "data:text/html,<script>alert(1)</script>"}},
+                {"status": "pass", "pair": {"scenarioLabel": "Long URL capture", "selector": "document", "referenceUrl": long_url, "url": long_url}},
             ]
         })).unwrap()).unwrap();
         let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
@@ -8173,25 +8215,27 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
             })
             .unwrap();
             cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-                window.try_find("capture-info-label").is_some_and(|label| {
-                    label.label()
-                        == Some(match index {
-                            0 => "Label: Carousel",
-                            1 => "Label: Whole document",
-                            3 => "Label: Long URL capture",
-                            _ => "Label: Legacy capture",
-                        })
-                })
+                window.try_find("capture-info-label").is_some()
             })
             .await;
             cx.update_window(handle.into(), |_, window, cx| {
+                assert_eq!(
+                    window.find("capture-info-label").label(),
+                    Some(match index {
+                        0 => "Label: Carousel",
+                        1 => "Label: Whole document",
+                        3 => "Label: Long URL capture",
+                        _ => "Label: Legacy capture",
+                    })
+                );
                 let bounds = window.find("capture-information-content").bounds();
                 assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
                 assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(height));
                 let label = window.find("capture-info-label").bounds();
                 let selector = window.find("capture-info-selector").bounds();
-                assert_eq!(label.top(), selector.top());
-                assert!(label.right() < selector.left() && selector.right() <= bounds.right());
+                assert!(label.top() < selector.top());
+                assert!(label.left() >= bounds.left() && label.right() <= bounds.right());
+                assert!(selector.right() <= bounds.right());
                 let diff_stats = [
                     "capture-info-diff",
                     "capture-info-diff-x",
@@ -8203,7 +8247,7 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                     assert!(pair[0].right() < pair[1].left());
                 }
                 assert!(diff_stats[2].right() <= bounds.right());
-                assert!(bounds.size.height <= px(120.));
+                assert!(bounds.size.height <= px(160.));
                 assert_eq!(
                     window.find("capture-info-selector").label(),
                     Some(match index {
@@ -8251,6 +8295,12 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                     assert!(url.left() >= label.right() && url.left() - label.right() <= px(8.));
                     assert!(copy.left() >= url.right() && copy.left() - url.right() <= px(8.));
                     assert!(copy.right() <= bounds.right());
+                    if index == 2 {
+                        assert_eq!(
+                            window.find(("capture-info-url-value", image)).label(),
+                            Some("Unavailable")
+                        );
+                    }
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("unchanged".into()));
                     window.click(("capture-info-copy-url", image), cx);
                     assert_eq!(
@@ -8526,6 +8576,28 @@ async fn results_suite_navigation_is_isolated_and_preserves_drafts_during_refres
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("capture-empty").label(),
+            Some("No captures for this suite")
+        );
+        window.within("image-modes").click(0_usize, cx);
+        assert_eq!(
+            window.find(("capture-preview-empty", 0_usize)).label(),
+            Some("No capture selected")
+        );
+        window.within("image-modes").click(3_usize, cx);
+        window.render_frame(cx);
+        for index in 0_usize..2 {
+            assert_eq!(
+                window.find(("capture-preview-empty", index)).label(),
+                Some("No capture selected")
+            );
+        }
+        assert!(
+            window
+                .try_find(("capture-preview-empty", 2_usize))
+                .is_none()
+        );
         assert_eq!(window.find("capture-heading").label(), Some("Comparison"));
         assert!(window.try_find(("capture", 0_usize)).is_none());
         assert!(window.try_find(("image-details", 1_usize)).is_none());

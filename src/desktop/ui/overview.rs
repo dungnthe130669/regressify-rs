@@ -307,31 +307,35 @@ impl Workbench {
     pub(super) fn render_overview(&self, cx: &mut Context<Self>) -> AnyElement {
         let Some(workspace) = &self.session.workspace else {
             return div()
+                .id("overview-empty")
+                .role(Role::Status)
+                .aria_label("No workspace open")
+                .test_support()
                 .flex()
-                .flex_col()
                 .size_full()
-                .items_center()
-                .justify_center()
-                .gap_4()
                 .child(
-                    Icon::new(gpui_kit::assets::IconName::Folders)
-                        .size(px(48.))
-                        .text_color(cx.theme().primary),
-                )
-                .child(
-                    div()
-                        .text_xl()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child("No workspace open"),
-                )
-                .child(
-                    Button::new("overview-open")
-                        .primary()
-                        .icon(IconName::FolderOpen)
-                        .label("Open workspace")
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.choose_workspace(&OpenWorkspace, window, cx)
-                        })),
+                    gpui_kit::component::empty::Empty::new()
+                        .size_full()
+                        .child(
+                            Icon::new(gpui::assets::IconName::Folders)
+                                .size(px(48.))
+                                .text_color(cx.theme().primary),
+                        )
+                        .child(
+                            div()
+                                .text_xl()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("No workspace open"),
+                        )
+                        .child(
+                            Button::new("overview-open")
+                                .primary()
+                                .icon(IconName::FolderOpen)
+                                .label("Open workspace")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.choose_workspace(&OpenWorkspace, window, cx)
+                                })),
+                        ),
                 )
                 .into_any_element();
         };
@@ -559,11 +563,11 @@ impl Workbench {
             } else {
                 "Ready"
             };
-            let color = match status {
-                "Invalid" | "Failed" => cx.theme().danger,
-                "Running" => cx.theme().primary,
-                "Passed" => cx.theme().success,
-                _ => cx.theme().muted_foreground,
+            let variant = match status {
+                "Invalid" | "Failed" => gpui_kit::component::tag::TagVariant::Danger,
+                "Running" => gpui_kit::component::tag::TagVariant::Primary,
+                "Passed" => gpui_kit::component::tag::TagVariant::Success,
+                _ => gpui_kit::component::tag::TagVariant::Secondary,
             };
             page = page.child(
                 div()
@@ -645,12 +649,17 @@ impl Workbench {
                             .child(
                                 div()
                                     .id(("overview-status", index))
+                                    .role(Role::Status)
+                                    .aria_label(status)
                                     .test_support()
                                     .w(status_width)
                                     .flex_shrink_0()
-                                    .text_xs()
-                                    .text_color(color)
-                                    .child(status),
+                                    .child(
+                                        gpui_kit::component::tag::Tag::new()
+                                            .with_variant(variant)
+                                            .outline()
+                                            .child(status),
+                                    ),
                             )
                             .child(
                                 div()

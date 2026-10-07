@@ -106,11 +106,12 @@ impl ListDelegate for CommandList {
             .role(Role::Status)
             .aria_label("No matching commands")
             .test_support()
-            .py_6()
-            .text_center()
-            .text_sm()
-            .text_color(cx.theme().muted_foreground)
-            .child("No matching commands")
+            .child(
+                gpui_kit::component::empty::Empty::new()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("No matching commands"),
+            )
     }
 
     fn set_selected_index(

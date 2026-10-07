@@ -1977,7 +1977,11 @@ impl Workbench {
                                     cx.notify();
                                 })),
                         )
-                        .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
+                        .child(
+                            gpui_kit::component::separator::Separator::horizontal()
+                                .flex_1()
+                                .min_w_0(),
+                        ),
                 );
                 section = Form::new().columns(2);
                 current_group = Some(group.0);

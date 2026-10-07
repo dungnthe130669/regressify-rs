@@ -1,8 +1,8 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-003 committed; task 004 Forms presentation is
-verified and awaiting its local commit. The approved Linux baseline exception
-remains in force.
+Status: Planning and tasks 001-004 committed. Task 005 is verified on Windows and
+ready for its authorized local commit; task 006 is next. The approved Linux
+baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -75,8 +75,9 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Committed as `4809144`.
 - [x] 002 Progress and binary checkbox: Kit Progress at both bars and binary Git-file Checkbox verified; aggregates remain mixed-state. Committed as `b8eb5c4`.
 - [x] 003 Numeric fields: controlled styled NumberInput verified for drafts, inheritance, limits, history and native workflows. Committed as `3b57c38`.
-- [x] 004 Forms: five form areas verified with focused tests, root lifecycle and native publishing/deployment/schema/default flows. Local commit pending.
-- [ ] 005 Status and content components: not started.
+- [x] 004 Forms: five form areas verified with focused tests, root lifecycle and native publishing/deployment/schema/default flows. Committed as `7bbf39b`.
+- [x] 005 Status and content components: focused GUI tests, native flows,
+  screenshot review and production gates pass; ready for the authorized commit.
 - [ ] 006 Dialog footers: not started.
 - [ ] 007 Toolbars: not started.
 - [ ] 008 Context menus: not started.
@@ -239,8 +240,48 @@ When a task changes state, record the exact focused command, exact outcome and n
 - User-facing workflow contracts did not change, so `docs/desktop.md` remains
   unchanged. Owning skills and shared source/publishing memory record the new
   presentation-only contract.
-- Task 004 is verified and ready for its authorized local commit. The Linux
-  baseline exception is unchanged.
+- Task 004 is committed as `7bbf39b`. The Linux baseline exception is unchanged.
+
+### Task 005 Verification
+
+- Adopted StatusBar, Marker, Tag, Badge, Separator, Label, DescriptionList and
+  Empty in the scoped presentation owners, preserving status meanings, exact
+  counts, raw safe URLs, stable names/actions and application state. Detailed
+  filters and scope are in [task 005](005-status-content.md).
+- Owner-approved exception: capture/approval errors use presentational Marker
+  inside their original named Role::Alert wrappers. Styled Alert with a neutral
+  observer wrapper lost the native error name; the final replacement keeps one
+  assertive region and passes native error-name checks.
+- Empty preview wrappers are keyed by pane index. The original shared ID
+  caused a native duplicate-a11y-node panic on empty side-by-side suites.
+  `cargo test --locked --features gui-tests --lib results_suite_navigation_is_isolated_and_preserves_drafts_during_refresh -- --test-threads=1`
+  passes (1), as does `results_filter_errors_and_load_image_comparison_modes`
+  (1) with the same command options. Full native comparison also passes the
+  formerly crashing empty-suite transition.
+- Approved harness repairs retain every exact URL/pixel/action assertion:
+  balanced frame-synchronized clicks, bounded clipboard-busy-only retries,
+  synthetic sentinels, and sequence-change waits before reading exact text.
+  `./ci/test-desktop-smoke.ps1` passes: 18 modules, 49 helpers, 45 dispatch/cleanup
+  cases, plus pointer cleanup and clipboard ordering/failure regressions.
+- The user confirmed moving the mouse during popup/tab failures. An undisturbed
+  `pwsh -NoProfile -STA -File .\ci\desktop-smoke.ps1 -SkipBuild -ComparisonFlows`
+  passes both sizes/themes, metadata/menu copies, pixel/gesture checks, empty
+  suites, historical viewport approval and error images. No popup lifecycle
+  change or navigation assertion relaxation was needed.
+- Final default and `-DeploymentFlows` native checks pass in fresh STA hosts;
+  Schema previously passed for the unchanged Source slice. Preferences and
+  clipboard were restored, with synthetic deployment fixtures and no remote
+  publication. Inspected compact/large light/dark screenshots for Source,
+  metadata, errors, empty panes, overview, run settings and deployment logs.
+- Final Rustfmt, production GUI Clippy with `-D warnings`, and desktop GUI build
+  pass. Guidance validation passes for 46 skills; self-tests pass 10/10. Scoped
+  Markdown lint passes for eight files with only the existing MD004 config warning.
+- Accounting: nine production UI owners are +368/-244 (net +124), including
+  semantic adapters and no new state/subscriptions. GUI tests are +86/-14;
+  native helper/flow changes are +90/-22 and headless tests +77/-3. The approved
+  correct-reuse-over-net-reduction decision applies.
+- Task 005 is verified and ready for its authorized local commit. No additional
+  task deferrals were introduced; the Linux baseline exception remains below.
 
 ### Approved Linux Baseline Exception
 

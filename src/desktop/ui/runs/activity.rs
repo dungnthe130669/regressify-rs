@@ -426,7 +426,12 @@ impl RunPanel {
                                                     div()
                                                         .size_2()
                                                         .rounded_full()
-                                                        .bg(status_color(status, cx)),
+                                                        .child(
+                                                            gpui_kit::component::badge::Badge::new()
+                                                                .dot()
+                                                                .color(status_color(status, cx))
+                                                                .child(div().size_2()),
+                                                        ),
                                                 )
                                                 .child(
                                                     div()
@@ -470,10 +475,30 @@ impl RunPanel {
                                                         .test_support()
                                                         .w(px(90.))
                                                         .text_right()
-                                                        .text_xs()
-                                                        .font_weight(FontWeight::MEDIUM)
-                                                        .text_color(status_color(status, cx))
-                                                        .child(status.label()),
+                                                        .child(
+                                                            gpui_kit::component::tag::Tag::new()
+                                                                .with_variant(match status {
+                                                                    Status::Running
+                                                                    | Status::Comparing => {
+                                                                        gpui_kit::component::tag::TagVariant::Primary
+                                                                    }
+                                                                    Status::Passed
+                                                                    | Status::Captured => {
+                                                                        gpui_kit::component::tag::TagVariant::Success
+                                                                    }
+                                                                    Status::Failed => {
+                                                                        gpui_kit::component::tag::TagVariant::Danger
+                                                                    }
+                                                                    Status::Cancelled => {
+                                                                        gpui_kit::component::tag::TagVariant::Warning
+                                                                    }
+                                                                    Status::Queued => {
+                                                                        gpui_kit::component::tag::TagVariant::Secondary
+                                                                    }
+                                                                })
+                                                                .outline()
+                                                                .child(status.label()),
+                                                        ),
                                                 ),
                                         )
                                         .children(scenario.message.as_ref().map(|message| {
@@ -746,7 +771,24 @@ impl RunPanel {
                                 .test_support()
                                 .text_sm()
                                 .truncate()
-                                .child(destination),
+                                .child(
+                                    gpui_kit::component::label::Label::new(job.target.name.clone())
+                                        .secondary(format!(
+                                            "| {} | {} | {} {}",
+                                            job.target.provider.label(),
+                                            if job.target.environment.is_empty() {
+                                                "Production"
+                                            } else {
+                                                &job.target.environment
+                                            },
+                                            job.suite_ids.len(),
+                                            if job.suite_ids.len() == 1 {
+                                                "suite"
+                                            } else {
+                                                "suites"
+                                            },
+                                        )),
+                                ),
                         )
                     }),
             )

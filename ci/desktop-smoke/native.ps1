@@ -48,7 +48,19 @@ Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public static class RegressifySmokePointer {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct Point { public int X, Y; }
     [DllImport("user32.dll")] public static extern bool SetPhysicalCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern bool GetPhysicalCursorPos(out Point point);
+}
+'@
+}
+
+if (-not ('RegressifySmokeClipboard' -as [type])) {
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class RegressifySmokeClipboard {
+    [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
 }
 '@
 }

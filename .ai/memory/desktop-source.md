@@ -2,6 +2,14 @@
 
 Verified: 2026-10-07
 
+- [Source footer](../../src/desktop/ui/source.rs) uses Kit StatusBar slots for
+  language, caret, completion and issue navigation. Keep child status IDs,
+  roles/names and action guards unchanged; `source_line_commands` (12) checks
+  caret position and language after the layout migration.
+- Source diagnostic severity dots use Kit Badge inside the existing fixed-size
+  test host; the parent severity cell retains its Warning/Error status name.
+  `schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows`
+  (1) verifies centering, text bounds, scroll and both themes/sizes.
 - Numeric Fields use styled Kit NumberInput with explicit `MaskPattern::None`
   and `set_step(None)`; 0.7.1 defaults to fixed step one. Step events call the
   existing schema-aware `adjust_field`, while Change retains raw invalid drafts.

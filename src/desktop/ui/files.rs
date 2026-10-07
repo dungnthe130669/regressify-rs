@@ -247,9 +247,6 @@ impl Workbench {
                 .role(Role::Status)
                 .aria_label(notice.message.clone())
                 .test_support()
-                .flex()
-                .flex_wrap()
-                .items_center()
                 .gap_2()
                 .w_full()
                 .flex_shrink_0()
@@ -259,28 +256,33 @@ impl Workbench {
                 .border_color(cx.theme().border)
                 .bg(cx.theme().muted)
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .whitespace_normal()
-                        .child(notice.message.clone()),
-                )
-                .child(
-                    Button::new("external-file-reload")
-                        .small()
-                        .flex_shrink_0()
-                        .icon(gpui_kit::assets::IconName::RotateCw)
-                        .label("Reload from disk")
-                        .disabled(self.busy)
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            if this.session.open.is_some()
-                                && let Err(error) = this.flush_drafts(window, cx)
-                            {
-                                this.status = format!("{error:#}");
-                            }
-                            this.guard(Pending::Reload, window, cx);
-                        })),
+                    gpui_kit::component::marker::Marker::new()
+                        .w_full()
+                        .flex_wrap()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_sm()
+                                .whitespace_normal()
+                                .child(notice.message.clone()),
+                        )
+                        .child(
+                            Button::new("external-file-reload")
+                                .small()
+                                .flex_shrink_0()
+                                .icon(gpui_kit::assets::IconName::RotateCw)
+                                .label("Reload from disk")
+                                .disabled(self.busy)
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    if this.session.open.is_some()
+                                        && let Err(error) = this.flush_drafts(window, cx)
+                                    {
+                                        this.status = format!("{error:#}");
+                                    }
+                                    this.guard(Pending::Reload, window, cx);
+                                })),
+                        ),
                 )
                 .into_any_element(),
         )

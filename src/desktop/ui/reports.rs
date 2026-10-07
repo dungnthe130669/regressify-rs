@@ -1157,16 +1157,30 @@ impl ResultsPanel {
             } else {
                 "No matching captures"
             };
+            let empty = if self.loading {
+                div()
+                    .py_6()
+                    .text_center()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(message)
+                    .into_any_element()
+            } else {
+                gpui_kit::component::empty::Empty::new()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(message)
+                    .into_any_element()
+            };
             rows = rows.child(
                 div()
                     .id("capture-empty")
                     .role(Role::Status)
                     .aria_label(message)
                     .test_support()
-                    .py_6()
-                    .text_center()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(message),
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(empty),
             );
         }
         if !filtered.is_empty() {
@@ -1236,18 +1250,14 @@ impl ResultsPanel {
                                 div()
                                     .flex()
                                     .flex_col()
-                                    .gap_1()
                                     .flex_1()
                                     .min_w_0()
                                     .text_left()
                                     .child(
-                                        div()
-                                            .truncate()
-                                            .text_color(cx.theme().foreground)
-                                            .child(test.pair.display.title.clone()),
-                                    )
-                                    .child(div().text_xs().truncate().text_color(color).child(
-                                        if test.pair.display.detail.is_empty() {
+                                        gpui_kit::component::label::Label::new(
+                                            test.pair.display.title.clone(),
+                                        )
+                                        .secondary(if test.pair.display.detail.is_empty() {
                                             outcome.label().to_string()
                                         } else {
                                             format!(
@@ -1255,8 +1265,9 @@ impl ResultsPanel {
                                                 outcome.label(),
                                                 test.pair.display.detail
                                             )
-                                        },
-                                    )),
+                                        })
+                                        .truncate(),
+                                    ),
                             ),
                     )
                     .tooltip(
@@ -1467,17 +1478,29 @@ impl ResultsPanel {
 
     fn render_preview(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
         let Some(preview) = self.previews.get(index) else {
+            if self.image_loading {
+                return div()
+                    .flex()
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .p_4()
+                    .child("Loading image...")
+                    .into_any_element();
+            }
             return div()
-                .flex()
+                .id(("capture-preview-empty", index))
+                .role(Role::Status)
+                .aria_label("No capture selected")
+                .test_support()
                 .flex_1()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .child(if self.image_loading {
-                    "Loading image..."
-                } else {
-                    "No capture selected"
-                })
+                .min_w_0()
+                .min_h_0()
+                .child(
+                    gpui_kit::component::empty::Empty::new()
+                        .size_full()
+                        .child("No capture selected"),
+                )
                 .into_any_element();
         };
         let content = match &preview.result {
@@ -1748,7 +1771,7 @@ impl ResultsPanel {
                         }
                     })
                     .unwrap_or_else(|| "Unavailable".into());
-                let mut content = div()
+                let content = div()
                     .id("capture-information-content")
                     .role(Role::Group)
                     .aria_label("Scenario information details")
@@ -1759,37 +1782,44 @@ impl ResultsPanel {
                     .w(px(460.))
                     .max_w(window.bounds().size.width - px(48.))
                     .text_sm();
-                let mut details = div().flex().items_center().gap_3().min_w_0();
-                for (id, label) in [
+                let selector = if pair.selector.is_empty() {
+                    "Unavailable".to_string()
+                } else {
+                    pair.selector.clone()
+                };
+                let mut details = gpui_kit::component::description_list::DescriptionList::new()
+                    .columns(1)
+                    .bordered(false)
+                    .label_width(px(112.));
+                for (id, visible_label, aria_label, value) in [
                     (
                         "capture-info-label",
+                        "Label:",
                         format!("Label: {}", pair.display.title),
+                        pair.display.title.clone(),
                     ),
                     (
                         "capture-info-selector",
-                        format!(
-                            "Selector: {}",
-                            if pair.selector.is_empty() {
-                                "Unavailable"
-                            } else {
-                                &pair.selector
-                            }
-                        ),
+                        "Selector:",
+                        format!("Selector: {selector}"),
+                        selector,
                     ),
                 ] {
-                    details = details.child(
+                    details = details.item(
+                        div().text_sm().child(visible_label).into_any_element(),
                         div()
                             .id(id)
                             .role(Role::Status)
-                            .aria_label(label.clone())
+                            .aria_label(aria_label)
                             .test_support()
                             .min_w_0()
                             .flex_shrink_1()
                             .truncate()
-                            .child(label),
+                            .child(value)
+                            .into_any_element(),
+                        1,
                     );
                 }
-                content = content.child(details);
                 for (index, kind) in [(0, "Reference"), (1, "Test")] {
                     let url = image_page_url(&pair, index);
                     let same = index == 1 && url.is_some() && url == image_page_url(&pair, 0);
@@ -1803,80 +1833,79 @@ impl ResultsPanel {
                     let link_url = url.clone();
                     let copy_url = url.clone();
                     let panel = panel.clone();
-                    content = content.child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1()
-                            .min_w_0()
-                            .child(
-                                div()
-                                    .id(("capture-info-url-label", index))
-                                    .role(Role::Status)
-                                    .aria_label(format!("{kind} URL:"))
-                                    .test_support()
-                                    .flex_shrink_0()
-                                    .child(format!("{kind} URL:")),
-                            )
-                            .child(
-                                Button::new(("capture-info-url", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .flex_shrink_1()
-                                    .min_w_0()
-                                    .px_0()
-                                    .justify_start()
-                                    .text_left()
-                                    .cursor(if url.is_some() {
-                                        CursorStyle::PointingHand
-                                    } else {
-                                        CursorStyle::Arrow
-                                    })
-                                    .accessibility_label(format!("Open {kind} URL"))
-                                    .tooltip(
-                                        url.as_ref()
-                                            .map(|url| url.as_str())
-                                            .unwrap_or("URL unavailable")
-                                            .to_string(),
-                                    )
-                                    .disabled(url.is_none())
-                                    .child(
-                                        div()
-                                            .id(("capture-info-url-value", index))
-                                            .role(Role::Status)
-                                            .aria_label(value.clone())
-                                            .test_support()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(cx.theme().primary)
-                                            .underline()
-                                            .child(value),
-                                    )
-                                    .on_click(move |_, window, cx| {
-                                        if let Some(url) = &link_url {
-                                            let _ = panel.update(cx, |this, cx| {
-                                                this.open_browser(url.clone(), window, cx)
-                                            });
-                                        }
-                                    }),
-                            )
-                            .child(
-                                Button::new(("capture-info-copy-url", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Copy)
-                                    .tooltip(format!("Copy {kind} URL"))
-                                    .accessibility_label(format!("Copy {kind} URL"))
-                                    .disabled(url.is_none())
-                                    .on_click(move |_, _, cx| {
-                                        if let Some(url) = &copy_url {
-                                            cx.write_to_clipboard(ClipboardItem::new_string(
-                                                url.to_string(),
-                                            ));
-                                        }
-                                    }),
-                            ),
-                    );
+                    let label = div()
+                        .id(("capture-info-url-label", index))
+                        .role(Role::Status)
+                        .aria_label(format!("{kind} URL:"))
+                        .test_support()
+                        .flex_shrink_0()
+                        .child(format!("{kind} URL:"))
+                        .into_any_element();
+                    let value = div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .min_w_0()
+                        .child(
+                            Button::new(("capture-info-url", index))
+                                .ghost()
+                                .xsmall()
+                                .flex_shrink_1()
+                                .min_w_0()
+                                .px_0()
+                                .justify_start()
+                                .text_left()
+                                .cursor(if url.is_some() {
+                                    CursorStyle::PointingHand
+                                } else {
+                                    CursorStyle::Arrow
+                                })
+                                .accessibility_label(format!("Open {kind} URL"))
+                                .tooltip(
+                                    url.as_ref()
+                                        .map(|url| url.as_str())
+                                        .unwrap_or("URL unavailable")
+                                        .to_string(),
+                                )
+                                .disabled(url.is_none())
+                                .child(
+                                    div()
+                                        .id(("capture-info-url-value", index))
+                                        .role(Role::Status)
+                                        .aria_label(value.clone())
+                                        .test_support()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_color(cx.theme().primary)
+                                        .underline()
+                                        .child(value),
+                                )
+                                .on_click(move |_, window, cx| {
+                                    if let Some(url) = &link_url {
+                                        let _ = panel.update(cx, |this, cx| {
+                                            this.open_browser(url.clone(), window, cx)
+                                        });
+                                    }
+                                }),
+                        )
+                        .child(
+                            Button::new(("capture-info-copy-url", index))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Copy)
+                                .tooltip(format!("Copy {kind} URL"))
+                                .accessibility_label(format!("Copy {kind} URL"))
+                                .disabled(url.is_none())
+                                .on_click(move |_, _, cx| {
+                                    if let Some(url) = &copy_url {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            url.to_string(),
+                                        ));
+                                    }
+                                }),
+                        )
+                        .into_any_element();
+                    details = details.item(label, value, 1);
                 }
                 let mut diff_stats = div().flex().items_center().gap_3().min_w_0();
                 for (id, label) in [
@@ -1912,7 +1941,12 @@ impl ResultsPanel {
                             .child(label),
                     );
                 }
-                content.child(diff_stats)
+                details = details.item(
+                    div().text_sm().child("Difference:").into_any_element(),
+                    diff_stats.into_any_element(),
+                    1,
+                );
+                content.child(details)
             })
             .into_any_element()
     }
@@ -2126,10 +2160,22 @@ impl ResultsPanel {
                 )
             })
             .children(self.approval_error.as_ref().map(|error| {
-                div().id("scenario-approval-error").role(Role::Alert)
-                    .aria_label(error.clone()).test_support()
-                    .flex_shrink_0().px_3().py_2().text_sm()
-                    .text_color(cx.theme().danger).child(error.clone())
+                div()
+                    .id("scenario-approval-error")
+                    .role(Role::Alert)
+                    .aria_label(error.clone())
+                    .test_support()
+                    .flex_shrink_0()
+                    .child(
+                        gpui_kit::component::marker::Marker::new()
+                            .w_full()
+                            .px_4()
+                            .py_2()
+                            .bg(cx.theme().danger.opacity(0.08))
+                            .text_color(cx.theme().danger)
+                            .child(Icon::new(IconName::CircleX))
+                            .child(div().flex_1().min_w_0().whitespace_normal().child(error.clone())),
+                    )
             }))
             .child(
                 div()
@@ -2231,10 +2277,16 @@ impl ResultsPanel {
                             .role(Role::Alert)
                             .aria_label(error.clone())
                             .test_support()
-                            .px_4()
-                            .py_2()
-                            .text_color(cx.theme().danger)
-                            .child(error.clone())
+                            .child(
+                                gpui_kit::component::marker::Marker::new()
+                                    .w_full()
+                                    .px_4()
+                                    .py_2()
+                                    .bg(cx.theme().danger.opacity(0.08))
+                                    .text_color(cx.theme().danger)
+                                    .child(Icon::new(IconName::CircleX))
+                                    .child(div().flex_1().min_w_0().whitespace_normal().child(error.clone())),
+                            )
                     }),
             )
             .child(div().flex_1().min_h_0().child(previews))

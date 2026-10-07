@@ -1,5 +1,5 @@
 function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 0, [int]$DiffY = 0) {
-    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
     try {
         Hover-Control 'Scenario information'
         Wait-Control 'Scenario information details' | Out-Null
@@ -19,34 +19,51 @@ function Test-CaptureInformation([string]$Name, [switch]$SameUrl, [int]$DiffX = 
         }
         foreach ($kind in @('Reference', 'Test')) {
             if (-not (Test-ControlInvokable "Open $kind URL")) { throw "$kind URL must be clickable." }
+            Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('Regressify URL copy pending') }
+            $clipboardSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
             Hover-Control "Copy $kind URL"
             Invoke-Control "Copy $kind URL" -Pointer
             $expected = if ($SameUrl) { 'https://example.com/account' } elseif ($kind -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
-            Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "$kind URL was not copied correctly."
+            try {
+                Wait-FixtureClipboardText $clipboardSequence $expected "$kind URL was not copied correctly."
+            } catch {
+                Capture-Window 'capture-information-copy-failure'
+                if ((Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq 'Regressify URL copy pending') { throw "$kind URL copy did not replace the synthetic clipboard sentinel." }
+                throw
+            }
         }
         Capture-Window $Name
         Hover-Control 'Help'
         Wait-WindowState { $null -eq (Find-Control 'Scenario information details') } 'Scenario information did not close after the pointer left.'
     } finally {
-        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        Invoke-FixtureClipboard {
+            if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        }
     }
 }
 
 function Test-ImageContextMenus {
-    $clipboard = [System.Windows.Forms.Clipboard]::GetDataObject()
+    $clipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
     try {
         foreach ($pane in @('Reference', 'Test', 'Diff')) {
+            Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('Regressify URL copy pending') }
             Hover-Control "$pane image preview"
-            [RegressifySmokeNative]::mouse_event(8, 0, 0, 0, [UIntPtr]::Zero)
-            [RegressifySmokeNative]::mouse_event(16, 0, 0, 0, [UIntPtr]::Zero)
+            Send-FixturePointerClick -Right
             foreach ($name in @('Open in default browser', 'Open in default image viewer', 'Show in file manager')) {
                 if (-not (Test-MenuActionEnabled $name)) { throw "Image action '$name' is unavailable." }
             }
             if ($pane -ne 'Diff') {
                 if (-not (Test-MenuActionEnabled "Open $pane URL")) { throw "$pane URL must be available in the image menu." }
+                $clipboardSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
                 Invoke-Control "Copy $pane URL" -Pointer
                 $expected = if ($pane -eq 'Reference') { 'https://example.com/checkout' } else { 'https://staging.example.com/checkout' }
-                Wait-WindowState { [System.Windows.Forms.Clipboard]::GetText() -eq $expected } "Image menu copied an incorrect $pane URL."
+                try {
+                    Wait-FixtureClipboardText $clipboardSequence $expected "Image menu copied an incorrect $pane URL."
+                } catch {
+                    Capture-Window 'image-menu-copy-failure'
+                    if ((Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq 'Regressify URL copy pending') { throw "Image menu $pane URL copy did not replace the synthetic clipboard sentinel." }
+                    throw
+                }
             } else {
                 if ($null -ne (Find-Control 'Open Reference URL') -or $null -ne (Find-Control 'Copy Test URL')) { throw 'Diff must not offer scenario URL actions.' }
                 Send-FixtureKeys Escape
@@ -54,7 +71,9 @@ function Test-ImageContextMenus {
             Wait-WindowState { $null -eq (Find-Control 'Open in default browser') } 'Image context menu did not close.'
         }
     } finally {
-        if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        Invoke-FixtureClipboard {
+            if ($null -ne $clipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($clipboard, $true) } else { [System.Windows.Forms.Clipboard]::Clear() }
+        }
     }
 }
 
