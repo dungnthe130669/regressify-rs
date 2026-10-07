@@ -1063,6 +1063,11 @@ fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_stat
             this.select_view(3, window, cx);
         });
         window.render_frame(cx);
+        window.scroll(
+            "git-select-folder:blocked",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-160.))),
+            cx,
+        );
         window.click("git-select-folder:nested", cx);
         window.render_frame(cx);
         assert_eq!(
@@ -1076,6 +1081,11 @@ fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_stat
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(view.read(cx).git.read(cx).selection, expected);
+        window.scroll(
+            "git-select-folder:nested",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(1600.))),
+            cx,
+        );
         window.click("git-select-folder:blocked", cx);
         assert_eq!(view.read(cx).git.read(cx).selection, expected);
         window.press("ctrl-a", cx);
@@ -1094,6 +1104,11 @@ fn folder_selection_excludes_conflicts_and_submodules_and_respects_disabled_stat
         assert_eq!(view.read(cx).git.read(cx).selection, allowed);
         window.press("escape", cx);
         assert!(view.read(cx).git.read(cx).selection.is_empty());
+        window.scroll(
+            "git-select-folder:blocked",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-160.))),
+            cx,
+        );
         window.click("git-select-folder:nested", cx);
         view.read(cx).git.clone().update(cx, |panel, cx| {
             panel.set_disabled(true, cx);

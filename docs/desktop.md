@@ -1889,6 +1889,11 @@ files; later approval can change their reference image.
 Use Cmd instead of Ctrl on macOS. Native inputs retain their editing shortcuts;
 toolbar Undo/Redo always use complete document history.
 
+Toolbars wrap to keep commands visible in narrow windows. With a toolbar control
+focused, Left/Right cycle through its enabled controls; Tab/Shift+Tab use the
+normal focus order. Search fields retain their caret keys, and open menus keep
+their own arrow-key navigation.
+
 | Shortcut                             | Command                                                |
 | ------------------------------------ | ------------------------------------------------------ |
 | Ctrl+O                               | Open workspace                                         |

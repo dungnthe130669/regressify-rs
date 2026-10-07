@@ -20,6 +20,19 @@ Issues identified during adversarial review that remain after the September 2026
   before the fix and passes for all three editable Git inputs. The
   [migration ledger](plan/gpui-component-reuse-tasks/README.md) tracks completion.
 
+## GPUI Toolbar Focus Compatibility (2026-10-07)
+
+- Mitigated locally: on Windows, published GPUI Kit 0.7.1 Toolbar backward
+  wrapping failed in native input and a two-button public fixture, while Right
+  and Shift+Tab worked. The owner-approved
+  [ToolbarFocus adapter](src/desktop/ui/design.rs) uses bounded forward focus
+  order and scoped destinations without changing toolkit sources.
+- The adapter yields to active toolkit popups and child input handlers. Five
+  `toolbar_` regressions cover wrapping, disabled/busy controls, menu/input
+  isolation, dynamic children and owner release; native default, Schema, Git
+  and Deployment flows pass. Keep the adapter until a replacement passes those
+  checks. This is not a new unresolved task or a passing Linux gate.
+
 ## Linux Baseline Verification (2026-10-06)
 
 - Existing Ubuntu Git 2.34.1 reports usage errors in three remote rename/remove

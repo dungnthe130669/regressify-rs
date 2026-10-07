@@ -37,6 +37,14 @@ Verified: 2026-10-07
   focus return, unchanged draft/saved bytes, and window-close owner release.
   Native Update, Artifact, Publishing, Deployment and Git flows pass with this
   footer check and the shared DialogFooter layout across all nine dialog sites.
+- Editor Toolbar Left wrapping failed in native input and a two-button public
+  fixture, while forward/Shift+Tab worked. The owner-approved
+  [ToolbarFocus adapter](../../src/desktop/ui/design.rs) uses bounded forward
+  tab order and scoped destinations, yielding to active toolkit popups. Five
+  `toolbar_` tests pass for geometry, actions, menu/modified keys, input caret
+  handling, dynamic controls and release. Native default verifies Add-to-More
+  Left plus exact log-search caret edits and clearing; Schema, Git and Deployment
+  also pass. Dropdown focus wrappers and input exclusion lists were unnecessary.
 - Run interactive flows without concurrent user mouse/keyboard input. Pointer
   movement dismissed a metadata hover card and redirected image-tab clicks;
   the undisturbed fresh-STA `-ComparisonFlows` run passed all four size/theme

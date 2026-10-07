@@ -56,6 +56,10 @@ function Test-DefaultFlows {
     Invoke-Control 'Checkout' -Pointer
     Wait-Control 'Document loaded' | Out-Null
     Capture-Window 'editor'
+    (Wait-Control 'Add' -Within 'Editor commands').SetFocus()
+    Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'Add' } 'Editor Add did not receive native keyboard focus.'
+    Send-FixtureKeys LeftArrow
+    Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'More suite actions' } 'Editor toolbar Left did not wrap from Add to More suite actions.'
     Invoke-Control 'Add action' -Pointer
     Wait-Control 'goto' | Out-Null
     Capture-Window 'action-menu'
@@ -116,6 +120,22 @@ function Test-DefaultFlows {
     Wait-Control 'Test 640 x 420' | Out-Null
     Wait-Control 'Mismatch Checkout' | Out-Null
     Test-CaptureInformation 'results-scenario-information'
+    Invoke-Control 'Capture Log' -Pointer
+    Wait-Control 'Capture log commands' | Out-Null
+    Invoke-Control 'Search log' -Within 'Log controls' -Pointer
+    Wait-Control 'Search log' -Within 'Log controls' | Out-Null
+    Send-FixtureText 'ab'
+    Send-FixtureKeys LeftArrow
+    Send-FixtureText 'X'
+    Wait-WindowState { (Read-ControlText 'Search log') -ceq 'aXb' } 'Log toolbar stole the search input Left key.'
+    Send-FixtureKeys RightArrow
+    Send-FixtureText 'Y'
+    Wait-WindowState { (Read-ControlText 'Search log') -ceq 'aXbY' } 'Log toolbar stole the search input Right key.'
+    Send-FixtureKeys A -Control
+    Send-FixtureKeys Backspace
+    Wait-WindowState { (Read-ControlText 'Search log') -ceq '' } 'Log toolbar search did not clear.'
+    Capture-Window 'capture-log-toolbar'
+    Invoke-Control 'Back to comparison' -Pointer
     Wait-Control 'Edit suite' | Out-Null
     Capture-Window 'results'
     Select-Theme 'Dark'

@@ -1,6 +1,6 @@
 # Desktop Git
 
-Verified: 2026-10-06
+Verified: 2026-10-07
 
 - [The Git model](../../src/desktop/git.rs) stores active remote selection in
   repository-local `regressify.remote`. Its configuration hash covers that key,
@@ -21,6 +21,11 @@ Verified: 2026-10-06
   guarded confirmations, local bare remotes, and compact/wide layout assertions.
   `desktop::git::tests::remote_`, `desktop::git::process::tests`, and
   `desktop::ui::git::tests::remote_` passed with their matching feature gates.
+- Normal toolkit command bars avoid duplicate padding inside padded remote and
+  commit sections. The open comparison panel reserves its 38px header in flex
+  basis so both trees receive usable viewport height. Long virtualized fixtures
+  wheel target folders into view before clicks. All 16 Git UI tests and native
+  Git smoke pass with the [toolbar layout](../../src/desktop/ui/git/view.rs).
 - Remote-management native smoke passed on 2026-09-24, using local repositories
   and light/dark compact/wide screenshots. Two 2026-09-27 native Git reruns passed
   the text-diff, exact-copy, malformed-JSON, and selected-comparison-commit checks,

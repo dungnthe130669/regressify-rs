@@ -2,6 +2,84 @@ use super::*;
 
 use crate::desktop::workspace::ThemePreference;
 
+#[derive(IntoElement)]
+pub(super) struct ToolbarFocus {
+    id: ElementId,
+    toolbar: gpui_kit::component::toolbar::Toolbar,
+}
+
+impl ToolbarFocus {
+    pub(super) fn new(
+        id: impl Into<ElementId>,
+        toolbar: gpui_kit::component::toolbar::Toolbar,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            toolbar,
+        }
+    }
+}
+
+impl RenderOnce for ToolbarFocus {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let focus = window
+            .use_keyed_state(self.id.clone(), cx, |_, cx| {
+                cx.focus_handle().tab_stop(false)
+            })
+            .read(cx)
+            .clone();
+        div()
+            .id(self.id)
+            .w_full()
+            .min_w_0()
+            .track_focus(&focus)
+            .on_key_down(move |event, window, cx| {
+                if event.keystroke.modifiers != Modifiers::default()
+                    || !focus.contains_focused(window, cx)
+                    || gpui_kit::base::GlobalState::is_in_deferred_context(cx)
+                {
+                    return;
+                }
+                let backward = match event.keystroke.key.as_str() {
+                    "left" => true,
+                    "right" => false,
+                    _ => return,
+                };
+                let Some(start) = window.focused(cx) else {
+                    return;
+                };
+                let mut previous = start.clone();
+                let mut destination = start.clone();
+                // Kit 0.7.1 fails backward wrapping; choose scoped destinations from bounded forward order.
+                for _ in 0..1024 {
+                    window.focus_next(cx);
+                    let Some(next) = window.focused(cx) else {
+                        break;
+                    };
+                    if next == start {
+                        window.focus(&destination, cx);
+                        cx.stop_propagation();
+                        return;
+                    }
+                    if next == previous {
+                        break;
+                    }
+                    if focus.contains(&next, window) {
+                        if !backward {
+                            cx.stop_propagation();
+                            return;
+                        }
+                        destination = next.clone();
+                    }
+                    previous = next;
+                }
+                window.focus(&start, cx);
+                cx.stop_propagation();
+            })
+            .child(self.toolbar.disabled(true))
+    }
+}
+
 pub(super) fn titlebar_control(element: impl IntoElement) -> AnyElement {
     div()
         .flex_shrink_0()

@@ -41,15 +41,16 @@ impl GitPanel {
             .py_2()
             .border_b_1()
             .border_color(cx.theme().border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .child(div().text_sm().child("Remote"))
-                    .child(
+            .child(design::ToolbarFocus::new(
+                "git-remotes-toolbar-focus",
+                gpui_kit::component::toolbar::Toolbar::new("git-remotes-toolbar")
+                    .with_size(gpui_kit::component::Size::Medium)
+                    .p_0()
+                    .h_auto()
+                    .flex_wrap()
+                    .content(div().text_sm().child("Remote"))
+                    .content(
                         Button::new("git-remote-menu")
-                            .small()
                             .min_w_0()
                             .max_w(px(260.))
                             .flex_1()
@@ -57,6 +58,8 @@ impl GitPanel {
                             .accessibility_label("Select Git remote")
                             .icon(gpui_kit::assets::IconName::ChevronDown)
                             .disabled(disabled || self.remote_edit.is_some() || remotes.is_empty())
+                            .prepare_for_toolbar()
+                            .with_size(gpui_kit::component::Size::Medium)
                             .dropdown_menu(move |menu, _, _| {
                                 let mut menu = menu.action_context(focus.clone()).scrollable(true);
                                 for name in &remotes {
@@ -72,7 +75,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-remote-add")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Plus)
                             .tooltip("Add remote")
                             .accessibility_label("Add remote")
@@ -84,7 +86,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-remote-rename")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Pencil)
                             .tooltip("Rename remote")
                             .accessibility_label("Rename remote")
@@ -98,7 +99,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-remote-remove")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Trash)
                             .tooltip("Remove remote")
                             .accessibility_label("Remove remote")
@@ -112,7 +112,7 @@ impl GitPanel {
                                 }
                             })),
                     ),
-            );
+            ));
         if let Some((mode, _)) = &self.remote_edit {
             let needs_name = !matches!(mode, RemoteEdit::Url { .. });
             let needs_url = !matches!(mode, RemoteEdit::Rename(_));
@@ -321,17 +321,15 @@ impl GitPanel {
             .min_w_0()
             .border_t_1()
             .border_color(cx.theme().border)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .py_1()
+            .child(design::ToolbarFocus::new(
+                "git-activity-toolbar-focus",
+                gpui_kit::component::toolbar::Toolbar::new("git-activity-toolbar")
+                    .with_size(gpui_kit::component::Size::Medium)
+                    .h_auto()
+                    .flex_wrap()
                     .child(
                         Button::new("git-activity-toggle")
                             .ghost()
-                            .xsmall()
                             .icon(if self.activity_open {
                                 gpui_kit::assets::IconName::ChevronDown
                             } else {
@@ -344,7 +342,7 @@ impl GitPanel {
                                 cx.notify();
                             })),
                     )
-                    .child(
+                    .content(
                         div()
                             .id("git-progress")
                             .role(Role::Status)
@@ -372,7 +370,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-log-copy")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::Copy)
                             .tooltip("Copy Git logs")
                             .accessibility_label("Copy Git logs")
@@ -385,7 +382,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-log-clear")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::Trash)
                             .tooltip("Clear Git logs")
                             .accessibility_label("Clear Git logs")
@@ -397,7 +393,7 @@ impl GitPanel {
                                 cx.notify();
                             })),
                     ),
-            )
+            ))
             .when(self.activity_open, |section| {
                 section
                     .child(
@@ -978,14 +974,15 @@ impl GitPanel {
                                     .disabled(disabled),
                             ),
                     )
-                    .child(
-                        div()
-                            .flex()
+                    .child(design::ToolbarFocus::new(
+                        "git-selection-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("git-selection-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .p_0()
+                            .h_auto()
                             .flex_wrap()
-                            .gap_2()
                             .child(
                                 Button::new("git-commit")
-                                    .small()
                                     .primary()
                                     .icon(gpui_kit::assets::IconName::GitCommitHorizontal)
                                     .label("Commit selected files")
@@ -1007,7 +1004,6 @@ impl GitPanel {
                             )
                             .child(
                                 Button::new("git-discard")
-                                    .small()
                                     .danger()
                                     .icon(gpui_kit::assets::IconName::Trash)
                                     .label("Discard selected files")
@@ -1023,7 +1019,7 @@ impl GitPanel {
                                         );
                                     })),
                             ),
-                    ),
+                    )),
             )
             .into_any_element()
     }
@@ -1057,7 +1053,10 @@ impl GitPanel {
             .flex_col()
             .min_h_0()
             .min_w_0()
-            .when(self.comparison_open, |panel| panel.flex_1())
+            // Reserve the header before sharing the remaining viewport height between both trees.
+            .when(self.comparison_open, |panel| {
+                panel.flex_1().flex_basis(px(38.))
+            })
             .when(!self.comparison_open, |panel| panel.flex_shrink_0())
             .child(
                 div()
@@ -1264,58 +1263,62 @@ impl GitPanel {
             .min_h_0()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .gap_2()
-                    .px_3()
-                    .h(px(34.))
+                    .id("git-diff-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Git diff commands")
+                    .test_support()
                     .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        div()
-                            .id("git-diff-summary")
-                            .role(Role::Status)
-                            .test_support()
-                            .text_sm()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(format!("{} changes", review.changes.len())),
-                    )
-                    .when_some(review.renamed_from.as_ref(), |header, path| {
-                        header.child(
-                            div()
-                                .text_sm()
-                                .min_w_0()
-                                .truncate()
-                                .child(format!("Renamed from {}", visible_name(path))),
-                        )
-                    })
-                    .child(
-                        Button::new("git-diff-previous")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ArrowUp)
-                            .tooltip("Previous change")
-                            .accessibility_label("Previous change")
-                            .disabled(review.changes.is_empty())
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.move_diff_change(false, cx)),
+                    .child(design::ToolbarFocus::new(
+                        "git-diff-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("git-diff-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .content(
+                                div()
+                                    .id("git-diff-summary")
+                                    .role(Role::Status)
+                                    .test_support()
+                                    .text_sm()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(format!("{} changes", review.changes.len())),
+                            )
+                            .when_some(review.renamed_from.as_ref(), |header, path| {
+                                header.content(
+                                    div()
+                                        .text_sm()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(format!("Renamed from {}", visible_name(path))),
+                                )
+                            })
+                            .child(
+                                Button::new("git-diff-previous")
+                                    .ghost()
+                                    .icon(IconName::ArrowUp)
+                                    .tooltip("Previous change")
+                                    .accessibility_label("Previous change")
+                                    .disabled(review.changes.is_empty())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.move_diff_change(false, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("git-diff-next")
+                                    .ghost()
+                                    .icon(IconName::ArrowDown)
+                                    .tooltip("Next change")
+                                    .accessibility_label("Next change")
+                                    .disabled(review.changes.is_empty())
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.move_diff_change(true, cx)
+                                    })),
                             ),
-                    )
-                    .child(
-                        Button::new("git-diff-next")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::ArrowDown)
-                            .tooltip("Next change")
-                            .accessibility_label("Next change")
-                            .disabled(review.changes.is_empty())
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.move_diff_change(true, cx)),
-                            ),
-                    ),
+                    )),
             )
             .child(
                 div()
@@ -1338,37 +1341,40 @@ impl GitPanel {
                         })
                         .child(
                             div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .px_3()
-                                .h(px(32.))
                                 .flex_shrink_0()
                                 .bg(cx.theme().muted.opacity(0.35))
-                                .child(div().flex_1().text_xs().child(if after {
-                                    "Saved File"
-                                } else {
-                                    "Last Commit"
-                                }))
-                                .child(
-                                    Button::new(SharedString::from(format!("git-copy-{side}")))
-                                        .ghost()
-                                        .xsmall()
-                                        .icon(IconName::Copy)
-                                        .tooltip(if after {
-                                            "Copy saved file"
-                                        } else {
-                                            "Copy last committed file"
-                                        })
-                                        .accessibility_label(if after {
-                                            "Copy saved file"
-                                        } else {
-                                            "Copy last committed file"
-                                        })
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.copy_diff(after, cx);
-                                        })),
-                                ),
+                                .child(design::ToolbarFocus::new(
+                                    SharedString::from(format!("git-{side}-copy-focus")),
+                                    gpui_kit::component::toolbar::Toolbar::new(SharedString::from(
+                                        format!("git-{side}-copy-toolbar"),
+                                    ))
+                                    .with_size(gpui_kit::component::Size::Medium)
+                                    .h_auto()
+                                    .flex_wrap()
+                                    .content(div().flex_1().text_xs().child(if after {
+                                        "Saved File"
+                                    } else {
+                                        "Last Commit"
+                                    }))
+                                    .child(
+                                        Button::new(SharedString::from(format!("git-copy-{side}")))
+                                            .ghost()
+                                            .icon(IconName::Copy)
+                                            .tooltip(if after {
+                                                "Copy saved file"
+                                            } else {
+                                                "Copy last committed file"
+                                            })
+                                            .accessibility_label(if after {
+                                                "Copy saved file"
+                                            } else {
+                                                "Copy last committed file"
+                                            })
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.copy_diff(after, cx);
+                                            })),
+                                    ),
+                                )),
                         )
                         .child(
                             div()
@@ -1531,95 +1537,101 @@ impl Render for GitPanel {
             .min_w_0()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
+                    .id("git-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Repository commands")
+                    .test_support()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(Icon::new(gpui_kit::assets::IconName::GitBranch).size_4())
-                    .child(
-                        div()
-                            .id("git-branch")
-                            .role(Role::Status)
-                            .aria_label(branch.clone())
-                            .test_support()
-                            .max_w(px(220.))
-                            .truncate()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .child(branch),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("git-refresh")
-                            .ghost()
-                            .small()
-                            .loading(self.scan.is_some())
-                            .icon(gpui_kit::assets::IconName::RefreshCw)
-                            .tooltip("Refresh local changes")
-                            .accessibility_label("Refresh Git status")
-                            .disabled(self.scan.is_some() || self.active())
-                            .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
-                    )
-                    .child(
-                        Button::new("git-fetch")
-                            .small()
-                            .loading(self.fetch.is_some())
-                            .icon(gpui_kit::assets::IconName::CloudDownload)
-                            .label("Fetch")
-                            .tooltip("Check remote commits without changing files")
-                            .disabled(
-                                disabled
-                                    || self.fetch.is_some()
-                                    || snapshot.and_then(Snapshot::default_remote).is_none(),
+                    .child(design::ToolbarFocus::new(
+                        "git-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("git-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .content(Icon::new(gpui_kit::assets::IconName::GitBranch).size_4())
+                            .content(
+                                div()
+                                    .id("git-branch")
+                                    .role(Role::Status)
+                                    .aria_label(branch.clone())
+                                    .test_support()
+                                    .max_w(px(220.))
+                                    .truncate()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(branch),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.check_remote(true, window, cx)
-                            })),
-                    )
-                    .child(
-                        Button::new("git-pull")
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ArrowDown)
-                            .label("Pull")
-                            .tooltip("Fast-forward only; commit local changes first")
-                            .disabled(pull_disabled)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.request(model::Action::Pull, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("git-push")
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ArrowUp)
-                            .label("Push")
-                            .tooltip("Push commits without overwriting remote history")
-                            .disabled(push_disabled)
-                            .on_click(
-                                cx.listener(|this, _, _, cx| this.request(model::Action::Push, cx)),
-                            ),
-                    )
-                    .child(
-                        Button::new("git-open-vscode")
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ExternalLink)
-                            .label("Open in VS Code")
-                            .disabled(self.root.is_none())
-                            .on_click(cx.listener(|this, _, _, cx| this.open_vscode(false, cx))),
-                    )
-                    .when(self.active() || self.fetch.is_some(), |bar| {
-                        bar.child(
-                            Button::new("git-stop")
-                                .small()
-                                .icon(gpui_kit::assets::IconName::Square)
-                                .label("Stop")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.cancel_operation(cx);
-                                })),
-                        )
-                    }),
+                            .content(div().flex_1())
+                            .child(
+                                Button::new("git-refresh")
+                                    .ghost()
+                                    .loading(self.scan.is_some())
+                                    .icon(gpui_kit::assets::IconName::RefreshCw)
+                                    .tooltip("Refresh local changes")
+                                    .accessibility_label("Refresh Git status")
+                                    .disabled(self.scan.is_some() || self.active())
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.refresh(window, cx)),
+                                    ),
+                            )
+                            .child(
+                                Button::new("git-fetch")
+                                    .loading(self.fetch.is_some())
+                                    .icon(gpui_kit::assets::IconName::CloudDownload)
+                                    .label("Fetch")
+                                    .tooltip("Check remote commits without changing files")
+                                    .disabled(
+                                        disabled
+                                            || self.fetch.is_some()
+                                            || snapshot
+                                                .and_then(Snapshot::default_remote)
+                                                .is_none(),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.check_remote(true, window, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("git-pull")
+                                    .icon(gpui_kit::assets::IconName::ArrowDown)
+                                    .label("Pull")
+                                    .tooltip("Fast-forward only; commit local changes first")
+                                    .disabled(pull_disabled)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request(model::Action::Pull, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("git-push")
+                                    .icon(gpui_kit::assets::IconName::ArrowUp)
+                                    .label("Push")
+                                    .tooltip("Push commits without overwriting remote history")
+                                    .disabled(push_disabled)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.request(model::Action::Push, cx)
+                                    })),
+                            )
+                            .child(
+                                Button::new("git-open-vscode")
+                                    .icon(gpui_kit::assets::IconName::ExternalLink)
+                                    .label("Open in VS Code")
+                                    .disabled(self.root.is_none())
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.open_vscode(false, cx)),
+                                    ),
+                            )
+                            .when(self.active() || self.fetch.is_some(), |bar| {
+                                bar.child(
+                                    Button::new("git-stop")
+                                        .icon(gpui_kit::assets::IconName::Square)
+                                        .label("Stop")
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.cancel_operation(cx);
+                                        })),
+                                )
+                            }),
+                    )),
             )
             .when(tracked, |panel| {
                 panel.child(

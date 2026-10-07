@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-005 committed. Task 006 is verified on Windows and
-ready for its authorized local commit; task 007 is next. The approved Linux
+Status: Planning and tasks 001-006 committed. Task 007 is verified on Windows and
+ready for its authorized local commit; task 008 is next. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -79,8 +79,9 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 005 Status and content components: focused GUI tests, native flows,
   screenshot review and production gates pass. Committed as `888aade`.
 - [x] 006 Dialog footers: all nine footers and the public Close pilot pass
-  focused, native and screenshot checks; ready for the authorized commit.
-- [ ] 007 Toolbars: not started.
+  focused, native and screenshot checks. Committed as `5133195`.
+- [x] 007 Toolbars: named bars, approved focus adapter and final native gates pass;
+  ready for the authorized commit.
 - [ ] 008 Context menus: not started.
 - [ ] 009 Value selectors: not started.
 - [ ] 010 Clipboard: not started.
@@ -308,10 +309,52 @@ When a task changes state, record the exact focused command, exact outcome and n
   visible and aligned. Production owners are +45/-47 (net two lines removed),
   tests +70/-0, native helper +1/-1, with no new state/subscriptions. Explicit
   busy/multi-action callbacks and semantic wrappers are intentional adapters.
-- Task 006 is verified and ready for the authorized local commit. The existing
+- Task 006 is committed as `5133195`. The existing
   Linux baseline exception is unchanged; full final gates remain task 020.
   Scoped Markdown lint passes for five files; guidance validation passes for
   46 skills and self-tests pass 10/10, with only the existing MD004 config warning.
+
+### Task 007 Verification
+
+- Editor/titlebar baseline passes (1). The first editor Toolbar/ToolbarGroup
+  pilot retains normal size, automatic height, all commands and operation guards.
+  Non-Sizable dropdown wrappers use `content` with prepared/sized triggers.
+- `cargo test --locked --features gui-tests --lib toolbar_editor_ -- --test-threads=1`:
+  initially 1 passed, 1 failed. Geometry/actions pass at both supported fixture sizes;
+  Left from the focused Add trigger does not wrap. A key-context wrapper probe
+  did not resolve it. This is not yet a proven toolkit defect.
+- Native default smoke and a reduced two-button toolkit fixture reproduce the
+  backward-wrap failure. The owner approved a public-API focus adapter in
+  `design::ToolbarFocus`, using bounded forward-order traversal with scoped
+  destinations, child-first handling, modifier guards and no toolkit changes.
+- `cargo test --locked --features gui-tests --lib toolbar_ -- --test-threads=1`
+  now passes 5 tests, including the unchanged failing assertion, disabled/busy
+  actions, hosted input editing, popup/modified-key isolation, dynamic controls
+  and owner release. An actual
+  input focus handle is required in the input fixture; no exclusion list remains.
+- Rustfmt, production GUI Clippy/build and fresh-STA native default smoke pass.
+  The native Add-to-More Left assertion passes with exact editing/Results/run
+  checks and restored preferences/drafts. Screenshot review passes.
+- Remaining named bars are converted. Focused Source (12 line-command tests and
+  1 tools test), Run (1), logs (7), capture-log (1), Git diff (3), remote/selection
+  and activity-focus checks pass; details are in [task 007](007-toolbars.md).
+  The initial combined Git gate had 13 passes/3 failures. Duplicated Git toolbar
+  padding and comparison-header flex allocation are repaired without shrinking
+  controls. A virtualized long-folder fixture now scrolls actual targets before
+  clicks, retaining every assertion. Final full Git UI gate passes 16/16.
+- Final Rustfmt, production GUI Clippy/build and headless harness pass. Fresh-STA
+  native default, Schema, Git and Deployment flows pass. Default also verifies
+  exact log-search caret edits and clearing. Preferences/drafts were restored;
+  no real remote publication or installation occurred. Reviewed compact/large
+  light/dark toolbar, log and Git screenshots without new overlap or hidden actions.
+- Accounting: production +962/-826 (net +136), including a 78-line shared public
+  focus adapter; main GUI tests +419, Git tests +15, native smoke +20. Thirteen
+  toolbar instances use one keyed focus handle each; no new domain state or
+  subscriptions. Correct reuse despite net source growth is approved.
+- Task 007 is verified and ready for the authorized commit. No new deferral was
+  introduced; the non-green Linux baseline exception and task 020 remain.
+  Scoped Markdown lint passes for eight files, guidance validation passes for
+  46 skills, and self-tests pass 10/10 with only the existing MD004 config warning.
 
 ### Approved Linux Baseline Exception
 

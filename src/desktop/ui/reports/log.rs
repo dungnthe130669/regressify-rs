@@ -140,100 +140,105 @@ impl ResultsPanel {
             .min_w_0()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_3()
-                    .py_2()
+                    .id("capture-log-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Capture log commands")
+                    .test_support()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        Button::new("results-log-back")
-                            .ghost()
-                            .small()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip("Back to comparison")
-                            .accessibility_label("Back to comparison")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.capture_log.active = false;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("results-log-heading")
-                            .role(Role::Heading)
-                            .aria_label(self.capture_log.title.clone())
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .child(self.capture_log.title.clone()),
-                    )
-                    .child(
-                        Button::new("results-log-reference")
-                            .small()
-                            .label("Reference")
-                            .when(self.capture_log.reference, |button| button.primary())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.capture_log.reference = true;
-                                this.capture_log.query.offset = 0;
-                                this.load_capture_log(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("results-log-test")
-                            .small()
-                            .label("Test")
-                            .when(!self.capture_log.reference, |button| button.primary())
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.capture_log.reference = false;
-                                this.capture_log.query.offset = 0;
-                                this.load_capture_log(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("results-log-previous")
-                            .ghost()
-                            .small()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip("Previous log page")
-                            .accessibility_label("Previous log page")
-                            .disabled(
-                                self.capture_log.loading || self.capture_log.query.offset == 0,
+                    .child(design::ToolbarFocus::new(
+                        "capture-log-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("capture-log-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .child(
+                                Button::new("results-log-back")
+                                    .ghost()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip("Back to comparison")
+                                    .accessibility_label("Back to comparison")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.capture_log.active = false;
+                                        cx.notify();
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.capture_log.query.offset =
-                                    this.capture_log.query.offset.saturating_sub(PAGE_RECORDS);
-                                this.load_capture_log(window, cx);
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("results-log-next")
-                            .ghost()
-                            .small()
-                            .icon(IconName::ArrowRight)
-                            .tooltip("Next log page")
-                            .accessibility_label("Next log page")
-                            .disabled(
-                                self.capture_log.loading
-                                    || !self
-                                        .capture_log
-                                        .page
-                                        .as_ref()
-                                        .is_some_and(LogPage::has_more),
+                            .content(
+                                div()
+                                    .id("results-log-heading")
+                                    .role(Role::Heading)
+                                    .aria_label(self.capture_log.title.clone())
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .child(self.capture_log.title.clone()),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.capture_log.query.offset += PAGE_RECORDS;
-                                this.load_capture_log(window, cx);
-                                cx.notify();
-                            })),
-                    ),
+                            .child(
+                                Button::new("results-log-reference")
+                                    .label("Reference")
+                                    .selected(self.capture_log.reference)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.capture_log.reference = true;
+                                        this.capture_log.query.offset = 0;
+                                        this.load_capture_log(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("results-log-test")
+                                    .label("Test")
+                                    .selected(!self.capture_log.reference)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.capture_log.reference = false;
+                                        this.capture_log.query.offset = 0;
+                                        this.load_capture_log(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("results-log-previous")
+                                    .ghost()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip("Previous log page")
+                                    .accessibility_label("Previous log page")
+                                    .disabled(
+                                        self.capture_log.loading
+                                            || self.capture_log.query.offset == 0,
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.capture_log.query.offset = this
+                                            .capture_log
+                                            .query
+                                            .offset
+                                            .saturating_sub(PAGE_RECORDS);
+                                        this.load_capture_log(window, cx);
+                                        cx.notify();
+                                    })),
+                            )
+                            .child(
+                                Button::new("results-log-next")
+                                    .ghost()
+                                    .icon(IconName::ArrowRight)
+                                    .tooltip("Next log page")
+                                    .accessibility_label("Next log page")
+                                    .disabled(
+                                        self.capture_log.loading
+                                            || !self
+                                                .capture_log
+                                                .page
+                                                .as_ref()
+                                                .is_some_and(LogPage::has_more),
+                                    )
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.capture_log.query.offset += PAGE_RECORDS;
+                                        this.load_capture_log(window, cx);
+                                        cx.notify();
+                                    })),
+                            ),
+                    )),
             )
             .child(self.capture_log.controls.clone())
             .child(

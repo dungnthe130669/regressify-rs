@@ -178,12 +178,9 @@ impl Render for LogControls {
         div()
             .id("log-controls")
             .track_focus(&self.focus)
-            .flex()
-            .flex_wrap()
-            .items_center()
-            .gap_2()
-            .px_3()
-            .py_2()
+            .role(Role::Group)
+            .aria_label("Log controls")
+            .test_support()
             .min_w_0()
             .on_action(cx.listener(|this, action: &ChooseLogLevel, _, cx| {
                 if let Some(level) = LEVELS.get(action.index) {
@@ -201,125 +198,134 @@ impl Render for LogControls {
                     cx.notify();
                 }
             }))
-            .child(
-                Button::new("log-level-filter")
-                    .ghost()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::List)
-                    .label(
-                        level
-                            .map(|level| format!("{level:?}"))
-                            .unwrap_or_else(|| "All levels".into()),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        let mut menu = menu.action_context(focus.clone());
-                        for (index, choice) in LEVELS.iter().enumerate() {
-                            menu = menu.menu_with_check_and_disabled(
-                                choice
-                                    .map(|choice| format!("{choice:?}"))
-                                    .unwrap_or_else(|| "All levels".into()),
-                                *choice == level,
-                                Box::new(ChooseLogLevel { index }),
-                                false,
-                            );
-                        }
-                        menu
-                    }),
-            )
-            .child(
-                Button::new("log-stage-filter")
-                    .ghost()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::List)
-                    .label(
-                        stage
-                            .map(|stage| format!("{stage:?}"))
-                            .unwrap_or_else(|| "All stages".into()),
-                    )
-                    .dropdown_menu(move |menu, _, _| {
-                        let mut menu = menu.action_context(stage_focus.clone()).scrollable(true);
-                        for (index, choice) in STAGES.iter().enumerate() {
-                            menu = menu.menu_with_check_and_disabled(
-                                choice
-                                    .map(|choice| format!("{choice:?}"))
-                                    .unwrap_or_else(|| "All stages".into()),
-                                *choice == stage,
-                                Box::new(ChooseLogStage { index }),
-                                false,
-                            );
-                        }
-                        menu
-                    }),
-            )
-            .child(
-                div()
-                    .id("log-search")
-                    .w(px(200.))
-                    .min_w(px(120.))
-                    .child(Input::new(&self.search).small()),
-            )
-            .child(
-                Checkbox::new("log-follow-tail")
-                    .label("Follow")
-                    .checked(self.follow)
-                    .disabled(!self.live)
-                    .on_click(cx.listener(|this, checked, _, cx| {
-                        this.follow = *checked;
-                        cx.emit(LogControlEvent::Follow(*checked));
-                        cx.notify();
-                    })),
-            )
-            .child(
-                Button::new("log-copy-page")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Copy)
-                    .tooltip("Copy displayed page")
-                    .accessibility_label("Copy displayed page")
-                    .disabled(self.state != Some(ArchiveState::Complete))
-                    .on_click(cx.listener(|_, _, _, cx| cx.emit(LogControlEvent::Copy))),
-            )
-            .child(
-                Button::new("log-download")
-                    .ghost()
-                    .small()
-                    .icon(gpui_kit::assets::IconName::Download)
-                    .tooltip(if self.state == Some(ArchiveState::Complete) {
-                        "Download complete filtered log".to_owned()
-                    } else {
-                        format!("Export unavailable: {reason}")
-                    })
-                    .accessibility_label("Download complete filtered log")
-                    .disabled(self.busy || self.state != Some(ArchiveState::Complete))
-                    .on_click(cx.listener(|this, _, _, cx| this.download(cx))),
-            )
-            .when(
-                self.state
-                    .is_some_and(|state| state != ArchiveState::Complete)
-                    && !self.live,
-                |bar| {
-                    let warning =
-                        format!("Log unavailable or incomplete: {reason}. Export disabled.");
-                    bar.child(
-                        div()
-                            .id("log-health-warning")
-                            .role(Role::Status)
-                            .aria_label(warning.clone())
-                            .test_support()
-                            .text_xs()
-                            .text_color(cx.theme().warning)
-                            .child(warning),
-                    )
-                },
-            )
-            .child(
-                div()
-                    .id("log-export-status")
-                    .role(Role::Status)
-                    .aria_label(self.status.clone())
-                    .test_support()
-                    .text_xs()
-                    .child(self.status.clone()),
-            )
+            .child(design::ToolbarFocus::new(
+                ("log-toolbar-focus", cx.entity().entity_id()),
+                gpui_kit::component::toolbar::Toolbar::new((
+                    "log-command-toolbar",
+                    cx.entity().entity_id(),
+                ))
+                .with_size(gpui_kit::component::Size::Medium)
+                .h_auto()
+                .flex_wrap()
+                .content(
+                    Button::new("log-level-filter")
+                        .ghost()
+                        .icon(gpui_kit::assets::IconName::List)
+                        .label(
+                            level
+                                .map(|level| format!("{level:?}"))
+                                .unwrap_or_else(|| "All levels".into()),
+                        )
+                        .prepare_for_toolbar()
+                        .with_size(gpui_kit::component::Size::Medium)
+                        .dropdown_menu(move |menu, _, _| {
+                            let mut menu = menu.action_context(focus.clone());
+                            for (index, choice) in LEVELS.iter().enumerate() {
+                                menu = menu.menu_with_check_and_disabled(
+                                    choice
+                                        .map(|choice| format!("{choice:?}"))
+                                        .unwrap_or_else(|| "All levels".into()),
+                                    *choice == level,
+                                    Box::new(ChooseLogLevel { index }),
+                                    false,
+                                );
+                            }
+                            menu
+                        }),
+                )
+                .content(
+                    Button::new("log-stage-filter")
+                        .ghost()
+                        .icon(gpui_kit::assets::IconName::List)
+                        .label(
+                            stage
+                                .map(|stage| format!("{stage:?}"))
+                                .unwrap_or_else(|| "All stages".into()),
+                        )
+                        .prepare_for_toolbar()
+                        .with_size(gpui_kit::component::Size::Medium)
+                        .dropdown_menu(move |menu, _, _| {
+                            let mut menu =
+                                menu.action_context(stage_focus.clone()).scrollable(true);
+                            for (index, choice) in STAGES.iter().enumerate() {
+                                menu = menu.menu_with_check_and_disabled(
+                                    choice
+                                        .map(|choice| format!("{choice:?}"))
+                                        .unwrap_or_else(|| "All stages".into()),
+                                    *choice == stage,
+                                    Box::new(ChooseLogStage { index }),
+                                    false,
+                                );
+                            }
+                            menu
+                        }),
+                )
+                .child(
+                    Checkbox::new("log-follow-tail")
+                        .label("Follow")
+                        .checked(self.follow)
+                        .disabled(!self.live)
+                        .on_click(cx.listener(|this, checked, _, cx| {
+                            this.follow = *checked;
+                            cx.emit(LogControlEvent::Follow(*checked));
+                            cx.notify();
+                        })),
+                )
+                .child(
+                    Button::new("log-copy-page")
+                        .ghost()
+                        .icon(IconName::Copy)
+                        .tooltip("Copy displayed page")
+                        .accessibility_label("Copy displayed page")
+                        .disabled(self.state != Some(ArchiveState::Complete))
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(LogControlEvent::Copy))),
+                )
+                .child(
+                    Button::new("log-download")
+                        .ghost()
+                        .icon(gpui_kit::assets::IconName::Download)
+                        .tooltip(if self.state == Some(ArchiveState::Complete) {
+                            "Download complete filtered log".to_owned()
+                        } else {
+                            format!("Export unavailable: {reason}")
+                        })
+                        .accessibility_label("Download complete filtered log")
+                        .disabled(self.busy || self.state != Some(ArchiveState::Complete))
+                        .on_click(cx.listener(|this, _, _, cx| this.download(cx))),
+                )
+                .content(
+                    div().id("log-search").w(px(200.)).min_w(px(120.)).child(
+                        Input::new(&self.search).with_size(gpui_kit::component::Size::Medium),
+                    ),
+                )
+                .when(
+                    self.state
+                        .is_some_and(|state| state != ArchiveState::Complete)
+                        && !self.live,
+                    |bar| {
+                        let warning =
+                            format!("Log unavailable or incomplete: {reason}. Export disabled.");
+                        bar.content(
+                            div()
+                                .id("log-health-warning")
+                                .role(Role::Status)
+                                .aria_label(warning.clone())
+                                .test_support()
+                                .text_xs()
+                                .text_color(cx.theme().warning)
+                                .child(warning),
+                        )
+                    },
+                )
+                .content(
+                    div()
+                        .id("log-export-status")
+                        .role(Role::Status)
+                        .aria_label(self.status.clone())
+                        .test_support()
+                        .text_xs()
+                        .child(self.status.clone()),
+                ),
+            ))
     }
 }

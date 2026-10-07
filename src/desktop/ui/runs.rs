@@ -1678,136 +1678,148 @@ impl Render for RunPanel {
             }))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_4()
-                    .py_2()
+                    .id("run-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Run commands")
+                    .test_support()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .children(
-                        [
-                            (
-                                "run-test",
-                                RunCommand::Test,
-                                gpui_kit::assets::IconName::Play,
-                            ),
-                            (
-                                "run-reference",
-                                RunCommand::Reference,
-                                gpui_kit::assets::IconName::Camera,
-                            ),
-                            (
-                                "run-approve",
-                                RunCommand::Approve,
-                                gpui_kit::assets::IconName::Check,
-                            ),
-                            (
-                                "run-compare",
-                                RunCommand::Compare,
-                                gpui_kit::assets::IconName::Images,
-                            ),
-                        ]
-                        .into_iter()
-                        .map(|(id, command, icon)| {
-                            Button::new(id)
-                                .small()
-                                .icon(icon)
-                                .label(command.action_label())
-                                .when(command == RunCommand::Test, |button| {
-                                    button.tooltip(
+                    .child(design::ToolbarFocus::new(
+                        "run-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("run-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .children(
+                                [
+                                    (
+                                        "run-test",
+                                        RunCommand::Test,
+                                        gpui_kit::assets::IconName::Play,
+                                    ),
+                                    (
+                                        "run-reference",
+                                        RunCommand::Reference,
+                                        gpui_kit::assets::IconName::Camera,
+                                    ),
+                                    (
+                                        "run-approve",
+                                        RunCommand::Approve,
+                                        gpui_kit::assets::IconName::Check,
+                                    ),
+                                    (
+                                        "run-compare",
+                                        RunCommand::Compare,
+                                        gpui_kit::assets::IconName::Images,
+                                    ),
+                                ]
+                                .into_iter()
+                                .map(|(id, command, icon)| {
+                                    Button::new(id)
+                                        .icon(icon)
+                                        .label(command.action_label())
+                                        .when(command == RunCommand::Test, |button| {
+                                            button.tooltip(
                                         "Requires reference images for every selected suite",
                                     )
-                                })
-                                .when(command == RunCommand::Test, |button| button.primary())
-                                .disabled(!self.can_request(command))
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    this.request_command(command, window, cx)
-                                }))
-                        }),
-                    )
-                    .child(
-                        Button::new("more-run-actions")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::Ellipsis)
-                            .accessibility_label("More actions")
-                            .tooltip("More actions")
-                            .disabled(running || self.disabled || self.root.is_none())
-                            .dropdown_menu(move |menu, _, _| {
-                                let mut menu = menu.action_context(focus.clone());
-                                for (index, command) in RunCommand::ALL
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(_, command)| !command.supports_scenarios())
-                                {
-                                    menu = menu.menu(
-                                        command.action_label(),
-                                        Box::new(RequestCommand { index }),
-                                    );
-                                }
-                                menu
-                            }),
-                    )
-                    .child(
-                        Button::new("cancel-command")
-                            .icon(gpui_kit::assets::IconName::Square)
-                            .label("Stop")
-                            .tooltip("Cancel running command")
-                            .disabled(!running)
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
-                    )
-                    .when(can_open_report || site_url.is_some(), |bar| {
-                        bar.child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_2()
-                                .when(can_open_report, |row| {
-                                    row.child(
-                                        Button::new("activity-view-results")
-                                            .primary()
-                                            .small()
-                                            .icon(gpui_kit::assets::IconName::Images)
-                                            .label("Open Report")
-                                            .tooltip(
-                                                "Open this run's test and reference comparison",
-                                            )
-                                            .disabled(self.disabled)
-                                            .on_click(
-                                                cx.listener(|this, _, _, cx| this.open_report(cx)),
-                                            ),
-                                    )
-                                })
-                                .when_some(site_url, |row, url| {
-                                    row.child(
-                                        Button::new("run-open-site")
-                                            .small()
-                                            .icon(gpui_kit::assets::IconName::ExternalLink)
-                                            .label("Open Site")
-                                            .tooltip(url.clone())
-                                            .disabled(self.disabled)
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.open_site(&url, cx)
-                                            })),
-                                    )
+                                        })
+                                        .when(command == RunCommand::Test, |button| {
+                                            button.primary()
+                                        })
+                                        .disabled(!self.can_request(command))
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.request_command(command, window, cx)
+                                        }))
                                 }),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id("run-scope")
-                            .role(Role::Status)
-                            .aria_label(scope.clone())
-                            .test_support()
-                            .w_full()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(scope),
-                    ),
+                            )
+                            .content(
+                                Button::new("more-run-actions")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::Ellipsis)
+                                    .accessibility_label("More actions")
+                                    .tooltip("More actions")
+                                    .disabled(running || self.disabled || self.root.is_none())
+                                    .prepare_for_toolbar()
+                                    .with_size(gpui_kit::component::Size::Medium)
+                                    .dropdown_menu(move |menu, _, _| {
+                                        let mut menu = menu.action_context(focus.clone());
+                                        for (index, command) in RunCommand::ALL
+                                            .iter()
+                                            .enumerate()
+                                            .filter(|(_, command)| !command.supports_scenarios())
+                                        {
+                                            menu = menu.menu(
+                                                command.action_label(),
+                                                Box::new(RequestCommand { index }),
+                                            );
+                                        }
+                                        menu
+                                    }),
+                            )
+                            .child(
+                                Button::new("cancel-command")
+                                    .icon(gpui_kit::assets::IconName::Square)
+                                    .label("Stop")
+                                    .tooltip("Cancel running command")
+                                    .disabled(!running)
+                                    .on_click(cx.listener(|this, _, _, cx| this.cancel(cx))),
+                            )
+                            .when(can_open_report || site_url.is_some(), |bar| {
+                                bar.child(
+                                    gpui_kit::component::toolbar::ToolbarGroup::new(
+                                        "run-output-actions",
+                                    )
+                                    .label("Run output")
+                                    .gap_2()
+                                    .when(can_open_report, |row| {
+                                        row.child(
+                                            Button::new("activity-view-results")
+                                                .primary()
+                                                .icon(gpui_kit::assets::IconName::Images)
+                                                .label("Open Report")
+                                                .tooltip(
+                                                    "Open this run's test and reference comparison",
+                                                )
+                                                .disabled(self.disabled)
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.open_report(cx)
+                                                })),
+                                        )
+                                    })
+                                    .when_some(
+                                        site_url,
+                                        |row, url| {
+                                            row.child(
+                                                Button::new("run-open-site")
+                                                    .icon(gpui_kit::assets::IconName::ExternalLink)
+                                                    .label("Open Site")
+                                                    .tooltip(url.clone())
+                                                    .disabled(self.disabled)
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            this.open_site(&url, cx)
+                                                        },
+                                                    )),
+                                            )
+                                        },
+                                    ),
+                                )
+                            })
+                            .content(
+                                div()
+                                    .id("run-scope")
+                                    .role(Role::Status)
+                                    .aria_label(scope.clone())
+                                    .test_support()
+                                    .w_full()
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(scope),
+                            ),
+                    )),
             )
             .when(
                 self.manager

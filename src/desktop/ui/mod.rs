@@ -1551,18 +1551,11 @@ impl Workbench {
         let add_scenario = open.is_some_and(|open| open.entry.kind == DocumentKind::Suite);
         let add_viewport = open.is_some_and(|open| open.entry.kind == DocumentKind::Viewports);
         let add_action = self.session.selection.scenario().is_some();
-        div()
-            .flex()
-            .items_center()
-            .flex_wrap()
+        let history = gpui_kit::component::toolbar::ToolbarGroup::new("editor-history-group")
+            .label("Document commands")
             .gap_2()
-            .px_4()
-            .py_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
             .child(
                 Button::new("save")
-                    .small()
                     .icon(gpui_kit::assets::IconName::Save)
                     .accessibility_label("Save document")
                     .tooltip("Save document")
@@ -1579,7 +1572,6 @@ impl Workbench {
             .child(
                 Button::new("undo")
                     .ghost()
-                    .small()
                     .icon(IconName::Undo)
                     .tooltip("Undo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_undo()))
@@ -1590,20 +1582,23 @@ impl Workbench {
             .child(
                 Button::new("redo")
                     .ghost()
-                    .small()
                     .icon(IconName::Redo)
                     .tooltip("Redo document edit")
                     .disabled(self.busy || !open.is_some_and(|open| open.document.can_redo()))
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.redo_document(&RedoDocument, window, cx)
                     })),
-            )
-            .child(
+            );
+        let selection = gpui_kit::component::toolbar::ToolbarGroup::new("editor-selection-group")
+            .label("Selection commands")
+            .gap_2()
+            .content(
                 Button::new("add-item")
-                    .small()
                     .icon(IconName::Plus)
                     .label("Add")
                     .disabled(self.busy || open.is_none())
+                    .prepare_for_toolbar()
+                    .with_size(gpui_kit::component::Size::Medium)
                     .dropdown_menu(move |menu, _, _| {
                         let mut menu = menu
                             .action_context(focus.clone())
@@ -1625,7 +1620,6 @@ impl Workbench {
             .child(
                 Button::new("duplicate-item")
                     .ghost()
-                    .small()
                     .icon(IconName::Copy)
                     .tooltip("Duplicate selected item")
                     .accessibility_label("Duplicate selected item")
@@ -1637,7 +1631,6 @@ impl Workbench {
             .child(
                 Button::new("remove-item")
                     .ghost()
-                    .small()
                     .icon(gpui_kit::assets::IconName::Trash)
                     .tooltip("Remove selected item")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -1648,7 +1641,6 @@ impl Workbench {
             .child(
                 Button::new("move-up")
                     .ghost()
-                    .small()
                     .icon(IconName::ArrowUp)
                     .tooltip("Move selected item up")
                     .disabled(self.busy || self.session.selection == Selection::Root)
@@ -1659,57 +1651,85 @@ impl Workbench {
             .child(
                 Button::new("move-down")
                     .ghost()
-                    .small()
                     .icon(IconName::ArrowDown)
                     .tooltip("Move selected item down")
                     .disabled(self.busy || self.session.selection == Selection::Root)
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.edit(|session| session.move_selected(1), window, cx)
                     })),
-            )
-            .child(div().flex_1())
+            );
+        let toolbar = gpui_kit::component::toolbar::Toolbar::new("editor-command-toolbar")
+            .with_size(gpui_kit::component::Size::Medium)
+            .h_auto()
+            .flex_wrap()
+            .child(history)
+            .child(selection)
+            .content(div().flex_1())
             .when(add_scenario, |bar| {
                 let focus = self.focus.clone();
-                bar.child(
-                    Button::new("suite-run-reference")
-                        .small()
-                        .icon(gpui_kit::assets::IconName::Camera)
-                        .label("Reference")
-                        .accessibility_label("Run Suite Reference")
-                        .tooltip("Capture reference images for the open suite")
-                        .disabled(self.busy || self.runs.read(cx).running())
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_open_suite(super::runner::RunCommand::Reference, window, cx)
-                        })),
-                )
-                .child(
-                    Button::new("suite-run-test")
-                        .primary()
-                        .small()
-                        .icon(gpui_kit::assets::IconName::Play)
-                        .label("Test")
-                        .accessibility_label("Run Suite Test")
-                        .tooltip("Run all scenarios in the open suite")
-                        .disabled(!self.can_test_open_suite(cx))
-                        .on_click(cx.listener(|this, _, window, cx| {
-                            this.run_open_suite(super::runner::RunCommand::Test, window, cx)
-                        })),
-                )
-                .child(
-                    Button::new("suite-run-more")
-                        .ghost()
-                        .small()
-                        .icon(gpui_kit::assets::IconName::Ellipsis)
-                        .accessibility_label("More suite actions")
-                        .tooltip("More suite actions")
-                        .disabled(self.busy || self.runs.read(cx).running())
-                        .dropdown_menu(move |menu, _, _| {
-                            menu.action_context(focus.clone())
-                                .menu("Approve Results", Box::new(RunSuiteCommand { index: 3 }))
-                                .menu("Compare Results", Box::new(RunSuiteCommand { index: 2 }))
-                        }),
-                )
-            })
+                let execution =
+                    gpui_kit::component::toolbar::ToolbarGroup::new("editor-execution-group")
+                        .label("Suite execution")
+                        .gap_2()
+                        .child(
+                            Button::new("suite-run-reference")
+                                .icon(gpui_kit::assets::IconName::Camera)
+                                .label("Reference")
+                                .accessibility_label("Run Suite Reference")
+                                .tooltip("Capture reference images for the open suite")
+                                .disabled(self.busy || self.runs.read(cx).running())
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.run_open_suite(
+                                        super::runner::RunCommand::Reference,
+                                        window,
+                                        cx,
+                                    )
+                                })),
+                        )
+                        .child(
+                            Button::new("suite-run-test")
+                                .primary()
+                                .icon(gpui_kit::assets::IconName::Play)
+                                .label("Test")
+                                .accessibility_label("Run Suite Test")
+                                .tooltip("Run all scenarios in the open suite")
+                                .disabled(!self.can_test_open_suite(cx))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.run_open_suite(super::runner::RunCommand::Test, window, cx)
+                                })),
+                        )
+                        .content(
+                            Button::new("suite-run-more")
+                                .ghost()
+                                .icon(gpui_kit::assets::IconName::Ellipsis)
+                                .accessibility_label("More suite actions")
+                                .tooltip("More suite actions")
+                                .disabled(self.busy || self.runs.read(cx).running())
+                                .prepare_for_toolbar()
+                                .with_size(gpui_kit::component::Size::Medium)
+                                .dropdown_menu(move |menu, _, _| {
+                                    menu.action_context(focus.clone())
+                                        .menu(
+                                            "Approve Results",
+                                            Box::new(RunSuiteCommand { index: 3 }),
+                                        )
+                                        .menu(
+                                            "Compare Results",
+                                            Box::new(RunSuiteCommand { index: 2 }),
+                                        )
+                                }),
+                        );
+                bar.child(execution)
+            });
+        div()
+            .id("editor-toolbar")
+            .role(Role::Group)
+            .aria_label("Editor commands")
+            .test_support()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(cx.theme().border)
+            .child(design::ToolbarFocus::new("editor-toolbar-focus", toolbar))
             .into_any_element()
     }
 

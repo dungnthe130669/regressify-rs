@@ -313,6 +313,13 @@ sizing, layout, semantic groups, and roving keyboard focus.
   propagation guard. The title bar itself already uses `TitleBar` and is not a
   replacement target.
 
+Task 007's owner-approved exception uses a public focus adapter around the
+toolkit toolbar: published 0.7.1 backward wrapping fails in native input and a
+two-button fixture. The adapter selects scoped destinations from bounded forward
+tab order and preserves child input keys; keyboard, lifecycle and native gates
+pass. Keep normal sizing and toolbar/group layout with the toolkit. Dropdown
+wrappers use `content` with their button triggers explicitly prepared and sized.
+
 **Expected deletion:** repeated bar geometry and compatible per-control sizing,
 not button definitions or operation guards. A small compatibility wrapper is
 acceptable when it transfers control behavior and styling to the toolkit.

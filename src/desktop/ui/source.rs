@@ -502,11 +502,12 @@ impl Workbench {
             .is_some_and(|open| open.document.format == Format::Yaml);
         Button::new("source-edit-menu")
             .ghost()
-            .small()
             .icon(gpui_kit::assets::IconName::SquarePen)
             .accessibility_label("Edit source lines")
             .tooltip("Edit source lines")
             .disabled(self.busy || self.session.open.is_none())
+            .prepare_for_toolbar()
+            .with_size(gpui_kit::component::Size::Medium)
             .dropdown_menu(move |menu, _, cx| {
                 let state = source.read(cx);
                 let text = state.value();
@@ -1084,133 +1085,133 @@ impl Workbench {
             .size_full()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_4()
-                    .py_2()
+                    .id("source-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Source commands")
+                    .test_support()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(self.source_edit_menu(cx))
-                    .child(
-                        Button::new("source-find")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Search)
-                            .accessibility_label("Find in source")
-                            .tooltip("Find in source")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.source
-                                    .update(cx, |state, cx| state.open_search(false, cx))
-                            })),
-                    )
-                    .child(
-                        Button::new("source-replace")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::Replace)
-                            .accessibility_label("Replace in source")
-                            .tooltip("Find and replace")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.source
-                                    .update(cx, |state, cx| state.open_search(true, cx))
-                            })),
-                    )
-                    .child(
-                        Button::new("source-suggest")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ListFilter)
-                            .accessibility_label("Suggest")
-                            .tooltip("Suggest (Ctrl+Space)")
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.request_completion(&CompleteSource, window, cx)
-                            })),
-                    )
-                    .child(
-                        gpui_kit::component::separator::Separator::vertical()
-                            .h_4()
-                            .mx_2(),
-                    )
-                    .child(
-                        Checkbox::new("source-wrap")
-                            .label("Wrap")
-                            .checked(self.source_wrap)
-                            .on_change(cx.listener(|this, checked, window, cx| {
-                                this.preferences.source_wrap = *checked;
-                                this.apply_editor_display(window, cx);
-                                this.save_preferences(window, cx);
-                            })),
-                    )
-                    .child(
-                        Checkbox::new("source-line-numbers")
-                            .label("Line numbers")
-                            .checked(self.source_line_numbers)
-                            .on_change(cx.listener(|this, checked, window, cx| {
-                                this.preferences.source_line_numbers = *checked;
-                                this.apply_editor_display(window, cx);
-                                this.save_preferences(window, cx);
-                            })),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("source-smaller")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ZoomOut)
-                            .accessibility_label("Smaller source text")
-                            .tooltip("Smaller source text")
-                            .disabled(self.source_font_size <= 10.)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.change_source_size(
-                                    (this.source_font_size as u8).saturating_sub(1),
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("source-text-size")
-                            .role(Role::Status)
-                            .aria_label(format!("{} px", self.source_font_size))
-                            .test_support()
-                            .w(px(40.))
-                            .text_center()
-                            .text_xs()
-                            .child(format!("{} px", self.source_font_size)),
-                    )
-                    .child(
-                        Button::new("source-larger")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::ZoomIn)
-                            .accessibility_label("Larger source text")
-                            .tooltip("Larger source text")
-                            .disabled(self.source_font_size >= 24.)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.change_source_size(
-                                    this.source_font_size as u8 + 1,
-                                    window,
-                                    cx,
-                                );
-                            })),
-                    )
-                    .child(
-                        Button::new("source-reset-size")
-                            .ghost()
-                            .small()
-                            .icon(gpui_kit::assets::IconName::RotateCcw)
-                            .tooltip("Reset text size")
-                            .accessibility_label("Reset text size")
-                            .disabled(self.source_font_size == 14.)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.change_source_size(14, window, cx)
-                            })),
-                    ),
+                    .child(design::ToolbarFocus::new(
+                        "source-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("source-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .content(self.source_edit_menu(cx))
+                            .child(
+                                Button::new("source-find")
+                                    .ghost()
+                                    .icon(IconName::Search)
+                                    .accessibility_label("Find in source")
+                                    .tooltip("Find in source")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.source
+                                            .update(cx, |state, cx| state.open_search(false, cx))
+                                    })),
+                            )
+                            .child(
+                                Button::new("source-replace")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::Replace)
+                                    .accessibility_label("Replace in source")
+                                    .tooltip("Find and replace")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.source
+                                            .update(cx, |state, cx| state.open_search(true, cx))
+                                    })),
+                            )
+                            .child(
+                                Button::new("source-suggest")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::ListFilter)
+                                    .accessibility_label("Suggest")
+                                    .tooltip("Suggest (Ctrl+Space)")
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.request_completion(&CompleteSource, window, cx)
+                                    })),
+                            )
+                            .content(
+                                gpui_kit::component::separator::Separator::vertical()
+                                    .h_4()
+                                    .mx_2(),
+                            )
+                            .child(
+                                Checkbox::new("source-wrap")
+                                    .label("Wrap")
+                                    .checked(self.source_wrap)
+                                    .on_change(cx.listener(|this, checked, window, cx| {
+                                        this.preferences.source_wrap = *checked;
+                                        this.apply_editor_display(window, cx);
+                                        this.save_preferences(window, cx);
+                                    })),
+                            )
+                            .child(
+                                Checkbox::new("source-line-numbers")
+                                    .label("Line numbers")
+                                    .checked(self.source_line_numbers)
+                                    .on_change(cx.listener(|this, checked, window, cx| {
+                                        this.preferences.source_line_numbers = *checked;
+                                        this.apply_editor_display(window, cx);
+                                        this.save_preferences(window, cx);
+                                    })),
+                            )
+                            .content(div().flex_1())
+                            .child(
+                                Button::new("source-smaller")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::ZoomOut)
+                                    .accessibility_label("Smaller source text")
+                                    .tooltip("Smaller source text")
+                                    .disabled(self.source_font_size <= 10.)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.change_source_size(
+                                            (this.source_font_size as u8).saturating_sub(1),
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .content(
+                                div()
+                                    .id("source-text-size")
+                                    .role(Role::Status)
+                                    .aria_label(format!("{} px", self.source_font_size))
+                                    .test_support()
+                                    .w(px(40.))
+                                    .text_center()
+                                    .text_xs()
+                                    .child(format!("{} px", self.source_font_size)),
+                            )
+                            .child(
+                                Button::new("source-larger")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::ZoomIn)
+                                    .accessibility_label("Larger source text")
+                                    .tooltip("Larger source text")
+                                    .disabled(self.source_font_size >= 24.)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.change_source_size(
+                                            this.source_font_size as u8 + 1,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            )
+                            .child(
+                                Button::new("source-reset-size")
+                                    .ghost()
+                                    .icon(gpui_kit::assets::IconName::RotateCcw)
+                                    .tooltip("Reset text size")
+                                    .accessibility_label("Reset text size")
+                                    .disabled(self.source_font_size == 14.)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.change_source_size(14, window, cx)
+                                    })),
+                            ),
+                    )),
             )
             .child(
                 div().flex_1().min_h_0().child(

@@ -300,114 +300,116 @@ impl RunPanel {
             .min_w_0()
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .gap_2()
-                    .px_4()
-                    .py_2()
+                    .id("run-log-toolbar")
+                    .role(Role::Group)
+                    .aria_label("Run log commands")
+                    .test_support()
+                    .flex_shrink_0()
                     .border_b_1()
                     .border_color(cx.theme().border)
-                    .child(
-                        Button::new("log-activity")
-                            .ghost()
-                            .small()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip("Back to Activity")
-                            .accessibility_label("Back to Activity")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.tab = 0;
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        div()
-                            .id("run-log-heading")
-                            .role(Role::Heading)
-                            .aria_label(title.clone())
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(title),
-                    )
-                    .when(self.log_scope.is_some(), |bar| {
-                        bar.child(
-                            Button::new("log-all")
-                                .ghost()
-                                .small()
-                                .icon(gpui_kit::assets::IconName::List)
-                                .label("All run logs")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.show_all_logs(window, cx)
-                                })),
-                        )
-                    })
-                    .child(
-                        Button::new("copy-run-log")
-                            .ghost()
-                            .small()
-                            .icon(IconName::Copy)
-                            .tooltip(if self.archive_page.is_some() {
-                                "Copy displayed log page"
-                            } else {
-                                "Copy log"
-                            })
-                            .accessibility_label(if self.archive_page.is_some() {
-                                "Copy displayed log page"
-                            } else {
-                                "Copy log"
-                            })
-                            .disabled(
-                                self.log_text.is_empty()
-                                    || self
-                                        .archive_page
-                                        .as_ref()
-                                        .is_some_and(|page| !page.state.can_export()),
+                    .child(design::ToolbarFocus::new(
+                        "run-log-toolbar-focus",
+                        gpui_kit::component::toolbar::Toolbar::new("run-log-command-toolbar")
+                            .with_size(gpui_kit::component::Size::Medium)
+                            .h_auto()
+                            .flex_wrap()
+                            .child(
+                                Button::new("log-activity")
+                                    .ghost()
+                                    .icon(IconName::ArrowLeft)
+                                    .tooltip("Back to Activity")
+                                    .accessibility_label("Back to Activity")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.tab = 0;
+                                        cx.notify();
+                                    })),
                             )
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                    this.log_text.clone(),
-                                ))
-                            })),
-                    )
-                    .when_some(self.archive_page.as_ref(), |bar, page| {
-                        bar.child(
-                            Button::new("log-previous-page")
-                                .ghost()
-                                .small()
-                                .icon(IconName::ArrowLeft)
-                                .tooltip("Previous log page")
-                                .accessibility_label("Previous log page")
-                                .disabled(page.offset == 0)
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.log_query.offset = this
-                                        .log_query
-                                        .offset
-                                        .saturating_sub(crate::desktop::logs::PAGE_RECORDS);
-                                    this.archive_key = None;
-                                    this.refresh_log(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                        .child(div().text_xs().child(format!("{} records", page.matched)))
-                        .child(
-                            Button::new("log-next-page")
-                                .ghost()
-                                .small()
-                                .icon(IconName::ArrowRight)
-                                .tooltip("Next log page")
-                                .accessibility_label("Next log page")
-                                .disabled(!page.has_more())
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.log_query.offset += crate::desktop::logs::PAGE_RECORDS;
-                                    this.archive_key = None;
-                                    this.refresh_log(window, cx);
-                                    cx.notify();
-                                })),
-                        )
-                    }),
+                            .content(
+                                div()
+                                    .id("run-log-heading")
+                                    .role(Role::Heading)
+                                    .aria_label(title.clone())
+                                    .test_support()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(title),
+                            )
+                            .when(self.log_scope.is_some(), |bar| {
+                                bar.child(
+                                    Button::new("log-all")
+                                        .ghost()
+                                        .icon(gpui_kit::assets::IconName::List)
+                                        .label("All run logs")
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.show_all_logs(window, cx)
+                                        })),
+                                )
+                            })
+                            .child(
+                                Button::new("copy-run-log")
+                                    .ghost()
+                                    .icon(IconName::Copy)
+                                    .tooltip(if self.archive_page.is_some() {
+                                        "Copy displayed log page"
+                                    } else {
+                                        "Copy log"
+                                    })
+                                    .accessibility_label(if self.archive_page.is_some() {
+                                        "Copy displayed log page"
+                                    } else {
+                                        "Copy log"
+                                    })
+                                    .disabled(
+                                        self.log_text.is_empty()
+                                            || self
+                                                .archive_page
+                                                .as_ref()
+                                                .is_some_and(|page| !page.state.can_export()),
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            this.log_text.clone(),
+                                        ))
+                                    })),
+                            )
+                            .when_some(self.archive_page.as_ref(), |bar, page| {
+                                bar.child(
+                                    Button::new("log-previous-page")
+                                        .ghost()
+                                        .icon(IconName::ArrowLeft)
+                                        .tooltip("Previous log page")
+                                        .accessibility_label("Previous log page")
+                                        .disabled(page.offset == 0)
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.log_query.offset = this
+                                                .log_query
+                                                .offset
+                                                .saturating_sub(crate::desktop::logs::PAGE_RECORDS);
+                                            this.archive_key = None;
+                                            this.refresh_log(window, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                                .content(div().text_xs().child(format!("{} records", page.matched)))
+                                .child(
+                                    Button::new("log-next-page")
+                                        .ghost()
+                                        .icon(IconName::ArrowRight)
+                                        .tooltip("Next log page")
+                                        .accessibility_label("Next log page")
+                                        .disabled(!page.has_more())
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.log_query.offset +=
+                                                crate::desktop::logs::PAGE_RECORDS;
+                                            this.archive_key = None;
+                                            this.refresh_log(window, cx);
+                                            cx.notify();
+                                        })),
+                                )
+                            }),
+                    )),
             )
             .child(self.log_controls.clone())
             .child(

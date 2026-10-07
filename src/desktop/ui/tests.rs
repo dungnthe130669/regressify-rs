@@ -6863,6 +6863,425 @@ async fn about_dialog_public_close_preserves_keyboard_focus_and_drafts(cx: &mut 
 }
 
 #[gpui_kit::test]
+fn toolbar_editor_controls_fit_supported_window_sizes(cx: &mut TestAppContext) {
+    for (width, height) in [(1000., 640.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let toolbar = window.find("editor-toolbar").bounds();
+            for control in [
+                "save",
+                "undo",
+                "redo",
+                "add-item",
+                "duplicate-item",
+                "remove-item",
+                "move-up",
+                "move-down",
+                "suite-run-reference",
+                "suite-run-test",
+                "suite-run-more",
+            ] {
+                let element = window.find(control);
+                let bounds = element.bounds();
+                assert!(element.visible(), "{control} is hidden at {width}x{height}");
+                assert!(
+                    bounds.size.height >= px(28.),
+                    "{control} is not normally sized"
+                );
+                assert!(
+                    bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+                    "{control} overflows the toolbar width"
+                );
+                assert!(
+                    bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom(),
+                    "{control} overflows the toolbar height"
+                );
+            }
+            window.click("save", cx);
+            window.click("undo", cx);
+            assert!(!view.read(cx).busy);
+            assert!(!view.read(cx).unsaved());
+            window.click("duplicate-item", cx);
+            assert!(view.read(cx).unsaved());
+            assert_eq!(
+                view.read(cx).session.value().unwrap()["scenarios"]
+                    .as_array()
+                    .unwrap()
+                    .len(),
+                2
+            );
+            window.within("editor-tabs").click(0_usize, cx);
+            window.render_frame(cx);
+            let toolbar = window.find("source-toolbar").bounds();
+            for control in [
+                "source-edit-menu",
+                "source-find",
+                "source-replace",
+                "source-suggest",
+                "source-wrap",
+                "source-line-numbers",
+                "source-smaller",
+                "source-text-size",
+                "source-larger",
+                "source-reset-size",
+            ] {
+                let element = window.find(control);
+                let bounds = element.bounds();
+                assert!(element.visible(), "{control} is hidden at {width}x{height}");
+                assert!(
+                    bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+                    "{control} overflows Source toolbar width"
+                );
+                assert!(
+                    bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom(),
+                    "{control} overflows Source toolbar height"
+                );
+            }
+            window.within("workbench-tabs").click(1_usize, cx);
+            window.render_frame(cx);
+            let toolbar = window.find("run-toolbar").bounds();
+            for control in [
+                "run-test",
+                "run-reference",
+                "run-approve",
+                "run-compare",
+                "more-run-actions",
+                "cancel-command",
+            ] {
+                let element = window.find(control);
+                let bounds = element.bounds();
+                assert!(element.visible(), "{control} is hidden at {width}x{height}");
+                assert!(
+                    bounds.size.height >= px(28.),
+                    "{control} is not normally sized"
+                );
+                assert!(
+                    bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+                    "{control} overflows Run toolbar width"
+                );
+                assert!(
+                    bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom(),
+                    "{control} overflows Run toolbar height"
+                );
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn toolbar_editor_navigation_preserves_disabled_and_busy_actions(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1000.), px(640.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.focus(&view.read(cx).focus.clone(), cx);
+        for _ in 0..100 {
+            if window.find("add-item").focused() == Some(true) {
+                break;
+            }
+            window.press("tab", cx);
+        }
+        assert_eq!(window.find("add-item").focused(), Some(true));
+        window.press("left", cx);
+        let focused = [
+            "save",
+            "undo",
+            "redo",
+            "add-item",
+            "duplicate-item",
+            "remove-item",
+            "move-up",
+            "move-down",
+            "suite-run-reference",
+            "suite-run-test",
+            "suite-run-more",
+        ]
+        .into_iter()
+        .filter(|control| window.find(*control).focused() == Some(true))
+        .collect::<Vec<_>>();
+        assert_eq!(
+            window.find("suite-run-more").focused(),
+            Some(true),
+            "Toolbar focus after Left: {focused:?}"
+        );
+        window.press("right", cx);
+        assert_eq!(window.find("add-item").focused(), Some(true));
+        window.press("right", cx);
+        assert_eq!(window.find("duplicate-item").focused(), Some(true));
+        window.press("right", cx);
+        assert_eq!(window.find("remove-item").focused(), Some(true));
+        window.press("left", cx);
+        assert_eq!(window.find("duplicate-item").focused(), Some(true));
+        window.press("space", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        window.press("tab", cx);
+        assert_eq!(window.find("remove-item").focused(), Some(true));
+        window.press("shift-tab", cx);
+        assert_eq!(window.find("duplicate-item").focused(), Some(true));
+        let draft = view.read(cx).session.value().unwrap();
+        view.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        for control in [
+            "save",
+            "undo",
+            "redo",
+            "add-item",
+            "duplicate-item",
+            "remove-item",
+            "move-up",
+            "move-down",
+            "suite-run-reference",
+            "suite-run-test",
+            "suite-run-more",
+        ] {
+            window.click(control, cx);
+            window.render_frame(cx);
+        }
+        assert_eq!(view.read(cx).session.value().unwrap(), draft);
+        assert!(!view.read(cx).runs.read(cx).running());
+        assert!(window.try_find("popup-menu").is_none());
+        assert!(window.try_find("remove-confirm").is_none());
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            cx.notify();
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn toolbar_plain_buttons_receive_native_arrow_events(cx: &mut TestAppContext) {
+    use gpui_kit::component::{Sizable, WindowExt, button::Button, toolbar::Toolbar};
+    use gpui_kit::{InputEvent, KeyDownEvent, KeyUpEvent, Keystroke, ParentElement};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, _view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.open_dialog(cx, |dialog, _, _| {
+            dialog
+                .title("Toolbar focus probe")
+                .child(super::design::ToolbarFocus::new(
+                    "toolbar-focus-probe-scope",
+                    Toolbar::new("toolbar-focus-probe")
+                        .with_size(gpui_kit::component::Size::Medium)
+                        .child(
+                            Button::new("toolbar-probe-first")
+                                .label("First")
+                                .on_click(|_, _, _| {}),
+                        )
+                        .child(
+                            Button::new("toolbar-probe-second")
+                                .label("Second")
+                                .on_click(|_, _, _| {}),
+                        ),
+                ))
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for _ in 0..6 {
+            if window.find("toolbar-probe-first").focused() == Some(true) {
+                break;
+            }
+            window.press("tab", cx);
+        }
+        assert_eq!(window.find("toolbar-probe-first").focused(), Some(true));
+        let key = Keystroke::parse("right").unwrap();
+        window.dispatch_event(
+            KeyDownEvent {
+                keystroke: key.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(KeyUpEvent { keystroke: key }.to_platform_input(), cx);
+        window.render_frame(cx);
+        assert_eq!(window.find("toolbar-probe-second").focused(), Some(true));
+        window.press("shift-tab", cx);
+        assert_eq!(
+            window.find("toolbar-probe-first").focused(),
+            Some(true),
+            "Plain Shift+Tab must move from Second to First"
+        );
+        window.press("right", cx);
+        assert_eq!(window.find("toolbar-probe-second").focused(), Some(true));
+        window.press("right", cx);
+        assert_eq!(window.find("toolbar-probe-first").focused(), Some(true));
+        window.press("left", cx);
+        assert_eq!(
+            window.find("toolbar-probe-second").focused(),
+            Some(true),
+            "Plain Toolbar Left must wrap from First to Second"
+        );
+        window.close_dialog(cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn toolbar_focus_keeps_input_keys_and_releases_dynamic_controls(cx: &mut TestAppContext) {
+    use gpui_kit::ParentElement;
+    use gpui_kit::component::{
+        Sizable, WindowExt,
+        button::Button,
+        input::{Input, InputState},
+        toolbar::Toolbar,
+    };
+    use std::{cell::Cell, rc::Rc};
+
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let input = cx
+        .update_window(handle.into(), |_, window, cx| {
+            cx.new(|cx| InputState::new(window, cx).default_value("abcd"))
+        })
+        .unwrap();
+    let controls = Rc::new(Cell::new(2_usize));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.open_dialog(cx, {
+            let input = input.clone();
+            let controls = controls.clone();
+            move |dialog, _, _| {
+                let mut toolbar = Toolbar::new("toolbar-input-probe")
+                    .with_size(gpui_kit::component::Size::Medium);
+                for index in 0..controls.get() {
+                    toolbar = toolbar.child(
+                        Button::new(("toolbar-dynamic-command", index))
+                            .label(format!("Command {index}"))
+                            .on_click(|_, _, _| {}),
+                    );
+                }
+                dialog
+                    .title("Toolbar input probe")
+                    .child(super::design::ToolbarFocus::new(
+                        "toolbar-input-probe-scope",
+                        toolbar.child(Input::new(&input).id("toolbar-hosted-input")),
+                    ))
+            }
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.focus(&input.read(cx).focus_handle(cx), cx);
+        window.press("ctrl-a", cx);
+        window.input("abcd", cx);
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        window.press("left", cx);
+        window.input("X", cx);
+        assert_eq!(input.read(cx).value().as_ref(), "abcXd");
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        window.press("right", cx);
+        window.input("Y", cx);
+        assert_eq!(input.read(cx).value().as_ref(), "abcXdY");
+        controls.set(0);
+        window.refresh();
+        window.render_frame(cx);
+        assert!(
+            window
+                .try_find(("toolbar-dynamic-command", 0_usize))
+                .is_none()
+        );
+        assert!(
+            window
+                .try_find(("toolbar-dynamic-command", 1_usize))
+                .is_none()
+        );
+        window.press("left", cx);
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+        controls.set(1);
+        window.refresh();
+        window.render_frame(cx);
+        window.press("shift-tab", cx);
+        assert_eq!(
+            window.find(("toolbar-dynamic-command", 0_usize)).focused(),
+            Some(true)
+        );
+        window.press("left", cx);
+        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+    })
+    .unwrap();
+    let weak_input = input.downgrade();
+    let weak_view = view.downgrade();
+    drop(input);
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| {
+        assert!(weak_input.upgrade().is_none());
+        assert!(weak_view.upgrade().is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn toolbar_dropdown_preserves_popup_and_modified_arrow_keys(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.focus(&view.read(cx).focus.clone(), cx);
+        for _ in 0..100 {
+            if window.find("add-item").focused() == Some(true) {
+                break;
+            }
+            window.press("tab", cx);
+        }
+        assert_eq!(window.find("add-item").focused(), Some(true));
+        let focus = window.focused(cx);
+        for key in ["ctrl-left", "alt-right"] {
+            window.press(key, cx);
+            assert_eq!(window.focused(cx), focus);
+        }
+        window.press("space", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .try_find("popup-menu")
+            .is_some_and(|menu| menu.visible())
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let focus = window.focused(cx);
+        for key in ["down", "right", "left"] {
+            window.press(key, cx);
+            assert!(window.find("popup-menu").visible());
+            assert_eq!(
+                window.focused(cx),
+                focus,
+                "{key} escaped the open toolbar menu"
+            );
+        }
+        window.press("escape", cx);
+        assert!(!view.read(cx).unsaved());
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.focused(cx), Some(view.read(cx).focus.clone()));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut TestAppContext) {
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
         let directory = tempfile::tempdir().unwrap();
