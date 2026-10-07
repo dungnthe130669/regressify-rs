@@ -1,10 +1,20 @@
 # Logging Diagnostics
 
-Verified: 2026-10-06
+Verified: 2026-10-08
 
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
   from live progress. Public capture records use templates, typed fields, opaque
   identities, and categorical errors; provider detail is deployment-only.
+- [Native log paging](../../src/desktop/logs.rs) keeps one aligned 500-record
+  page and clamps large/filter-shrunk offsets in one streaming pass. `log_pagination_`
+  covers 0/1/500/501 matches, partial archives and checked page conversion.
+  [Run logs](../../src/desktop/ui/runs/log.rs) hide numbering during Follow;
+  disabling it loads the last aligned page. A cleared archive key permits a new
+  read during loading, while key/generation checks reject stale completion.
+- [Capture Log](../../src/desktop/ui/reports/log.rs) uses segmented source tabs
+  with two public focus handles and Enter/Space hooks because Kit 0.7.1 tabs are
+  pointer-only. Real-handle GUI tests and native Right/Enter, Left/Space checks
+  pass; source changes reset page one and retain generation-based rejection.
 - Capture failure summaries (`FailureSite` in the record module, tracked by
   `OperationContext::track` in the [runtime](../../src/diagnostics/runtime.rs))
   use only typed record fields and the category, so markers, `engineErrorMsg`,

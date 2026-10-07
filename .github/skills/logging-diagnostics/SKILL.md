@@ -24,6 +24,7 @@ description: 'Use when changing structured diagnostics, tracing spans, capture/d
 1. Preserve original execution links through compare, approval, and suite changes. Capture sidecars bind to image digests. Generated chunk cleanup follows selected report dependencies and must not delete retained or active source journals.
 1. `logLevel`/CLI/environment settings filter display only. Chunk size, disk budget, and `REGRESSIFY_DISABLE_DIAGNOSTIC_ARCHIVE` are operation settings, not part of the scenario/suite/workspace cascade.
 1. Keep native reads/exports off the UI thread, pages bounded, and stale completions rejected. Web chunks are lazy, version-verified, bounded and rendered as text. Preserve reference/test and capture deep-link identity through refresh.
+1. Native numbered pages use checked `LogPage` arithmetic and aligned 500-record offsets. Clamp out-of-range/filter-shrunk requests while retaining one page, not the full log. Rolling Follow is unnumbered; Follow-off requests the last aligned page. Allow invalidated in-flight reads to start replacements and reject stale generations. Page counts never prove completeness or enable partial exports.
 1. Deployment cancellation after worker termination uses the exact saved operation ID, never the latest directory. Local cancellation does not prove remote failure. Publication success remains a separate provider-confirmed lifecycle event.
 
 ## Checks
@@ -40,6 +41,7 @@ cargo test --features desktop --lib desktop::logs::tests
 cargo test --features desktop --lib desktop::deployment::
 cargo test --features gui-tests --lib run_log_ -- --test-threads=1
 cargo test --features gui-tests --lib log_health_warning_ -- --test-threads=1
+cargo test --features gui-tests --lib log_pagination_ -- --test-threads=1
 ```
 
 Run frontend `bun run test:e2e --grep 'capture log'` and the explicit cached-browser CLI regression from the [verification document](../../../docs/logging-verification.md). The [benchmark](../../../docs/logging-benchmark.md) documents the confirmed 10% mean wall-time budget, five-pair workload, and archive-off baseline limitations.

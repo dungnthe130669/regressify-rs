@@ -1161,7 +1161,7 @@ impl Drop for RunManager {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1689,7 +1689,7 @@ mod tests {
         assert!(RunSnapshot::load(&path, &root).unwrap().is_some());
     }
 
-    fn polling_fixture() -> (RunManager, Arc<Mutex<LiveProgress>>) {
+    pub(crate) fn polling_fixture() -> (RunManager, Arc<Mutex<LiveProgress>>) {
         let (_, logs) = mpsc::sync_channel(1);
         let (cancel, _) = mpsc::sync_channel(1);
         let progress = Arc::new(Mutex::new(LiveProgress::default()));

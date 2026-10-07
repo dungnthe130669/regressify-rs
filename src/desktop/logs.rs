@@ -120,6 +120,21 @@ pub struct LogPage {
 }
 
 impl LogPage {
+    pub fn page_count(&self) -> usize {
+        self.matched.div_ceil(PAGE_RECORDS).max(1)
+    }
+
+    pub fn page_number(&self) -> usize {
+        self.offset / PAGE_RECORDS + 1
+    }
+
+    pub fn offset_for_page(&self, page: usize) -> Option<usize> {
+        (page <= self.page_count())
+            .then_some(page)?
+            .checked_sub(1)?
+            .checked_mul(PAGE_RECORDS)
+    }
+
     pub fn unavailable(state: ArchiveState) -> Self {
         Self {
             state,
@@ -267,7 +282,7 @@ fn load_page_inner(
         state: ArchiveState::Complete,
         records: Vec::new(),
         matched: 0,
-        offset: query.offset,
+        offset: 0,
         sources: sources.clone(),
     };
     let mut seen = BTreeSet::new();
@@ -306,7 +321,12 @@ fn load_page_inner(
                             latest.pop_front();
                         }
                         latest.push_back(record);
-                    } else if page.matched >= query.offset && page.records.len() < PAGE_RECORDS {
+                    } else if page.matched / PAGE_RECORDS <= query.offset / PAGE_RECORDS {
+                        // Retain at most one aligned page, including the last page when totals shrink.
+                        if page.matched.is_multiple_of(PAGE_RECORDS) {
+                            page.records.clear();
+                            page.offset = page.matched;
+                        }
                         page.records.push(record);
                     }
                     page.matched += 1;
@@ -346,6 +366,83 @@ pub(crate) mod tests {
         journal::{JournalOptions, JournalWriter, OperationMetadata},
         record::*,
     };
+
+    #[test]
+    fn log_pagination_boundaries_and_reconciled_offsets_remain_bounded() {
+        for count in [0_usize, 1, 500, 501] {
+            let root = tempfile::tempdir().unwrap();
+            let (request, jobs, reference) = fixture(root.path(), count);
+            for offset in [0, 1, 500, usize::MAX] {
+                let page = load_run_page(
+                    &request,
+                    &jobs,
+                    &LogQuery {
+                        stage: Some(Stage::ActionsFrames),
+                        offset,
+                        ..Default::default()
+                    },
+                );
+                let expected_offset = (offset / PAGE_RECORDS)
+                    .min(count.saturating_sub(1) / PAGE_RECORDS)
+                    * PAGE_RECORDS;
+                assert_eq!(page.offset, expected_offset);
+                assert_eq!(page.matched, count);
+                assert_eq!(
+                    page.records.len(),
+                    (count - expected_offset).min(PAGE_RECORDS)
+                );
+                assert_eq!(page.page_count(), count.div_ceil(PAGE_RECORDS).max(1));
+                assert_eq!(page.page_number(), expected_offset / PAGE_RECORDS + 1);
+                assert_eq!(
+                    page.offset_for_page(page.page_number()),
+                    Some(expected_offset)
+                );
+                assert_eq!(page.offset_for_page(0), None);
+                assert_eq!(page.offset_for_page(usize::MAX), None);
+                assert_eq!(page.state, ArchiveState::Complete);
+                if let Some(record) = page.records.first() {
+                    assert_eq!(record.sequence, expected_offset as u64);
+                }
+            }
+            let page = load_run_page(
+                &request,
+                &jobs,
+                &LogQuery {
+                    stage: Some(Stage::Finish),
+                    offset: 500,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(page.offset, 0);
+            assert_eq!(page.matched, 1);
+            assert_eq!(page.records.len(), 1);
+            if count == 501 {
+                let output = request.options.output_directory(root.path());
+                std::fs::remove_file(
+                    crate::diagnostics::journal::archive_directory(
+                        &output,
+                        &reference.operation_id,
+                    )
+                    .join("index.json"),
+                )
+                .unwrap();
+                let partial = load_run_page(
+                    &request,
+                    &jobs,
+                    &LogQuery {
+                        stage: Some(Stage::ActionsFrames),
+                        offset: usize::MAX,
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(partial.state, ArchiveState::Partial);
+                assert_eq!(partial.page_count(), 2);
+                assert_eq!(partial.offset, 500);
+                assert_eq!(partial.records.len(), 1);
+                assert!(!partial.state.can_export());
+            }
+        }
+    }
 
     pub(crate) fn fixture(root: &Path, count: usize) -> (RunRequest, Vec<Job>, ArchiveReference) {
         let output = root.join(".regressify");

@@ -175,7 +175,7 @@ async fn log_health_warning_partial_archive_keeps_pass_badge(cx: &mut TestAppCon
                 .try_find("results-show-capture-log")
                 .is_some_and(|element| element.visible())
                 || window
-                    .try_find("results-log-test")
+                    .try_find("results-log-source")
                     .is_some_and(|element| element.visible())
         })
         .await;
@@ -445,7 +445,7 @@ async fn results_capture_log_view_selects_reference_and_test_without_changing_re
     let (handle, view) = editor(cx, directory.path());
     let suite_id = cx.update(|cx| view.read(cx).session.suites[0].output_id.clone());
     let (request, _, reference) = crate::desktop::logs::tests::fixture(directory.path(), 3);
-    crate::desktop::logs::tests::fixture(directory.path(), 7);
+    crate::desktop::logs::tests::fixture(directory.path(), 750);
     let output = request.options.output_directory(directory.path());
     let suite = output.join(&suite_id);
     std::fs::rename(output.join("suite"), &suite).unwrap();
@@ -496,8 +496,26 @@ async fn results_capture_log_view_selects_reference_and_test_without_changing_re
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        window.within("results-log-pagination").click("next", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        view.read(cx)
+            .results
+            .read(cx)
+            .capture_log_text(cx)
+            .contains("#750]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("results-log-reference", cx);
+        assert_eq!(
+            window.find("results-log-page-number").label(),
+            Some("Page 2 of 2")
+        );
+        window.within("results-log-source").click(0_usize, cx);
+        window.within("results-log-source").click(1_usize, cx);
+        window.within("results-log-source").click(0_usize, cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
@@ -507,6 +525,40 @@ async fn results_capture_log_view_selects_reference_and_test_without_changing_re
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
+        assert_eq!(
+            window.find("results-log-page-number").label(),
+            Some("Page 1 of 1")
+        );
+        assert!(
+            view.read(cx)
+                .results
+                .read(cx)
+                .capture_log_source_focus(0)
+                .is_focused(window)
+        );
+        window.press("right", cx);
+        window.render_frame(cx);
+        assert!(
+            view.read(cx)
+                .results
+                .read(cx)
+                .capture_log_source_focus(1)
+                .is_focused(window)
+        );
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        let text = view.read(cx).results.read(cx).capture_log_text(cx);
+        text.contains("#7]") && !text.contains("#750]")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("results-log-page-number").label(),
+            Some("Page 1 of 2")
+        );
         assert!(window.find("results-capture-log-view").visible());
         window.click("results-log-back", cx);
         window.render_frame(cx);
@@ -548,15 +600,23 @@ async fn run_log_loads_archive_after_restart(cx: &mut TestAppContext) {
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        assert!(window.find("log-next-page").visible());
-        window.click("log-next-page", cx);
+        assert_eq!(
+            window.find("run-log-page-number").label(),
+            Some("Page 1 of 2")
+        );
+        window.within("run-log-pagination").click("next", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
         view.read(cx).runs.read(cx).rendered_log().contains("#501]")
     })
     .await;
-    cx.update_window(handle.into(), |_, _, cx| {
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find("run-log-page-number").label(),
+            Some("Page 2 of 2")
+        );
         let text = view.read(cx).runs.read(cx).rendered_log();
         assert!(text.contains("Loaded from archive"));
         assert!(!text.contains("bounded history"));

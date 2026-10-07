@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-009 committed. Task 010's Clipboard controls pass
-acceptance and await their authorized local commit. The approved Linux
+Status: Planning and tasks 001-010 committed. Task 011 log navigation passes
+acceptance and awaits its authorized local commit. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -85,8 +85,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 008 Context menus: suite/image parity, guarded dismissal and final native gates pass;
   committed as `fa13c04`.
 - [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; committed as `b77d5a6`.
-- [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; commit pending.
-- [ ] 011 Log navigation: not started.
+- [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; committed as `41fd5cc`.
+- [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; commit pending.
 - [ ] 012 Application menus: not started.
 - [ ] 013 Collapsible groups: not started; form prerequisite satisfied.
 - [ ] 014 Flat collections: not started.
@@ -452,8 +452,34 @@ When a task changes state, record the exact focused command, exact outcome and n
   Reviewed compact saved-URL and both diff-side controls fit without overlap.
 - Production +98/-61 (net +37), including the 72-line CopyText wrapper; GUI tests
   +103. Feedback/timers remain toolkit-owned; guards remain application-owned.
-  Task 010 is ready for its local commit after final maintenance checks, with
+  Task 010 is committed as `41fd5cc`, with
   no new deferral. The approved Linux exception and task 020 remain.
+
+### Task 011 Verification
+
+- Baselines pass: reader (5), run logs (7), health warning (1). Capture Log now
+  uses segmented source tabs and compact Pagination; run archives use non-tail
+  Pagination and hide numbering during rolling Follow.
+- The owner approved two public tab-stop handles and Enter/Space activation
+  after reproducing Kit 0.7.1's pointer-only Tab behavior. Existing toolbar
+  arrows handle traversal. Actual-handle keyboard and rapid-source tests pass.
+- The bounded reader clamps/aligned pages in one pass with at most 500 records;
+  checked page arithmetic and post-load offset synchronization keep model/display
+  consistent for empty, filtered or shrinking totals. Follow-off loads the last
+  aligned page and invalidated in-flight loads can be superseded safely.
+- Focused paging tests pass (2), capture source/page test (1), full reader (6),
+  run logs (7) and health warning (1). Partial page counts retain export guards.
+  Headless harness passes with new native Right/Enter and Left/Space assertions.
+- Native default passes after the user-requested retry of an interactive-focus
+  prerequisite failure. Native Deployment passes after an unchanged retry of
+  a clipboard-restoration failure; cleanup assertions were not relaxed and no
+  clipboard contents were logged. Reviewed log tabs/page status and compact layout.
+- Rustfmt, GUI Clippy/build, diagnostics and headless harness pass; final guidance
+  validation follows the maintenance update. Production +145/-96 (net +49),
+  tests/helpers +280/-9, native checks +17. Two focus handles are the only added
+  retained navigation state; bounded page loading reuses existing query/generations.
+  Task 011 awaits its authorized local commit. No new deferral; Linux exception
+  and task 020 remain.
 
 ### Approved Linux Baseline Exception
 

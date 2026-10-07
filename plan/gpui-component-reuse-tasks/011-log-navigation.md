@@ -1,6 +1,7 @@
 # 011: Log Tabs And Pagination
 
-Status: Not started. Depends on 001.
+Status: Implementation and acceptance complete; authorized local commit pending.
+Depends on 001.
 
 ## Scope
 
@@ -49,3 +50,38 @@ selected filters execute them. Follow
 [feature checks](../../.github/skills/rust-feature-checks/SKILL.md).
 Commit tabs/paging/tests/maintenance only. Reopen for unbounded allocation,
 stale-source overwrite, false completeness or unsupported page representation.
+
+## Implementation Evidence
+
+- Task 010 is committed as `41fd5cc`; task 011 is uncommitted.
+- Baselines passed: bounded reader (5), `run_log_` (7), `log_health_warning_` (1).
+- Capture Log uses segmented Reference/Test TabBar and compact Pagination.
+  Kit 0.7.1 tabs are pointer-only; the owner explicitly approved a scoped public
+  adapter with two retained tab-stop handles and Enter/Space activation. Existing
+  toolbar arrows perform traversal. The keyboard test failed before the adapter
+  and passes using actual handles, since Tab observation omits focus metadata.
+- Non-tail reader pages remain aligned and retain at most 500 records while
+  clamping an out-of-range request to the last available page in one pass.
+  Page arithmetic is checked. Empty/filtered/shrinking totals agree with displayed
+  offsets; counts do not imply archive completeness or permit incomplete exports.
+- Run Pagination is hidden during rolling Follow. Turning Follow off requests
+  the last aligned page; invalidating an in-flight read allows its replacement
+  to start and generation/key checks reject the stale completion. Existing
+  no-process polling fixture is shared with the UI test through test-only scope.
+- `log_pagination_` passes (2), covering 0/1/500/501 matches, huge/unaligned
+  requests, partial archives, last-page Follow and in-flight filter changes.
+  Capture source/page test passes (1) for later-page reset, rapid source changes
+  and keyboard activation. Full reader passes (6), run logs (7), health warning (1).
+- Native default passes with source-tab Right/Enter and Left/Space. Its first
+  attempt could not focus the interactive desktop; the user requested a retry,
+  and a fresh-build rerun passed with guards intact. Native Deployment also passes;
+  an intermediate clipboard-restoration error was reported, then an unchanged
+  complete retry passed. No clipboard data was logged or cleanup relaxed.
+- Rustfmt, production GUI Clippy/build, editor diagnostics and headless smoke
+  harness pass. Reviewed capture-log tabs/page status and compact activity layout.
+  Docs, skills and shared memory describe bounded page/Follow/focus contracts;
+  final guidance checks run before commit.
+- Accounting: production +145/-96 (net +49), tests/helpers +280/-9, native
+  assertions +17. The adapter adds two retained focus handles; paging reuses
+  existing offset, loading and generation state and allocates at most one page.
+- No new deferral. The approved Linux baseline exception and task 020 remain.

@@ -245,9 +245,7 @@ impl RunPanel {
                         this.refresh_log(window, cx);
                     }
                     LogControlEvent::Follow(follow) => {
-                        this.log_follow = *follow;
-                        this.archive_key = None;
-                        this.refresh_log(window, cx);
+                        this.set_log_follow(*follow, window, cx);
                     }
                     LogControlEvent::Copy => {
                         cx.write_to_clipboard(ClipboardItem::new_string(this.log_text.clone()))
@@ -1965,9 +1963,138 @@ impl Render for RunPanel {
 mod tests {
     use super::{RunCommand, RunEvent, RunIntent, RunOptions, RunOutcome, RunRequest};
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
-    use gpui_kit::{AppContext, TestAppContext};
+    use gpui_kit::{AppContext, Focusable, TestAppContext};
     use serde_json::json;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    async fn log_pagination_leaving_follow_and_filtering_reject_stale_reads(
+        cx: &mut TestAppContext,
+    ) {
+        let directory = tempfile::tempdir().unwrap();
+        let (request, jobs, _) = crate::desktop::logs::tests::fixture(directory.path(), 1001);
+        let (mut manager, _) = crate::desktop::runner::tests::polling_fixture();
+        manager.request = Some(request);
+        for job in jobs {
+            manager.progress.apply(crate::progress::Record {
+                version: 1,
+                elapsed_ms: 0,
+                event: crate::progress::Event::Queued { job },
+            });
+        }
+        let (handle, view) = super::super::tests::editor(cx, directory.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.main_tab = 1;
+                this.runs.update(cx, |panel, cx| {
+                    panel.manager = manager;
+                    panel.tab = 3;
+                    panel.refresh_log(window, cx);
+                });
+            });
+        })
+        .unwrap();
+        cx.wait_for(
+            handle.into(),
+            std::time::Duration::from_secs(10),
+            |_, cx| {
+                let panel = view.read(cx).runs.read(cx);
+                !panel.archive_loading
+                    && panel
+                        .archive_page
+                        .as_ref()
+                        .is_some_and(|page| page.offset == 502)
+            },
+        )
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(view.read(cx).runs.read(cx).running());
+            assert_eq!(
+                view.read(cx)
+                    .runs
+                    .read(cx)
+                    .archive_page
+                    .as_ref()
+                    .unwrap()
+                    .records
+                    .len(),
+                500
+            );
+            assert!(window.try_find("run-log-pagination").is_none());
+            view.read(cx).runs.clone().update(cx, |panel, cx| {
+                panel.archive_key = None;
+                panel.refresh_log(window, cx);
+            });
+            assert!(view.read(cx).runs.read(cx).archive_loading);
+            window.click("log-follow-tail", cx);
+        })
+        .unwrap();
+        cx.wait_for(
+            handle.into(),
+            std::time::Duration::from_secs(10),
+            |_, cx| {
+                let panel = view.read(cx).runs.read(cx);
+                !panel.archive_loading
+                    && panel
+                        .archive_page
+                        .as_ref()
+                        .is_some_and(|page| page.offset == 1000)
+            },
+        )
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let panel = view.read(cx).runs.read(cx);
+            assert!(!panel.log_follow);
+            assert_eq!(panel.archive_page.as_ref().unwrap().records.len(), 2);
+            assert_eq!(
+                window.find("run-log-page-number").label(),
+                Some("Page 3 of 3")
+            );
+            assert!(panel.log_text.contains("#1000]"));
+            assert!(!panel.log_text.contains("#999]"));
+            window.within("run-log-pagination").click("prev", cx);
+            assert!(view.read(cx).runs.read(cx).archive_loading);
+            let search = view
+                .read(cx)
+                .runs
+                .read(cx)
+                .log_controls
+                .read(cx)
+                .search
+                .clone();
+            window.focus(&search.read(cx).focus_handle(cx), cx);
+            window.input("success", cx);
+        })
+        .unwrap();
+        cx.wait_for(
+            handle.into(),
+            std::time::Duration::from_secs(10),
+            |_, cx| {
+                let panel = view.read(cx).runs.read(cx);
+                !panel.archive_loading
+                    && panel
+                        .archive_page
+                        .as_ref()
+                        .is_some_and(|page| page.matched == 1)
+            },
+        )
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let panel = view.read(cx).runs.read(cx);
+            assert_eq!(panel.log_query.offset, 0);
+            assert_eq!(panel.archive_page.as_ref().unwrap().offset, 0);
+            assert_eq!(
+                window.find("run-log-page-number").label(),
+                Some("Page 1 of 1")
+            );
+            assert!(panel.log_text.contains("#1001]"));
+            assert!(!panel.log_text.contains("#500]"));
+        })
+        .unwrap();
+    }
 
     #[gpui_kit::test]
     async fn runs_open_site_reloads_latest_suite_publication(cx: &mut TestAppContext) {

@@ -6,6 +6,22 @@ pub(super) struct ScenarioLogScope {
 }
 
 impl RunPanel {
+    pub(super) fn set_log_follow(
+        &mut self,
+        follow: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.log_follow && !follow {
+            // The bounded reader clamps this request to the last page after counting matches.
+            self.log_query.offset = usize::MAX;
+        }
+        self.log_follow = follow;
+        self.archive_key = None;
+        self.refresh_log(window, cx);
+        cx.notify();
+    }
+
     fn scenario_jobs(&self, suite: &str, scenario: &str) -> BTreeSet<usize> {
         let output = self
             .executed_suites
@@ -207,7 +223,7 @@ impl RunPanel {
 
     fn refresh_archive(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let running = self.running();
-        if running && self.archive_loading {
+        if running && self.archive_loading && self.archive_key.is_some() {
             return;
         }
         let Some(request) = self.manager.request.clone() else {
@@ -374,41 +390,60 @@ impl RunPanel {
                                         ))
                                     })),
                             )
-                            .when_some(self.archive_page.as_ref(), |bar, page| {
-                                bar.child(
-                                    Button::new("log-previous-page")
-                                        .ghost()
-                                        .icon(IconName::ArrowLeft)
-                                        .tooltip("Previous log page")
-                                        .accessibility_label("Previous log page")
-                                        .disabled(page.offset == 0)
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.log_query.offset = this
-                                                .log_query
-                                                .offset
-                                                .saturating_sub(crate::desktop::logs::PAGE_RECORDS);
-                                            this.archive_key = None;
-                                            this.refresh_log(window, cx);
-                                            cx.notify();
-                                        })),
-                                )
-                                .content(div().text_xs().child(format!("{} records", page.matched)))
-                                .child(
-                                    Button::new("log-next-page")
-                                        .ghost()
-                                        .icon(IconName::ArrowRight)
-                                        .tooltip("Next log page")
-                                        .accessibility_label("Next log page")
-                                        .disabled(!page.has_more())
-                                        .on_click(cx.listener(|this, _, window, cx| {
-                                            this.log_query.offset +=
-                                                crate::desktop::logs::PAGE_RECORDS;
-                                            this.archive_key = None;
-                                            this.refresh_log(window, cx);
-                                            cx.notify();
-                                        })),
-                                )
-                            }),
+                            .when_some(
+                                self.archive_page
+                                    .as_ref()
+                                    .filter(|_| !(self.running() && self.log_follow)),
+                                |bar, page| {
+                                    bar.child(
+                                        gpui_kit::component::pagination::Pagination::new(
+                                            "run-log-pagination",
+                                        )
+                                        .compact()
+                                        .current_page(page.page_number())
+                                        .total_pages(page.page_count())
+                                        .disabled(self.archive_loading)
+                                        .on_click(
+                                            cx.listener(|this, page: &usize, window, cx| {
+                                                if this.archive_loading
+                                                    || (this.running() && this.log_follow)
+                                                {
+                                                    return;
+                                                }
+                                                let Some(offset) =
+                                                    this.archive_page.as_ref().and_then(
+                                                        |current| current.offset_for_page(*page),
+                                                    )
+                                                else {
+                                                    return;
+                                                };
+                                                this.log_query.offset = offset;
+                                                this.archive_key = None;
+                                                this.refresh_log(window, cx);
+                                                cx.notify();
+                                            }),
+                                        ),
+                                    )
+                                    .content(
+                                        div()
+                                            .id("run-log-page-number")
+                                            .role(Role::Status)
+                                            .aria_label(format!(
+                                                "Page {} of {}",
+                                                page.page_number(),
+                                                page.page_count()
+                                            ))
+                                            .test_support()
+                                            .text_xs()
+                                            .child(format!(
+                                                "Page {} of {} | {} records",
+                                                page.page_number(),
+                                                page.page_count(),
+                                                page.matched
+                                            )),
+                                    )
+                                },
+                            ),
                     )),
             )
             .child(self.log_controls.clone())

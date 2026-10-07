@@ -1,5 +1,5 @@
 use super::*;
-use crate::desktop::logs::{LogPage, LogQuery, PAGE_RECORDS};
+use crate::desktop::logs::{LogPage, LogQuery};
 
 pub(super) struct CaptureLogView {
     pub(super) controls: Entity<super::super::log_controls::LogControls>,
@@ -12,6 +12,7 @@ pub(super) struct CaptureLogView {
     pub(super) loading: bool,
     pub(super) generation: u64,
     title: String,
+    source_focus: [FocusHandle; 2],
 }
 
 impl CaptureLogView {
@@ -59,11 +60,31 @@ impl CaptureLogView {
             loading: false,
             generation: 0,
             title: "Capture Log".into(),
+            source_focus: [
+                cx.focus_handle().tab_stop(true),
+                cx.focus_handle().tab_stop(true),
+            ],
         }
     }
 }
 
 impl ResultsPanel {
+    fn select_capture_log_source(
+        &mut self,
+        index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(focus) = self.capture_log.source_focus.get(index) else {
+            return;
+        };
+        window.focus(focus, cx);
+        self.capture_log.reference = index == 0;
+        self.capture_log.query.offset = 0;
+        self.load_capture_log(window, cx);
+        cx.notify();
+    }
+
     pub(super) fn load_capture_log(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
             return;
@@ -118,6 +139,7 @@ impl ResultsPanel {
                 this.capture_log
                     .editor
                     .update(cx, |state, cx| state.set_value(page.text(), window, cx));
+                this.capture_log.query.offset = page.offset;
                 this.capture_log.page = Some(page);
                 this.capture_log.loading = false;
                 let state = this.capture_log.page.as_ref().map(|page| page.state);
@@ -177,67 +199,41 @@ impl ResultsPanel {
                                     .child(self.capture_log.title.clone()),
                             )
                             .child(
-                                Button::new("results-log-reference")
-                                    .label("Reference")
-                                    .selected(self.capture_log.reference)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.capture_log.reference = true;
-                                        this.capture_log.query.offset = 0;
+                                TabBar::new("results-log-source")
+                                    .segmented()
+                                    .selected_index(usize::from(!self.capture_log.reference))
+                                    // Kit tabs are pointer-only; retain source-button keyboard access.
+                                    .children(["Reference", "Test"].into_iter().enumerate().map(|(index, label)| {
+                                        Tab::new().label(label).track_focus(&self.capture_log.source_focus[index])
+                                            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                                                if event.keystroke.modifiers == Modifiers::default() && matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                                                    cx.stop_propagation();
+                                                    this.select_capture_log_source(index, window, cx);
+                                                }
+                                            }))
+                                    }))
+                                    .on_click(cx.listener(|this, index: &usize, window, cx| {
+                                        this.select_capture_log_source(*index, window, cx);
+                                    })),
+                            )
+                            .child(
+                                gpui_kit::component::pagination::Pagination::new("results-log-pagination")
+                                    .compact()
+                                    .current_page(self.capture_log.page.as_ref().map_or(1, LogPage::page_number))
+                                    .total_pages(self.capture_log.page.as_ref().map_or(1, LogPage::page_count))
+                                    .disabled(self.capture_log.loading || self.capture_log.page.is_none())
+                                    .on_click(cx.listener(|this, page: &usize, window, cx| {
+                                        if this.capture_log.loading { return; }
+                                        let Some(offset) = this.capture_log.page.as_ref().and_then(|current| current.offset_for_page(*page)) else { return; };
+                                        this.capture_log.query.offset = offset;
                                         this.load_capture_log(window, cx);
                                         cx.notify();
                                     })),
                             )
-                            .child(
-                                Button::new("results-log-test")
-                                    .label("Test")
-                                    .selected(!self.capture_log.reference)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.capture_log.reference = false;
-                                        this.capture_log.query.offset = 0;
-                                        this.load_capture_log(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("results-log-previous")
-                                    .ghost()
-                                    .icon(IconName::ArrowLeft)
-                                    .tooltip("Previous log page")
-                                    .accessibility_label("Previous log page")
-                                    .disabled(
-                                        self.capture_log.loading
-                                            || self.capture_log.query.offset == 0,
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.capture_log.query.offset = this
-                                            .capture_log
-                                            .query
-                                            .offset
-                                            .saturating_sub(PAGE_RECORDS);
-                                        this.load_capture_log(window, cx);
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                Button::new("results-log-next")
-                                    .ghost()
-                                    .icon(IconName::ArrowRight)
-                                    .tooltip("Next log page")
-                                    .accessibility_label("Next log page")
-                                    .disabled(
-                                        self.capture_log.loading
-                                            || !self
-                                                .capture_log
-                                                .page
-                                                .as_ref()
-                                                .is_some_and(LogPage::has_more),
-                                    )
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.capture_log.query.offset += PAGE_RECORDS;
-                                        this.load_capture_log(window, cx);
-                                        cx.notify();
-                                    })),
-                            ),
+                            .when_some(self.capture_log.page.as_ref(), |bar, page| {
+                                bar.content(div().id("results-log-page-number").role(Role::Status).aria_label(format!("Page {} of {}", page.page_number(), page.page_count())).test_support()
+                                    .text_xs().child(format!("Page {} of {}", page.page_number(), page.page_count())))
+                            }),
                     )),
             )
             .child(self.capture_log.controls.clone())
@@ -250,6 +246,11 @@ impl ResultsPanel {
                 ),
             )
             .into_any_element()
+    }
+
+    #[cfg(test)]
+    pub(in crate::desktop::ui) fn capture_log_source_focus(&self, index: usize) -> FocusHandle {
+        self.capture_log.source_focus[index].clone()
     }
 
     #[cfg(test)]

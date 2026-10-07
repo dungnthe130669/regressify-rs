@@ -1523,8 +1523,10 @@ or arbitrary executables.
 Completed scenario/job logs load from their capture-owned archives, including after
 reopening a workspace or losing the bounded live buffer. The existing View Log
 navigation is preserved. Archives load in the background in 500-record pages;
-previous/next controls navigate the full history, and Copy copies the displayed
-page. Shared execution history is not repeated for each image.
+compact previous/next controls and a page indicator navigate the full history,
+and Copy copies the displayed page. Filtering or shrinking history reconciles
+the selected page without an empty out-of-range view. Shared execution history
+is not repeated for each image.
 
 Compare, Approve, Build Report, Optimize, Install, and Initialize retain their own
 command journals. View Log uses the operation ID saved with Activity, not the
@@ -1747,6 +1749,8 @@ be reconstructed from reports and are not fabricated.
 
 The Capture Log icon opens the selected capture's archived timeline without
 leaving Results. Reference and Test select their original executions separately;
+the segmented source tabs support pointer selection and keyboard activation.
+Changing source starts on its first page and discards stale load results;
 the heading shows viewport dimensions and attempt when available. Multiple images
 from one execution share its history. Use Back to comparison to return to the
 same image and pass/fail result. Legacy and unavailable logs remain explicit.
@@ -1756,7 +1760,9 @@ Download. Filters affect the view only. Download streams all matching records,
 not just the visible page, and replaces the chosen file only after verifying a
 complete archive. A partial, missing, legacy, or unreadable log cannot be exported
 as complete. Active Activity logs offer Follow to keep the latest bounded page
-visible; turning it off holds the current page while the worker keeps recording.
+visible without a numbered-page indicator. Turning Follow off loads the last
+page-aligned archive page while the worker keeps recording; that page may contain
+fewer than 500 records. This is distinct from the rolling last-500-record tail.
 
 Log-health warnings are separate from image results: a passed capture stays
 passed when its log is partial or unavailable. Activity's run summary and Results

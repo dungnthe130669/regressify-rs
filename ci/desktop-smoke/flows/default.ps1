@@ -141,6 +141,23 @@ function Test-DefaultFlows {
     Send-FixtureKeys A -Control
     Send-FixtureKeys Backspace
     Wait-WindowState { (Read-ControlText 'Search log') -ceq '' } 'Log toolbar search did not clear.'
+    Invoke-Control 'Reference' -Within 'Capture log commands' -Pointer
+    Send-FixtureKeys RightArrow
+    Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'Test' } 'Capture Log Right did not focus the Test source tab.'
+    Send-FixtureKeys Enter
+    Wait-WindowState {
+        $tab = Find-Control 'Test' -Within 'Capture log commands'
+        $pattern = $null
+        $null -ne $tab -and $tab.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern) -and ([System.Windows.Automation.SelectionItemPattern]$pattern).Current.IsSelected
+    } 'Capture Log Enter did not select the Test source.'
+    Send-FixtureKeys LeftArrow
+    Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'Reference' } 'Capture Log Left did not focus the Reference source tab.'
+    Send-FixtureKeys Spacebar
+    Wait-WindowState {
+        $tab = Find-Control 'Reference' -Within 'Capture log commands'
+        $pattern = $null
+        $null -ne $tab -and $tab.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern) -and ([System.Windows.Automation.SelectionItemPattern]$pattern).Current.IsSelected
+    } 'Capture Log Space did not select the Reference source.'
     Capture-Window 'capture-log-toolbar'
     Invoke-Control 'Back to comparison' -Pointer
     Wait-Control 'Edit suite' | Out-Null
