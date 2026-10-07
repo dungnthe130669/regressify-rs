@@ -604,7 +604,7 @@ impl Workbench {
         {
             return;
         }
-        self.suite_menu = None;
+        self.suite_menu_epoch = self.suite_menu_epoch.wrapping_add(1);
         if self.session.open.is_some()
             && let Err(error) = self.flush_drafts(window, cx)
         {

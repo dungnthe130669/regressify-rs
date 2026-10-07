@@ -2,6 +2,35 @@ use super::*;
 
 use crate::desktop::workspace::ThemePreference;
 
+pub(super) fn restore_managed_menu_focus<View: 'static>(
+    owner: WeakEntity<View>,
+    menu_focus: FocusHandle,
+    restore: FocusHandle,
+    invalidate: fn(&mut View),
+    window: &mut Window,
+    cx: &mut Context<gpui_kit::component::menu::PopupMenu>,
+) {
+    let menu = cx.entity();
+    window
+        .subscribe(&menu, cx, move |_, _: &DismissEvent, window, cx| {
+            let owner = owner.clone();
+            let menu_focus = menu_focus.clone();
+            let restore = restore.clone();
+            window.defer(cx, move |window, cx| {
+                // Managed menu painting can re-focus its closing view; never override a newer focus owner.
+                if !menu_focus.is_focused(window) {
+                    return;
+                }
+                let _ = owner.update(cx, |this, cx| {
+                    invalidate(this);
+                    window.focus(&restore, cx);
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+}
+
 #[derive(IntoElement)]
 pub(super) struct ToolbarFocus {
     id: ElementId,

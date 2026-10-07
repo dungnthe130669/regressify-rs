@@ -2,6 +2,13 @@
 
 Verified: 2026-10-07
 
+- [Managed image menus](../../src/desktop/ui/reports.rs) use ContextMenuExt with
+  generation-scoped scroll triggers and captured validated path/URL targets.
+  Mode/capture/refresh/Results exit remove old menus. The shared weak
+  [dismissal helper](../../src/desktop/ui/design.rs) restores focus only while
+  the disappearing popup still owns it. Mixed-button mouse clicks cannot open
+  a pane; the held-pan regression verifies cancellation and unchanged offsets.
+  Image action/lifecycle tests and native Comparison pass without toolkit edits.
 - Capture information in [Results](../../src/desktop/ui/reports.rs) uses an
   unbordered one-column DescriptionList while retaining stable custom URL
   children. The existing metadata GUI regression verifies raw reference/test

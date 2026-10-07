@@ -7966,6 +7966,212 @@ async fn suite_panel_activity_remap_finishes_persistence_and_unlocks_catalog(
 }
 
 #[gpui_kit::test]
+async fn context_menu_suite_preserves_focus_selection_and_lifetime(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1000.), px(640.)));
+    let (index, entry) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("second")
+                    .unwrap();
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+            });
+            window.render_frame(cx);
+            let index = view
+                .read(cx)
+                .session
+                .entries
+                .iter()
+                .position(|entry| entry.suite_name().as_deref() == Some("second"))
+                .unwrap();
+            (index, view.read(cx).session.entries[index].clone())
+        })
+        .unwrap();
+    let (open, selected) = cx.update(|cx| {
+        let workbench = view.read(cx);
+        (
+            workbench.session.open.as_ref().unwrap().entry.path.clone(),
+            workbench.runs.read(cx).selected("second"),
+        )
+    });
+    for dismiss in ["escape", "refresh", "busy"] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.right_click(("suite-row", index), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .await;
+        let menu_focus = cx
+            .update_window(handle.into(), |_, window, cx| {
+                assert_eq!(view.read(cx).suite_list.current.as_ref(), Some(&entry.path));
+                assert_eq!(
+                    view.read(cx).session.open.as_ref().unwrap().entry.path,
+                    open
+                );
+                assert_eq!(view.read(cx).runs.read(cx).selected("second"), selected);
+                let bounds = window.find("popup-menu").bounds();
+                assert!(bounds.left() >= px(0.) && bounds.right() <= px(1000.));
+                assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(640.));
+                let menu_focus = window.focused(cx);
+                match dismiss {
+                    "escape" => window.press("escape", cx),
+                    "refresh" => view.update(cx, |this, cx| {
+                        this.sync_suites(cx);
+                        cx.notify();
+                    }),
+                    _ => view.update(cx, |this, cx| {
+                        this.busy = true;
+                        cx.notify();
+                    }),
+                }
+                menu_focus
+            })
+            .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("popup-menu").is_none()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            if dismiss == "escape" {
+                assert_eq!(
+                    window.focused(cx),
+                    Some(view.read(cx).suite_list.focus.clone()),
+                    "Focus before Escape: {menu_focus:?}"
+                );
+            }
+            if dismiss == "busy" {
+                window.right_click(("suite-row", index), cx);
+                window.render_frame(cx);
+                assert!(window.try_find("popup-menu").is_none());
+                view.update(cx, |this, cx| {
+                    this.busy = false;
+                    cx.notify();
+                });
+            }
+        })
+        .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.right_click(("suite-row", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    let weak = view.downgrade();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| assert!(weak.upgrade().is_none()));
+}
+
+#[gpui_kit::test]
+async fn context_menu_suite_rename_keeps_dialog_focus_and_clicked_identity(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let index = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("second")
+                    .unwrap();
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+            });
+            window.render_frame(cx);
+            let index = view
+                .read(cx)
+                .session
+                .entries
+                .iter()
+                .position(|entry| entry.suite_name().as_deref() == Some("second"))
+                .unwrap();
+            window.right_click(("suite-row", index), cx);
+            index
+        })
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(0_usize, cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("file-name").is_some()
+    })
+    .await;
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("file-name").focused(), Some(true));
+        assert_eq!(window.find("file-name").value(), Some("second.tests.yaml"));
+        assert!(window.try_find("popup-menu").is_none());
+        window.click("file-cancel", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.right_click(("suite-row", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, _, cx| {
+        view.update(cx, |this, cx| {
+            this.session.entries.reverse();
+            this.sync_suites(cx);
+            cx.notify();
+        });
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("second")
+        );
+        assert!(
+            directory
+                .path()
+                .join("visual_tests/ui-test.tests.yaml")
+                .is_file()
+        );
+        assert!(
+            directory
+                .path()
+                .join("visual_tests/second.tests.yaml")
+                .is_file()
+        );
+    });
+}
+
+#[gpui_kit::test]
 async fn suite_panel_context_rename_fields_and_delete_keep_artifacts_aligned(
     cx: &mut TestAppContext,
 ) {
@@ -9279,7 +9485,7 @@ async fn image_context_menus_offer_external_targets_without_switching_tabs(
                 {"status": "pass", "pair": {"label": "Legacy capture", "reference": image, "test": image}}
             ]
         })).unwrap()).unwrap();
-        let (handle, _) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
             window.within("workbench-tabs").click(2_usize, cx);
@@ -9395,6 +9601,76 @@ async fn image_context_menus_offer_external_targets_without_switching_tabs(
             })
             .await;
         }
+        for change in ["mode", "capture", "refresh", "exit"] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.within("image-modes").click(1_usize, cx);
+                window.focus(&view.read(cx).focus.clone(), cx);
+                window.right_click(("image-content", 1_usize), cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                window.try_find("popup-menu").is_some()
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| match change {
+                "mode" => window.within("image-modes").click(0_usize, cx),
+                "capture" => window.click(("capture", 0_usize), cx),
+                "refresh" => window.click("refresh-results", cx),
+                _ => window.within("workbench-tabs").click(0_usize, cx),
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find("popup-menu").is_none()
+            })
+            .await;
+            if change == "exit" {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    window.within("workbench-tabs").click(2_usize, cx);
+                })
+                .unwrap();
+            }
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find(("image-details", 0_usize)).is_some()
+                    || window.try_find(("image-details", 1_usize)).is_some()
+            })
+            .await;
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("image-modes").click(1_usize, cx);
+            window.focus(&view.read(cx).focus.clone(), cx);
+            window.right_click(("image-content", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("escape", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.try_find("popup-menu").is_none()
+                && window.focused(cx) == Some(view.read(cx).focus.clone())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.right_click(("image-content", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("popup-menu").is_some()
+        })
+        .await;
+        let weak_results = cx.update(|cx| view.read(cx).results.downgrade());
+        let weak = view.downgrade();
+        drop(view);
+        cx.update_window(handle.into(), |_, window, _| window.remove_window())
+            .unwrap();
+        cx.update(|_| {
+            assert!(weak.upgrade().is_none());
+            assert!(weak_results.upgrade().is_none());
+        });
     }
 }
 
@@ -9971,6 +10247,96 @@ async fn image_previews_zoom_at_pointer_and_pan_on_drag(cx: &mut TestAppContext)
                     assert_eq!(window.find(("image-content", index)).bounds(), after);
                 }
             }
+        }
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("image-modes").click(3_usize, cx);
+        window.click("fit-image", cx);
+        window.click("actual-size", cx);
+        window.right_click(("image-scroll", 0_usize), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    let (pointer, before) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            window.within("image-modes").click(3_usize, cx);
+            window.click("fit-image", cx);
+            window.click("actual-size", cx);
+            let pointer = window.find(("image-scroll", 0_usize)).bounds().center();
+            let before = window.find(("image-content", 0_usize)).bounds().origin;
+            window.dispatch_event(
+                gpui_kit::MouseDownEvent {
+                    position: pointer,
+                    button: gpui_kit::MouseButton::Left,
+                    modifiers: Default::default(),
+                    click_count: 1,
+                    first_mouse: false,
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.right_click(("image-scroll", 0_usize), cx);
+            for index in 0_usize..3 {
+                assert!(
+                    window.try_find(("image-scroll", index)).is_some(),
+                    "Held-pan right-click switched away from pane {index}"
+                );
+            }
+            (pointer, before)
+        })
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let pointer = pointer + gpui_kit::point(px(-30.), px(-40.));
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: pointer,
+                pressed_button: Some(gpui_kit::MouseButton::Left),
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            gpui_kit::MouseUpEvent {
+                position: pointer,
+                button: gpui_kit::MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(("image-content", 0_usize)).bounds().origin,
+            before
+        );
+        for index in 0_usize..3 {
+            assert!(window.find(("image-scroll", index)).visible());
         }
     })
     .unwrap();

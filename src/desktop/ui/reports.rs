@@ -140,12 +140,6 @@ impl LoadedImage {
     }
 }
 
-struct ImageMenu {
-    menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
-    _subscription: Subscription,
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ZoomMode {
     FitArea,
@@ -324,7 +318,7 @@ pub(super) struct ResultsPanel {
     focus: FocusHandle,
     capture_focus: FocusHandle,
     previews: Vec<Preview>,
-    image_menu: Option<ImageMenu>,
+    image_menu_epoch: u64,
     preview_textures: [PreviewTexture; 3],
     image_task: Option<gpui_kit::Task<()>>,
     image_load_gate: Arc<futures::lock::Mutex<()>>,
@@ -379,7 +373,7 @@ impl ResultsPanel {
     fn reset_view(&mut self) {
         self.approval_confirmation = false;
         self.approval_error = None;
-        self.image_menu = None;
+        self.image_menu_epoch = self.image_menu_epoch.wrapping_add(1);
         self.preview_views = Default::default();
         self.comparison_scroll.set_offset(point(px(0.), px(0.)));
         for scroll in &self.preview_scrolls {
@@ -390,7 +384,7 @@ impl ResultsPanel {
     }
 
     fn select_image_mode(&mut self, index: usize, cx: &mut Context<Self>) {
-        self.image_menu = None;
+        self.image_menu_epoch = self.image_menu_epoch.wrapping_add(1);
         self.image_mode = index;
         self.pointer_guides.pan.borrow_mut().take();
         self.pointer_guides.active.set(None);
@@ -623,7 +617,7 @@ impl ResultsPanel {
             focus: cx.focus_handle(),
             capture_focus: cx.focus_handle().tab_index(0),
             previews: Vec::new(),
-            image_menu: None,
+            image_menu_epoch: 0,
             preview_textures: Default::default(),
             image_task: None,
             image_load_gate: Arc::default(),
@@ -791,7 +785,7 @@ impl ResultsPanel {
 
     fn reset_previews(&mut self, mut window: Option<&mut Window>, cx: &mut App) {
         self.approval_confirmation = false;
-        self.image_menu = None;
+        self.image_menu_epoch = self.image_menu_epoch.wrapping_add(1);
         self.image_task = None;
         self.image_loading = false;
         for preview in &self.previews {
@@ -950,22 +944,22 @@ impl ResultsPanel {
         .detach();
     }
 
-    fn show_image_menu(
+    fn build_image_menu(
         &mut self,
         index: usize,
-        position: Point<Pixels>,
+        menu: PopupMenu,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> PopupMenu {
         let Some(image) = self
             .previews
             .get(index)
             .and_then(|preview| preview.result.as_ref().ok())
         else {
-            return;
+            return menu;
         };
         let Some(path) = &image.path else {
-            return;
+            return menu;
         };
         let viewer_path = path.clone();
         let reveal_path = path.clone();
@@ -993,50 +987,36 @@ impl ResultsPanel {
             }
         });
         let focus = window.focused(cx).unwrap_or_else(|| self.focus.clone());
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.action_context(focus)
-                .item(
-                    PopupMenuItem::new("Open in default browser")
-                        .disabled(browser_disabled)
-                        .on_click(browser),
-                )
-                .item(PopupMenuItem::new("Open in default image viewer").on_click(viewer))
-                .item(
-                    PopupMenuItem::new("Show in file manager")
-                        .on_click(move |_, _, cx| cx.reveal_path(&reveal_path)),
-                )
-                .when(index < 2, |menu| {
-                    menu.separator()
-                        .item(
-                            PopupMenuItem::new(format!("Open {url_kind} URL"))
-                                .disabled(page_disabled)
-                                .on_click(page),
-                        )
-                        .item(
-                            PopupMenuItem::new(format!("Copy {url_kind} URL"))
-                                .disabled(page_disabled)
-                                .on_click(move |_, _, cx| {
-                                    if let Some(url) = &copy_url {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(
-                                            url.to_string(),
-                                        ));
-                                    }
-                                }),
-                        )
-                })
-        });
-        let subscription = cx.subscribe(&menu, |this, _, _: &gpui_kit::DismissEvent, cx| {
-            this.image_menu = None;
-            cx.notify();
-        });
-        menu.focus_handle(cx).focus(window, cx);
-        self.image_menu = Some(ImageMenu {
-            menu,
-            position,
-            _subscription: subscription,
-        });
-        self.pointer_guides.pan.borrow_mut().take();
-        cx.notify();
+        menu.action_context(focus)
+            .item(
+                PopupMenuItem::new("Open in default browser")
+                    .disabled(browser_disabled)
+                    .on_click(browser),
+            )
+            .item(PopupMenuItem::new("Open in default image viewer").on_click(viewer))
+            .item(
+                PopupMenuItem::new("Show in file manager")
+                    .on_click(move |_, _, cx| cx.reveal_path(&reveal_path)),
+            )
+            .when(index < 2, |menu| {
+                menu.separator()
+                    .item(
+                        PopupMenuItem::new(format!("Open {url_kind} URL"))
+                            .disabled(page_disabled)
+                            .on_click(page),
+                    )
+                    .item(
+                        PopupMenuItem::new(format!("Copy {url_kind} URL"))
+                            .disabled(page_disabled)
+                            .on_click(move |_, _, cx| {
+                                if let Some(url) = &copy_url {
+                                    cx.write_to_clipboard(ClipboardItem::new_string(
+                                        url.to_string(),
+                                    ));
+                                }
+                            }),
+                    )
+            })
     }
 
     fn open_browser(&mut self, url: reqwest::Url, window: &mut Window, cx: &mut Context<Self>) {
@@ -1578,7 +1558,12 @@ impl ResultsPanel {
                             cx.stop_propagation();
                         }
                     })
-                    .on_click(cx.listener(move |this, _, _, cx| {
+                    .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                        // Mixed-button releases must not turn a context-menu gesture into pane activation.
+                        if matches!(event, gpui_kit::ClickEvent::Mouse(click)
+                            if click.down.button != MouseButton::Left || click.up.button != MouseButton::Left) {
+                            return;
+                        }
                         if this.image_mode == 3 {
                             this.select_image_mode(index, cx);
                         }
@@ -1678,6 +1663,63 @@ impl ResultsPanel {
                 .on_scroll_wheel(cx.listener(move |this, event, _, cx| {
                     this.zoom_at_pointer(index, event, cx);
                 }));
+                let viewport = div()
+                    .id(SharedString::from(format!(
+                        "image-menu-{}-{index}",
+                        self.image_menu_epoch
+                    )))
+                    .size_full()
+                    .relative()
+                    .overflow_scroll()
+                    .map(|mut viewport| {
+                        viewport.style().allow_concurrent_scroll = Some(true);
+                        viewport
+                    })
+                    .track_scroll(scroll)
+                    .bg(cx.theme().muted)
+                    .capture_any_mouse_down({
+                        let guides = self.pointer_guides.clone();
+                        move |event, window, _| {
+                            if event.button == MouseButton::Right {
+                                guides.pan.borrow_mut().take();
+                                window.prevent_default();
+                            }
+                        }
+                    })
+                    .child(display);
+                let viewport = if image.path.is_some() {
+                    use gpui_kit::component::menu::ContextMenuExt;
+                    let owner = cx.entity().downgrade();
+                    let epoch = self.image_menu_epoch;
+                    viewport
+                        .context_menu(move |menu, window, cx| {
+                            let Some(panel) = owner.upgrade() else {
+                                return menu;
+                            };
+                            if panel.read(cx).image_menu_epoch != epoch {
+                                return menu;
+                            }
+                            let restore = window
+                                .focused(cx)
+                                .unwrap_or_else(|| panel.read(cx).focus.clone());
+                            design::restore_managed_menu_focus(
+                                owner.clone(),
+                                menu.focus_handle(cx),
+                                restore,
+                                |this| {
+                                    this.image_menu_epoch = this.image_menu_epoch.wrapping_add(1)
+                                },
+                                window,
+                                cx,
+                            );
+                            panel.update(cx, |this, cx| {
+                                this.build_image_menu(index, menu, window, cx)
+                            })
+                        })
+                        .into_any_element()
+                } else {
+                    viewport.into_any_element()
+                };
                 div()
                     .id(("image-details", index))
                     .role(Role::Group)
@@ -1696,25 +1738,7 @@ impl ResultsPanel {
                             .aria_label(format!("{} image preview", preview.label))
                             .test_support()
                             .size_full()
-                            .relative()
-                            .overflow_scroll()
-                            .map(|mut viewport| {
-                                viewport.style().allow_concurrent_scroll = Some(true);
-                                viewport
-                            })
-                            .track_scroll(scroll)
-                            .bg(cx.theme().muted)
-                            .on_mouse_down(
-                                MouseButton::Right,
-                                cx.listener(
-                                    move |this, event: &gpui_kit::MouseDownEvent, window, cx| {
-                                        this.show_image_menu(index, event.position, window, cx);
-                                        window.prevent_default();
-                                        cx.stop_propagation();
-                                    },
-                                ),
-                            )
-                            .child(display),
+                            .child(viewport),
                     )
                     .scrollbar(scroll, scroll::ScrollbarAxis::Both)
                     .into_any_element()
@@ -2422,16 +2446,6 @@ impl Render for ResultsPanel {
                     .text_xs()
                     .text_color(cx.theme().warning)
                     .child(warning.clone())
-            }))
-            .children(self.image_menu.as_ref().map(|menu| {
-                gpui_kit::deferred(
-                    gpui_kit::anchored()
-                        .position(menu.position)
-                        .anchor(gpui_kit::Anchor::TopLeft)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(menu.menu.clone()),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY)
             }))
     }
 }

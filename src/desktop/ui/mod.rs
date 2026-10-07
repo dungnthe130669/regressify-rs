@@ -163,7 +163,7 @@ pub struct Workbench {
     overview: bool,
     scenario_search: Entity<InputState>,
     suite_list: lists::ListState<PathBuf>,
-    suite_menu: Option<navigation::SuiteMenu>,
+    suite_menu_epoch: u64,
     scenario_list: lists::ListState<(PathBuf, usize)>,
     workspace_list: lists::ListState<PathBuf>,
     sequence_list: lists::ListState<(PathBuf, usize, usize)>,
@@ -428,7 +428,7 @@ impl Workbench {
             overview: true,
             scenario_search,
             suite_list: lists::ListState::new(cx),
-            suite_menu: None,
+            suite_menu_epoch: 0,
             scenario_list: lists::ListState::new(cx),
             workspace_list: lists::ListState::new(cx),
             sequence_list: lists::ListState::new(cx),
@@ -766,6 +766,7 @@ impl Workbench {
     }
 
     fn sync_suites(&mut self, cx: &mut Context<Self>) {
+        self.suite_menu_epoch = self.suite_menu_epoch.wrapping_add(1);
         let suites = self.session.suites.clone();
         let error = self.session.suite_error.clone();
         self.runs

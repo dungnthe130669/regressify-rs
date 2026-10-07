@@ -1060,6 +1060,9 @@ Right-click a Test suites row for Rename suite or Delete suite. With that panel
 focused, F2 renames the focused suite and Delete opens its deletion confirmation.
 These commands target one row, including in Results; they do not apply to every
 checked suite or intercept keys in text inputs. Active runs block both operations.
+Right-click changes the focused row without opening or checking it. Escape closes
+the menu and returns keyboard control to the suite list; catalog refresh closes
+an open menu so its actions cannot target a changed list.
 
 New suite (`+`) and Rename suite focus the filename input and select the name
 without its `.tests.yaml`, `.tests.yml`, or `.tests.json` suffix. Start typing to
@@ -1878,6 +1881,8 @@ recorded initial scenario URL: Reference uses `referenceUrl`, while Test uses
 not use the final URL after actions or recompute from today's replacement profile.
 URL actions are disabled when the corresponding metadata is missing or unsupported;
 they are not offered for Diff. HTTP, HTTPS, and local file URLs are supported.
+Opening an image menu cancels an active pan without switching panes. Changing the
+capture, image mode, report, or Results view dismisses the old menu.
 
 External-open controls also launch the HTML summary and artifact folder.
 The app does not embed a browser or webview; browser actions launch the installed

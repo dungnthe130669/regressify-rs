@@ -365,6 +365,11 @@ manual `anchored`/`deferred` mounting where the lifecycle tests pass. Keep nativ
 `suite_panel_` and image-menu interaction tests, including row reorder/refresh
 while open and workbench release after closing the window.
 
+Task 008 verified generation-scoped managed triggers for suite and image menus.
+The owner-approved shared weak dismissal adapter repairs closing-popup focus
+without overriding newer menus/dialogs. Native Artifact and Comparison gates pass;
+manual popup owners/mounts are removed, and mixed-button pane activation is guarded.
+
 ### R6: Value Selectors
 
 **Single values:** use [Select][kit-select] for `Control::Choice` in

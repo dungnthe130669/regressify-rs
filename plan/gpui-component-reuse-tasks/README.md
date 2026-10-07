@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-006 committed. Task 007 is verified on Windows and
-ready for its authorized local commit; task 008 is next. The approved Linux
+Status: Planning and tasks 001-007 committed. Task 008 is verified on Windows and
+ready for its authorized local commit; task 009 is next. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -81,8 +81,9 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 006 Dialog footers: all nine footers and the public Close pilot pass
   focused, native and screenshot checks. Committed as `5133195`.
 - [x] 007 Toolbars: named bars, approved focus adapter and final native gates pass;
+  committed as `065c0df`.
+- [x] 008 Context menus: suite/image parity, guarded dismissal and final native gates pass;
   ready for the authorized commit.
-- [ ] 008 Context menus: not started.
 - [ ] 009 Value selectors: not started.
 - [ ] 010 Clipboard: not started.
 - [ ] 011 Log navigation: not started.
@@ -351,10 +352,47 @@ When a task changes state, record the exact focused command, exact outcome and n
   focus adapter; main GUI tests +419, Git tests +15, native smoke +20. Thirteen
   toolbar instances use one keyed focus handle each; no new domain state or
   subscriptions. Correct reuse despite net source growth is approved.
-- Task 007 is verified and ready for the authorized commit. No new deferral was
+- Task 007 is committed as `065c0df`. No new deferral was
   introduced; the non-green Linux baseline exception and task 020 remain.
   Scoped Markdown lint passes for eight files, guidance validation passes for
   46 skills, and self-tests pass 10/10 with only the existing MD004 config warning.
+
+### Task 008 Verification
+
+- Baseline `suite_panel_` passes (5). Managed suite-row ContextMenuExt replaces
+  the manual popup owner, position/subscription storage and deferred mounting.
+  Workspace/path/generation trigger identity, weak callbacks and capture-phase
+  list focus preserve clicked identity without opening/checking the row.
+- Published managed-menu dismissal left focus on the disappearing popup after
+  Escape. The owner approved a guarded deferred dismissal adapter: only when
+  that menu still owns focus, retire its generation and restore the suite list;
+  newer menus/dialogs keep their focus. No toolkit source or private API changes.
+- `context_menu_suite_` passes (2): focus/checked/open identity, repeated opens,
+  bounds, refresh/busy/reorder invalidation, Rename input focus and owner release.
+  Rename's cross-suite asynchronous open is awaited before input assertions.
+- Final suite-panel regression filter passes (5); `navigator_` passes (7).
+- Image menus use managed, generation-scoped scroll triggers and frozen safe
+  path/URL actions. The existing image-menu test passes with source/mode/refresh/
+  Results-exit invalidation and owner release. A mixed-button click guard fixes
+  Left-held/Right-release incorrectly opening a pane; all 3 image-preview tests
+  pass with interrupted-pan coverage.
+- Native Artifact and undisturbed Comparison passed intermediate candidates;
+  final current-binary reruns also pass after the last guards. The user confirmed
+  pointer movement in failed crosshair/tab-click attempts; unchanged assertions
+  pass undisturbed. Native Artifact now explicitly
+  verifies right-click identity, Escape and F2 focus, and headless harness passes.
+- Shared `restore_managed_menu_focus` consolidates the guarded weak/deferred
+  adapter. Final suite lifecycle (2), image lifecycle (1) and pathless failed-image
+  guard (1) pass. Rustfmt, production GUI Clippy/build and editor diagnostics pass.
+  Native preferences are restored; screenshots show intact menus, comparison
+  gestures/pixels, error images, approval scope and empty-suite behavior.
+- Accounting: production +311/-248 (net +63), including the 29-line helper;
+  GUI tests +367/-1 and native Artifact +15. Two generation counters replace
+  manual popup owner slots, and one weak per-menu focus-repair subscription remains.
+- Task 008 is verified and ready for the authorized local commit. No new deferral;
+  the approved non-green Linux baseline and task 020 final gates remain.
+  Final suite-panel filter passes (5), scoped Markdown lint passes (8 files),
+  guidance validates 46 skills, and self-tests pass 10/10.
 
 ### Approved Linux Baseline Exception
 

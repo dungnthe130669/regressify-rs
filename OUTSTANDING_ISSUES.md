@@ -33,6 +33,18 @@ Issues identified during adversarial review that remain after the September 2026
   and Deployment flows pass. Keep the adapter until a replacement passes those
   checks. This is not a new unresolved task or a passing Linux gate.
 
+## Managed Menu Focus Compatibility (2026-10-07)
+
+- Mitigated locally: on Windows, GPUI Kit 0.7.1 ContextMenuExt could retain
+  focus on its disappearing popup after Escape. The owner-approved shared
+  [dismissal helper](src/desktop/ui/design.rs) uses a weak deferred callback to
+  invalidate that generation and restore focus only while the old popup still
+  owns it. A newly opened dialog or menu is not overridden.
+- Suite/image lifecycle regressions cover identity, refresh/mode/visibility
+  invalidation, focus and owner release. Native Artifact right-click/Escape/F2
+  and full Comparison flows pass. No toolkit edit or new deferral is required;
+  retain the helper until replacement behavior passes the same checks.
+
 ## Linux Baseline Verification (2026-10-06)
 
 - Existing Ubuntu Git 2.34.1 reports usage errors in three remote rename/remove

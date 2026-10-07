@@ -1,4 +1,19 @@
 function Test-ArtifactFlows {
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
+    Hover-Control 'account.tests.json'
+    Send-FixturePointerClick -Right
+    if (-not (Test-MenuActionEnabled 'Rename suite') -or -not (Test-MenuActionEnabled 'Delete suite')) { throw 'Suite context actions are unavailable.' }
+    Wait-Control 'Checkout' | Out-Null
+    if ($null -ne (Find-Control 'Profile')) { throw 'Right-click opened the focused suite.' }
+    Capture-Window 'suite-context-menu'
+    Send-FixtureKeys Escape
+    Wait-WindowState { $null -eq (Find-Control 'Rename suite') } 'Suite context menu did not close.'
+    Send-FixtureKeys F2
+    Wait-Control 'Filename' | Out-Null
+    if ((Read-ControlText 'Filename') -cne 'account.tests.json') { throw 'Suite-menu Escape did not restore focused-row keyboard actions.' }
+    Invoke-Control 'Close' -Pointer
+    Wait-WindowState { $null -eq (Find-Control 'Filename') } 'Context-targeted Rename did not cancel.'
     Write-Host 'Checking create-dialog initial selection and X dismissal'
     Invoke-Control 'New suite' -Pointer
     Wait-Control 'Filename' | Out-Null

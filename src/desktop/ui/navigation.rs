@@ -1,15 +1,9 @@
 //! Separate suite selection from the open document's scenario outline.
 
-use gpui_kit::component::menu::{PopupMenu, PopupMenuItem};
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::resizable::v_resizable;
 
 use super::*;
-
-pub(super) struct SuiteMenu {
-    menu: Entity<PopupMenu>,
-    position: Point<Pixels>,
-    _subscription: Subscription,
-}
 
 fn empty_list(id: &'static str, text: &'static str, cx: &App) -> AnyElement {
     div()
@@ -61,43 +55,6 @@ fn page_location(url: &str, root: Option<&std::path::Path>) -> String {
 }
 
 impl Workbench {
-    fn show_suite_menu(
-        &mut self,
-        entry: Entry,
-        position: Point<Pixels>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.busy || self.runs.read(cx).running() {
-            return;
-        }
-        self.suite_list.focus_item(entry.path.clone(), window, cx);
-        let rename_entry = entry.clone();
-        let rename = cx.listener(move |this, _, window, cx| {
-            this.begin_suite_operation(rename_entry.clone(), files::Operation::Rename, window, cx)
-        });
-        let delete = cx.listener(move |this, _, window, cx| {
-            this.begin_suite_operation(entry.clone(), files::Operation::Delete, window, cx)
-        });
-        let focus = self.suite_list.focus.clone();
-        let menu = PopupMenu::build(window, cx, move |menu, _, _| {
-            menu.action_context(focus)
-                .item(PopupMenuItem::new("Rename suite").on_click(rename))
-                .item(PopupMenuItem::new("Delete suite").on_click(delete))
-        });
-        let subscription = cx.subscribe(&menu, |this, _, _: &gpui_kit::DismissEvent, cx| {
-            this.suite_menu = None;
-            cx.notify();
-        });
-        menu.focus_handle(cx).focus(window, cx);
-        self.suite_menu = Some(SuiteMenu {
-            menu,
-            position,
-            _subscription: subscription,
-        });
-        cx.notify();
-    }
-
     fn select_visible_suites(&mut self, visible: &[String], cx: &mut Context<Self>) {
         if self.busy || visible.is_empty() {
             return;
@@ -399,21 +356,6 @@ impl Workbench {
             .when(self.main_tab != 2, |navigation| {
                 navigation.child(self.render_workspace_files(cx))
             })
-            .children(self.suite_menu.as_ref().map(|menu| {
-                gpui_kit::deferred(
-                    gpui_kit::anchored()
-                        .position(menu.position)
-                        .anchor(gpui_kit::Anchor::TopLeft)
-                        .snap_to_window_with_margin(px(8.))
-                        .child(
-                            div()
-                                .id("suite-context-menu")
-                                .test_support()
-                                .child(menu.menu.clone()),
-                        ),
-                )
-                .with_priority(gpui_kit::base::POPUP_PRIORITY)
-            }))
             .into_any_element()
     }
 
@@ -611,6 +553,20 @@ impl Workbench {
             let visible = visible.clone();
             let entry = entry.clone();
             let menu_entry = entry.clone();
+            let rename_entry = entry.clone();
+            let delete_entry = entry.clone();
+            let menu_view = cx.entity().downgrade();
+            let menu_focus = self.suite_list.focus.clone();
+            let menu_epoch = self.suite_menu_epoch;
+            let menu_id = SharedString::from(format!(
+                "suite-menu-{}-{:?}-{:?}",
+                self.suite_menu_epoch,
+                self.session
+                    .workspace
+                    .as_ref()
+                    .map(|workspace| &workspace.root),
+                entry.path
+            ));
             let label = if open {
                 self.value["displayName"]
                     .as_str()
@@ -672,108 +628,171 @@ impl Workbench {
                 } else {
                     cx.theme().muted_foreground
                 };
+            let row = div()
+                .id(menu_id)
+                .flex()
+                .items_center()
+                .w_full()
+                .h(px(44.))
+                .flex_shrink_0()
+                .min_w_0()
+                .border_l_2()
+                .border_color(
+                    if current || self.suite_list.current.as_ref() == Some(&entry.path) {
+                        cx.theme().primary
+                    } else {
+                        cx.theme().transparent
+                    },
+                )
+                .when(selected, |row| row.bg(cx.theme().accent))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .capture_any_mouse_down(cx.listener(
+                    move |this, event: &MouseDownEvent, window, cx| {
+                        if event.button == MouseButton::Right {
+                            if this.busy || this.runs.read(cx).running() {
+                                cx.stop_propagation();
+                                return;
+                            }
+                            this.suite_list
+                                .focus_item(menu_entry.path.clone(), window, cx);
+                            window.prevent_default();
+                            cx.notify();
+                        }
+                    },
+                ))
+                .child(
+                    Button::new(("file", index))
+                        .ghost()
+                        .h_full()
+                        .flex_1()
+                        .min_w_0()
+                        .justify_start()
+                        .selected(selected)
+                        .accessibility_label(if label == name {
+                            filename
+                        } else {
+                            label.clone()
+                        })
+                        .tooltip(error.map_or_else(
+                            || entry.label(),
+                            |error| format!("{}\n{error}", entry.label()),
+                        ))
+                        .child(
+                            Icon::new(gpui_kit::assets::IconName::Files)
+                                .small()
+                                .text_color(status_color),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .gap_1()
+                                .flex_1()
+                                .min_w_0()
+                                .text_left()
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .font_weight(if current {
+                                            FontWeight::SEMIBOLD
+                                        } else {
+                                            FontWeight::NORMAL
+                                        })
+                                        .child(label),
+                                )
+                                .child(
+                                    div()
+                                        .id(("suite-activity", index))
+                                        .role(Role::Status)
+                                        .aria_label(detail.clone())
+                                        .test_support()
+                                        .text_xs()
+                                        .truncate()
+                                        .text_color(status_color)
+                                        .child(detail),
+                                ),
+                        )
+                        .disabled(self.busy)
+                        .on_click(cx.listener(
+                            move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                cx.stop_propagation();
+                                this.suite_list.focus_item(entry.path.clone(), window, cx);
+                                this.runs.update(cx, |panel, cx| {
+                                    panel.select_suite(&name, &visible, event.modifiers(), cx);
+                                });
+                                if this.main_tab == 2 {
+                                    this.results.update(cx, |panel, cx| {
+                                        panel.select_suite(&entry, window, cx);
+                                    });
+                                } else {
+                                    this.open_location(entry.clone(), Selection::Root, window, cx);
+                                }
+                            },
+                        )),
+                );
+            let row = if self.busy || runs.running() {
+                row.into_any_element()
+            } else {
+                row.context_menu(move |menu, window, cx| {
+                    if menu_view
+                        .upgrade()
+                        .is_none_or(|view| view.read(cx).suite_menu_epoch != menu_epoch)
+                    {
+                        return menu;
+                    }
+                    design::restore_managed_menu_focus(
+                        menu_view.clone(),
+                        menu.focus_handle(cx),
+                        menu_focus.clone(),
+                        |this| this.suite_menu_epoch = this.suite_menu_epoch.wrapping_add(1),
+                        window,
+                        cx,
+                    );
+                    let rename_view = menu_view.clone();
+                    let delete_view = menu_view.clone();
+                    let rename_entry = rename_entry.clone();
+                    let delete_entry = delete_entry.clone();
+                    menu.action_context(menu_focus.clone())
+                        .item(
+                            PopupMenuItem::new("Rename suite").on_click(move |_, window, cx| {
+                                let _ = rename_view.update(cx, |this, cx| {
+                                    if this.suite_menu_epoch != menu_epoch {
+                                        return;
+                                    }
+                                    this.begin_suite_operation(
+                                        rename_entry.clone(),
+                                        files::Operation::Rename,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                        )
+                        .item(
+                            PopupMenuItem::new("Delete suite").on_click(move |_, window, cx| {
+                                let _ = delete_view.update(cx, |this, cx| {
+                                    if this.suite_menu_epoch != menu_epoch {
+                                        return;
+                                    }
+                                    this.begin_suite_operation(
+                                        delete_entry.clone(),
+                                        files::Operation::Delete,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                        )
+                })
+                .into_any_element()
+            };
             rows = rows.child(
                 div()
                     .id(("suite-row", index))
                     .test_support()
-                    .flex()
-                    .items_center()
                     .w_full()
-                    .h(px(44.))
                     .flex_shrink_0()
-                    .min_w_0()
-                    .border_l_2()
-                    .border_color(
-                        if current || self.suite_list.current.as_ref() == Some(&entry.path) {
-                            cx.theme().primary
-                        } else {
-                            cx.theme().transparent
-                        },
-                    )
-                    .when(selected, |row| row.bg(cx.theme().accent))
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                            cx.stop_propagation();
-                            this.show_suite_menu(menu_entry.clone(), event.position, window, cx);
-                        }),
-                    )
-                    .child(
-                        Button::new(("file", index))
-                            .ghost()
-                            .h_full()
-                            .flex_1()
-                            .min_w_0()
-                            .justify_start()
-                            .selected(selected)
-                            .accessibility_label(if label == name {
-                                filename
-                            } else {
-                                label.clone()
-                            })
-                            .tooltip(error.map_or_else(
-                                || entry.label(),
-                                |error| format!("{}\n{error}", entry.label()),
-                            ))
-                            .child(
-                                Icon::new(gpui_kit::assets::IconName::Files)
-                                    .small()
-                                    .text_color(status_color),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_left()
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .font_weight(if current {
-                                                FontWeight::SEMIBOLD
-                                            } else {
-                                                FontWeight::NORMAL
-                                            })
-                                            .child(label),
-                                    )
-                                    .child(
-                                        div()
-                                            .id(("suite-activity", index))
-                                            .role(Role::Status)
-                                            .aria_label(detail.clone())
-                                            .test_support()
-                                            .text_xs()
-                                            .truncate()
-                                            .text_color(status_color)
-                                            .child(detail),
-                                    ),
-                            )
-                            .disabled(self.busy)
-                            .on_click(cx.listener(
-                                move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    this.suite_list.focus_item(entry.path.clone(), window, cx);
-                                    this.runs.update(cx, |panel, cx| {
-                                        panel.select_suite(&name, &visible, event.modifiers(), cx);
-                                    });
-                                    if this.main_tab == 2 {
-                                        this.results.update(cx, |panel, cx| {
-                                            panel.select_suite(&entry, window, cx);
-                                        });
-                                    } else {
-                                        this.open_location(
-                                            entry.clone(),
-                                            Selection::Root,
-                                            window,
-                                            cx,
-                                        );
-                                    }
-                                },
-                            )),
-                    ),
+                    .child(row),
             );
         }
         if count == 0 {
