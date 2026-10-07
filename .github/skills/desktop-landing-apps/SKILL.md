@@ -18,6 +18,7 @@ description: 'Use when changing desktop landing apps, automatic landing storage,
 1. Preview binds only loopback and serves an exact public-asset allowlist with Host validation. It must never expose definitions, workspace files, or credentials.
 1. Deploy saved definitions through existing provider clients and target controls. Keep work off the UI thread, check file identity again, and surface cancellation honestly: accepted remote publication cannot be undone locally. Persist each successful URL under the landing app's managed identity, and expose open/copy controls after reopening. Successful private Cloudflare publication clears stale public URLs; failure/cancellation preserves them. Report local save failures explicitly.
 1. Guard draft switches and native window close. Local removal confirms its scope and never deletes hosted sites. Removing targets preserves named credentials.
+1. Landing editor fields use toolkit Form/Field, with normal unframed GroupBox for each site. Preserve the retained outer scroll handle and IDs, stable per-site input/action IDs, explicit accessible names, and the existing draft/save guards; offscreen controls may require scrolling before native lookup.
 
 ## Checks
 

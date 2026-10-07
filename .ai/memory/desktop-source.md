@@ -1,12 +1,16 @@
 # Desktop Source Editing
 
-Verified: 2026-10-06
+Verified: 2026-10-07
 
 - Numeric Fields use styled Kit NumberInput with explicit `MaskPattern::None`
   and `set_step(None)`; 0.7.1 defaults to fixed step one. Step events call the
   existing schema-aware `adjust_field`, while Change retains raw invalid drafts.
   `numeric_stepper_` (2) and `pixel_match_threshold_` (12) pass. Native tests
   observe `("input", state.entity_id())` inside the stable field wrapper.
+- Run settings and workspace Fields use Kit Form/Field for presentation only.
+  The Fields editor still owns bindings, raw drafts, `field_errors`, inheritance
+  hints, reset, and semantic edits; `setting_search_`, numeric/threshold filters,
+  and the invalid-draft/reset native regression pass after the migration.
 - [Native windows](../../src/desktop/ui/mod.rs) and
   [test fixtures](../../src/desktop/ui/tests.rs) use GPUI Kit 0.7.1's
   `open_window`, returning content under a Base root with automatic overlays.

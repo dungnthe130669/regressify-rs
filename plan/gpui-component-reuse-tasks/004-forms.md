@@ -1,6 +1,8 @@
 # 004: Form And Field Presentation
 
-Status: Not started. Depends on 001. Task 013 depends on this task.
+Status: Verified; local commit pending. Focused checks, root lifecycle, and native
+Publishing/Deployment/Schema/default flows pass. Depends on 001; prerequisite
+for task 013. Exact evidence is in README.
 
 ## Scope
 
@@ -47,3 +49,29 @@ Follow [lossless editing](../../.github/skills/desktop-lossless-editing/SKILL.md
 Commit R3 presentation, existing-module tests and maintenance only. Investigate
 and ask before retaining a blocked custom form. Reopen for lost accessibility,
 scroll ownership, credentials, conflicts or coerced source drafts.
+
+## Implementation Evidence
+
+- Replaced run-settings grids/headings and configuration field rows with toolkit
+  Form/Field (`FormField`), retaining controlled collapsible sections for task
+   013. Adopted the same field layout in deployment target and named-token edit
+  dialogs. Landing base fields and each dynamic site use Form/Field; landing
+  sites use normal unframed GroupBox.
+- Preserved stable control IDs and input entities, accessible names, schema
+  descriptions/required markers, inherited hints, reset callbacks, validation
+  children, password content type, dynamic provider fields, async locks, outer
+  scroll/accessibility IDs, and per-site action behavior. Structured/Markdown,
+  URL, and Cloudflare exclusion controls span both columns where appropriate.
+- Baseline: run settings and `setting_search_`, one test each, passed before
+  edits. Focused post-edit native checks are recorded in the task bundle README;
+  all invoked filters had nonzero pass counts, including numeric (2), threshold
+  (12), provider, secret, landing draft/scroll/save, and URL reopen/copy tests.
+- Rustfmt, production Clippy with `-D warnings`, GUI build, guidance
+  validator/self-tests, and scoped Markdown lint passed. Native Publishing,
+  Deployment, Schema and default flows pass; root ownership checks pass (2).
+  Screenshot review removed duplicate required markers and redundant inline
+  Fields descriptions without changing validation or draft behavior.
+- The five Rust files account for +207/-125 lines overall, including
+  the landing pointer assertion. The pilot alone is line-neutral after format;
+  toolkit field adapters do not produce an aggregate production-code reduction.
+  No state/subscriptions were added. No commit was created.

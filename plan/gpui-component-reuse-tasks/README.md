@@ -1,17 +1,18 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-002 committed; task 003 verified and awaiting its
-local commit. The approved Linux baseline exception remains in force.
+Status: Planning and tasks 001-003 committed; task 004 Forms presentation is
+verified and awaiting its local commit. The approved Linux baseline exception
+remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
 ## Authorization And Status
 
 - Task 000 is the reviewed plan and task bundle; it has no separate task file.
-- The user's interview explicitly authorizes one local commit per completed, verified task, including planning and final acceptance documentation. No branch, push, release, credential change, live remote operation, toolkit edit, vendoring, fork, or plan deletion is authorized.
-- Delegation of independent work is approved, but shared files must be serialized and builds/commits must be serialized. An implementation blocker still requires the decision process in the implement-plan skill.
-- Keep this bundle and the refined plan. The main agent owns integration and commits.
-- Task 001 is under validation after storage recovery; no component task may start until the Windows upgrade gates pass. Unavailable local Linux verification may remain explicitly pending for CI as approved.
+- The user's interview authorizes one local commit per completed, verified task. The main agent owns integration and commits; a delegate's no-commit instruction does not change that authorization. No branch, push, release, credential change, live remote operation, toolkit edit, vendoring, fork, or plan deletion is authorized.
+- Delegation of independent work is approved; shared files, builds and commits remain serialized. An implementation blocker requires the decision process in the implement-plan skill.
+- Keep this bundle and the refined plan.
+- Task 001 Windows upgrade gates passed; the separately approved Linux baseline exception remains pending CI.
 
 ## Baseline Evidence
 
@@ -25,7 +26,7 @@ Baseline revision: `be843359a593b19d155c82bdcea0ee163e015423`.
 - The approved target is frozen at exact published 0.7.1. Do not chase newer releases.
 - Refined-plan lint: `rumdl check --no-exclude plan/gpui-component-reuse.md` passed with a pre-existing warning: MD004 has unknown option `after-marker`. No suppression/config change was made.
 
-These are baseline facts, not evidence that a runtime test passed or that the planned migration compiles. Task 001 must record the remaining baseline outcomes and complete the Windows upgrade gates before any presentation migration.
+These are historical baseline facts, not evidence that the migration compiled or that Linux passed. Task 001's Windows upgrade gates are complete as recorded below; Linux remains an explicit exception.
 
 ## Coverage Matrix
 
@@ -73,8 +74,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 000 Planning: 36-answer interview, release/source review, requirement coverage, dependencies, and all 20 tasks reconciled; scoped Markdown checks pass. Committed as `278be67`.
 - [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Committed as `4809144`.
 - [x] 002 Progress and binary checkbox: Kit Progress at both bars and binary Git-file Checkbox verified; aggregates remain mixed-state. Committed as `b8eb5c4`.
-- [x] 003 Numeric fields: controlled styled NumberInput verified for drafts, inheritance, limits, history and native workflows. Local commit pending.
-- [ ] 004 Forms: not started.
+- [x] 003 Numeric fields: controlled styled NumberInput verified for drafts, inheritance, limits, history and native workflows. Committed as `3b57c38`.
+- [x] 004 Forms: five form areas verified with focused tests, root lifecycle and native publishing/deployment/schema/default flows. Local commit pending.
 - [ ] 005 Status and content components: not started.
 - [ ] 006 Dialog footers: not started.
 - [ ] 007 Toolbars: not started.
@@ -83,7 +84,7 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [ ] 010 Clipboard: not started.
 - [ ] 011 Log navigation: not started.
 - [ ] 012 Application menus: not started.
-- [ ] 013 Collapsible groups: not started; awaits 004.
+- [ ] 013 Collapsible groups: not started; form prerequisite satisfied.
 - [ ] 014 Flat collections: not started.
 - [ ] 015 Git Tree: not started; awaits 014.
 - [ ] 016 Overview Table: not started.
@@ -198,6 +199,48 @@ When a task changes state, record the exact focused command, exact outcome and n
   removed), including one retained Step subscription per numeric field and
   stable labeled wrappers. No new document state or parsing/history policy.
   Test additions and selector repairs are not counted as production savings.
+
+### Task 004 Verification
+
+- Adopted Form/Field (aliased `FormField`) in run settings, configuration
+  Fields, deployment target editing, named-token editing, and landing app/site
+  editing. Run-option categories and landing sites use normal unframed
+  GroupBox. Configuration's controlled/collapsible sections remain application
+  owned for task 013.
+- Preserved state ownership and stable input/test/accessibility IDs, raw input
+  entities, provider-dependent fields, password masking, hidden errors, reset
+  callbacks, inherited-value hints, save/cancel locks, landing site action IDs,
+  outer deployment/landing IDs, and the landing scroll handle. Long structured,
+  Markdown, URL, and Cloudflare exclude-path controls span the form width where
+  appropriate.
+- Pre-edit baselines passed: `run_settings_are_available_before_execution_and_validate_only_relevant_commands` (1) and `setting_search_` (1).
+- Focused native checks passed with `CARGO_INCREMENTAL=0`: run settings (1),
+  `setting_search_` (1), `problem_links_focus_drafts_and_resets_preserve_other_invalid_fields` (1),
+  `numeric_stepper_` (2), `pixel_match_threshold_` (12), deployment target
+  masking/storage (1), Netlify provider scoping (1), Cloudflare settings/token
+  preservation (1), deployment secret draft cancellation (1), named-token
+  masking/save/rename/removal (1), landing draft guard (1), landing site
+  action/scroll (1), landing managed save path (1), and saved URL reopen/copy
+  (1). Each filter ran serially with `--test-threads=1`.
+- Rustfmt, production GUI Clippy with `-D warnings`, desktop GUI build, guidance
+  validator/self-tests (46 skills/10 tests), and scoped Markdown lint passed.
+  Parent `root_overlay_` checks pass (2). Native Publishing, Deployment, Schema
+  and default flows pass with the current binary. One Deployment attempt hit
+  existing clipboard restoration contention; the complete retry passed.
+- Screenshot review caught duplicate required asterisks and unnecessary inline
+  help in Fields. The final renderer uses one toolkit required marker and keeps
+  the prior help presentation. `setting_search_` passed again after the repair,
+  followed by a rebuilt binary and passing default smoke. Inspected compact
+  Fields/run settings, landing, token and deployment views across themes.
+- Five Rust owners show 207 insertions and 125 deletions overall
+  (+82 net, including the landing interaction assertion). Form/grid wrappers
+  were removed, but adapters and toolkit field composition mean this task is
+  not a net source-reduction win. No new state or subscriptions were added.
+- User-facing workflow contracts did not change, so `docs/desktop.md` remains
+  unchanged. Owning skills and shared source/publishing memory record the new
+  presentation-only contract.
+- Task 004 is verified and ready for its authorized local commit. The Linux
+  baseline exception is unchanged.
 
 ### Approved Linux Baseline Exception
 

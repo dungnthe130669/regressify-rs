@@ -10,6 +10,7 @@ use futures::StreamExt;
 use gpui_kit::component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
+    form::{Field as FormField, Form},
     input::{
         Editor as CodeEditor, EditorState, Input, InputEvent, InputState, NumberInput,
         NumberInputEvent, StepAction, Textarea, TextareaState,
@@ -1886,7 +1887,7 @@ impl Workbench {
             )
         });
         let mut current_group = None;
-        let mut section = div().grid().grid_cols(2).gap_3();
+        let mut section = Form::new().columns(2);
         let mut matching = 0;
         for (_, binding) in bindings {
             let field = &binding.field;
@@ -1978,7 +1979,7 @@ impl Workbench {
                         )
                         .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
                 );
-                section = div().grid().grid_cols(2).gap_4();
+                section = Form::new().columns(2);
                 current_group = Some(group.0);
             }
             if self.collapsed_fields.contains(&group.0) && query.is_empty() && !error {
@@ -1990,66 +1991,68 @@ impl Workbench {
             let wide = matches!(field.kind, FieldKind::List { .. } | FieldKind::Structured)
                 || matches!(field.key.as_str(), "url" | "description")
                 || action;
-            let mut row = div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .w_full()
-                .min_w_0()
-                .when(wide, |row| row.col_span(2));
             let key = field.key.clone();
             let reset = field.clone();
-            row = row.child(
-                div()
-                    .flex()
-                    .items_center()
-                    .flex_wrap()
-                    .justify_between()
-                    .gap_2()
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(format!(
-                                "{}{}",
-                                field.label,
-                                if field.required { " *" } else { "" }
-                            )),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
+            let field_label = field.label.clone();
+            let boolean = matches!(binding.control, Control::Boolean);
+            let inherited_hint = self.field_hint(field, explicit);
+            let hint_id = SharedString::from(format!("hint-{}", field.key));
+            let hint_width = if wide { 300. } else { 150. };
+            let muted_foreground = cx.theme().muted_foreground;
+            let reset_disabled =
+                self.busy || field.required || (!explicit && !self.field_errors.contains_key(&key));
+            let view = cx.entity();
+            let mut row = FormField::new()
+                .label_fn(move |window, _| {
+                    let reset = reset.clone();
+                    div()
+                        .flex()
+                        .items_center()
+                        .flex_wrap()
+                        .justify_between()
+                        .gap_2()
+                        .when(!boolean, |row| {
+                            row.child(
                                 div()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .id(SharedString::from(format!("hint-{}", field.key)))
-                                    .role(Role::Status)
-                                    .aria_label(self.field_hint(field, explicit))
-                                    .test_support()
-                                    .max_w(px(if wide { 300. } else { 150. }))
-                                    .truncate()
-                                    .child(self.field_hint(field, explicit)),
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .child(field_label.clone()),
                             )
-                            .child(
-                                Button::new(SharedString::from(format!("reset-{key}")))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Undo)
-                                    .tooltip("Use inherited value")
-                                    .disabled(
-                                        self.busy
-                                            || field.required
-                                            || (!explicit && !self.field_errors.contains_key(&key)),
-                                    )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.reset_field(&reset, window, cx)
-                                    })),
-                            ),
-                    ),
-            );
+                        })
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(muted_foreground)
+                                        .id(hint_id.clone())
+                                        .role(Role::Status)
+                                        .aria_label(inherited_hint.clone())
+                                        .test_support()
+                                        .max_w(px(hint_width))
+                                        .truncate()
+                                        .child(inherited_hint.clone()),
+                                )
+                                .child(
+                                    Button::new(SharedString::from(format!("reset-{key}")))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(IconName::Undo)
+                                        .tooltip("Use inherited value")
+                                        .disabled(reset_disabled)
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            move |this, _, window, cx| {
+                                                this.reset_field(&reset, window, cx)
+                                            },
+                                        )),
+                                ),
+                        )
+                })
+                .required(field.required && !boolean);
             let control = match &binding.control {
                 Control::Input(state) if matches!(field.kind, FieldKind::Number { .. }) => div()
                     .id(field_id)
@@ -2161,7 +2164,7 @@ impl Workbench {
                         .child(error.clone()),
                 );
             }
-            section = section.child(row);
+            section = section.child(row.when(wide, |field| field.col_span(2)));
         }
         if current_group.is_some() {
             form = form.child(section);

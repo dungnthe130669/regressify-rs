@@ -297,7 +297,8 @@ impl Workbench {
                         .child(Button::new("deploy-remove-confirm").danger().label("Remove target").accessibility_label("Confirm remove target").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.remove_deploy_target(window, cx)))));
             } else if editing {
-                body = body.child(div().flex().flex_col().gap_1().child("Provider")
+                let mut target_fields = Form::new().columns(2);
+                target_fields = target_fields.child(FormField::new().label("Provider")
                     .child(Button::new("deploy-provider").small().label(state.provider.label())
                         .accessibility_label("Deployment provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
                         .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
@@ -313,8 +314,8 @@ impl Workbench {
                         Some(false) => "Private",
                         None => "Preserve existing routing",
                     };
-                    body = body.child(div().flex().items_center().gap_2().min_w_0()
-                        .child(div().text_sm().child("workers.dev"))
+                    target_fields = target_fields.child(FormField::new().label("workers.dev").col_span(2)
+                        .child(div().flex().items_center().gap_2().min_w_0()
                         .child(Button::new("deploy-cloudflare-routing").small().flex_1().min_w_0().label(routing)
                             .accessibility_label("Cloudflare public routing").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
                             .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
@@ -328,13 +329,13 @@ impl Workbench {
                             .tooltip("Cloudflare asset settings").accessibility_label("Cloudflare asset settings").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, _, cx| {
                                 this.deployment.update(cx, |state, cx| { state.cloudflare_options = !state.cloudflare_options; cx.notify(); });
-                            }))));
+                            })))));
                     if state.cloudflare_options {
                         for (label, id, setting, value, choices) in [
                             ("HTML handling", "deploy-cloudflare-html", "html", state.cloudflare.html_handling.clone(), vec!["auto-trailing-slash", "force-trailing-slash", "drop-trailing-slash", "none"]),
                             ("Not-found handling", "deploy-cloudflare-not-found", "notFound", state.cloudflare.not_found_handling.clone(), vec!["none", "404-page", "single-page-application"]),
                         ] {
-                            body = body.child(div().flex().items_center().gap_2().min_w_0().child(div().text_sm().child(label))
+                            target_fields = target_fields.child(FormField::new().label(label)
                                 .child(Button::new(id).small().flex_1().min_w_0().label(value).accessibility_label(label)
                                     .icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
                                     .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
@@ -346,8 +347,9 @@ impl Workbench {
                                     }})));
                         }
                         for (label, id, input) in [("Compatibility date", "deploy-cloudflare-date", &state.compatibility_date), ("Excluded paths (JSON array)", "deploy-cloudflare-excludes", &state.excludes)] {
-                            body = body.child(div().flex().flex_col().gap_1().child(label)
-                                .child(Input::new(input).id(id).aria_label(label).small().disabled(saving)));
+                            target_fields = target_fields.child(FormField::new().label(label)
+                                .child(Input::new(input).id(id).aria_label(label).small().disabled(saving))
+                                .when(id == "deploy-cloudflare-excludes", |field| field.col_span(2)));
                         }
                     }
                 }
@@ -359,7 +361,7 @@ impl Workbench {
                 if state.provider != DeploymentProvider::AzureSwa {
                     let tokens = state.tokens.tokens.iter().filter(|entry| entry.provider == state.provider).cloned().collect::<Vec<_>>();
                     let label = state.named_token_id.as_deref().map(|id| state.tokens.find(id).map(|entry| entry.name.clone()).unwrap_or_else(|_| "Missing named token".into())).unwrap_or_else(|| "Target-specific token".into());
-                    body = body.child(div().flex().flex_col().gap_1().child("Token source").child(Button::new("deploy-token-source").label(label).icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
+                    target_fields = target_fields.child(FormField::new().label("Token source").child(Button::new("deploy-token-source").label(label).icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
                         .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
                             let mut menu = menu.action_context(focus.clone()).menu("Target-specific token", Box::new(ChooseDeployToken { id: None }));
                             for entry in &tokens { menu = menu.menu(entry.name.clone(), Box::new(ChooseDeployToken { id: Some(entry.id.clone()) })); }
@@ -377,9 +379,11 @@ impl Workbench {
                     }
                 }
                 for (label, id, input) in fields {
-                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
-                        .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
+                    target_fields = target_fields.child(FormField::new().label(label)
+                        .child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
+                            .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
                 }
+                body = body.child(target_fields);
                 body = body.child(div().flex().justify_end().gap_2()
                     .child(Button::new("deploy-target-cancel").label("Cancel edit").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx))))
                     .child(Button::new("deploy-target-save").primary().icon(gpui_kit::assets::IconName::Save).label("Save target").disabled(saving)

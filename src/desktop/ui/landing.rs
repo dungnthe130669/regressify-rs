@@ -2,6 +2,7 @@ use super::*;
 use crate::desktop::landing::{
     LandingApp, LandingCatalog, LandingFile, LandingPreview, LandingSite,
 };
+use gpui_kit::component::group_box::{GroupBox, GroupBoxVariants};
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 pub(super) struct ChooseLandingApp {
@@ -235,24 +236,84 @@ impl Workbench {
                             this.perform_landing_action(pending.clone(), window, cx);
                         }))));
             } else {
-                body = body.child(div().flex().flex_col().flex_shrink_0().gap_1().child("Heading").child(Input::new(&state.heading).id("landing-heading").aria_label("Landing heading").disabled(locked)))
-                    .child(div().flex().flex_col().flex_shrink_0().gap_1().child("Subheading (Markdown)").child(div().id("landing-subheading").test_support().child(Textarea::new(&state.subheading).aria_label("Landing subheading Markdown").h(px(72.)).disabled(locked))));
+                let fields = Form::new()
+                    .columns(2)
+                    .child(FormField::new().label("Heading")
+                        .child(Input::new(&state.heading).id("landing-heading").aria_label("Landing heading").disabled(locked)))
+                    .child(FormField::new().label("Subheading (Markdown)").col_span(2)
+                        .child(div().id("landing-subheading").test_support()
+                            .child(Textarea::new(&state.subheading).aria_label("Landing subheading Markdown").h(px(72.)).disabled(locked))));
+                body = body.child(fields);
                 for (index, site) in state.sites.iter().enumerate() {
                     let id = site.id.clone();
                     let up = id.clone();
                     let down = id.clone();
                     let remove = id.clone();
-                    body = body.child(div().id(SharedString::from(format!("landing-site-{id}"))).flex().flex_col().flex_shrink_0().gap_2().pt_3().border_t_1().border_color(cx.theme().border)
-                        .child(div().flex().items_center().gap_1().child(div().flex_1().child(format!("Site {}", index + 1)))
-                            .child(Button::new(SharedString::from(format!("landing-site-up-{id}"))).small().ghost().icon(IconName::ArrowUp).tooltip("Move site up").accessibility_label("Move site up").disabled(locked || index == 0)
-                                .on_click(window.listener_for(&view, move |this, _, _, cx| this.move_landing_site(&up, -1, cx))))
-                            .child(Button::new(SharedString::from(format!("landing-site-down-{id}"))).small().ghost().icon(IconName::ArrowDown).tooltip("Move site down").accessibility_label("Move site down").disabled(locked || index + 1 == state.sites.len())
-                                .on_click(window.listener_for(&view, move |this, _, _, cx| this.move_landing_site(&down, 1, cx))))
-                            .child(Button::new(SharedString::from(format!("landing-site-remove-{id}"))).small().ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove site").accessibility_label("Remove site").disabled(locked)
-                                .on_click(window.listener_for(&view, move |this, _, _, cx| this.landing.update(cx, |state, cx| { if !state.saving { state.sites.retain(|site| site.id != remove); cx.notify(); } })))))
-                        .child(div().flex().flex_col().gap_1().child("Site heading").child(Input::new(&site.heading).id(SharedString::from(format!("landing-site-heading-{id}"))).aria_label(format!("Site {} heading", index + 1)).disabled(locked)))
-                        .child(div().flex().flex_col().gap_1().child("Subheading (Markdown)").child(div().id(SharedString::from(format!("landing-site-subheading-{id}"))).test_support().child(Textarea::new(&site.subheading).aria_label(format!("Site {} subheading Markdown", index + 1)).h(px(60.)).disabled(locked))))
-                        .child(div().flex().flex_col().gap_1().child("URL").child(Input::new(&site.url).id(SharedString::from(format!("landing-site-url-{id}"))).aria_label(format!("Site {} URL", index + 1)).disabled(locked))));
+                    let site_fields = Form::new().columns(2)
+                        .child(FormField::new().label("Site heading")
+                            .child(Input::new(&site.heading).id(SharedString::from(format!("landing-site-heading-{id}"))).aria_label(format!("Site {} heading", index + 1)).disabled(locked)))
+                        .child(FormField::new().label("Subheading (Markdown)").col_span(2)
+                            .child(div().id(SharedString::from(format!("landing-site-subheading-{id}"))).test_support()
+                                .child(Textarea::new(&site.subheading).aria_label(format!("Site {} subheading Markdown", index + 1)).h(px(60.)).disabled(locked))))
+                        .child(FormField::new().label("URL").col_span(2)
+                            .child(Input::new(&site.url).id(SharedString::from(format!("landing-site-url-{id}"))).aria_label(format!("Site {} URL", index + 1)).disabled(locked)));
+                    let site_title = div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .child(div().flex_1().child(format!("Site {}", index + 1)))
+                        .child(
+                            Button::new(SharedString::from(format!("landing-site-up-{id}")))
+                                .small()
+                                .ghost()
+                                .icon(IconName::ArrowUp)
+                                .tooltip("Move site up")
+                                .accessibility_label("Move site up")
+                                .disabled(locked || index == 0)
+                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                    this.move_landing_site(&up, -1, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("landing-site-down-{id}")))
+                                .small()
+                                .ghost()
+                                .icon(IconName::ArrowDown)
+                                .tooltip("Move site down")
+                                .accessibility_label("Move site down")
+                                .disabled(locked || index + 1 == state.sites.len())
+                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                    this.move_landing_site(&down, 1, cx)
+                                })),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("landing-site-remove-{id}")))
+                                .small()
+                                .ghost()
+                                .icon(gpui_kit::assets::IconName::Trash)
+                                .tooltip("Remove site")
+                                .accessibility_label("Remove site")
+                                .disabled(locked)
+                                .on_click(window.listener_for(&view, move |this, _, _, cx| {
+                                    this.landing.update(cx, |state, cx| {
+                                        if !state.saving {
+                                            state.sites.retain(|site| site.id != remove);
+                                            cx.notify();
+                                        }
+                                    })
+                                })),
+                        );
+                    let site_group = GroupBox::new()
+                        .normal()
+                        .id(SharedString::from(format!("landing-site-group-{id}")))
+                        .title(site_title)
+                        .child(site_fields);
+                    body = body.child(
+                        div()
+                            .id(SharedString::from(format!("landing-site-{id}")))
+                            .flex_shrink_0()
+                            .child(site_group),
+                    );
                 }
                 body = body.child(Button::new("landing-add-site").small().flex_shrink_0().icon(IconName::Plus).label("Add site").disabled(locked || state.sites.len() >= 100)
                     .on_click(window.listener_for(&view, |this, _, window, cx| this.landing.update(cx, |state, cx| {
@@ -586,7 +647,7 @@ mod tests {
     async fn landing_form_scrolls_to_the_last_site(cx: &mut TestAppContext) {
         let root = tempfile::tempdir().unwrap();
         let (handle, view) = super::super::tests::editor(cx, root.path());
-        let last = cx
+        let (first_down, last) = cx
             .update_window(handle.into(), |_, window, cx| {
                 view.update(cx, |this, cx| {
                     this.landing.update(cx, |state, cx| {
@@ -603,15 +664,24 @@ mod tests {
                         }
                     });
                     this.show_landing_manager(window, cx);
-                    format!(
-                        "landing-site-url-{}",
-                        this.landing.read(cx).sites.last().unwrap().id
+                    (
+                        format!("landing-site-down-{}", this.landing.read(cx).sites[0].id),
+                        format!(
+                            "landing-site-url-{}",
+                            this.landing.read(cx).sites.last().unwrap().id
+                        ),
                     )
                 })
             })
             .unwrap();
         super::super::tests::settle_dialog(cx, handle).await;
         cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(first_down.clone(), cx);
+            assert_eq!(
+                view.read(cx).landing.read(cx).app(cx).sites[0].heading,
+                "Remote 1"
+            );
             window.render_frame(cx);
             let viewport = window.find("landing-editor-body").bounds();
             assert!(

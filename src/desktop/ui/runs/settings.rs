@@ -1,6 +1,10 @@
 //! Run settings stay available independently of which command was last executed.
 
 use super::*;
+use gpui_kit::component::{
+    form::{Field as FormField, Form},
+    group_box::{GroupBox, GroupBoxVariants},
+};
 
 fn group(key: &str) -> usize {
     match key {
@@ -55,7 +59,7 @@ impl RunPanel {
         .into_iter()
         .enumerate()
         {
-            let mut fields = div().grid().grid_cols(2).gap_3();
+            let mut fields = Form::new().columns(2);
             let mut count = 0;
             for binding in self
                 .bindings
@@ -145,39 +149,35 @@ impl RunPanel {
                     }
                 };
                 let boolean = field.kind == FieldKind::Boolean && field.key != "fetchBrowser";
-                fields = fields.child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_2()
-                        .min_w_0()
-                        .when(
-                            matches!(field.key.as_str(), "regressifyDir" | "proxy"),
-                            |field| field.col_span(2),
-                        )
-                        .when(!boolean, |row| {
-                            row.child(div().text_sm().font_weight(FontWeight::MEDIUM).child(label))
-                        })
-                        .child(control)
-                        .children(self.errors.get(&field.key).map(|error| {
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().danger)
-                                .child(error.clone())
-                        })),
-                );
+                let mut form_field =
+                    FormField::new().when(boolean, |field| field.label_indent(false));
+                if !boolean {
+                    form_field = form_field.label(label).required(field.required);
+                }
+                if !field.description.is_empty() {
+                    form_field = form_field.description(field.description.clone());
+                }
+                form_field = form_field
+                    .child(control)
+                    .children(self.errors.get(&field.key).map(|error| {
+                        div()
+                            .text_xs()
+                            .text_color(cx.theme().danger)
+                            .child(error.clone())
+                    }));
+                fields = fields.child(form_field.when(
+                    matches!(field.key.as_str(), "regressifyDir" | "proxy"),
+                    |field| field.col_span(2),
+                ));
             }
             if count > 0 {
-                form = form
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(name))
-                            .child(div().flex_1().h(px(1.)).bg(cx.theme().border)),
-                    )
-                    .child(fields);
+                form = form.child(
+                    GroupBox::new()
+                        .normal()
+                        .id(format!("run-options-group-{index}"))
+                        .title(name)
+                        .child(fields),
+                );
             }
             total += count;
         }

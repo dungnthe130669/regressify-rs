@@ -24,6 +24,7 @@ description: 'Use when changing desktop file discovery, Save/Save As, suite crea
 1. List every regular file under `common`, including nested and binary files. Only `visual_tests` entries become suites. Compute `Entry::supports_editing` from bounded UTF-8 text reads, not an extension whitelist. Keep binary, unreadable, and oversized rows visible but disabled; guard mouse/keyboard activation and recheck content and containment at `Workspace::open_document`. Never treat JavaScript or CSS as YAML.
 1. Non-YAML/JSON text uses `Format::Text` and Source only. Preserve exact source, undo/redo, conflict detection, and no-clobber Save As; reject binary controls and conversion between text and structured formats. Keep Source selected after Save As and breadcrumb navigation.
 1. New/Rename dialogs select the filename stem in the focused input. Enter from inputs or Create/Save shares the existing asynchronous commit and no-clobber guards; only successful writes close the dialog. Retain editable input on failure. X, Cancel, and Escape cancel without saving and cannot dismiss a busy write. Preserve keyboard cancellation when wiring a dialog-wide default action.
+1. Workspace configuration Fields may use toolkit Form/Field for presentation. Source fidelity, external-conflict checks, save validation, path containment, and no-clobber behavior remain owned by the existing document/session/workspace code.
 
 ## Checks
 

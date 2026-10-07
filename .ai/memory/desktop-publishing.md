@@ -1,6 +1,6 @@
 # Desktop Publishing
 
-Verified: 2026-10-05
+Verified: 2026-10-07
 
 - [Landing apps](../../src/desktop/landing.rs) are global per-user definitions,
   automatically stored by UUID. The [editor](../../src/desktop/ui/landing.rs)
@@ -13,6 +13,10 @@ Verified: 2026-10-05
   JSON. Keyring identities use `named:<uuid>`, separate from direct target tokens.
   Provider/account identity is immutable, and target deletion preserves shared
   tokens. The catalog uses a file lock and stale-editor comparison.
+- Deployment target and named-token edit dialogs use Kit Form/Field only for
+  presentation. Native regressions pass for masked secrets, provider-specific
+  fields, saved-secret preservation, and draft cancellation; IDs and accessible
+  names remain on the actual controls.
 - [Target settings](../../src/desktop/deployment.rs) retain optional `publishedUrl`
   per ID for reports and landing apps. Only successful publication updates it;
   destination edits (including Azure token replacement) clear it. The runner saves
@@ -49,6 +53,9 @@ Verified: 2026-10-05
 - Keep selector widths bounded: long token names otherwise push toolbar actions
   beyond the dialog. Landing forms use a retained explicit scroll handle, and
   offscreen inputs may be absent from native accessibility until scrolling.
+- Landing base/site fields use Kit Form/Field; each dynamic site is a normal,
+  unframed GroupBox. The native site-action/scroll test verifies pointer reorder
+  still works and the final URL input remains reachable through the owned handle.
 - Native password clicks require the existing post-click `Wait-Control` settling
   before typing. Menu selection also needs a rendered-state wait before checking
   hidden fields. GPUI scroll tests must settle dialog animations before geometry.

@@ -143,21 +143,26 @@ impl Workbench {
                             if let Some(id) = this.tokens.read(cx).selected.clone() { this.persist_named_token(TokenChange::Remove(id), window, cx); }
                         }))));
             } else if state.editing {
-                body = body.child(div().flex().flex_col().gap_1().child("Provider")
-                    .child(Button::new("named-token-provider").label(state.provider.label()).accessibility_label("Token provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(state.saving || state.editing_id.is_some())
+                let mut fields = Form::new().columns(2).child(
+                    FormField::new().label("Provider").col_span(2)
+                        .child(Button::new("named-token-provider").label(state.provider.label()).accessibility_label("Token provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(state.saving || state.editing_id.is_some())
                         .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
                             menu.action_context(focus.clone())
                                 .menu("Netlify", Box::new(ChooseNamedTokenProvider { provider: DeploymentProvider::Netlify }))
                                 .menu("Cloudflare Workers", Box::new(ChooseNamedTokenProvider { provider: DeploymentProvider::CloudflareWorkers }))
-                        }})));
+                        }})),
+                );
                 for (label, id, input) in [("Token name", "named-token-name", &state.name), ("Token", "named-token-secret", &state.secret)] {
-                    body = body.child(div().flex().flex_col().gap_1().child(label).child(Input::new(input).id(id).aria_label(label).disabled(state.saving)
-                        .when(id == "named-token-secret", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
+                    fields = fields.child(FormField::new().label(label)
+                        .child(Input::new(input).id(id).aria_label(label).disabled(state.saving)
+                            .when(id == "named-token-secret", |input| input.content_type(gpui_kit::component::input::InputContentType::Password)))
+                        .when(id == "named-token-secret", |field| field.col_span(2)));
                 }
                 if state.provider == DeploymentProvider::CloudflareWorkers {
-                    body = body.child(div().flex().flex_col().gap_1().child("Cloudflare Account ID").child(Input::new(&state.account).id("named-token-account").aria_label("Cloudflare Account ID").disabled(state.saving || state.editing_id.is_some())));
+                    fields = fields.child(FormField::new().label("Cloudflare Account ID").col_span(2)
+                        .child(Input::new(&state.account).id("named-token-account").aria_label("Cloudflare Account ID").disabled(state.saving || state.editing_id.is_some())));
                 }
-                body = body.child(div().flex().justify_end().gap_2()
+                body = body.child(fields).child(div().flex().justify_end().gap_2()
                     .child(Button::new("named-token-cancel").label("Cancel edit").disabled(state.saving).on_click(window.listener_for(&view, |this, _, window, cx| this.cancel_named_token(window, cx))))
                     .child(Button::new("named-token-save").primary().icon(gpui_kit::assets::IconName::Save).label("Save token").disabled(state.saving).on_click(window.listener_for(&view, |this, _, window, cx| this.save_named_token(window, cx)))));
             } else if let Some(token) = selected {
