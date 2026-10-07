@@ -55,9 +55,18 @@ impl Workbench {
                     ),
                 )
                 .footer(
-                    Button::new("about-close")
-                        .label("Close")
-                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                    gpui_kit::component::dialog::DialogFooter::new().child(
+                        // DialogClose owns its trigger ID; retain the application's observation scope.
+                        div()
+                            .id("about-close")
+                            .role(Role::Group)
+                            .aria_label("About actions")
+                            .test_support()
+                            .child(
+                                gpui_kit::component::dialog::DialogClose::new()
+                                    .trigger(|button| button.label("Close")),
+                            ),
+                    ),
                 )
         });
     }

@@ -30,6 +30,13 @@ Verified: 2026-10-07
 - Inline `Add-Type` definitions are cached for the PowerShell process. Native
   tests of changed C# need a fresh host; rerunning in an old terminal can otherwise
   retain the previous implementation.
+- [About's footer](../../src/desktop/ui/overview.rs) uses public DialogClose's
+  trigger inside the `about-close` observation wrapper. The native menu smoke
+  clicks Close within the `About actions` group so the titlebar X cannot satisfy
+  the check. GUI tests cover actual pointer dismissal, Tab/Enter/Space/Escape,
+  focus return, unchanged draft/saved bytes, and window-close owner release.
+  Native Update, Artifact, Publishing, Deployment and Git flows pass with this
+  footer check and the shared DialogFooter layout across all nine dialog sites.
 - Run interactive flows without concurrent user mouse/keyboard input. Pointer
   movement dismissed a metadata hover card and redirected image-tab clicks;
   the undisturbed fresh-STA `-ComparisonFlows` run passed all four size/theme

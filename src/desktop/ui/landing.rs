@@ -323,7 +323,7 @@ impl Workbench {
             if !state.status.is_empty() { body = body.child(div().id("landing-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             dialog.title("Landing apps").w(px(700.)).overlay_closable(false).keyboard(false).close_button(false)
                 .child(div().id("landing-editor-viewport").role(Role::Group).aria_label("Landing editor").child(body.vertical_scrollbar(&state.scroll)))
-                .footer(div().flex().flex_wrap().justify_end().gap_2()
+                .footer(gpui_kit::component::dialog::DialogFooter::new().flex_wrap()
                     .child(Button::new("landing-close").label("Close").disabled(locked).on_click(window.listener_for(&view, |this, _, window, cx| this.request_landing_action(LandingAction::Close, window, cx))))
                     .child(Button::new("landing-preview").icon(gpui_kit::assets::IconName::ExternalLink).label("Preview").disabled(locked).on_click(window.listener_for(&view, |this, _, window, cx| this.preview_landing(window, cx))))
                     .child(Button::new("landing-deploy").icon(gpui_kit::assets::IconName::CloudUpload).label("Deploy").accessibility_label("Landing deployment settings").tooltip("Deploy the saved landing page").disabled(locked || state.open.is_none() || state.dirty(cx))

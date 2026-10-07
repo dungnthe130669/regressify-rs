@@ -6790,6 +6790,76 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
         );
     })
     .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("about-application").is_none()
+    })
+    .await;
+}
+
+#[gpui_kit::test]
+async fn about_dialog_public_close_preserves_keyboard_focus_and_drafts(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let path = directory.path().join("visual_tests/ui-test.tests.yaml");
+    let saved = std::fs::read(&path).unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("duplicate-item", cx);
+    })
+    .unwrap();
+    let draft = cx.update(|cx| view.read(cx).session.value().unwrap());
+    for dismissal in ["enter", "space", "escape"] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.focus(&view.read(cx).focus.clone(), cx);
+            view.update(cx, |this, cx| {
+                this.show_about(&super::ShowAbout, window, cx)
+            });
+        })
+        .unwrap();
+        settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            if dismissal != "escape" {
+                for _ in 0..6 {
+                    if window.within("about-close").find("close").focused() == Some(true) {
+                        break;
+                    }
+                    window.press("tab", cx);
+                }
+                assert_eq!(
+                    window.within("about-close").find("close").focused(),
+                    Some(true)
+                );
+                assert_eq!(
+                    window.within("about-close").find("close").label(),
+                    Some("Close")
+                );
+            }
+            window.press(dismissal, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window.try_find("about-application").is_none()
+                && window.focused(cx) == Some(view.read(cx).focus.clone())
+        })
+        .await;
+        cx.update(|cx| {
+            assert!(view.read(cx).unsaved());
+            assert_eq!(view.read(cx).session.value().unwrap(), draft);
+        });
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.show_about(&super::ShowAbout, window, cx)
+        });
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    let weak = view.downgrade();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| assert!(weak.upgrade().is_none()));
 }
 
 #[gpui_kit::test]

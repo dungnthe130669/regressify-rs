@@ -257,11 +257,8 @@ impl Workbench {
                     )
                 })
                 .footer(
-                    div()
-                        .flex()
+                    gpui_kit::component::dialog::DialogFooter::new()
                         .flex_wrap()
-                        .justify_end()
-                        .gap_2()
                         .child(
                             Button::new("update-close")
                                 .label("Close")

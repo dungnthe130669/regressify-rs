@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-004 committed. Task 005 is verified on Windows and
-ready for its authorized local commit; task 006 is next. The approved Linux
+Status: Planning and tasks 001-005 committed. Task 006 is verified on Windows and
+ready for its authorized local commit; task 007 is next. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -77,8 +77,9 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 003 Numeric fields: controlled styled NumberInput verified for drafts, inheritance, limits, history and native workflows. Committed as `3b57c38`.
 - [x] 004 Forms: five form areas verified with focused tests, root lifecycle and native publishing/deployment/schema/default flows. Committed as `7bbf39b`.
 - [x] 005 Status and content components: focused GUI tests, native flows,
-  screenshot review and production gates pass; ready for the authorized commit.
-- [ ] 006 Dialog footers: not started.
+  screenshot review and production gates pass. Committed as `888aade`.
+- [x] 006 Dialog footers: all nine footers and the public Close pilot pass
+  focused, native and screenshot checks; ready for the authorized commit.
 - [ ] 007 Toolbars: not started.
 - [ ] 008 Context menus: not started.
 - [ ] 009 Value selectors: not started.
@@ -280,8 +281,37 @@ When a task changes state, record the exact focused command, exact outcome and n
   semantic adapters and no new state/subscriptions. GUI tests are +86/-14;
   native helper/flow changes are +90/-22 and headless tests +77/-3. The approved
   correct-reuse-over-net-reduction decision applies.
-- Task 005 is verified and ready for its authorized local commit. No additional
+- Task 005 is committed as `888aade`. No additional
   task deferrals were introduced; the Linux baseline exception remains below.
+
+### Task 006 Verification
+
+- Baseline `cargo test --locked --features gui-tests --lib suite_name_dialog_ -- --test-threads=1`:
+  6 passed, covering input/button Enter, cancellation, busy dismissal/submission,
+  and failed-write retry.
+- The filename dialog now uses DialogFooter with its original explicit buttons
+  and `file-confirm-focus` wrapper. Immediate focused
+  `suite_name_dialog_enter_activates_focused_create_and_save_buttons` passes (1)
+  with the same command options; the final full filename filter passes (6).
+- All nine footer sites are converted with explicit busy/confirmation callbacks
+  retained. Baseline/post-edit owner regressions pass as listed in
+  [task 006](006-dialog-footers.md). About's public DialogClose pilot preserves
+  its application wrapper and passes pointer, keyboard, focus/draft and owner
+  release checks. Native smoke now scopes Close to its `About actions` group.
+- Rustfmt, production GUI Clippy/build and the headless harness pass. Native
+  Artifact, Publishing, Deployment, Git and Update flows all pass using fresh
+  STA hosts and the current binary. Each native flow tests About's actual footer
+  trigger; source/draft guards, named-token and landing workflows, reviewed Git
+  operations and unavailable-update controls remain intact. Preferences were
+  restored; no real remote deployment or update installation occurred.
+- Inspected compact/large light/dark dialog screenshots; footer actions remain
+  visible and aligned. Production owners are +45/-47 (net two lines removed),
+  tests +70/-0, native helper +1/-1, with no new state/subscriptions. Explicit
+  busy/multi-action callbacks and semantic wrappers are intentional adapters.
+- Task 006 is verified and ready for the authorized local commit. The existing
+  Linux baseline exception is unchanged; full final gates remain task 020.
+  Scoped Markdown lint passes for five files; guidance validation passes for
+  46 skills and self-tests pass 10/10, with only the existing MD004 config warning.
 
 ### Approved Linux Baseline Exception
 

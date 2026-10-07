@@ -221,6 +221,6 @@ function Test-ApplicationMenus {
     Wait-Control 'Author: Tuyen Pham' | Out-Null
     if (-not (Test-ControlInvokable 'https://tuyen.blog/')) { throw 'About website must be an external link.' }
     Capture-Window 'help-about'
-    Invoke-Control 'Close'
+    Invoke-Control 'Close' -Within 'About actions' -Pointer
     Wait-WindowState { $null -eq (Find-Control "Version: $version") } 'About dialog did not close.'
 }

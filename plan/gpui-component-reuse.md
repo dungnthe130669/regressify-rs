@@ -500,6 +500,11 @@ parity. `DialogDispatchAnchor` is private in 0.7.1; do not plan an application
 integration using it. Save/Discard/Cancel and inline approval confirmations keep
 their distinct application policies rather than becoming generic two-button prompts.
 
+Task 006's public composition pilot uses About's `DialogClose::trigger` with a
+stable observation wrapper and a named native group. Pointer, keyboard, focus
+return, draft preservation and owner release pass; busy and multi-action dialogs
+retain their explicit buttons and callbacks. All nine footer sites use DialogFooter.
+
 ### R11: Binary Git Checkboxes
 
 **Adopt:** styled Checkbox for individual files in

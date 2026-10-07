@@ -983,33 +983,33 @@ impl Workbench {
                         .id("git-confirmation")
                         .role(Role::Group)
                         .aria_label("Git confirmation")
-                        .flex()
-                        .justify_end()
-                        .gap_2()
                         .child(
-                            Button::new("git-operation-cancel")
-                                .label("Cancel")
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
-                        )
-                        .child(
-                            Button::new("git-operation-confirm")
-                                .primary()
-                                .when(
-                                    matches!(
-                                        request.action,
-                                        model::Action::Discard { .. }
-                                            | model::Action::RemoveRemote { .. }
-                                    ),
-                                    |button| button.danger(),
+                            gpui_kit::component::dialog::DialogFooter::new()
+                                .child(
+                                    Button::new("git-operation-cancel")
+                                        .label("Cancel")
+                                        .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
-                                .label(request.action.label())
-                                .on_click(window.listener_for(
-                                    &view,
-                                    move |this, _, window, cx| {
-                                        window.close_dialog(cx);
-                                        this.start_git(run.clone(), window, cx);
-                                    },
-                                )),
+                                .child(
+                                    Button::new("git-operation-confirm")
+                                        .primary()
+                                        .when(
+                                            matches!(
+                                                request.action,
+                                                model::Action::Discard { .. }
+                                                    | model::Action::RemoveRemote { .. }
+                                            ),
+                                            |button| button.danger(),
+                                        )
+                                        .label(request.action.label())
+                                        .on_click(window.listener_for(
+                                            &view,
+                                            move |this, _, window, cx| {
+                                                window.close_dialog(cx);
+                                                this.start_git(run.clone(), window, cx);
+                                            },
+                                        )),
+                                ),
                         ),
                 )
         });

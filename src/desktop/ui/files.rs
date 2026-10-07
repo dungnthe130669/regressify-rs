@@ -497,10 +497,7 @@ impl Workbench {
                         .child(state.status.clone()),
                 )
                 .footer(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
+                    gpui_kit::component::dialog::DialogFooter::new()
                         .child(
                             Button::new("guard-cancel")
                                 .label("Cancel")
@@ -745,10 +742,7 @@ impl Workbench {
                         .child(state.status.clone()),
                 )
                 .footer(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
+                    gpui_kit::component::dialog::DialogFooter::new()
                         .child(
                             Button::new("file-cancel")
                                 .label("Cancel")
@@ -972,10 +966,7 @@ impl Workbench {
                 .child(div().id("remove-target").role(Role::Status).aria_label(title).test_support().child(target.clone()))
                 .when(file, |dialog| dialog.child("Reference images, test runs, and local reports for this suite will also be deleted."))
                 .footer(
-                    div()
-                        .flex()
-                        .justify_end()
-                        .gap_2()
+                    gpui_kit::component::dialog::DialogFooter::new()
                         .child(
                             Button::new("remove-cancel")
                                 .label("Cancel")

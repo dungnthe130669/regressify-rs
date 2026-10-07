@@ -432,7 +432,7 @@ impl Workbench {
             let starting = saving && !editing && !state.removing;
             dialog.title(if state.landing.is_some() { "Deploy landing page" } else { "Deploy reports" }).overlay_closable(!saving && state.landing.is_none()).keyboard(!saving && state.landing.is_none()).close_button(!saving && state.landing.is_none()).child(div().id("deploy-dialog-body").role(Role::Group).aria_label("Deployment options").child(if state.cloudflare_options && editing && state.provider == DeploymentProvider::CloudflareWorkers { div().max_h(px(390.)).overflow_y_scrollbar().child(body).into_any_element() } else { body.into_any_element() }))
                 .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_deploy_edit(window, cx)))
-                .footer(div().flex().justify_end().gap_2()
+                .footer(gpui_kit::component::dialog::DialogFooter::new()
                     .child(Button::new("deploy-close").label("Close").disabled(saving).on_click(window.listener_for(&view, |this, _, window, cx| {
                         this.cancel_deploy_edit(window, cx);
                         window.close_dialog(cx);

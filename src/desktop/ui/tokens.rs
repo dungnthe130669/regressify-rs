@@ -172,7 +172,8 @@ impl Workbench {
             if !state.status.is_empty() { body = body.child(div().id("named-token-status").role(Role::Status).aria_label(state.status.clone()).text_color(cx.theme().danger).child(state.status.clone())); }
             dialog.title("Deployment tokens").overlay_closable(false).keyboard(!state.saving).close_button(!state.saving).child(body)
                 .on_close(window.listener_for(&view, |this, _, window, cx| this.cancel_named_token(window, cx)))
-                .footer(Button::new("named-token-close").label("Close").disabled(state.saving).on_click(window.listener_for(&view, |this, _, window, cx| { this.cancel_named_token(window, cx); window.close_dialog(cx); })))
+                .footer(gpui_kit::component::dialog::DialogFooter::new()
+                    .child(Button::new("named-token-close").label("Close").disabled(state.saving).on_click(window.listener_for(&view, |this, _, window, cx| { this.cancel_named_token(window, cx); window.close_dialog(cx); }))))
         });
     }
 
