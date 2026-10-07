@@ -11,7 +11,8 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
     input::{
-        Editor as CodeEditor, EditorState, Input, InputEvent, InputState, Textarea, TextareaState,
+        Editor as CodeEditor, EditorState, Input, InputEvent, InputState, NumberInput,
+        NumberInputEvent, StepAction, Textarea, TextareaState,
     },
     menu::DropdownMenu,
     resizable::{h_resizable, resizable_panel},
@@ -1385,9 +1386,16 @@ impl Workbench {
                 }
                 _ => {
                     let state = cx.new(|cx| {
-                        InputState::new(window, cx)
-                            .default_value(text)
-                            .placeholder(placeholder)
+                        let state = InputState::new(window, cx);
+                        let state = if matches!(field.kind, FieldKind::Number { .. }) {
+                            let mut state =
+                                state.mask_pattern(gpui_kit::base::input::MaskPattern::None);
+                            state.set_step(None, window, cx);
+                            state
+                        } else {
+                            state
+                        };
+                        state.default_value(text).placeholder(placeholder)
                     });
                     let descriptor = field.clone();
                     self.field_subscriptions.push(cx.subscribe_in(
@@ -1404,6 +1412,22 @@ impl Workbench {
                             }
                         },
                     ));
+                    if matches!(field.kind, FieldKind::Number { .. }) {
+                        let descriptor = field.clone();
+                        self.field_subscriptions.push(cx.subscribe_in(
+                            &state,
+                            window,
+                            move |this, _, event: &NumberInputEvent, window, cx| {
+                                let NumberInputEvent::Step(action) = event;
+                                this.adjust_field(
+                                    &descriptor,
+                                    *action == StepAction::Increment,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        ));
+                    }
                     Control::Input(state)
                 }
             };
@@ -2027,48 +2051,18 @@ impl Workbench {
                     ),
             );
             let control = match &binding.control {
+                Control::Input(state) if matches!(field.kind, FieldKind::Number { .. }) => div()
+                    .id(field_id)
+                    .role(Role::Group)
+                    .aria_label(field.label.clone())
+                    .test_support()
+                    .w_full()
+                    .child(NumberInput::new(state).disabled(self.busy))
+                    .into_any_element(),
                 Control::Input(state) => Input::new(state)
                     .id(field_id)
                     .small()
                     .disabled(self.busy)
-                    .when(matches!(field.kind, FieldKind::Number { .. }), |input| {
-                        let decrease = field.clone();
-                        let increase = field.clone();
-                        input.suffix(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap_1()
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "decrease-{}",
-                                        field.key
-                                    )))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Minus)
-                                    .tooltip(format!("Decrease {}", field.label))
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.adjust_field(&decrease, false, window, cx)
-                                    })),
-                                )
-                                .child(
-                                    Button::new(SharedString::from(format!(
-                                        "increase-{}",
-                                        field.key
-                                    )))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Plus)
-                                    .tooltip(format!("Increase {}", field.label))
-                                    .disabled(self.busy)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.adjust_field(&increase, true, window, cx)
-                                    })),
-                                ),
-                        )
-                    })
                     .when(field.key.ends_with("Path"), |input| {
                         let key = field.key.clone();
                         input.suffix(

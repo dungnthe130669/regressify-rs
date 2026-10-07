@@ -10,6 +10,23 @@ use gpui_kit::{
 use super::Workbench;
 use crate::desktop::session::Selection;
 
+fn numeric_input_id(
+    view: &Entity<Workbench>,
+    key: &str,
+    cx: &gpui_kit::App,
+) -> gpui_kit::ElementId {
+    let binding = view
+        .read(cx)
+        .bindings
+        .iter()
+        .find(|binding| binding.field.key == key)
+        .unwrap();
+    let super::Control::Input(input) = &binding.control else {
+        panic!("Expected an input field");
+    };
+    ("input", input.entity_id()).into()
+}
+
 #[gpui_kit::test]
 async fn root_overlay_mounts_dialog_once_and_restores_content_focus(cx: &mut TestAppContext) {
     use gpui_kit::component::{WindowExt, button::Button};
@@ -2630,7 +2647,11 @@ async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
         window.click("overrides-only", cx);
         window.click("problem-delay", cx);
         assert!(!view.read(cx).overrides_only);
-        assert_eq!(window.find("field-delay").value(), Some("invalid delay"));
+        let input_id = numeric_input_id(&view, "delay", cx);
+        assert_eq!(
+            window.within("field-delay").find(input_id).value(),
+            Some("invalid delay")
+        );
         let binding = view
             .read(cx)
             .bindings
@@ -2645,8 +2666,12 @@ async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
         assert!(!view.read(cx).field_errors.contains_key("delay"));
         assert!(view.read(cx).field_errors.contains_key("misMatchThreshold"));
         window.click("problem-misMatchThreshold", cx);
+        let input_id = numeric_input_id(&view, "misMatchThreshold", cx);
         assert_eq!(
-            window.find("field-misMatchThreshold").value(),
+            window
+                .within("field-misMatchThreshold")
+                .find(input_id)
+                .value(),
             Some("invalid threshold")
         );
         window.click("reset-misMatchThreshold", cx);
@@ -2656,7 +2681,14 @@ async fn problem_links_focus_drafts_and_resets_preserve_other_invalid_fields(
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         assert!(view.read(cx).field_errors.is_empty());
-        assert_eq!(window.find("field-misMatchThreshold").value(), Some(""));
+        let input_id = numeric_input_id(&view, "misMatchThreshold", cx);
+        assert_eq!(
+            window
+                .within("field-misMatchThreshold")
+                .find(input_id)
+                .value(),
+            Some("")
+        );
         let value = view.read(cx).session.value().unwrap();
         assert!(value["scenarios"][0].get("delay").is_none());
         assert!(value["scenarios"][0].get("misMatchThreshold").is_none());
@@ -5547,13 +5579,30 @@ async fn pixel_match_threshold_controls_inherit_edit_and_reset(cx: &mut TestAppC
         .unwrap();
         cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
             window
-                .try_find("increase-pixelMatchThreshold")
+                .within("field-pixelMatchThreshold")
+                .try_find("increment")
                 .is_some_and(|field| field.visible())
                 && window.try_find("field-url").is_none()
         })
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
-            window.click("increase-pixelMatchThreshold", cx);
+            window
+                .within("field-pixelMatchThreshold")
+                .click("increment", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .session
+                .value()
+                .unwrap()
+                .pointer(parent)
+                .unwrap()["pixelMatchThreshold"]
+                .as_f64()
+                .is_some_and(|value| (value - inherited - 0.1).abs() < 1e-10)
+        })
+        .await;
+        cx.update_window(handle.into(), |_, _, cx| {
             let value = view.read(cx).session.value().unwrap();
             let threshold = value.pointer(parent).unwrap()["pixelMatchThreshold"]
                 .as_f64()
@@ -5586,7 +5635,8 @@ async fn pixel_match_threshold_controls_inherit_edit_and_reset(cx: &mut TestAppC
         cx.run_until_parked();
         cx.update_window(handle.into(), |_, window, cx| {
             window.render_frame(cx);
-            window.click("field-pixelMatchThreshold", cx);
+            let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+            window.within("field-pixelMatchThreshold").click(input, cx);
             window.press("ctrl-a", cx);
             window.input("0", cx);
             window.click("field-search", cx);
@@ -5604,7 +5654,9 @@ async fn pixel_match_threshold_controls_inherit_edit_and_reset(cx: &mut TestAppC
         })
         .await;
         cx.update_window(handle.into(), |_, window, cx| {
-            window.click("decrease-pixelMatchThreshold", cx);
+            window
+                .within("field-pixelMatchThreshold")
+                .click("decrement", cx);
             assert_eq!(
                 view.read(cx)
                     .session
@@ -5652,16 +5704,32 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(2), |window, _| {
         window.try_find("field-url").is_none()
-            && window.try_find("increase-asyncCaptureLimit").is_some()
+            && window
+                .within("field-asyncCaptureLimit")
+                .try_find("increment")
+                .is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
-        window.click("increase-asyncCaptureLimit", cx);
+        window
+            .within("field-asyncCaptureLimit")
+            .click("increment", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(2), |_, cx| {
+        view.read(cx).session.value().unwrap()["asyncCaptureLimit"] == 6
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
             view.read(cx).session.value().unwrap()["asyncCaptureLimit"],
             6
         );
-        assert_eq!(window.find("field-asyncCaptureLimit").value(), Some("6"));
+        let input = numeric_input_id(&view, "asyncCaptureLimit", cx);
+        assert_eq!(
+            window.within("field-asyncCaptureLimit").find(input).value(),
+            Some("6")
+        );
         window.click("field-search", cx);
         window.press("ctrl-a", cx);
         window.press("backspace", cx);
@@ -5681,6 +5749,184 @@ async fn numeric_stepper_uses_inherited_value_and_groups_can_collapse(cx: &mut T
         assert_eq!(
             view.read(cx).session.value().unwrap()["asyncCaptureLimit"],
             6
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn numeric_stepper_preserves_drafts_keyboard_limits_and_history(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.select(Selection::Root, window, cx);
+            this.select_editor_tab(0, window, cx);
+        });
+        window.render_frame(cx);
+        window.click("field-search", cx);
+        window.input("pixelMatchThreshold", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("field-url").is_none()
+            && window.try_find("field-pixelMatchThreshold").is_some()
+    })
+    .await;
+    let saved = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    for draft in ["-", "1e", "invalid"] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+            window.within("field-pixelMatchThreshold").click(input, cx);
+            window.press("ctrl-a", cx);
+            window.input(draft, cx);
+            window.click("field-search", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .field_errors
+                .contains_key("pixelMatchThreshold")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window
+                .within("field-pixelMatchThreshold")
+                .click("increment", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+            assert_eq!(
+                window
+                    .within("field-pixelMatchThreshold")
+                    .find(input)
+                    .value(),
+                Some(draft)
+            );
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                saved
+            );
+        })
+        .unwrap();
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+        window.within("field-pixelMatchThreshold").click(input, cx);
+        window.press("ctrl-a", cx);
+        window.input("1e1", cx);
+        window.click("field-search", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64() == Some(10.)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+        assert_eq!(
+            window
+                .within("field-pixelMatchThreshold")
+                .find(input.clone())
+                .value(),
+            Some("1e1")
+        );
+        window.within("field-pixelMatchThreshold").click(input, cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64() == Some(10.1)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.press("down", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64() == Some(10.)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window
+            .within("field-pixelMatchThreshold")
+            .click("increment", cx);
+        window.press("up", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64(),
+            Some(10.)
+        );
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64(),
+            Some(10.1)
+        );
+        window.click("redo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64(),
+            Some(10.)
+        );
+        let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+        window.within("field-pixelMatchThreshold").click(input, cx);
+        window.press("ctrl-a", cx);
+        window.input("100", cx);
+        window.click("field-search", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64() == Some(100.)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within("field-pixelMatchThreshold")
+            .click("increment", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let input = numeric_input_id(&view, "pixelMatchThreshold", cx);
+        assert_eq!(
+            window
+                .within("field-pixelMatchThreshold")
+                .find(input)
+                .value(),
+            Some("100.0")
+        );
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["pixelMatchThreshold"].as_f64(),
+            Some(100.)
         );
     })
     .unwrap();

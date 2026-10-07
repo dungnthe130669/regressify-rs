@@ -35,6 +35,10 @@ assistive technologies. Download progress remains separate from verification
 and installation readiness. Individual Git-file checkboxes use the toolkit's
 binary control; folder and suite aggregates retain partial-selection semantics.
 
+Numeric Fields controls support toolkit step buttons and Up/Down stepping.
+Regressify retains schema limits, inherited values and document undo/redo;
+invalid or intermediate text remains editable and is not coerced on blur.
+
 For distribution, use `cargo build --release --features gui --bin regressify-desktop`.
 The desktop executable contains the engine; no separate `regressify` binary or
 executable picker is needed. It launches itself in a private headless worker mode

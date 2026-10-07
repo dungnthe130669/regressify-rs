@@ -207,8 +207,11 @@ subscriptions and `adjust_field` in the same module.
   `.mask_pattern(MaskPattern::None)`. [Mask selection][kit-input-state] records
   that the application selected a mask, so `ensure_number_mask` will not install
   its default numeric mask. Merely relying on the default mask is insufficient.
-- Leave native `step`, `min`, and `max` unset. [Base stepping][kit-number-base]
-  then emits `NumberInputEvent::Step` instead of calculating/replacing the text.
+- Explicitly call `InputState::set_step(None, window, cx)` and leave `min` and
+  `max` unset. Published 0.7.1 defaults to a fixed step of one; merely omitting
+  the builder does not disable it. [Base stepping][kit-number-base] then emits
+  `NumberInputEvent::Step` instead of calculating/replacing the text. This
+  correction was verified by the inherited-value pilot and approved by the owner.
 - Subscribe to that event and call the existing `adjust_field`, distinguishing
   increment/decrement. Keep `InputEvent::Change` routed through `change_field`.
 - Retain inherited-value lookup, integer/fractional steps, schema limits,

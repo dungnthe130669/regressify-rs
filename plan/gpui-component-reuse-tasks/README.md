@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and task 001 committed; task 002 verified and awaiting its local
-commit. The explicitly approved Linux baseline exception remains in force.
+Status: Planning and tasks 001-002 committed; task 003 verified and awaiting its
+local commit. The approved Linux baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -72,8 +72,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 
 - [x] 000 Planning: 36-answer interview, release/source review, requirement coverage, dependencies, and all 20 tasks reconciled; scoped Markdown checks pass. Committed as `278be67`.
 - [x] 001 Upgrade and root API: 0.7.1 pin/lock, production/test roots and authorized compatibility fixes verified; Windows gates pass, Linux baseline exception recorded. Committed as `4809144`.
-- [x] 002 Progress and binary checkbox: Kit Progress at both bars and binary Git-file Checkbox verified; aggregates remain mixed-state. Local commit pending.
-- [ ] 003 Numeric fields: not started; next unit.
+- [x] 002 Progress and binary checkbox: Kit Progress at both bars and binary Git-file Checkbox verified; aggregates remain mixed-state. Committed as `b8eb5c4`.
+- [x] 003 Numeric fields: controlled styled NumberInput verified for drafts, inheritance, limits, history and native workflows. Local commit pending.
 - [ ] 004 Forms: not started.
 - [ ] 005 Status and content components: not started.
 - [ ] 006 Dialog footers: not started.
@@ -172,6 +172,32 @@ When a task changes state, record the exact focused command, exact outcome and n
 - Production accounting: 33 lines added, 46 removed across activity, update and
   Git-row renderers (net 13 removed), including the retained wrapper. No added
   state or subscriptions. Test/smoke additions are excluded from savings.
+
+### Task 003 Verification
+
+- Numeric Fields now use styled NumberInput at normal size, retaining the same
+  InputState, explicit no-mask setting, Change subscription and `adjust_field`.
+  Each numeric state calls public `set_step(None)` to disable Kit's default
+  fixed step one; this corrected the proposal's false unset-step assumption
+  after a failing inherited-value pilot and explicit owner approval.
+- Focused native `numeric_stepper_`: 2 passed, covering inherited increments,
+  actual editable child values, invalid/intermediate drafts after blur and
+  rejected steps, exponent notation, Up/Down, busy state, undo/redo and upper
+  limits. `pixel_match_threshold_`: 12 passed, including explicit zero/reset,
+  schema/cascade/document/manifest contracts. `setting_search_`: 1 passed.
+- The broad workbench run reported 135 passed and one obsolete wrapper-value
+  assertion. That assertion now reads the actual Input child via its public
+  element identity; focused `problem_links_focus_drafts_and_resets_preserve_other_invalid_fields`
+  passes with every draft, focus and reset assertion retained. The broad result
+  is not reported as a 136-test passing run; final acceptance owns a fresh run.
+- Production GUI Clippy, desktop build and Rustfmt pass. Native Schema and
+  default smoke pass; the first Schema attempt could not focus the desktop,
+  then passed after the user confirmed availability. Preferences were restored.
+  Inspected large/compact Fields and schema screenshots; no new overlap found.
+- Production accounting: 36 lines added, 42 removed in the field owner (net 6
+  removed), including one retained Step subscription per numeric field and
+  stable labeled wrappers. No new document state or parsing/history policy.
+  Test additions and selector repairs are not counted as production savings.
 
 ### Approved Linux Baseline Exception
 

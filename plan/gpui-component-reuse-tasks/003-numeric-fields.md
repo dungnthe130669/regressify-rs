@@ -1,6 +1,7 @@
 # 003: Numeric Fields With Lossless Drafts
 
-Status: Not started. Depends on 001.
+Status: Verified; local commit pending. Depends on 001. See README for results
+and the approved explicit `set_step(None)` correction.
 
 ## Scope
 
@@ -10,7 +11,7 @@ Migrate schema numeric controls in [ui/mod.rs](../../src/desktop/ui/mod.rs) to K
 
 1. Before edits, run `cargo test --locked --features gui-tests --lib numeric_stepper_ -- --test-threads=1` and `cargo test --locked --features gui-tests --lib pixel_match_threshold_ -- --test-threads=1`; confirm nonzero counts and record behavior. Inspect the native UI and lossless-editing skills.
 1. Explicitly construct numeric field input state with `MaskPattern::None`; relying on the default mask is not equivalent because the selected-mask state prevents `ensure_number_mask` from adding it.
-1. Leave native step/min/max unset so the Kit base emits `NumberInputEvent::Step` rather than rewriting input text. Subscribe to Step and call existing `adjust_field` for increment/decrement. Keep `InputEvent::Change` routed through `change_field`.
+1. Call `InputState::set_step(None, window, cx)` explicitly and leave min/max unset so Kit emits `NumberInputEvent::Step` rather than rewriting text. Published 0.7.1 defaults to fixed step one; omitting the builder is insufficient. Subscribe to Step and call existing `adjust_field` for increment/decrement. Keep `InputEvent::Change` routed through `change_field`.
 1. Render NumberInput only for numeric schema fields; retain Input for paths and other text. Preserve inherited lookup, integer/fractional steps, schema limits, explicit/inherited state, invalid drafts, reset, history, focus, disabled state, stable wrappers, and accessible names. Test the actual editable child, not wrapper metadata.
 1. Extend existing native tests for invalid/intermediate text, exponent notation, keyboard stepping, busy state, blur without coercion, reset, and undo/redo. Review net deletion including subscriptions/adapters; maintain affected docs/guidance/memory.
 
