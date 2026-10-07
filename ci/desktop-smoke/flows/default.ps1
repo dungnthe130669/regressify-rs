@@ -66,16 +66,23 @@ function Test-DefaultFlows {
     Send-FixtureKeys Escape
     Send-FixtureKeys F -Control -Shift
     Send-FixtureText 'viewportNames'
-    Invoke-Control 'Choose viewports'
-    Wait-Control 'phone (390 x 844)' | Out-Null
+    Invoke-Control 'Choose viewports' -Pointer
+    try { Wait-Control 'phone (390 x 844)' | Out-Null } catch {
+        $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+        $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+            Where-Object { $_.Current.Name -match '^(Choose viewports|phone|desktop|Search|Viewport names)' -or $_.Current.ControlType -in @([System.Windows.Automation.ControlType]::ComboBox, [System.Windows.Automation.ControlType]::List, [System.Windows.Automation.ControlType]::ListItem) } |
+            ForEach-Object { Write-Output ("Choice node: {0}, role={1}, offscreen={2}, bounds={3}" -f $_.Current.Name, $_.Current.ControlType.ProgrammaticName, $_.Current.IsOffscreen, $_.Current.BoundingRectangle) }
+        throw
+    }
     Capture-Window 'viewport-choices'
-    Invoke-Control 'phone (390 x 844)'
-    Invoke-Control 'Choose viewports'
-    Invoke-Control 'desktop (1280 x 720)'
+    Invoke-Control 'phone (390 x 844)' -Pointer
+    Wait-Control 'desktop (1280 x 720)' | Out-Null
+    Invoke-Control 'desktop (1280 x 720)' -Pointer
+    Send-FixtureKeys Escape
     Send-FixtureKeys F -Control -Shift
     Send-FixtureKeys A -Control
     Send-FixtureText 'needs'
-    Invoke-Control 'Choose dependencies'
+    Invoke-Control 'Choose dependencies' -Pointer
     Wait-Control 'Signed-in account (signed-in-account)' | Out-Null
     Capture-Window 'dependency-choices'
     Send-FixtureKeys Escape

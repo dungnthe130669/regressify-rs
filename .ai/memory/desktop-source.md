@@ -2,6 +2,18 @@
 
 Verified: 2026-10-07
 
+- [Value pickers](../../src/desktop/ui/choices.rs) use retained Select and multiple
+  Combobox state, with `SearchableVec` for actual filtering. Plain Vec enabled
+  an input but did not filter. `value_selector_` reproduces unchanged-refresh
+  query loss and stale selection after Reset; both are fixed.
+- Windows option names need `Role::Label` plus `aria_value(title)` on the
+  shared item renderer. Label-only/string rows were visible but unnamed in UIA;
+  the public adapter passed the unchanged native pointer/name assertions.
+- `choice_combobox_` covers one undo per toggle, Escape without rollback,
+  unknown-only/scalar drafts, case matching, invalid raw input and stale binding
+  rejection. Viewport controls wait for discovery before marking names unavailable.
+  Toolkit value setters clear search; multi-choice sync resolves the full list
+  first, then restores the query. Raw textareas remain authoritative.
 - [Source footer](../../src/desktop/ui/source.rs) uses Kit StatusBar slots for
   language, caret, completion and issue navigation. Keep child status IDs,
   roles/names and action guards unchanged; `source_line_commands` (12) checks

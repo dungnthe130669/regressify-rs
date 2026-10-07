@@ -293,6 +293,7 @@ would overwrite an unselected file. Changed Git status requires another review.
 Untracked workspaces display Not tracked and offer Initialize Git; initialization
 does not stage files. The **Remote** row supports adding named remotes, selecting
 the active remote, renaming it, editing its fetch or push URL, and removing it.
+The remote selector supports search; unchanged status refreshes retain its query.
 Add and URL edits accept credential-free HTTPS/SSH URLs or local repository paths.
 Remote names start with a letter or number and use letters, numbers, `.`, `-`, `_`,
 or `/`, subject to Git reference-name rules. URLs containing credentials or
@@ -423,6 +424,10 @@ Account ID. The token input is masked, and saved secrets are never displayed.
 Leave it blank when editing to preserve the current secret. To change provider
 or Cloudflare account, create a new entry so existing targets cannot silently
 switch identity.
+
+Saved-token and target selectors support search and retain their stable identity
+when names change. Reconfirming the current provider or token source preserves
+the current secret draft; choosing a different identity clears that draft.
 
 In a deployment target, choose a saved name under **Token source**, then enter
 the Netlify Site ID or Cloudflare Worker name. A named Cloudflare token supplies
@@ -1267,6 +1272,11 @@ steppers start from the effective inherited value; mismatch percentages remain
 within 0-100 and concurrency counts remain positive. File pickers sit beside
 their input. Field-issue links reveal the affected control even under filters.
 
+Single-choice fields use searchable selectors. Inherited values are displayed
+without creating overrides; explicitly confirming a value creates an override.
+Reset removes the override and updates the displayed inherited selection.
+Unsupported values remain visible until explicitly replaced or reset.
+
 Pixel color threshold (`pixelMatchThreshold`) is available in the Capture group
 for workspace, suite, and scenario Fields, without enabling Advanced. It ranges
 from `0` to `100`, defaults to `5`, and steps by `0.1`. Lower values highlight
@@ -1276,18 +1286,21 @@ threshold is divided by `100` internally, so `5` means a normalized tolerance of
 explicit `0` override. New captures save the resolved value; comparing a saved
 run reuses that run's threshold.
 
-Viewport and dependency lists retain free-form input and also offer checked
-choice menus. Viewports load asynchronously from the effective viewport file,
+Viewport and dependency lists retain free-form input and also offer searchable
+multi-select controls. Each accepted toggle is one undoable edit; the picker stays
+open, and Escape closes it without rolling back edits. Viewports load asynchronously from the effective viewport file,
 including custom names and dimensions. Missing scenario selections inherit their
 configuration; an empty resolved selection means all configured viewports. The
 picker keeps at least one selected. Unknown
-existing values remain editable instead of being silently removed. Dependencies
+existing values remain editable and appear as unavailable choices instead of
+being silently removed. Viewport matching ignores case; dependency matching is
+case-sensitive. Dependencies
 use IDs from the current unsaved suite and exclude the current scenario and
 ambiguous duplicate IDs. Missing or invalid explicit viewport files display a
 recoverable warning beside the field.
 
 Every action has an optional `viewportNames` string or list in Fields. Its choice
-menu and YAML/JSON Source value completion offer only the consuming scenario's
+picker and YAML/JSON Source value completion offer only the consuming scenario's
 effective viewport labels and preserve scalar or array values. The action never
 adds capture jobs. Unset, `null`, and empty lists apply to all those jobs and do
 not add fields to new action templates. Empty strings are invalid.

@@ -150,6 +150,7 @@ function Test-PublishingFlows {
             Capture-Window ('publishing-landing-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
             Invoke-Control 'Close'
             Open-PublishingMenu 'Deployment tokens'
+            Wait-Control 'Add named token' | Out-Null
             Capture-Window ('publishing-tokens-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
             Invoke-Control 'Close'
         }

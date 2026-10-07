@@ -6,6 +6,10 @@ Verified: 2026-10-07
   repository-local `regressify.remote`. Its configuration hash covers that key,
   remotes, and URL rewrites; branch tracking is checked separately. Removing the
   active remote deliberately retains its missing selection to prevent fallback.
+- [The remote Select](../../src/desktop/ui/git/view.rs) retains its search through
+  unchanged snapshots and shows a removed selected name as unavailable. It calls
+  the existing guarded request path; `remote_select_` and the real typed-search
+  workflow pass, as does the full 18-test Git UI module.
 - Remote form drafts in [the UI](../../src/desktop/ui/git.rs) keep the opening
   snapshot. A newer periodic status must not silently authorize an old URL edit.
   Named remotes support add/select/update/rename/remove; fetch and push URL edits

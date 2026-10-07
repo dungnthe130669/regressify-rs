@@ -119,19 +119,25 @@ async fn remote_management_forms_menu_confirmation_and_logs_work_in_app(cx: &mut
         super::super::tests::settle_dialog(cx, handle).await;
     }
     cx.update_window(handle.into(), |_, window, cx| {
+        let control = window.find("git-remote-menu");
+        assert!(control.visible());
+        assert!(
+            control.bounds().size.width >= px(80.),
+            "Remote selector is too narrow: {:?}",
+            control.bounds()
+        );
+        assert_eq!(control.value(), Some("origin"));
         window.click("git-remote-menu", cx);
+        window.input("z-team", cx);
     })
     .unwrap();
-    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window.within("popup-menu").try_find(1_usize).is_some()
-    })
-    .await;
+    cx.run_until_parked();
     cx.update_window(handle.into(), |_, window, cx| {
-        assert_eq!(
-            window.within("popup-menu").find(1_usize).label(),
-            Some("z-team")
-        );
-        window.within("popup-menu").click(1_usize, cx);
+        view.read(cx).git.clone().update(cx, |panel, cx| {
+            panel.install_snapshot(panel.snapshot.clone().unwrap(), window, cx);
+        });
+        window.render_frame(cx);
+        window.press("enter", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -189,6 +195,7 @@ async fn remote_management_forms_menu_confirmation_and_logs_work_in_app(cx: &mut
         .await;
         super::super::tests::settle_dialog(cx, handle).await;
     }
+
     cx.update_window(handle.into(), |_, window, cx| {
         window.click("git-remote-rename", cx);
         window.click("git-remote-name", cx);
@@ -299,6 +306,176 @@ async fn remote_management_forms_menu_confirmation_and_logs_work_in_app(cx: &mut
         window.click("git-log-clear", cx);
         assert!(panel.read(cx).activity_text.is_empty());
         panel.update(cx, |panel, _| panel.cancel_all());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn remote_select_sync_is_quiet_and_clears_removed_identity(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let (panel, select, requests, _subscription) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let panel = this.git.clone();
+                let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let observed = requests.clone();
+                let subscription = cx.subscribe(&panel, move |_, _, event: &super::GitEvent, _| {
+                    if matches!(event, super::GitEvent::Requested(_)) {
+                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+                panel.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().canonicalize().unwrap());
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            remotes: vec!["origin".into(), "z-team".into()],
+                            selected_remote: Some("origin".into()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                });
+                let select = panel.read(cx).remote_select.clone();
+                this.main_tab = 3;
+                (panel, select, requests, subscription)
+            })
+        })
+        .unwrap();
+
+    cx.update_window(handle.into(), |_, window, cx| {
+        let select_id = select.entity_id();
+        let mut refreshed = model::Snapshot {
+            repository: Some(model::Repository {
+                root: directory.path().into(),
+                git_dir: directory.path().join(".git"),
+            }),
+            remotes: vec!["origin".into(), "z-team".into()],
+            selected_remote: Some("origin".into()),
+            ..Default::default()
+        };
+        panel.update(cx, |panel, cx| {
+            panel.install_snapshot(refreshed.clone(), window, cx)
+        });
+        assert_eq!(select.entity_id(), select_id);
+        assert_eq!(
+            select.read(cx).selected_value().map(String::as_str),
+            Some("origin")
+        );
+
+        refreshed.remotes = vec!["z-team".into()];
+        refreshed.selected_remote = Some("origin".into());
+        panel.update(cx, |panel, cx| {
+            panel.install_snapshot(refreshed, window, cx)
+        });
+        assert_eq!(select.read(cx).selected_value(), None);
+        assert_eq!(panel.read(cx).remote_items, ["z-team"]);
+        window.render_frame(cx);
+        assert_eq!(window.find("git-remote-menu").value(), Some("origin"));
+        assert!(window.find("git-remote-unavailable").visible());
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn remote_select_busy_confirmation_restores_snapshot_selection(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let (panel, select, requests, _subscription) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let panel = this.git.clone();
+                let requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let observed = requests.clone();
+                let subscription = cx.subscribe(&panel, move |_, _, event: &super::GitEvent, _| {
+                    if matches!(event, super::GitEvent::Requested(_)) {
+                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+                panel.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().canonicalize().unwrap());
+                    panel.disabled = true;
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            remotes: vec!["origin".into(), "z-team".into()],
+                            selected_remote: Some("origin".into()),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.remote_select.update(cx, |state, cx| {
+                        state.set_selected_value(&"z-team".to_string(), window, cx);
+                        cx.emit(gpui_kit::component::select::SelectEvent::<
+                            super::choices::ValueChoices,
+                        >::Confirm(Some("z-team".into())));
+                    });
+                });
+                (
+                    panel.clone(),
+                    panel.read(cx).remote_select.clone(),
+                    requests,
+                    subscription,
+                )
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert_eq!(
+            select.read(cx).selected_value().map(String::as_str),
+            Some("origin")
+        );
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(panel.read(cx).remote_edit.is_none());
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.disabled = false;
+            panel.action = Some(Cancellation::default());
+            panel.remote_select.update(cx, |state, cx| {
+                state.set_selected_value(&"z-team".to_string(), window, cx);
+                cx.emit(gpui_kit::component::select::SelectEvent::<
+                    super::choices::ValueChoices,
+                >::Confirm(Some("z-team".into())));
+            });
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert_eq!(
+            select.read(cx).selected_value().map(String::as_str),
+            Some("origin")
+        );
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
+    })
+    .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.action = None;
+            let snapshot = panel.snapshot.clone().unwrap();
+            panel.remote_edit = Some((super::RemoteEdit::Add, snapshot));
+            panel.remote_select.update(cx, |state, cx| {
+                state.set_selected_value(&"z-team".to_string(), window, cx);
+                cx.emit(gpui_kit::component::select::SelectEvent::<
+                    super::choices::ValueChoices,
+                >::Confirm(Some("z-team".into())));
+            });
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, _, cx| {
+        assert_eq!(
+            select.read(cx).selected_value().map(String::as_str),
+            Some("origin")
+        );
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 0);
     })
     .unwrap();
 }
@@ -604,6 +781,11 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
         });
         window.render_frame(cx);
         assert!(window.find("git-folder:nested").visible());
+        window.scroll(
+            "git-folder:nested",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-96.))),
+            cx,
+        );
         window.click(("git-file", index), cx);
         window.click(("git-select", index), cx);
         window.render_frame(cx);

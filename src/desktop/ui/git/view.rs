@@ -21,11 +21,6 @@ impl GitPanel {
         let selected = snapshot
             .and_then(Snapshot::default_remote)
             .map(str::to_string);
-        let remotes = snapshot
-            .map(|snapshot| snapshot.remotes.clone())
-            .unwrap_or_default();
-        let focus = self.focus.clone();
-        let current = selected.clone();
         let rename = selected.clone();
         let remove = selected.clone();
         let mut section = div()
@@ -50,27 +45,38 @@ impl GitPanel {
                     .flex_wrap()
                     .content(div().text_sm().child("Remote"))
                     .content(
-                        Button::new("git-remote-menu")
+                        div()
+                            .id("git-remote-menu-frame")
+                            .test_support()
                             .min_w_0()
                             .max_w(px(260.))
                             .flex_1()
-                            .label(selected.clone().unwrap_or_else(|| "Select remote".into()))
-                            .accessibility_label("Select Git remote")
-                            .icon(gpui_kit::assets::IconName::ChevronDown)
-                            .disabled(disabled || self.remote_edit.is_some() || remotes.is_empty())
-                            .prepare_for_toolbar()
-                            .with_size(gpui_kit::component::Size::Medium)
-                            .dropdown_menu(move |menu, _, _| {
-                                let mut menu = menu.action_context(focus.clone()).scrollable(true);
-                                for name in &remotes {
-                                    menu = menu.menu_with_check(
-                                        name.clone(),
-                                        current.as_ref() == Some(name),
-                                        Box::new(ChooseGitRemote { name: name.clone() }),
-                                    );
-                                }
-                                menu
-                            }),
+                            .h(px(32.))
+                            .child(
+                                gpui_kit::component::select::Select::new(&self.remote_select)
+                                    .id("git-remote-menu")
+                                    .accessibility_label("Select Git remote")
+                                    .placeholder(
+                                        self.remote_selected
+                                            .clone()
+                                            .unwrap_or_else(|| "Select remote".into()),
+                                    )
+                                    .search_placeholder("Search remotes")
+                                    .menu_max_h(px(260.))
+                                    .size_full()
+                                    .with_size(gpui_kit::component::Size::Medium)
+                                    .when(
+                                        self.remote_selected.as_ref().is_some_and(|selected| {
+                                            !self.remote_items.contains(selected)
+                                        }),
+                                        |control| control.border_color(cx.theme().danger),
+                                    )
+                                    .disabled(
+                                        disabled
+                                            || self.remote_edit.is_some()
+                                            || self.remote_items.is_empty(),
+                                    ),
+                            ),
                     )
                     .child(
                         Button::new("git-remote-add")
@@ -113,6 +119,22 @@ impl GitPanel {
                             })),
                     ),
             ));
+        if self
+            .remote_selected
+            .as_ref()
+            .is_some_and(|selected| !self.remote_items.contains(selected))
+        {
+            section = section.child(
+                div()
+                    .id("git-remote-unavailable")
+                    .role(Role::Status)
+                    .aria_label("Selected remote is unavailable")
+                    .test_support()
+                    .text_sm()
+                    .text_color(cx.theme().danger)
+                    .child("Selected remote is unavailable"),
+            );
+        }
         if let Some((mode, _)) = &self.remote_edit {
             let needs_name = !matches!(mode, RemoteEdit::Url { .. });
             let needs_url = !matches!(mode, RemoteEdit::Rename(_));
@@ -1521,16 +1543,6 @@ impl Render for GitPanel {
             .id("git-panel")
             .test_support()
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, action: &ChooseGitRemote, _, cx| {
-                if this.remote_edit.is_none() {
-                    this.request(
-                        model::Action::SelectRemote {
-                            name: action.name.clone(),
-                        },
-                        cx,
-                    );
-                }
-            }))
             .size_full()
             .flex()
             .flex_col()

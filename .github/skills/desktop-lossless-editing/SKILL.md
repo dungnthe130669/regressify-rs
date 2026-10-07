@@ -22,6 +22,7 @@ description: 'Use when changing desktop YAML/JSON or plain-text document edits, 
 1. Guard document/workspace switches and destructive actions with existing session transitions; do not silently discard source when a derived view cannot parse it.
 1. `Format::Text` is raw UTF-8 source, not a YAML scalar or a structured data mapping. Preserve bytes and history; accept empty text, reject binary controls, and do not expose Fields, Effective, schema diagnostics, or YAML/JSON conversion through Save As.
 1. Toolkit Form/Field in the Fields view is presentation only. Keep `Binding`, raw `InputState` drafts, `field_errors`, inherited hints, reset handlers, and semantic document/session edits in the existing workbench owner. Do not let displayed descriptions or required markers coerce or discard draft text.
+1. Retained Choice state must resynchronize from inheritance on Reset without rebuilding away unrelated invalid drafts. Multi-choice fields retain scalar/list source until an explicit toggle, preserve unknown entries and use one document history entry per accepted Change; dismissal is not a second write.
 
 ## Checks
 

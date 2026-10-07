@@ -2162,20 +2162,20 @@ async fn action_viewport_picker_filters_choices_and_preserves_invalid_source(
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window.within("popup-menu").try_find(0_usize).is_some()
+        window.try_find("choice-option-desktop").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
-            window.within("popup-menu").find(0_usize).label(),
+            window.find("choice-option-desktop").label(),
             Some("desktop (1280 x 720)")
         );
         assert_eq!(
-            window.within("popup-menu").find(1_usize).label(),
+            window.find("choice-option-mobile").label(),
             Some("mobile (375 x 667)")
         );
-        assert!(window.within("popup-menu").try_find(2_usize).is_none());
-        window.within("popup-menu").click(0_usize, cx);
+        assert!(window.try_find("choice-option-tablet").is_none());
+        window.click("choice-option-desktop", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
@@ -2184,6 +2184,7 @@ async fn action_viewport_picker_filters_choices_and_preserves_invalid_source(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
         let mut value = view.read(cx).session.value().unwrap();
         value["scenarios"][0]["actions"][0]["viewportNames"] = serde_json::json!(["tablet"]);
         let invalid = serde_yaml::to_string(&value).unwrap();
@@ -2282,15 +2283,15 @@ async fn guided_viewport_menu_opens_after_filtering_and_accepts_pointer_selectio
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
-        window.within("popup-menu").try_find(0_usize).is_some()
+        window.try_find("choice-option-phone").is_some()
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert_eq!(
-            window.within("popup-menu").find(0_usize).label(),
+            window.find("choice-option-phone").label(),
             Some("phone (390 x 844)")
         );
-        window.within("popup-menu").click(0_usize, cx);
+        window.click("choice-option-phone", cx);
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
@@ -2298,6 +2299,452 @@ async fn guided_viewport_menu_opens_after_filtering_and_accepts_pointer_selectio
             == serde_json::json!(["desktop", "phone"])
     })
     .await;
+}
+
+#[gpui_kit::test]
+async fn choice_combobox_only_unknown_values_remain_visible(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original =
+        "scenarios:\n  - id: first\n    url: https://example.test/\n    needs: UNKNOWN\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Scenario(0);
+            this.sync_editor(window, cx);
+            this.field_search
+                .update(cx, |state, cx| state.set_value("needs", window, cx));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.find("choices-needs").visible());
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        window.click("choices-needs", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choice-option-UNKNOWN").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("choice-option-UNKNOWN").label(),
+            Some("UNKNOWN (unavailable)")
+        );
+        window.click("choice-option-UNKNOWN", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["needs"] == serde_json::json!([])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.focus(&view.read(cx).focus.clone(), cx);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        )
+    });
+}
+
+#[gpui_kit::test]
+async fn choice_combobox_preserves_unknown_dependencies_and_invalid_drafts(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "scenarios:\n  - id: first\n    url: https://example.test/\n    needs: [UNKNOWN, STEP]\n  - id: setup\n    url: https://example.test/setup\n  - id: step\n    url: https://example.test/lower\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Scenario(0);
+            this.sync_editor(window, cx);
+        });
+        window.press("ctrl-shift-f", cx);
+        window.input("needs", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-needs").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choices-needs", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choice-option-UNKNOWN").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            window.find("choice-option-UNKNOWN").label(),
+            Some("UNKNOWN (unavailable)")
+        );
+        assert!(window.try_find("choice-option-first").is_none());
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        window.click("choice-option-step", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["needs"]
+            == serde_json::json!(["UNKNOWN", "STEP", "step"])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choice-option-setup", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["needs"]
+            == serde_json::json!(["UNKNOWN", "STEP", "step", "setup"])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+        window.focus(&view.read(cx).focus.clone(), cx);
+        window.press("ctrl-z", cx);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let input = cx
+        .update_window(handle.into(), |_, window, cx| {
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                original
+            );
+            assert!(
+                !view
+                    .read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .can_undo()
+            );
+            let input = match &view
+                .read(cx)
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "needs")
+                .unwrap()
+                .control
+            {
+                super::Control::Textarea(state) => state.clone(),
+                _ => panic!("guided choices must retain the raw textarea"),
+            };
+            window.click(("input", input.entity_id()), cx);
+            window.press("ctrl-a", cx);
+            window.input("[invalid draft", cx);
+            input
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).field_errors.contains_key("needs"));
+        let picker = view.read(cx).list_choice_pickers["needs"].state.clone();
+        picker.update(cx, |state, cx| {
+            state.set_selected_values(
+                &["UNKNOWN".into(), "STEP".into(), "step".into()],
+                window,
+                cx,
+            );
+            cx.emit(gpui_kit::component::combobox::ComboboxEvent::<
+                super::choices::ValueChoices,
+            >::Change(vec![
+                "UNKNOWN".into(),
+                "STEP".into(),
+                "step".into(),
+            ]));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(input.read(cx).value().as_str(), "[invalid draft");
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        assert_eq!(
+            view.read(cx).list_choice_pickers["needs"]
+                .state
+                .read(cx)
+                .selected_values(),
+            ["UNKNOWN", "STEP"]
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn choice_combobox_rejects_last_viewport_and_keeps_case_and_stale_identity(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(directory.path().join("common/_viewports.yaml"), "- label: phone\n  width: 390\n  height: 844\n- label: desktop\n  width: 1280\n  height: 720\n").unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "scenarios:\n  - url: https://example.test/\n    viewportNames: DESKTOP\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Scenario(0);
+            this.sync_editor(window, cx);
+        });
+        window.press("ctrl-shift-f", cx);
+        window.input("viewportNames", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-viewportNames").is_some()
+    })
+    .await;
+    let picker = cx.update(|cx| {
+        view.read(cx).list_choice_pickers["viewportNames"]
+            .state
+            .clone()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(picker.read(cx).selected_values(), ["desktop"]);
+        window.click("choices-viewportNames", cx);
+        window.input("desktop", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choice-option-desktop", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).status.contains("At least one viewport"));
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        assert_eq!(picker.read(cx).selected_values(), ["desktop"]);
+        assert_eq!(picker.read(cx).query(cx).as_str(), "desktop");
+        assert!(window.find("choice-option-desktop").visible());
+        window.focus(&picker.focus_handle(cx), cx);
+        window.press("ctrl-a", cx);
+        window.input("phone", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(picker.read(cx).query(cx).as_str(), "phone");
+        window.click("choice-option-phone", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["viewportNames"]
+            == serde_json::json!(["DESKTOP", "phone"])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+        view.update(cx, |this, cx| this.select(Selection::Root, window, cx));
+        window.render_frame(cx);
+        assert_ne!(
+            picker,
+            view.read(cx).list_choice_pickers["viewportNames"].state
+        );
+        picker.update(cx, |state, cx| {
+            state.set_selected_values(&["phone".into()], window, cx);
+            cx.emit(gpui_kit::component::combobox::ComboboxEvent::<
+                super::choices::ValueChoices,
+            >::Change(vec!["phone".into()]));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        let value = view.read(cx).session.value().unwrap();
+        assert!(value.get("viewportNames").is_none());
+        assert_eq!(
+            value["scenarios"][0]["viewportNames"],
+            serde_json::json!(["DESKTOP", "phone"])
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn choice_combobox_toggles_once_and_escape_keeps_history(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(directory.path().join("common/_viewports.yaml"), "- label: phone\n  width: 390\n  height: 844\n- label: desktop\n  width: 1280\n  height: 720\n").unwrap();
+    std::fs::write(
+        directory.path().join("regressify.yaml"),
+        "viewportNames: [desktop]\n",
+    )
+    .unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("ctrl-shift-f", cx);
+        window.input("viewportNames", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("choices-viewportNames").is_some()
+    })
+    .await;
+    let state = cx.update(|cx| {
+        view.read(cx).list_choice_pickers["viewportNames"]
+            .state
+            .clone()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("choices-viewportNames", cx);
+        window.input("phone", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["viewportNames"]
+            == serde_json::json!(["desktop", "phone"])
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            state,
+            view.read(cx).list_choice_pickers["viewportNames"].state
+        );
+        assert_eq!(state.read(cx).query(cx).as_str(), "phone");
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["viewportNames"],
+            serde_json::json!(["desktop", "phone"])
+        );
+        window.focus(&view.read(cx).focus.clone(), cx);
+        window.press("ctrl-z", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        )
+    });
 }
 
 #[gpui_kit::test]
@@ -2403,6 +2850,604 @@ async fn guided_choices_keep_inherited_viewports_and_draft_dependencies_consiste
                 serde_json::json!([])
             );
         });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn value_selector_confirmation_preserves_source_and_single_history_entry(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original =
+        "scenarios:\n  - url: https://example.test/\n    actions:\n      - switchTab: new\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Action {
+                scenario: 0,
+                index: 0,
+            };
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        let state = match &view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "switchTab")
+            .unwrap()
+            .control
+        {
+            super::Control::Choice(state) => state.clone(),
+            _ => panic!("switchTab must use a value selector"),
+        };
+        state.update(cx, |state, cx| {
+            state.set_selected_value(&"previous".to_string(), window, cx)
+        });
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        window.focus(&state.read(cx).focus_handle(cx), cx);
+        view.update(cx, |this, cx| this.rebuild_fields(window, cx));
+        window.render_frame(cx);
+        let rebuilt = match &view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "switchTab")
+            .unwrap()
+            .control
+        {
+            super::Control::Choice(state) => state,
+            _ => panic!("switchTab must retain its value selector"),
+        };
+        assert_eq!(rebuilt.entity_id(), state.entity_id());
+        assert!(state.read(cx).focus_handle(cx).is_focused(window));
+        assert_eq!(
+            state.read(cx).selected_value().map(String::as_str),
+            Some("new")
+        );
+        window.click("field-switchTab", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["switchTab"]
+            == "previous"
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        window.click("redo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["switchTab"],
+            "previous"
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn value_selector_reset_resynchronizes_inherited_selection(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original =
+        "logLevel: info\nscenarios:\n  - url: https://example.test/\n    logLevel: debug\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Scenario(0);
+            this.sync_editor(window, cx);
+            this.field_search
+                .update(cx, |state, cx| state.set_value("logLevel", window, cx));
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        let choice = match &view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "logLevel")
+            .unwrap()
+            .control
+        {
+            super::Control::Choice(state) => state.clone(),
+            _ => panic!("log level must use a value selector"),
+        };
+        assert_eq!(
+            choice.read(cx).selected_value().map(String::as_str),
+            Some("debug")
+        );
+        window.click("reset-logLevel", cx);
+        window.render_frame(cx);
+        assert!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]
+                .get("logLevel")
+                .is_none()
+        );
+        assert_eq!(
+            choice.read(cx).selected_value().map(String::as_str),
+            Some("info")
+        );
+        assert_eq!(window.find("field-logLevel").value(), Some("info"));
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn value_selector_inheritance_unknown_values_and_reset_are_lossless(cx: &mut TestAppContext) {
+    for unknown in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor(cx, directory.path());
+        let original = if unknown {
+            "browser: mystery\nscenarios:\n  - url: https://example.test/\n"
+        } else {
+            "scenarios:\n  - url: https://example.test/\n"
+        };
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session.open.as_mut().unwrap().document = super::Document::new(
+                    super::DocumentKind::Suite,
+                    super::Format::Yaml,
+                    original.into(),
+                )
+                .unwrap();
+                this.session.selection = Selection::Root;
+                this.field_search
+                    .update(cx, |state, cx| state.set_value("browser", window, cx));
+                this.sync_editor(window, cx);
+            });
+            window.render_frame(cx);
+            let state = match &view
+                .read(cx)
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "browser")
+                .unwrap()
+                .control
+            {
+                super::Control::Choice(state) => state.clone(),
+                _ => panic!("browser must use a value selector"),
+            };
+            assert_eq!(
+                state.read(cx).selected_value().map(String::as_str),
+                if unknown { None } else { Some("chromium") }
+            );
+            assert_eq!(
+                window.find("field-browser").value(),
+                Some(if unknown { "mystery" } else { "chromium" })
+            );
+            assert_eq!(window.try_find("choice-error-browser").is_some(), unknown);
+            assert!(
+                !view
+                    .read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .can_undo()
+            );
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                original
+            );
+            window.click("field-browser", cx);
+            if unknown {
+                window.press("down", cx);
+            }
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).session.value().unwrap()["browser"] == "chromium"
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("choice-error-browser").is_none());
+            window.click("undo", cx);
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                original
+            );
+            assert!(
+                !view
+                    .read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .can_undo()
+            );
+            window.click("redo", cx);
+            window.click("reset-browser", cx);
+            assert!(
+                view.read(cx)
+                    .session
+                    .value()
+                    .unwrap()
+                    .get("browser")
+                    .is_none()
+            );
+            window.click("undo", cx);
+            assert_eq!(
+                view.read(cx).session.value().unwrap()["browser"],
+                "chromium"
+            );
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn value_selector_state_is_isolated_between_workspaces(cx: &mut TestAppContext) {
+    let first = tempfile::tempdir().unwrap();
+    let second = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, first.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        let old = view.update(cx, |this, cx| {
+            this.session.selection = Selection::Root;
+            this.rebuild_fields(window, cx);
+            match &this
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "browser")
+                .unwrap()
+                .control
+            {
+                super::Control::Choice(state) => state.clone(),
+                _ => panic!("browser must use a value selector"),
+            }
+        });
+        view.update(cx, |this, cx| {
+            this.session.connect(second.path()).unwrap();
+            let open = this
+                .session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("ui-test")
+                .unwrap();
+            this.session.install_document(open).unwrap();
+            this.session.selection = Selection::Root;
+            this.sync_editor(window, cx);
+        });
+        let current = match &view
+            .read(cx)
+            .bindings
+            .iter()
+            .find(|binding| binding.field.key == "browser")
+            .unwrap()
+            .control
+        {
+            super::Control::Choice(state) => state.clone(),
+            _ => panic!("browser must use a value selector"),
+        };
+        assert_ne!(old.entity_id(), current.entity_id());
+        old.update(cx, |_, cx| {
+            cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                Some("chromium".into()),
+            ))
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update(|cx| {
+        assert!(
+            view.read(cx)
+                .session
+                .value()
+                .unwrap()
+                .get("browser")
+                .is_none()
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+    });
+}
+
+#[gpui_kit::test]
+async fn value_selector_rejected_confirmation_keeps_drafts_and_selection(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = "browser: mystery\nscenarios:\n  - url: https://example.test/\n";
+    let (choice, number) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session.open.as_mut().unwrap().document = super::Document::new(
+                    super::DocumentKind::Suite,
+                    super::Format::Yaml,
+                    original.into(),
+                )
+                .unwrap();
+                this.session.selection = Selection::Root;
+                this.field_search
+                    .update(cx, |state, cx| state.set_value("browser", window, cx));
+                this.sync_editor(window, cx);
+            });
+            let choice = match &view
+                .read(cx)
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "browser")
+                .unwrap()
+                .control
+            {
+                super::Control::Choice(state) => state.clone(),
+                _ => panic!("browser must use a value selector"),
+            };
+            let number = match &view
+                .read(cx)
+                .bindings
+                .iter()
+                .find(|binding| binding.field.key == "asyncCaptureLimit")
+                .unwrap()
+                .control
+            {
+                super::Control::Input(state) => state.clone(),
+                _ => panic!("capture limit must use an input"),
+            };
+            view.update(cx, |this, cx| {
+                this.busy = true;
+                cx.notify();
+            });
+            choice.update(cx, |state, cx| {
+                state.set_selected_value(&"chromium".to_string(), window, cx);
+                cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                    Some("chromium".into()),
+                ));
+            });
+            (choice, number)
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(choice.read(cx).selected_value().is_none());
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            this.field_search.update(cx, |state, cx| {
+                state.set_value("asyncCaptureLimit", window, cx)
+            });
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click(numeric_input_id(&view, "asyncCaptureLimit", cx), cx);
+        window.press("ctrl-a", cx);
+        window.input("invalid count", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).field_errors.contains_key("asyncCaptureLimit"));
+        view.update(cx, |this, cx| {
+            this.field_search
+                .update(cx, |state, cx| state.set_value("browser", window, cx));
+        });
+        window.render_frame(cx);
+        window.click("field-browser", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        assert_eq!(number.read(cx).value().as_ref(), "invalid count");
+        assert!(choice.read(cx).selected_value().is_none());
+        assert_eq!(window.find("field-browser").value(), Some("mystery"));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn value_selector_search_confirms_filtered_value(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original =
+        "scenarios:\n  - url: https://example.test/\n    actions:\n      - switchTab: new\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                original.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Action {
+                scenario: 0,
+                index: 0,
+            };
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        window.click("field-switchTab", cx);
+        window.input("previous", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| this.rebuild_fields(window, cx));
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        window.render_frame(cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["switchTab"],
+            "previous"
+        );
+        window.click("undo", cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(
+            !view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .can_undo()
+        );
+        window.click("redo", cx);
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["scenarios"][0]["actions"][0]["switchTab"],
+            "previous"
+        );
     })
     .unwrap();
 }

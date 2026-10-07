@@ -18,6 +18,7 @@ use gpui_kit::component::{
     menu::DropdownMenu,
     resizable::{h_resizable, resizable_panel},
     scroll::ScrollableElement,
+    select::{SearchableVec, SelectEvent, SelectState},
     tab::{Tab, TabBar},
     *,
 };
@@ -88,12 +89,6 @@ struct AddBrowserAction {
 }
 
 #[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
-struct ChooseField {
-    key: String,
-    value: String,
-}
-
-#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
 struct SelectView {
     index: usize,
 }
@@ -113,7 +108,7 @@ enum Control {
     Input(Entity<InputState>),
     Textarea(Entity<TextareaState>),
     Boolean,
-    Choice,
+    Choice(Entity<SelectState<choices::ValueChoices>>),
 }
 
 struct Binding {
@@ -134,6 +129,8 @@ pub struct Workbench {
     resolved: Entity<EditorState>,
     search: Entity<InputState>,
     bindings: Vec<Binding>,
+    list_choice_pickers: BTreeMap<String, choices::ListChoicePicker>,
+    choice_binding_scope: Option<(PathBuf, Selection)>,
     _subscriptions: Vec<Subscription>,
     field_subscriptions: Vec<Subscription>,
     field_errors: BTreeMap<String, String>,
@@ -387,6 +384,8 @@ impl Workbench {
             resolved,
             search,
             bindings: Vec::new(),
+            list_choice_pickers: BTreeMap::new(),
+            choice_binding_scope: None,
             _subscriptions: vec![
                 source_subscription,
                 search_subscription,
@@ -1330,7 +1329,31 @@ impl Workbench {
         self.configure_source(cx);
         self.refresh_value();
         self.update_source_diagnostics(cx);
-        self.bindings.clear();
+        let scope = self
+            .session
+            .workspace
+            .as_ref()
+            .zip(self.session.open.as_ref())
+            .map(|(workspace, open)| {
+                (
+                    workspace.root.join(&open.entry.path),
+                    self.session.selection,
+                )
+            });
+        let reuse_choices = self.choice_binding_scope == scope;
+        self.choice_binding_scope = scope;
+        if !reuse_choices {
+            self.list_choice_pickers.clear();
+        }
+        let mut choice_states = std::mem::take(&mut self.bindings)
+            .into_iter()
+            .filter_map(|binding| match (binding.field.kind, binding.control) {
+                (FieldKind::Choice(choices), Control::Choice(state)) if reuse_choices => {
+                    Some((binding.field.key, (choices, state)))
+                }
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
         self.field_subscriptions.clear();
         self.field_errors.clear();
         self.workspace_value = self
@@ -1361,7 +1384,80 @@ impl Workbench {
             };
             let control = match &field.kind {
                 FieldKind::Boolean => Control::Boolean,
-                FieldKind::Choice(_) => Control::Choice,
+                FieldKind::Choice(choices) => {
+                    let shown = if value.is_null() {
+                        placeholder.clone()
+                    } else {
+                        text.clone()
+                    };
+                    let (state, items_changed) = match choice_states.remove(&field.key) {
+                        Some((previous_choices, state)) => (state, previous_choices != *choices),
+                        None => (
+                            cx.new(|cx| {
+                                SelectState::new(choices::value_choices(choices), None, window, cx)
+                                    .searchable(true)
+                            }),
+                            false,
+                        ),
+                    };
+                    state.update(cx, |state, cx| {
+                        if items_changed {
+                            state.set_items(choices::value_choices(choices), window, cx);
+                        }
+                        // Kit selection sync clears the query; unchanged refreshes must retain it.
+                        if items_changed
+                            || state.selected_value()
+                                != choices.iter().find(|choice| *choice == &shown)
+                        {
+                            state.set_selected_value(&shown, window, cx);
+                        }
+                    });
+                    let descriptor = field.clone();
+                    let entry = self
+                        .session
+                        .workspace
+                        .as_ref()
+                        .zip(self.session.open.as_ref())
+                        .map(|(workspace, open)| workspace.root.join(&open.entry.path));
+                    let selection = self.session.selection;
+                    self.field_subscriptions.push(cx.subscribe_in(
+                        &state,
+                        window,
+                        move |this, state, event, window, cx| {
+                            let current = this
+                                .session
+                                .workspace
+                                .as_ref()
+                                .zip(this.session.open.as_ref())
+                                .map(|(workspace, open)| workspace.root.join(&open.entry.path));
+                            if current != entry || this.session.selection != selection {
+                                return;
+                            }
+                            if let SelectEvent::Confirm(Some(value)) = event {
+                                this.edit(
+                                    |session| {
+                                        session.set_field(&descriptor.key, Some(json!(value)))
+                                    },
+                                    window,
+                                    cx,
+                                );
+                                let value = this
+                                    .value
+                                    .pointer(&selection.path())
+                                    .and_then(|value| value.get(&descriptor.key))
+                                    .filter(|value| !value.is_null())
+                                    .unwrap_or(
+                                        &this.effective[&schema::effective_key(&descriptor.key)],
+                                    );
+                                let shown = descriptor.display(value);
+                                state.update(cx, |state, cx| {
+                                    state.set_selected_value(&shown, window, cx)
+                                });
+                            }
+                        },
+                    ));
+                    Control::Choice(state)
+                }
                 FieldKind::List { .. } | FieldKind::Structured => {
                     let state = cx.new(|cx| {
                         TextareaState::new(window, cx)
@@ -1503,6 +1599,10 @@ impl Workbench {
                 }
                 Control::Textarea(input) => {
                     input.update(cx, |state, cx| state.set_value("", window, cx))
+                }
+                Control::Choice(state) => {
+                    let shown = field.display(&self.effective[&schema::effective_key(&field.key)]);
+                    state.update(cx, |state, cx| state.set_selected_value(&shown, window, cx));
                 }
                 _ => {}
             }
@@ -2130,41 +2230,47 @@ impl Workbench {
                         }))
                         .into_any_element()
                 }
-                Control::Choice => {
-                    let choices = if let FieldKind::Choice(choices) = &field.kind {
-                        choices.clone()
+                Control::Choice(state) => {
+                    let shown = if value.is_null() {
+                        field.display(&self.effective[&schema::effective_key(&field.key)])
                     } else {
-                        Vec::new()
+                        field.display(value)
                     };
-                    let key = field.key.clone();
-                    let focus = self.focus.clone();
-                    Button::new(field_id)
-                        .label(
-                            value
-                                .as_str()
-                                .or_else(|| self.effective[&field.key].as_str())
-                                .unwrap_or("Inherited")
-                                .to_string(),
+                    let unknown = !value.is_null()
+                        && matches!(&field.kind, FieldKind::Choice(choices) if !choices.contains(&shown));
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            gpui_kit::component::select::Select::new(state)
+                                .id(field_id)
+                                .accessibility_label(field.label.clone())
+                                .placeholder(if shown.is_empty() {
+                                    "Inherited".to_string()
+                                } else {
+                                    shown
+                                })
+                                .disabled(self.busy)
+                                .when(unknown, |control| control.border_color(cx.theme().danger)),
                         )
-                        .disabled(self.busy)
-                        .dropdown_menu(move |menu, _, _| {
-                            let mut menu = menu.action_context(focus.clone());
-                            for value in &choices {
-                                menu = menu.menu(
-                                    value.clone(),
-                                    Box::new(ChooseField {
-                                        key: key.clone(),
-                                        value: value.clone(),
-                                    }),
-                                );
-                            }
-                            menu
+                        .when(unknown, |row| {
+                            row.child(
+                                div()
+                                    .id(SharedString::from(format!("choice-error-{}", field.key)))
+                                    .role(Role::Status)
+                                    .aria_label("Unsupported value")
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(cx.theme().danger)
+                                    .child("Unsupported value"),
+                            )
                         })
                         .into_any_element()
                 }
             };
             row = row.child(control);
-            if let Some(choices) = self.render_list_choices(field, value, cx) {
+            if let Some(choices) = self.render_list_choices(field, cx) {
                 row = row.child(choices);
             }
             if field.key == "file" {
@@ -2741,7 +2847,8 @@ impl Workbench {
 }
 
 impl Render for Workbench {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_list_choice_pickers(window, cx);
         self.results
             .update(cx, |panel, cx| panel.set_visible(self.main_tab == 2, cx));
         let editor = if self.main_tab == 3 {
@@ -2862,13 +2969,6 @@ impl Render for Workbench {
             }))
             .on_action(cx.listener(|this, action: &AddBrowserAction, window, cx| {
                 this.edit(|session| session.add_action(&action.kind), window, cx)
-            }))
-            .on_action(cx.listener(|this, action: &ChooseField, window, cx| {
-                this.edit(
-                    |session| session.set_field(&action.key, Some(json!(action.value))),
-                    window,
-                    cx,
-                )
             }))
             .font_family(cx.theme().font_family.clone())
             .child(self.render_header(cx))

@@ -25,6 +25,7 @@ description: 'Use when changing desktop deployment targets, saved target configu
 1. Name-only edits, Cloudflare asset options, and Netlify/Cloudflare token changes preserve the URL. Destination/routing-mode changes clear it; replacing an Azure token also clears it because the token identifies the app. A confirmed private Cloudflare publication clears stale URLs; failure/cancellation does not. Surface persistence errors without hiding a successful URL. Report completion writes in the runner's background task; landing completion writes before returning to the UI.
 1. `reportPublications` stores target IDs and suite output IDs in completion order, atomically with report URLs. Replace membership when redeploying that target/site, clear it with invalidated URLs or removed targets, and retain it on failure/cancellation. Resolve the latest publication containing every requested suite; single suites use URL path-segment encoding under `/suites/`. Legacy URLs without membership must not imply that a suite was published. Load Runs links off the UI thread and refresh after completion or target changes.
 1. Deployment and named-token edit forms use toolkit Form/Field for labels only. Keep stable input IDs and accessible names, provider-dependent controls, masked password content types, saved-secret placeholders, and the existing save/cancel locks and draft clearing behavior.
+1. Saved target/token Select items use stable IDs separate from names; provider items use machine keys. Reconcile rejected confirmations to the authoritative selection. Confirming an unchanged token source or provider preserves the secret draft; actual identity changes clear it. Keep missing selected identities visible and non-deployable.
 
 ## Checks
 
@@ -37,6 +38,7 @@ cargo test --features desktop --lib published_report_sites_
 cargo test --features gui-tests --lib saved_deployment_urls_reopen_and_copy -- --test-threads=1
 cargo test --features gui-tests --lib runs_open_site_ -- --test-threads=1
 cargo test --features gui-tests --lib desktop::ui::tokens::tests -- --test-threads=1
+cargo test --features gui-tests --lib desktop::ui::deployment::tests -- --test-threads=1
 ```
 
 Cover workspace isolation, create/edit/delete, blank/missing tokens, provider changes, failed saves, corrupt target files, and errors that omit synthetic secrets. Run `./ci/desktop-smoke.ps1 -PublishingFlows` for named-token and landing controls; run the smoke harness self-tests first and preserve the interactive-desktop guards.

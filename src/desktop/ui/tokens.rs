@@ -22,6 +22,9 @@ enum TokenChange {
 
 pub(super) struct TokenPanel {
     catalog: TokenCatalog,
+    token_picker: choices::ValueSelector,
+    provider_picker: choices::ValueSelector,
+    _selector_subscriptions: Vec<Subscription>,
     path: Option<PathBuf>,
     selected: Option<String>,
     editing: bool,
@@ -39,6 +42,9 @@ impl TokenPanel {
     pub(super) fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self {
             catalog: TokenCatalog::default(),
+            token_picker: choices::ValueSelector::new(window, cx),
+            provider_picker: choices::ValueSelector::new(window, cx),
+            _selector_subscriptions: Vec::new(),
             path: None,
             selected: None,
             editing: false,
@@ -73,6 +79,28 @@ impl TokenPanel {
         self.selected
             .as_deref()
             .and_then(|id| self.catalog.tokens.iter().find(|token| token.id == id))
+    }
+
+    fn sync_selectors(&mut self, window: &mut Window, cx: &mut App) {
+        let items = self
+            .catalog
+            .tokens
+            .iter()
+            .map(|entry| choices::ValueChoice::new(entry.id.clone(), entry.name.clone()))
+            .collect();
+        self.token_picker
+            .sync(items, self.selected.clone(), window, cx);
+        let providers = deployment::PROVIDER_CHOICES
+            .into_iter()
+            .filter(|(provider, _)| *provider != DeploymentProvider::AzureSwa)
+            .map(|(provider, value)| choices::ValueChoice::new(value, provider.label()))
+            .collect();
+        let selected_provider = deployment::PROVIDER_CHOICES
+            .iter()
+            .find(|(provider, _)| provider == &self.provider)
+            .map(|(_, value)| (*value).into());
+        self.provider_picker
+            .sync(providers, selected_provider, window, cx);
     }
 }
 
@@ -112,29 +140,64 @@ impl Workbench {
     fn show_token_manager(&self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.tokens.clone();
         let view = cx.entity();
-        let focus = self.focus.clone();
+        let picker = panel.read(cx).token_picker.state.clone();
+        let subscription = cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &SelectEvent<choices::ValueChoices>, window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = event {
+                    this.choose_named_token(&ChooseNamedToken { id: id.clone() }, window, cx);
+                }
+                this.tokens
+                    .update(cx, |state, cx| state.sync_selectors(window, cx));
+            },
+        );
+        let provider = panel.read(cx).provider_picker.state.clone();
+        let provider_subscription = cx.subscribe_in(
+            &provider,
+            window,
+            |this, _, event: &SelectEvent<choices::ValueChoices>, window, cx| {
+                if let SelectEvent::Confirm(Some(value)) = event
+                    && let Some((provider, _)) = deployment::PROVIDER_CHOICES
+                        .into_iter()
+                        .find(|(_, key)| key == value)
+                {
+                    this.choose_named_token_provider(
+                        &ChooseNamedTokenProvider { provider },
+                        window,
+                        cx,
+                    );
+                }
+                this.tokens
+                    .update(cx, |state, cx| state.sync_selectors(window, cx));
+            },
+        );
+        panel.update(cx, |state, _| {
+            state._selector_subscriptions = vec![subscription, provider_subscription]
+        });
         window.open_dialog(cx, move |dialog, window, cx| {
+            panel.update(cx, |state, cx| state.sync_selectors(window, cx));
             let state = panel.read(cx);
             let selected = state.selected();
+            let token_label = selected.map(|entry| entry.name.clone()).or_else(|| state.selected.clone()).unwrap_or_else(|| "No saved tokens".into());
+            let missing_token = state.selected.is_some() && selected.is_none();
             let tokens = state.catalog.tokens.clone();
             let locked = state.saving || state.editing || state.removing;
             let mut body = div().id("token-manager-body").flex().flex_col().gap_3()
                 .child(div().flex().gap_2()
-                    .child(Button::new("named-token-menu").w(px(260.)).max_w(px(260.)).min_w_0().overflow_hidden()
-                        .accessibility_label(selected.map(|entry| entry.name.clone()).unwrap_or_else(|| "No saved tokens".into()))
-                        .child(div().min_w_0().truncate().child(selected.map(|entry| entry.name.clone()).unwrap_or_else(|| "No saved tokens".into())))
-                        .icon(gpui_kit::assets::IconName::ChevronDown).disabled(locked || tokens.is_empty())
-                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                            let mut menu = menu.action_context(focus.clone());
-                            for token in &tokens { menu = menu.menu(token.name.clone(), Box::new(ChooseNamedToken { id: token.id.clone() })); }
-                            menu
-                        }}))
+                    .child(gpui_kit::component::select::Select::new(&state.token_picker.state).id("named-token-menu").w(px(260.)).max_w(px(260.)).min_w_0()
+                        .accessibility_label(token_label.clone()).placeholder(token_label).search_placeholder("Search tokens")
+                        .when(missing_token, |select| select.border_color(cx.theme().danger)).disabled(locked || tokens.is_empty()))
                     .child(Button::new("named-token-add").ghost().icon(IconName::Plus).tooltip("Add token").accessibility_label("Add named token").disabled(locked)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_named_token(false, window, cx))))
                     .child(Button::new("named-token-edit").ghost().icon(gpui_kit::assets::IconName::Pencil).tooltip("Edit token").accessibility_label("Edit named token").disabled(locked || selected.is_none())
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_named_token(true, window, cx))))
                     .child(Button::new("named-token-remove").ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove token").accessibility_label("Remove named token").disabled(locked || selected.is_none())
                         .on_click(window.listener_for(&view, |this, _, _, cx| this.tokens.update(cx, |state, cx| { state.removing = true; cx.notify(); })))));
+            if missing_token {
+                body = body.child(div().id("named-token-unavailable").role(Role::Status).aria_label("Selected token is unavailable")
+                    .test_support().text_color(cx.theme().danger).child("Selected token is unavailable"));
+            }
             if state.removing {
                 body = body.child("Remove this saved token? All targets using it will need another token. Deployed websites will not be deleted.")
                     .child(div().flex().justify_end().gap_2()
@@ -145,12 +208,8 @@ impl Workbench {
             } else if state.editing {
                 let mut fields = Form::new().columns(2).child(
                     FormField::new().label("Provider").col_span(2)
-                        .child(Button::new("named-token-provider").label(state.provider.label()).accessibility_label("Token provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(state.saving || state.editing_id.is_some())
-                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                            menu.action_context(focus.clone())
-                                .menu("Netlify", Box::new(ChooseNamedTokenProvider { provider: DeploymentProvider::Netlify }))
-                                .menu("Cloudflare Workers", Box::new(ChooseNamedTokenProvider { provider: DeploymentProvider::CloudflareWorkers }))
-                        }})),
+                        .child(gpui_kit::component::select::Select::new(&state.provider_picker.state).id("named-token-provider")
+                            .accessibility_label("Token provider").disabled(state.saving || state.editing_id.is_some())),
                 );
                 for (label, id, input) in [("Token name", "named-token-name", &state.name), ("Token", "named-token-secret", &state.secret)] {
                     fields = fields.child(FormField::new().label(label)
@@ -207,6 +266,7 @@ impl Workbench {
                 && state.editing
                 && state.editing_id.is_none()
                 && action.provider != DeploymentProvider::AzureSwa
+                && action.provider != state.provider
             {
                 state.provider = action.provider;
                 state.secret = TokenPanel::secret_input(false, window, cx);
@@ -362,6 +422,216 @@ mod tests {
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    async fn value_selector_named_tokens_preserve_ids_and_reconcile_locks(cx: &mut TestAppContext) {
+        let root = tempfile::tempdir().unwrap();
+        let first = uuid::Uuid::new_v4().to_string();
+        let second = uuid::Uuid::new_v4().to_string();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_token_manager(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("named-token-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).tokens.clone().update(cx, |state, cx| {
+                state.catalog.tokens = [&first, &second]
+                    .into_iter()
+                    .map(|id| super::NamedToken {
+                        id: id.clone(),
+                        name: "Shared account".into(),
+                        provider: super::DeploymentProvider::Netlify,
+                        account_id: String::new(),
+                    })
+                    .collect();
+                state.selected = Some(first.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("named-token-menu", cx);
+            window.input("shared", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press("down", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).tokens.read(cx).selected.as_deref() == Some(second.as_str())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).tokens.clone().update(cx, |state, cx| {
+                state.catalog.tokens[1].name = "Renamed account".into();
+                state.catalog.tokens.swap(0, 1);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("named-token-menu").label(),
+                Some("Renamed account")
+            );
+        })
+        .unwrap();
+        for lock in ["saving", "editing", "removing"] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.read(cx).tokens.clone().update(cx, |state, cx| {
+                    state.saving = lock == "saving";
+                    state.editing = lock == "editing";
+                    state.removing = lock == "removing";
+                    state.token_picker.state.update(cx, |select, cx| {
+                        select.set_selected_value(&first, window, cx);
+                        cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                            Some(first.clone()),
+                        ));
+                    });
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let state = view.read(cx).tokens.read(cx);
+                assert_eq!(state.selected.as_deref(), Some(second.as_str()));
+                assert_eq!(
+                    state.token_picker.state.read(cx).selected_value(),
+                    Some(&second)
+                );
+            });
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).tokens.clone().update(cx, |state, cx| {
+                state.saving = false;
+                state.editing = false;
+                state.removing = false;
+                state.catalog.tokens.retain(|entry| entry.id != second);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("named-token-menu").label(),
+                Some(second.as_str())
+            );
+            assert!(window.find("named-token-unavailable").visible());
+            assert!(
+                view.read(cx)
+                    .tokens
+                    .read(cx)
+                    .token_picker
+                    .state
+                    .read(cx)
+                    .selected_value()
+                    .is_none()
+            );
+            assert!(
+                !view
+                    .read(cx)
+                    .tokens
+                    .read(cx)
+                    .path
+                    .as_ref()
+                    .unwrap()
+                    .exists()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    async fn value_selector_token_provider_keeps_identity_and_secret_guards(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_token_manager(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("named-token-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("named-token-add", cx);
+            window.click("named-token-secret", cx);
+            window.input("synthetic-unsaved-secret", cx);
+            window.click("named-token-provider", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(
+                view.read(cx)
+                    .tokens
+                    .read(cx)
+                    .secret
+                    .read(cx)
+                    .value()
+                    .as_str(),
+                "synthetic-unsaved-secret"
+            );
+            window.click("named-token-provider", cx);
+            window.press("down", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).tokens.read(cx).provider == super::DeploymentProvider::CloudflareWorkers
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("named-token-account").visible());
+            assert!(
+                view.read(cx)
+                    .tokens
+                    .read(cx)
+                    .secret
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+        })
+        .unwrap();
+        for saving in [false, true] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                view.read(cx).tokens.clone().update(cx, |state, cx| {
+                    state.saving = saving;
+                    state.editing_id = (!saving).then(|| "fixed-identity".into());
+                    state.provider_picker.state.update(cx, |select, cx| {
+                        select.set_selected_value(&"netlify".into(), window, cx);
+                        cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                            Some("netlify".into()),
+                        ));
+                    });
+                });
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update(|cx| {
+                let state = view.read(cx).tokens.read(cx);
+                assert_eq!(state.provider, super::DeploymentProvider::CloudflareWorkers);
+                assert_eq!(
+                    state
+                        .provider_picker
+                        .state
+                        .read(cx)
+                        .selected_value()
+                        .map(String::as_str),
+                    Some("cloudflareWorkers")
+                );
+                assert!(state.catalog.tokens.is_empty());
+            });
+        }
+    }
 
     #[gpui_kit::test]
     async fn named_token_manager_masks_saves_renames_and_confirms_removal(cx: &mut TestAppContext) {

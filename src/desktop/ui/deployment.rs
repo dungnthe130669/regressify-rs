@@ -9,6 +9,12 @@ use crate::desktop::{
 };
 use zeroize::Zeroizing;
 
+pub(super) const PROVIDER_CHOICES: [(DeploymentProvider, &str); 3] = [
+    (DeploymentProvider::AzureSwa, "azureSwa"),
+    (DeploymentProvider::Netlify, "netlify"),
+    (DeploymentProvider::CloudflareWorkers, "cloudflareWorkers"),
+];
+
 enum TargetChange {
     Save(Box<DeployTarget>, Zeroizing<String>),
     Remove(String),
@@ -66,6 +72,13 @@ pub(super) struct DeploymentPanel {
     cloudflare_options: bool,
     compatibility_date: Entity<InputState>,
     excludes: Entity<InputState>,
+    target_picker: choices::ValueSelector,
+    provider_picker: choices::ValueSelector,
+    token_picker: choices::ValueSelector,
+    routing_picker: choices::ValueSelector,
+    html_picker: choices::ValueSelector,
+    not_found_picker: choices::ValueSelector,
+    selector_subscriptions: Vec<Subscription>,
 }
 
 impl DeploymentPanel {
@@ -104,6 +117,13 @@ impl DeploymentPanel {
             compatibility_date: cx.new(|cx| InputState::new(window, cx).placeholder("YYYY-MM-DD")),
             excludes: cx
                 .new(|cx| InputState::new(window, cx).placeholder("[\"*.map\", \"private/**\"]")),
+            target_picker: choices::ValueSelector::new(window, cx),
+            provider_picker: choices::ValueSelector::new(window, cx),
+            token_picker: choices::ValueSelector::new(window, cx),
+            routing_picker: choices::ValueSelector::new(window, cx),
+            html_picker: choices::ValueSelector::new(window, cx),
+            not_found_picker: choices::ValueSelector::new(window, cx),
+            selector_subscriptions: Vec::new(),
         }
     }
 
@@ -124,6 +144,82 @@ impl DeploymentPanel {
             .targets
             .iter()
             .find(|target| Some(&target.id) == self.settings.selected.as_ref())
+    }
+
+    fn sync_selectors(&mut self, window: &mut Window, cx: &mut App) {
+        let targets = self
+            .settings
+            .targets
+            .iter()
+            .map(|target| choices::ValueChoice::new(target.id.clone(), target.name.clone()))
+            .collect();
+        self.target_picker
+            .sync(targets, self.settings.selected.clone(), window, cx);
+        let providers = PROVIDER_CHOICES
+            .into_iter()
+            .map(|(provider, value)| choices::ValueChoice::new(value, provider.label()))
+            .collect();
+        let selected_provider = PROVIDER_CHOICES
+            .iter()
+            .find(|(provider, _)| provider == &self.provider)
+            .map(|(_, value)| (*value).into());
+        self.provider_picker
+            .sync(providers, selected_provider, window, cx);
+        let mut tokens = vec![choices::ValueChoice::new("", "Target-specific token")];
+        tokens.extend(
+            self.tokens
+                .tokens
+                .iter()
+                .filter(|entry| entry.provider == self.provider)
+                .map(|entry| choices::ValueChoice::new(entry.id.clone(), entry.name.clone())),
+        );
+        self.token_picker.sync(
+            tokens,
+            Some(self.named_token_id.clone().unwrap_or_default()),
+            window,
+            cx,
+        );
+        let routing = match self.cloudflare.workers_dev {
+            Some(true) => "public",
+            Some(false) => "private",
+            None => "preserve",
+        };
+        self.routing_picker.sync(
+            [
+                ("public", "Public (production)"),
+                ("private", "Private"),
+                ("preserve", "Preserve existing routing"),
+            ]
+            .into_iter()
+            .map(|(value, label)| choices::ValueChoice::new(value, label))
+            .collect(),
+            Some(routing.into()),
+            window,
+            cx,
+        );
+        self.html_picker.sync(
+            [
+                "auto-trailing-slash",
+                "force-trailing-slash",
+                "drop-trailing-slash",
+                "none",
+            ]
+            .into_iter()
+            .map(|value| choices::ValueChoice::new(value, value))
+            .collect(),
+            Some(self.cloudflare.html_handling.clone()),
+            window,
+            cx,
+        );
+        self.not_found_picker.sync(
+            ["none", "404-page", "single-page-application"]
+                .into_iter()
+                .map(|value| choices::ValueChoice::new(value, value))
+                .collect(),
+            Some(self.cloudflare.not_found_handling.clone()),
+            window,
+            cx,
+        );
     }
 
     fn can_deploy(&self) -> bool {
@@ -265,30 +361,93 @@ impl Workbench {
     fn show_deployment_dialog(&self, window: &mut Window, cx: &mut Context<Self>) {
         let panel = self.deployment.clone();
         let view = cx.entity();
-        let focus = self.focus.clone();
+        let picker = panel.read(cx).target_picker.state.clone();
+        let subscription = cx.subscribe_in(
+            &picker,
+            window,
+            |this, _, event: &SelectEvent<choices::ValueChoices>, window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = event {
+                    this.choose_deploy_target(&ChooseDeployTarget { id: id.clone() }, window, cx);
+                }
+                this.deployment
+                    .update(cx, |state, cx| state.sync_selectors(window, cx));
+            },
+        );
+        let mut subscriptions = vec![subscription];
+        for (kind, picker) in [
+            ("provider", panel.read(cx).provider_picker.state.clone()),
+            ("token", panel.read(cx).token_picker.state.clone()),
+            ("routing", panel.read(cx).routing_picker.state.clone()),
+            ("html", panel.read(cx).html_picker.state.clone()),
+            ("notFound", panel.read(cx).not_found_picker.state.clone()),
+        ] {
+            subscriptions.push(cx.subscribe_in(
+                &picker,
+                window,
+                move |this, _, event: &SelectEvent<choices::ValueChoices>, window, cx| {
+                    if let SelectEvent::Confirm(Some(value)) = event {
+                        match kind {
+                            "provider" => {
+                                if let Some((provider, _)) =
+                                    PROVIDER_CHOICES.into_iter().find(|(_, key)| key == value)
+                                {
+                                    this.choose_deploy_provider(
+                                        &ChooseDeployProvider { provider },
+                                        window,
+                                        cx,
+                                    );
+                                }
+                            }
+                            "token" => this.choose_deploy_token(
+                                &ChooseDeployToken {
+                                    id: (!value.is_empty()).then(|| value.clone()),
+                                },
+                                window,
+                                cx,
+                            ),
+                            _ => this.choose_cloudflare_setting(
+                                &ChooseCloudflareSetting {
+                                    setting: kind.into(),
+                                    value: value.clone(),
+                                },
+                                window,
+                                cx,
+                            ),
+                        }
+                    }
+                    this.deployment
+                        .update(cx, |state, cx| state.sync_selectors(window, cx));
+                },
+            ));
+        }
+        panel.update(cx, |state, _| state.selector_subscriptions = subscriptions);
         window.open_dialog(cx, move |dialog, window, cx| {
+            panel.update(cx, |state, cx| state.sync_selectors(window, cx));
             let state = panel.read(cx);
             let targets = state.settings.targets.clone();
             let selected = state.selected();
+            let target_label = selected.map(|target| target.name.clone()).or_else(|| state.settings.selected.clone()).unwrap_or_else(|| "No deployment targets".into());
+            let missing_target = state.settings.selected.is_some() && selected.is_none();
             let editing = state.editing;
             let saving = state.saving;
             let mut body = div().flex().flex_col().gap_3().min_w_0()
                 .when(!editing && selected.is_some(), |body| body.child(div().text_sm().text_color(cx.theme().muted_foreground)
                     .child(selected.map(|target| target.provider.label()).unwrap_or_default())))
                 .child(div().flex().items_center().gap_2()
-                    .child(Button::new("deploy-target-menu").flex_1().min_w_0().label(selected.map(|target| target.name.clone()).unwrap_or_else(|| "No deployment targets".into()))
-                        .icon(gpui_kit::assets::IconName::ChevronDown).disabled(editing || saving || state.removing || targets.is_empty())
-                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                            let mut menu = menu.action_context(focus.clone());
-                            for target in &targets { menu = menu.menu(target.name.clone(), Box::new(ChooseDeployTarget { id: target.id.clone() })); }
-                            menu
-                        }}))
+                    .child(gpui_kit::component::select::Select::new(&state.target_picker.state).id("deploy-target-menu").flex_1().min_w_0()
+                        .accessibility_label(target_label.clone()).placeholder(target_label).search_placeholder("Search targets")
+                        .when(missing_target, |select| select.border_color(cx.theme().danger))
+                        .disabled(editing || saving || state.removing || targets.is_empty()))
                     .child(Button::new("deploy-target-add").ghost().icon(IconName::Plus).tooltip("Add target").accessibility_label("Add target").disabled(saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(false, window, cx))))
                     .child(Button::new("deploy-target-edit").ghost().icon(gpui_kit::assets::IconName::Pencil).tooltip("Edit target").accessibility_label("Edit target").disabled(selected.is_none() || saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))
                     .child(Button::new("deploy-target-remove").ghost().icon(gpui_kit::assets::IconName::Trash).tooltip("Remove target").accessibility_label("Remove target").disabled(selected.is_none() || saving || editing || state.removing)
                         .on_click(window.listener_for(&view, |this, _, _, cx| this.deployment.update(cx, |state, cx| { state.removing = true; cx.notify(); })))));
+            if missing_target {
+                body = body.child(div().id("deploy-target-unavailable").role(Role::Status).aria_label("Selected deployment target is unavailable")
+                    .test_support().text_color(cx.theme().danger).child("Selected deployment target is unavailable"));
+            }
             if state.removing {
                 body = body.child(format!("Remove target '{}'? The hosted site will not be deleted.", selected.map(|target| target.name.as_str()).unwrap_or_default()))
                     .child(div().flex().justify_end().gap_2()
@@ -299,52 +458,27 @@ impl Workbench {
             } else if editing {
                 let mut target_fields = Form::new().columns(2);
                 target_fields = target_fields.child(FormField::new().label("Provider")
-                    .child(Button::new("deploy-provider").small().label(state.provider.label())
-                        .accessibility_label("Deployment provider").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
-                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                            let mut menu = menu.action_context(focus.clone());
-                            for provider in [DeploymentProvider::AzureSwa, DeploymentProvider::Netlify, DeploymentProvider::CloudflareWorkers] {
-                                menu = menu.menu(provider.label(), Box::new(ChooseDeployProvider { provider }));
-                            }
-                            menu
-                        }})));
+                    .child(gpui_kit::component::select::Select::new(&state.provider_picker.state).id("deploy-provider")
+                        .accessibility_label("Deployment provider").disabled(saving)));
                 if state.provider == DeploymentProvider::CloudflareWorkers {
-                    let routing = match state.cloudflare.workers_dev {
-                        Some(true) => "Public (production)",
-                        Some(false) => "Private",
-                        None => "Preserve existing routing",
-                    };
                     target_fields = target_fields.child(FormField::new().label("workers.dev").col_span(2)
                         .child(div().flex().items_center().gap_2().min_w_0()
-                        .child(Button::new("deploy-cloudflare-routing").small().flex_1().min_w_0().label(routing)
-                            .accessibility_label("Cloudflare public routing").icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
-                            .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                                let mut menu = menu.action_context(focus.clone());
-                                for (label, value) in [("Public (production)", "public"), ("Private", "private"), ("Preserve existing routing", "preserve")] {
-                                    menu = menu.menu(label, Box::new(ChooseCloudflareSetting { setting: "routing".into(), value: value.into() }));
-                                }
-                                menu
-                            }}))
+                        .child(gpui_kit::component::select::Select::new(&state.routing_picker.state).id("deploy-cloudflare-routing").flex_1().min_w_0()
+                            .accessibility_label("Cloudflare public routing").disabled(saving))
                         .child(Button::new("deploy-cloudflare-options").small().ghost().icon(gpui_kit::assets::IconName::Settings2)
                             .tooltip("Cloudflare asset settings").accessibility_label("Cloudflare asset settings").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, _, cx| {
                                 this.deployment.update(cx, |state, cx| { state.cloudflare_options = !state.cloudflare_options; cx.notify(); });
                             })))));
                     if state.cloudflare_options {
-                        for (label, id, setting, value, choices) in [
-                            ("HTML handling", "deploy-cloudflare-html", "html", state.cloudflare.html_handling.clone(), vec!["auto-trailing-slash", "force-trailing-slash", "drop-trailing-slash", "none"]),
-                            ("Not-found handling", "deploy-cloudflare-not-found", "notFound", state.cloudflare.not_found_handling.clone(), vec!["none", "404-page", "single-page-application"]),
+                        for (label, id, picker, value) in [
+                            ("HTML handling", "deploy-cloudflare-html", &state.html_picker.state, &state.cloudflare.html_handling),
+                            ("Not-found handling", "deploy-cloudflare-not-found", &state.not_found_picker.state, &state.cloudflare.not_found_handling),
                         ] {
                             target_fields = target_fields.child(FormField::new().label(label)
-                                .child(Button::new(id).small().flex_1().min_w_0().label(value).accessibility_label(label)
-                                    .icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
-                                    .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                                        let mut menu = menu.action_context(focus.clone());
-                                        for value in &choices {
-                                            menu = menu.menu(*value, Box::new(ChooseCloudflareSetting { setting: setting.into(), value: (*value).into() }));
-                                        }
-                                        menu
-                                    }})));
+                                .child(gpui_kit::component::select::Select::new(picker).id(id).flex_1().min_w_0()
+                                    .accessibility_label(label).placeholder(value.clone()).disabled(saving)
+                                    .when(picker.read(cx).selected_value().is_none(), |select| select.border_color(cx.theme().danger))));
                         }
                         for (label, id, input) in [("Compatibility date", "deploy-cloudflare-date", &state.compatibility_date), ("Excluded paths (JSON array)", "deploy-cloudflare-excludes", &state.excludes)] {
                             target_fields = target_fields.child(FormField::new().label(label)
@@ -359,14 +493,11 @@ impl Workbench {
                     DeploymentProvider::CloudflareWorkers => "API token",
                 };
                 if state.provider != DeploymentProvider::AzureSwa {
-                    let tokens = state.tokens.tokens.iter().filter(|entry| entry.provider == state.provider).cloned().collect::<Vec<_>>();
                     let label = state.named_token_id.as_deref().map(|id| state.tokens.find(id).map(|entry| entry.name.clone()).unwrap_or_else(|_| "Missing named token".into())).unwrap_or_else(|| "Target-specific token".into());
-                    target_fields = target_fields.child(FormField::new().label("Token source").child(Button::new("deploy-token-source").label(label).icon(gpui_kit::assets::IconName::ChevronDown).disabled(saving)
-                        .dropdown_menu({ let focus = focus.clone(); move |menu, _, _| {
-                            let mut menu = menu.action_context(focus.clone()).menu("Target-specific token", Box::new(ChooseDeployToken { id: None }));
-                            for entry in &tokens { menu = menu.menu(entry.name.clone(), Box::new(ChooseDeployToken { id: Some(entry.id.clone()) })); }
-                            menu
-                        }})));
+                    target_fields = target_fields.child(FormField::new().label("Token source")
+                        .child(gpui_kit::component::select::Select::new(&state.token_picker.state).id("deploy-token-source")
+                            .accessibility_label(label.clone()).placeholder(label).search_placeholder("Search tokens").disabled(saving)
+                            .when(state.token_picker.state.read(cx).selected_value().is_none(), |select| select.border_color(cx.theme().danger))));
                 }
                 let mut fields = vec![("Target name", "deploy-name", &state.name)];
                 if state.named_token_id.is_none() { fields.push((token_label, "deploy-token", &state.token)); }
@@ -545,7 +676,11 @@ impl Workbench {
         cx: &mut Context<Self>,
     ) {
         self.deployment.update(cx, |state, cx| {
-            if state.saving || !state.editing || state.provider == DeploymentProvider::AzureSwa {
+            if state.saving
+                || !state.editing
+                || state.provider == DeploymentProvider::AzureSwa
+                || state.named_token_id == action.id
+            {
                 return;
             }
             if let Some(id) = &action.id {
@@ -1026,6 +1161,321 @@ mod tests {
     use gpui_kit::test::{TestAppContextExt, TestWindowExt};
     use gpui_kit::{AppContext, TestAppContext};
     use std::time::Duration;
+
+    #[gpui_kit::test]
+    async fn value_selector_deployment_provider_and_token_source_keep_guarded_drafts(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let account = "a".repeat(32);
+        let token_id = uuid::Uuid::new_v4().to_string();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).deployment.clone().update(cx, |state, _| {
+                state
+                    .tokens
+                    .tokens
+                    .push(crate::desktop::deployment::tokens::NamedToken {
+                        id: token_id.clone(),
+                        name: "Shared account".into(),
+                        provider: DeploymentProvider::CloudflareWorkers,
+                        account_id: account.clone(),
+                    });
+            });
+            window.click("deploy-target-add", cx);
+            window.click("deploy-token", cx);
+            window.input("synthetic-unsaved-secret", cx);
+            window.click("deploy-provider", cx);
+            window.input("cloudflare", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).deployment.read(cx).provider == DeploymentProvider::CloudflareWorkers
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            assert_eq!(
+                view.read(cx).deployment.read(cx).cloudflare.workers_dev,
+                Some(true)
+            );
+            window.click("deploy-token", cx);
+            window.input("synthetic-unsaved-direct-token", cx);
+            window.click("deploy-token-source", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .as_str(),
+                "synthetic-unsaved-direct-token"
+            );
+            window.click("deploy-token-source", cx);
+            window.input("shared", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).deployment.read(cx).named_token_id.as_deref() == Some(token_id.as_str())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("deploy-token").is_none());
+            assert!(window.try_find("deploy-account-id").is_none());
+            assert_eq!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .account_id
+                    .read(cx)
+                    .value()
+                    .as_str(),
+                account
+            );
+            window.click("deploy-cloudflare-options", cx);
+        })
+        .unwrap();
+        for (control, query) in [
+            ("deploy-cloudflare-routing", "private"),
+            ("deploy-cloudflare-html", "none"),
+            ("deploy-cloudflare-not-found", "404-page"),
+        ] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click(control, cx);
+                window.input(query, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+                .unwrap();
+            cx.run_until_parked();
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            let state = view.read(cx).deployment.read(cx);
+            assert_eq!(state.cloudflare.workers_dev, Some(false));
+            assert_eq!(state.cloudflare.html_handling, "none");
+            assert_eq!(state.cloudflare.not_found_handling, "404-page");
+            window.click("deploy-cloudflare-options", cx);
+            window.click("deploy-token-source", cx);
+            window.input("target-specific", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).deployment.read(cx).named_token_id.is_none()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("deploy-token").visible());
+            assert!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .token
+                    .read(cx)
+                    .value()
+                    .is_empty()
+            );
+            window.click("deploy-provider", cx);
+            window.input("netlify", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| window.press("enter", cx))
+            .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).deployment.read(cx).provider == DeploymentProvider::Netlify
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.token_picker.state.update(cx, |_, cx| {
+                    cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                        Some(token_id.clone()),
+                    ))
+                });
+                state.saving = true;
+                state.provider_picker.state.update(cx, |select, cx| {
+                    select.set_selected_value(&"azureSwa".into(), window, cx);
+                    cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                        Some("azureSwa".into()),
+                    ));
+                });
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = view.read(cx).deployment.read(cx);
+            assert_eq!(state.provider, DeploymentProvider::Netlify);
+            assert!(state.named_token_id.is_none());
+            assert_eq!(
+                state
+                    .provider_picker
+                    .state
+                    .read(cx)
+                    .selected_value()
+                    .map(String::as_str),
+                Some("netlify")
+            );
+            assert_eq!(
+                state
+                    .token_picker
+                    .state
+                    .read(cx)
+                    .selected_value()
+                    .map(String::as_str),
+                Some("")
+            );
+            assert!(state.settings.targets.is_empty());
+        });
+    }
+
+    #[gpui_kit::test]
+    async fn value_selector_deployment_uses_ids_and_rejects_stale_selection(
+        cx: &mut TestAppContext,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let (handle, view) = super::super::tests::editor(cx, root.path());
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| this.open_deployment(window, cx));
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window.try_find("deploy-target-add").is_some()
+        })
+        .await;
+        super::super::tests::settle_dialog(cx, handle).await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.settings = serde_json::from_value(serde_json::json!({
+                    "targets": [
+                        {"id": "first", "name": "Shared target"},
+                        {"id": "second", "name": "Shared target"},
+                        {"id": "other", "name": "Other target"}
+                    ],
+                    "selected": "first"
+                }))
+                .unwrap();
+                cx.notify();
+            });
+            window.render_frame(cx);
+            window.click("deploy-target-menu", cx);
+            window.input("shared", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx)
+                .deployment
+                .clone()
+                .update(cx, |_, cx| cx.notify());
+            window.render_frame(cx);
+            window.press("down", cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx)
+                .deployment
+                .read(cx)
+                .settings
+                .selected
+                .as_deref()
+                == Some("second")
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.settings.targets[1].name = "Renamed target".into();
+                state.settings.targets.swap(0, 1);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("deploy-target-menu").label(),
+                Some("Renamed target")
+            );
+            assert_eq!(
+                view.read(cx)
+                    .deployment
+                    .read(cx)
+                    .target_picker
+                    .state
+                    .read(cx)
+                    .selected_value()
+                    .map(String::as_str),
+                Some("second")
+            );
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.settings.selected = Some("removed-target".into());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find("deploy-target-menu").label(),
+                Some("removed-target")
+            );
+            assert!(window.find("deploy-target-unavailable").visible());
+            assert!(!view.read(cx).deployment.read(cx).can_deploy());
+            view.read(cx).deployment.clone().update(cx, |state, cx| {
+                state.saving = true;
+                state.target_picker.state.update(cx, |select, cx| {
+                    select.set_selected_value(&"second".into(), window, cx);
+                    cx.emit(super::SelectEvent::<super::choices::ValueChoices>::Confirm(
+                        Some("second".into()),
+                    ));
+                });
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update(|cx| {
+            let state = view.read(cx).deployment.read(cx);
+            assert_eq!(state.settings.selected.as_deref(), Some("removed-target"));
+            assert!(
+                state
+                    .target_picker
+                    .state
+                    .read(cx)
+                    .selected_value()
+                    .is_none()
+            );
+        });
+    }
 
     #[gpui_kit::test]
     async fn saved_deployment_urls_reopen_and_copy_for_reports_and_landings(

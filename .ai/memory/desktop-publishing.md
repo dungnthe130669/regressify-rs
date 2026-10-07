@@ -17,6 +17,14 @@ Verified: 2026-10-07
   presentation. Native regressions pass for masked secrets, provider-specific
   fields, saved-secret preservation, and draft cancellation; IDs and accessible
   names remain on the actual controls.
+- Saved target/token Select items separate UUID identity from display names;
+  provider choices use stable machine keys. Unchanged confirmation preserves
+  masked drafts, while actual provider/source changes clear them. Real picker
+  tests cover duplicate/renamed labels, missing IDs, locks and exact credentials;
+  deployment and token GUI modules pass (8 and 3 tests).
+- Native token screenshots wait for Add named token, not the Publish menu's
+  identically named entry. Reviewed light/dark compact/large captures show the
+  bounded saved-token selector and its Add/Edit/Remove/Close actions intact.
 - [Target settings](../../src/desktop/deployment.rs) retain optional `publishedUrl`
   per ID for reports and landing apps. Only successful publication updates it;
   destination edits (including Azure token replacement) clear it. The runner saves

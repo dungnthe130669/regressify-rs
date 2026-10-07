@@ -12,11 +12,6 @@ mod tests;
 const LOCAL_INTERVAL: Duration = Duration::from_secs(5);
 const REMOTE_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, gpui_kit::Action)]
-struct ChooseGitRemote {
-    name: String,
-}
-
 #[derive(Clone)]
 enum RemoteEdit {
     Add,
@@ -62,6 +57,9 @@ pub(super) struct GitPanel {
     diff_scroll: UniformListScrollHandle,
     diff_change: Option<usize>,
     message: Entity<TextareaState>,
+    remote_select: Entity<SelectState<choices::ValueChoices>>,
+    remote_items: Vec<String>,
+    remote_selected: Option<String>,
     remote_name: Entity<InputState>,
     remote_url: Entity<InputState>,
     remote_edit: Option<(RemoteEdit, Snapshot)>,
@@ -102,9 +100,37 @@ impl GitPanel {
         let remote_url = cx.new(|cx| {
             InputState::new(window, cx).placeholder("HTTPS, SSH URL or local repository path")
         });
+        let remote_select = cx.new(|cx| {
+            SelectState::new(choices::value_choices(&[]), None, window, cx).searchable(true)
+        });
         let message_subscription = cx.subscribe(&message, |_, _, _: &InputEvent, cx| cx.notify());
         let remote_subscription = cx.subscribe(&remote_url, |_, _, _: &InputEvent, cx| cx.notify());
         let name_subscription = cx.subscribe(&remote_name, |_, _, _: &InputEvent, cx| cx.notify());
+        let remote_select_subscription = cx.subscribe_in(
+            &remote_select,
+            window,
+            |this, state, event: &SelectEvent<choices::ValueChoices>, window, cx| {
+                if let SelectEvent::Confirm(Some(name)) = event
+                    && this.remote_edit.is_none()
+                {
+                    this.request(model::Action::SelectRemote { name: name.clone() }, cx);
+                }
+                let selected = this
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| {
+                        snapshot
+                            .selected_remote
+                            .as_deref()
+                            .or_else(|| snapshot.default_remote())
+                    })
+                    .map(str::to_string);
+                state.update(cx, |state, cx| match selected {
+                    Some(selected) => state.set_selected_value(&selected, window, cx),
+                    None => state.set_selected_index(None, window, cx),
+                });
+            },
+        );
         Self {
             root: None,
             snapshot: None,
@@ -134,6 +160,9 @@ impl GitPanel {
             diff_scroll: Default::default(),
             diff_change: None,
             message,
+            remote_select,
+            remote_items: Vec::new(),
+            remote_selected: None,
             remote_name,
             remote_url,
             remote_edit: None,
@@ -152,7 +181,12 @@ impl GitPanel {
             tree_current: Default::default(),
             tree_scroll: Default::default(),
             comparison_open: false,
-            _subscriptions: vec![message_subscription, remote_subscription, name_subscription],
+            _subscriptions: vec![
+                message_subscription,
+                remote_subscription,
+                name_subscription,
+                remote_select_subscription,
+            ],
         }
     }
 
@@ -183,6 +217,7 @@ impl GitPanel {
         self.diff_generation += 1;
         self.root = root;
         self.snapshot = None;
+        self.sync_remote_select(None, window, cx);
         self.error = None;
         self.remote_error = None;
         self.last_fetch = None;
@@ -319,9 +354,42 @@ impl GitPanel {
             self.diff_scroll = Default::default();
             self.diff_change = None;
         }
+        self.sync_remote_select(Some(&snapshot), window, cx);
         self.snapshot = Some(snapshot);
         self.error = None;
         self.rebuild_tree();
+    }
+
+    fn sync_remote_select(
+        &mut self,
+        snapshot: Option<&Snapshot>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let items = snapshot
+            .map(|snapshot| snapshot.remotes.clone())
+            .unwrap_or_default();
+        let selected = snapshot
+            .and_then(|snapshot| {
+                snapshot
+                    .selected_remote
+                    .as_deref()
+                    .or_else(|| snapshot.default_remote())
+            })
+            .map(str::to_string);
+        if self.remote_items == items && self.remote_selected == selected {
+            return;
+        }
+
+        self.remote_select.update(cx, |state, cx| {
+            state.set_items(choices::value_choices(&items), window, cx);
+            match selected.as_ref() {
+                Some(selected) => state.set_selected_value(selected, window, cx),
+                None => state.set_selected_index(None, window, cx),
+            }
+        });
+        self.remote_items = items;
+        self.remote_selected = selected;
     }
 
     pub(super) fn badge(&self) -> String {

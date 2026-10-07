@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-007 committed. Task 008 is verified on Windows and
-ready for its authorized local commit; task 009 is next. The approved Linux
+Status: Planning and tasks 001-008 committed. Task 009's selectors pass acceptance;
+the authorized local commit is pending. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -83,8 +83,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 007 Toolbars: named bars, approved focus adapter and final native gates pass;
   committed as `065c0df`.
 - [x] 008 Context menus: suite/image parity, guarded dismissal and final native gates pass;
-  ready for the authorized commit.
-- [ ] 009 Value selectors: not started.
+  committed as `fa13c04`.
+- [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; commit pending.
 - [ ] 010 Clipboard: not started.
 - [ ] 011 Log navigation: not started.
 - [ ] 012 Application menus: not started.
@@ -389,10 +389,47 @@ When a task changes state, record the exact focused command, exact outcome and n
 - Accounting: production +311/-248 (net +63), including the 29-line helper;
   GUI tests +367/-1 and native Artifact +15. Two generation counters replace
   manual popup owner slots, and one weak per-menu focus-repair subscription remains.
-- Task 008 is verified and ready for the authorized local commit. No new deferral;
+- Task 008 is committed as `fa13c04`. No new deferral;
   the approved non-green Linux baseline and task 020 final gates remain.
   Final suite-panel filter passes (5), scoped Markdown lint passes (8 files),
   guidance validates 46 skills, and self-tests pass 10/10.
+
+### Task 009 Verification
+
+- Baseline `setting_search_` passes (1). Guided Choice fields now retain Select
+  state by workspace-root/document/selection/field identity. Programmatic item
+  and value synchronization does not write; user Confirm uses the existing
+  guarded edit path and reconciles rejected choices to authoritative values.
+- `value_selector_` passes (10): lossless inheritance/unknown values, same-value
+  confirmation, stable workspace/field/UUID identity, real search and provider/
+  token/target choices, and rejected busy/immutable/draft changes. Regressions
+  failed before fixes for query loss on unchanged rebuild, stale inherited Reset
+  display and secret clearing when confirming an unchanged provider/token source.
+- `choice_combobox_` passes (4), including one undo per accepted toggle, Escape
+  without rollback, retained search, scalar/unknown-only values, invalid raw
+  drafts, case matching, last-viewport rejection and stale binding isolation.
+  Viewport discovery completes before unavailable choices are classified.
+- Existing pointer viewport checks pass (1 each); guided choices and setting
+  search (1 each), full Git UI (18), deployment UI (8), token UI (3), and root
+  lifecycle (2) pass. Production GUI Clippy passed before the final loading guard;
+  the final gates and native candidate are pending. Headless harness passes
+  (18 modules, 49 helpers, 45 dispatch/cleanup cases).
+- Default smoke now toggles multiple items in one popup, then closes with Escape.
+  Native unnamed-row failures led to an explicit owner-approved bounded public
+  adapter investigation. The shared item renderer supplies Label role and value,
+  which Windows uses for native names. All five affected native flows now pass:
+  default, Git, Publishing, Deployment and Schema. No toolkit edits or weakened
+  assertions. Publishing screenshot readiness now waits for the actual dialog;
+  reviewed token/provider/viewport/Git screenshots show intact control bounds.
+- Final `value_selector_` passes (10), `remote_` passes (19), and deployment
+  activity passes (2). Rustfmt, final GUI Clippy/build, diagnostics and headless
+  harness pass. Guidance validation/self-tests passed before this status update;
+  final maintenance checks repeat before commit.
+- Production accounting is +791/-201 (net +590), GUI tests +1844/-92, native
+  flows +14/-6. Item caches, retained entities and guarded subscriptions replace
+  manual menu plumbing; correctness/maintainability was explicitly prioritized
+  over net source reduction. Task 009 awaits its authorized local commit.
+  No new deferral; the Linux exception is unchanged.
 
 ### Approved Linux Baseline Exception
 
