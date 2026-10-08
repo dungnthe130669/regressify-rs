@@ -1,6 +1,8 @@
 # 015: Git Change Trees
 
-Status: Not started. Depends on 001 and 014.
+Status: Verified, pending local commit. Full Git UI: 23 passed, only the approved
+task 019 header failure remains. Final native Git, production and guidance checks
+pass with the public base adapter below. Depends on 001 and 014 (`23d805c`).
 
 ## Scope
 
@@ -44,3 +46,15 @@ process ownership changes, and
 Commit tree/tests/maintenance only. Investigate and ask before deferring if
 immutable requests, locked mutation or stale-read rejection cannot coexist with
 read-only browsing. Never weaken existing concurrency assertions.
+
+## Approved Adapter
+
+The mounted two-tree release regression reproduced a self-retaining render
+closure in published styled Tree 0.7.1, even without a menu. The owner approved
+using its public base Tree with the same ListItem/scrollbar presentation. Kit
+still owns hierarchy, expansion, navigation and virtualization; no toolkit source
+or private API is used. The release regression passes with this adapter.
+
+The task 019 header exception also covers Git smoke's compact conflict theme
+switch: widen only to select Light, then restore 1080x720 before the unchanged
+capture/assertions. This is not passing compact-header acceptance.

@@ -2,6 +2,29 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Git Tree Lifetime Compatibility (2026-10-08)
+
+- Mitigated in the task 015 candidate: styled Kit Tree 0.7.1 retains its own
+  TreeState through its stored context-menu renderer even with no menu configured.
+  The mounted two-tree window-close regression reproduced the leak while GitPanel
+  itself released. The owner approved public base Tree with the same styled
+  ListItem/scrollbar; the unchanged lifecycle regression passes with that adapter.
+- Keep the release test and adapter until a replacement passes ownership checks.
+  All seven `git_tree_` cases and rebuilt native Git smoke pass. No dependency,
+  toolkit source, private API or fork was introduced.
+
+## Git Tree Checkbox Interaction (2026-10-08)
+
+- Resolved in the task 015 candidate: Kit Tree expands a row on mouse-down,
+  which can move an embedded folder checkbox before click completion. The
+  existing conflict/submodule folder-selection test failed after migration and
+  passes with local pointer isolation that focuses/selects by stable ID without
+  changing expansion. All original selection and disabled-state assertions remain.
+- Application guards, not disabled appearance, lock selection during operations.
+  Focused regressions cover both trees, reviewed request identity, read-only
+  browsing and obsolete diff completions. Native Git smoke passes on the final
+  rebuilt candidate, retaining the separately approved header exception.
+
 ## Capture List Refresh Identity (2026-10-08)
 
 - Resolved in the task 014 candidate: report refresh retained a numeric index,
@@ -25,6 +48,10 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Compact Desktop Header (2026-10-08)
 
+- Task 015 native Git smoke reached the final compact conflict theme switch,
+  then could not find Light because the appearance control was clipped. The
+  owner extended wide-only theme selection to that Git step; both compact
+  conflict captures and all assertions remain. Task 019 must remove it too.
 - Task 014's integrated gate and an isolated `ad26ca0` baseline also fail
   `git_large_tree_and_status_fit_compact_and_wide_windows`: a long Git status
   pushes `open-workspace` beyond the window-control reserve. The owner retained

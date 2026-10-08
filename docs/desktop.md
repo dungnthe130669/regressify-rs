@@ -250,6 +250,12 @@ own panel to include them in a commit. Collapsing the panel preserves explicit
 selections, and the confirmation calls out included comparison files. Git-ignored
 results stay ignored; this does not edit `.gitignore` or force-add ignored files.
 
+Each tree retains its own cursor and folder expansion across status refreshes.
+The cursor follows its repository-relative path when rows move and clears when
+that path is no longer visible. During Git operations, you can still navigate,
+expand folders and open other diffs. File selection and mutation commands stay
+locked; browsing cannot change the paths or snapshot of the reviewed operation.
+
 Selecting a text file opens a side-by-side comparison of **Last Commit** and
 **Saved File**. Removed lines are red, added lines are green, and empty rows align
 insertions and deletions without changing the original line numbers. Both panes
@@ -1087,9 +1093,11 @@ write, submission and dismissal controls are locked until the operation finishes
 Runs > Suites supports Ctrl+A, Ctrl+Shift+A, and Escape for its checklist. Git's
 Changes and Comparison Changes trees support the same selection shortcuts within
 the focused group, keeping comparison artifacts separate and excluding conflicts
-and submodules. In Git, arrows and Home/End move focus, Space toggles a file or
-folder, and Enter opens a diff or expands/collapses a folder. These keys never
-commit or discard files.
+and submodules. In Git, Up/Down moves the cursor and wraps at the ends; Home/End
+moves to the first/last visible row. Left/Right collapses/expands a folder,
+Space toggles checked selection, and Enter opens a diff or toggles folder
+expansion. Cursor movement alone does not open a diff or check a file. These
+keys never commit or discard files, and selection remains locked during operations.
 
 Viewports and Captures remain single-selection lists with Up/Down and Home/End
 navigation. Workspace files and action sequences use these keys to move focus,

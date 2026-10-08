@@ -1,7 +1,22 @@
 # Desktop Git
 
-Verified: 2026-10-07
+Verified: 2026-10-08
 
+- [Change trees](../../src/desktop/ui/git/view.rs) retain two Kit TreeState
+  entities, using group/repository-path IDs. Refresh restores by ID after
+  `set_items` clears the cursor; TreeEvent retains collapsed-folder preference.
+- Styled Tree 0.7.1 retains its own state through the stored menu-render closure
+  even without a configured menu. The mounted two-tree release regression fails
+  with that wrapper and passes with the approved public base Tree plus styled
+  ListItem and scrollbar adapter. No toolkit or dependency edits are required.
+- The `git_tree_` regressions cover operation-time read-only browsing, immutable
+  emitted requests, both-group selection locks, refresh identity, stale diff
+  completions and large-list body bounds. Checkbox mouse-down must not expand
+  its row: the unchanged folder-selection test failed until pointer isolation.
+  Scoped Kit Confirm handles folder Enter; the parent intercepts only leaves.
+- The Git long-status title-bar test remains a known non-green task 019 exception;
+  see [the issue list](../../OUTSTANDING_ISSUES.md#compact-desktop-header-2026-10-08).
+  Passing tree-body tests does not establish header acceptance.
 - [The Git model](../../src/desktop/git.rs) stores active remote selection in
   repository-local `regressify.remote`. Its configuration hash covers that key,
   remotes, and URL rewrites; branch tracking is checked separately. Removing the

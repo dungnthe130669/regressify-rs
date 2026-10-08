@@ -1,4 +1,6 @@
 use anyhow::Context as _;
+use gpui_kit::base::ScrollbarHandle as _;
+use gpui_kit::component::tree::{TreeEvent, TreeItem, TreeState};
 use std::time::{Duration, Instant};
 
 use super::*;
@@ -72,11 +74,8 @@ pub(super) struct GitPanel {
     activity_log: Entity<EditorState>,
     activity_text: String,
     status: String,
-    rows: Vec<view::TreeRow>,
-    comparison_rows: Vec<view::TreeRow>,
-    tree_focus: [FocusHandle; 2],
-    tree_current: [Option<String>; 2],
-    tree_scroll: [UniformListScrollHandle; 2],
+    trees: [Entity<TreeState>; 2],
+    tree_generation: u64,
     comparison_open: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -131,6 +130,26 @@ impl GitPanel {
                 });
             },
         );
+        let trees = std::array::from_fn(|_| cx.new(|cx| TreeState::new(cx)));
+        let mut subscriptions = vec![
+            message_subscription,
+            remote_subscription,
+            name_subscription,
+            remote_select_subscription,
+        ];
+        for tree in &trees {
+            subscriptions.push(cx.subscribe(tree, |this, _, event: &TreeEvent, cx| {
+                match event {
+                    TreeEvent::Expanded(id) => {
+                        this.collapsed.remove(id.as_str());
+                    }
+                    TreeEvent::Collapsed(id) => {
+                        this.collapsed.insert(id.to_string());
+                    }
+                }
+                cx.notify();
+            }));
+        }
         Self {
             root: None,
             snapshot: None,
@@ -175,18 +194,10 @@ impl GitPanel {
             activity_log: cx.new(|cx| EditorState::new(window, cx).line_number(false)),
             activity_text: String::new(),
             status: String::new(),
-            rows: Vec::new(),
-            comparison_rows: Vec::new(),
-            tree_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0)),
-            tree_current: Default::default(),
-            tree_scroll: Default::default(),
+            trees,
+            tree_generation: 0,
             comparison_open: false,
-            _subscriptions: vec![
-                message_subscription,
-                remote_subscription,
-                name_subscription,
-                remote_select_subscription,
-            ],
+            _subscriptions: subscriptions,
         }
     }
 
@@ -225,10 +236,13 @@ impl GitPanel {
         self.selection.clear();
         self.collapsed.clear();
         self.active_file = None;
-        self.rows.clear();
-        self.comparison_rows.clear();
-        self.tree_current = Default::default();
-        self.tree_scroll = Default::default();
+        self.tree_generation = self.tree_generation.wrapping_add(1);
+        for tree in &self.trees {
+            tree.update(cx, |tree, cx| {
+                tree.set_items(Vec::new(), cx);
+                tree.scroll_handle().set_offset(point(px(0.), px(0.)));
+            });
+        }
         self.comparison_open = false;
         self.diff_text.clear();
         self.text_review = None;
@@ -357,7 +371,7 @@ impl GitPanel {
         self.sync_remote_select(Some(&snapshot), window, cx);
         self.snapshot = Some(snapshot);
         self.error = None;
-        self.rebuild_tree();
+        self.rebuild_tree(cx);
     }
 
     fn sync_remote_select(
@@ -833,16 +847,27 @@ impl GitPanel {
         cx.spawn_in(window, async move |panel, cx| {
             let (review, fallback) = task.await;
             let _ = panel.update_in(cx, |this, window, cx| {
-                if this.diff_generation != generation {
-                    return;
-                }
-                this.diff_cancel = None;
-                this.text_review = Some(review);
-                this.set_diff(fallback, window, cx);
+                this.finish_review(generation, review, fallback, window, cx);
             });
         })
         .detach();
         cx.notify();
+    }
+
+    fn finish_review(
+        &mut self,
+        generation: u64,
+        review: std::result::Result<model::review::TextReview, String>,
+        fallback: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.diff_generation != generation {
+            return;
+        }
+        self.diff_cancel = None;
+        self.text_review = Some(review);
+        self.set_diff(fallback, window, cx);
     }
 
     fn set_diff(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {

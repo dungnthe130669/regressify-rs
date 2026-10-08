@@ -245,7 +245,10 @@ function Test-GitFlows {
     Select-Theme 'Dark'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'git-conflicts-dark-compact'
+    # Task 019 owns compact header fit; keep both conflict body captures compact.
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'git-conflicts-light-compact'
     Write-Output 'Git remote add/select/update/rename/remove, cancellation, activity logs, init, selected commits, diff/tree review, incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
 }

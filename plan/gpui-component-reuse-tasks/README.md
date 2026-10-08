@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-013 committed. Task 014 flat collections is verified, pending commit;
-the workspace List pilot passes its focused checks.
+Status: Planning and tasks 001-014 committed. Task 015 Git Tree is verified,
+pending its local commit with the approved header exception.
 The approved Linux baseline and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -89,8 +89,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; committed as `521e14f`.
 - [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; committed as `6b0fbf8`.
 - [x] 013 Collapsible groups: Fields/workspace/activity and acceptance pass; committed as `ad26ca0`, with task 019 header exception recorded.
-- [x] 014 Flat collections: all surfaces and native acceptance verified; pending commit with the approved task 019 header exception.
-- [ ] 015 Git Tree: not started; awaits 014.
+- [x] 014 Flat collections: committed as `23d805c`; all surfaces and native acceptance verified with the approved task 019 header exception.
+- [x] 015 Git Tree: verified with the approved public base adapter and task 019 header exception; local commit pending.
 - [ ] 016 Overview Table: not started.
 - [ ] 017 Command palette: not started.
 - [ ] 018 Source font size: not started; awaits 003 and 007.
@@ -644,8 +644,86 @@ When a task changes state, record the exact focused command, exact outcome and n
   subscriptions, dependency edits or toolkit fork. Existing suite/scenario
   selection controllers remain. Reviewed callback scope, busy/draft checks,
   weak ownership, refresh ambiguity and known action permutations.
-- Task 014 acceptance is complete with the approved header exception; the local
-  commit is pending. Source plan and bundle are retained. Task 015 is next.
+- Task 014 is committed as `23d805c`; the post-commit worktree was clean.
+  Acceptance retains the approved header exception. Source plan and bundle
+  remain; no push or release occurred.
+
+### Task 015 Verification
+
+- `cargo test --locked --features gui-tests --lib desktop::ui::git::tests
+  -- --test-threads=1` with temporary `CARGO_INCREMENTAL=0`: 17 passed, 1 failed,
+  0 ignored (155.60s). The sole failure is the existing task 019 header assertion.
+- Current trees own flattened rows, cursor paths, expansion and scroll handles.
+  Their navigation/activation guards also block read-only movement while an
+  operation is active. The approved Tree migration must separate that from
+  mutation policy without changing the cloned reviewed `model::Request`.
+- Public Kit TreeState provides `set_items`, `selected_item`, `index_of`,
+  expansion events and scroll handles. `set_items` clears the cursor, so restore
+  it by group/path ID rather than the previous numeric index.
+- Added `git_tree_allows_read_only_navigation_during_operations`: failed before
+  the guard repair (End retained `first.txt`), then passed. Both groups now use
+  retained Kit TreeState/Tree/ListItem with weak owners, group/path IDs and two
+  expansion subscriptions. Removed manual flattened row vectors, cursor paths,
+  focus handles and scroll handles; checkbox/request policy remains in GitPanel.
+- The first refresh pilot passed reordered/removed identities and independent
+  collapsed branches before rendering changed. Scoped Enter now routes directly
+  to Kit Confirm for folders and existing diff review for leaves. Forwarding
+  another action from the old handler did not satisfy the existing collapse test.
+- The unchanged folder-selection test exposed a missed checkbox click after
+  migration. Disabled/active and clipping diagnostics ruled those causes out;
+  isolating checkbox mouse-down from Tree expansion fixed it. All temporary
+  probes were removed; no existing assertion was relaxed.
+- `cargo test --locked --features gui-tests --lib git_tree_ -- --test-threads=1`
+  passed 5 tests before the final body test was added: operation browsing,
+  group/path refresh, immutable emitted requests, stale diff success/failure and
+  the existing unsaved commit guard. The request fixture records a real emitted
+  Request but prevents Workbench execution; no synthetic lock test performs a write.
+- `git_tree_virtual_scroll_fits_both_groups_and_window_sizes` passes (1), with
+  256 rows per group, both themes/sizes, wheel, Home/End and exact visible bounds.
+  It checks body geometry independently because the approved header failure
+  occurs before the old large-tree body's assertions. Production and native
+  acceptance remain pending; no task 015 commit is claimed yet.
+- First integrated candidate: the full Git UI slice ran 23 tests, 22 passed and
+  only the approved header assertion failed (196.02s). Rustfmt, production GUI
+  Clippy and desktop build passed. Guidance self-tests passed 10/10 and the
+  validator checked 46 skills; changed-file Markdown checks passed.
+- Native Git reached its final compact conflict Light switch, then failed to
+  find the clipped theme control. The owner approved extending wide-only theme
+  selection to this Git step while retaining both compact captures/assertions.
+  Headless harness passed (18 modules, 49 helpers, 45 dispatch/cleanup cases).
+  The next full local-repository Git smoke passed and restored preferences.
+- Final ownership review added `git_tree_entities_release_after_window_close`:
+  it failed because both styled Tree states remained alive after GitPanel/window
+  release. The styled 0.7.1 renderer captures its own entity for context menus,
+  even when none is configured. The owner approved public base Tree with the
+  same ListItem/scrollbar styling; the lifecycle regression now passes. No
+  toolkit/private API/dependency changes. Final gates and native smoke are being
+  repeated on this repaired candidate before acceptance or commit.
+- Final repaired candidate: the same complete Git UI command runs 24 tests,
+  23 passed, 1 failed, 0 ignored, 1141 filtered out (179.08s). The sole failure
+  remains `git_large_tree_and_status_fit_compact_and_wide_windows`, assigned to
+  task 019. All seven `git_tree_` cases pass within that run. Rustfmt, production
+  GUI Clippy with `-D warnings`, desktop build, editor diagnostics and guidance
+  checks pass (10 self-tests, 46 skills).
+- Final rebuilt binary passes `pwsh -NoProfile -STA -File
+  ./ci/desktop-smoke.ps1 -SkipBuild -GitFlows`. The first final attempt stopped
+  before scenarios at the Windows focus guard; the owner confirmed readiness
+  and the retry passed. Local-repository init, selected ordinary/comparison
+  commits, diff copying, remote forms/cancellation, push/pull and conflict
+  handoff pass, and preferences are restored. No real remote was used.
+- Inspected final `git-text-diff-{light,dark}-{1080,1600}.png` and
+  `git-comparison-changes-selected.png` under `target/desktop-smoke`, plus the
+  preceding tree and compact conflict images. The body layouts, row selection,
+  disabled conflict controls and split diffs are intact. Header clipping remains
+  recorded, not accepted as correct.
+- Production diff: GitPanel +52/-27, tree view +279/-244, scoped key binding +5,
+  total net +65. Tests +553/-3 (net +550), smoke +3. Two retained Tree entities,
+  two expansion subscriptions and one callback generation replace two row vectors,
+  two cursor paths, two focus handles and two scroll handles. Expansion preference
+  and application selection remain owned by GitPanel. Reviewed request capture,
+  locks, stale completions, pointer behavior and entity release; no unresolved
+  task 015 defect outside the approved header exception. No broader CLI/Linux
+  gate is claimed. Task 015 is verified and ready for its authorized local commit.
 
 ### Approved Compact Header Exception
 
@@ -662,6 +740,10 @@ When a task changes state, record the exact focused command, exact outcome and n
   Git status pushes `open-workspace` beyond `width - 95`. The owner retained this
   header exception while approving adjacent non-header repairs. Task 019 must
   rerun this unchanged assertion as well as native theme switching.
+- Task 015 native Git confirms the same clipping at the final compact conflict
+  Light switch. The owner approved wide-only theme selection in that step;
+  both 1080x720 conflict captures remain. Task 019 owns removing this additional
+  workaround and native switching with long Git/conflict status at minimum size.
 - Temporary rationale: task 013's disclosure, draft, focus and body geometry can
   be verified in both themes without changing application data or bypassing any
   operation guard. All other required task checks must still pass before commit.

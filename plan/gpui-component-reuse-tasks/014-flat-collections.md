@@ -1,6 +1,6 @@
 # 014: Flat Collections And Row Presentation
 
-Status: Verified, pending commit. Integrated UI: 255 pass, only the approved
+Status: Committed as `23d805c`. Integrated UI: 255 pass, only the approved
 task 019 Git header failure remains. Default/Schema/Comparison/Artifact native
 flows pass. Depends on 001. Task 015 depends on this task.
 

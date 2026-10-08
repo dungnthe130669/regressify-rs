@@ -19,6 +19,554 @@ fn git(root: &Path, args: &[&str]) {
 }
 
 #[gpui_kit::test]
+fn git_tree_allows_read_only_navigation_during_operations(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.git.update(cx, |panel, cx| {
+                panel.root = Some(directory.path().into());
+                panel.install_snapshot(
+                    model::Snapshot {
+                        repository: Some(model::Repository {
+                            root: directory.path().into(),
+                            git_dir: directory.path().join(".git"),
+                        }),
+                        changes: ["first.txt", "second.txt"]
+                            .into_iter()
+                            .map(|path| model::Change {
+                                path: path.into(),
+                                original_path: None,
+                                index: '.',
+                                worktree: 'M',
+                                untracked: false,
+                                conflict: false,
+                                submodule: false,
+                            })
+                            .collect(),
+                        ..Default::default()
+                    },
+                    window,
+                    cx,
+                );
+                panel.selection.insert("first.txt".into());
+                panel.trees[0].update(cx, |tree, cx| tree.set_selected_index(Some(0), cx));
+                panel.action = Some(Cancellation::default());
+            });
+            this.select_view(3, window, cx);
+        });
+        let panel = view.read(cx).git.clone();
+        let tree = panel.read(cx).trees[0].clone();
+        tree.update(cx, |tree, cx| tree.focus(window, cx));
+        window.render_frame(cx);
+        window.press("end", cx);
+        assert_eq!(
+            tree.read(cx).selected_item().map(|item| item.id.as_str()),
+            Some("false:second.txt")
+        );
+        window.press("space", cx);
+        window.press("ctrl-a", cx);
+        assert_eq!(panel.read(cx).selection, ["first.txt".into()].into());
+        assert!(panel.read(cx).active_file.is_none());
+        window.press("enter", cx);
+        assert_eq!(panel.read(cx).active_file.as_deref(), Some("second.txt"));
+        assert_eq!(panel.read(cx).selection, ["first.txt".into()].into());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn git_tree_refresh_restores_group_path_identity(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let change = |path: &str| model::Change {
+        path: path.into(),
+        original_path: None,
+        index: '.',
+        worktree: 'M',
+        untracked: false,
+        conflict: false,
+        submodule: false,
+    };
+    let mut snapshot = model::Snapshot {
+        changes: [
+            "project/child/first.txt",
+            "project/second.txt",
+            "project/.regressify/result.json",
+        ]
+        .into_iter()
+        .map(change)
+        .collect(),
+        ..Default::default()
+    };
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = view.read(cx).git.clone();
+        panel.update(cx, |panel, cx| {
+            panel.collapsed.extend([
+                "false:project/child".into(),
+                "true:project/.regressify".into(),
+            ]);
+            panel.install_snapshot(snapshot.clone(), window, cx);
+        });
+        let trees = panel.read(cx).trees.clone();
+        let selected = ["false:project/second.txt", "true:project/.regressify"];
+        let mut previous = [None; 2];
+        for (group, tree) in trees.iter().enumerate() {
+            tree.update(cx, |tree, cx| {
+                let index = tree.index_of(&selected[group].into());
+                assert!(index.is_some());
+                tree.set_selected_index(index, cx);
+                previous[group] = index;
+            });
+        }
+        snapshot
+            .changes
+            .extend([change("aaa/file.txt"), change(".regressify/first.png")]);
+        snapshot.changes.reverse();
+        panel.update(cx, |panel, cx| {
+            panel.install_snapshot(snapshot.clone(), window, cx)
+        });
+        for (group, tree) in trees.iter().enumerate() {
+            let tree = tree.read(cx);
+            assert_eq!(
+                tree.selected_item().map(|item| item.id.as_str()),
+                Some(selected[group])
+            );
+            assert_ne!(tree.selected_index(), previous[group]);
+        }
+        assert!(
+            trees[0]
+                .read(cx)
+                .index_of(&"false:project/child/first.txt".into())
+                .is_none()
+        );
+        assert!(
+            trees[1]
+                .read(cx)
+                .index_of(&"true:project/.regressify/result.json".into())
+                .is_none()
+        );
+        snapshot
+            .changes
+            .retain(|change| !change.path.starts_with("project/"));
+        panel.update(cx, |panel, cx| panel.install_snapshot(snapshot, window, cx));
+        assert!(
+            trees
+                .iter()
+                .all(|tree| tree.read(cx).selected_item().is_none())
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn git_tree_operation_locks_keep_reviewed_requests_immutable(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let paths = [
+        "nested/first.txt",
+        "nested/second.txt",
+        ".regressify/first.json",
+        ".regressify/second.json",
+    ];
+    let snapshot = model::Snapshot {
+        repository: Some(model::Repository {
+            root: directory.path().into(),
+            git_dir: directory.path().join(".git"),
+        }),
+        branch: "reviewed-branch".into(),
+        changes: paths
+            .iter()
+            .map(|path| model::Change {
+                path: (*path).into(),
+                original_path: None,
+                index: '.',
+                worktree: 'M',
+                untracked: false,
+                conflict: false,
+                submodule: false,
+            })
+            .collect(),
+        ..Default::default()
+    };
+    let requests = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = requests.clone();
+    let subscription = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let subscription =
+                    cx.subscribe(&this.git, move |_, _, event: &super::GitEvent, _| {
+                        if let super::GitEvent::Requested(request) = event {
+                            observed.borrow_mut().push((**request).clone());
+                        }
+                    });
+                // Keep the Workbench from executing this recorded request in the fixture.
+                this.busy = true;
+                this.main_tab = 3;
+                this.git.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().into());
+                    panel.install_snapshot(snapshot.clone(), window, cx);
+                    panel.selection.insert(paths[0].into());
+                    panel.comparison_open = true;
+                    panel.request(
+                        model::Action::Commit {
+                            paths: vec![paths[0].into()],
+                            message: "Reviewed message".into(),
+                        },
+                        cx,
+                    );
+                });
+                cx.notify();
+                subscription
+            })
+        })
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(requests.borrow().len(), 1);
+    cx.update_window(handle.into(), |_, window, cx| {
+        let panel = view.read(cx).git.clone();
+        for disabled in [false, true] {
+            view.update(cx, |this, cx| {
+                this.busy = disabled;
+                cx.notify();
+            });
+            panel.update(cx, |panel, cx| {
+                panel.action = (!disabled).then(Cancellation::default);
+                panel.set_disabled(disabled, cx);
+                cx.notify();
+            });
+            window.render_frame(cx);
+            for (group, folder, last) in [(0, "nested", paths[1]), (1, ".regressify", paths[3])] {
+                let comparison = group == 1;
+                let tree = panel.read(cx).trees[group].clone();
+                tree.update(cx, |tree, cx| tree.focus(window, cx));
+                window.press("end", cx);
+                assert_eq!(
+                    tree.read(cx)
+                        .selected_item()
+                        .map(|item| item.id.to_string()),
+                    Some(format!("{comparison}:{last}"))
+                );
+                let active = panel.read(cx).active_file.clone();
+                window.press("down", cx);
+                assert_eq!(tree.read(cx).selected_index(), Some(0));
+                window.press("up", cx);
+                assert_eq!(
+                    tree.read(cx)
+                        .selected_item()
+                        .map(|item| item.id.to_string()),
+                    Some(format!("{comparison}:{last}"))
+                );
+                assert_eq!(panel.read(cx).active_file, active);
+                window.press("home", cx);
+                window.press("left", cx);
+                assert!(
+                    tree.read(cx)
+                        .index_of(&format!("{comparison}:{last}").into())
+                        .is_none()
+                );
+                window.press("right", cx);
+                assert!(
+                    tree.read(cx)
+                        .index_of(&format!("{comparison}:{last}").into())
+                        .is_some()
+                );
+                assert!(
+                    !panel
+                        .read(cx)
+                        .collapsed
+                        .contains(&format!("{comparison}:{folder}"))
+                );
+                window.click(
+                    gpui_kit::SharedString::from(format!(
+                        "{}:{folder}",
+                        if comparison {
+                            "git-select-comparison-folder"
+                        } else {
+                            "git-select-folder"
+                        }
+                    )),
+                    cx,
+                );
+                assert!(tree.read(cx).entry(0).unwrap().is_expanded());
+                window.click(
+                    ("git-select", if comparison { 3_usize } else { 1_usize }),
+                    cx,
+                );
+                for key in ["space", "ctrl-space", "ctrl-a", "ctrl-shift-a", "escape"] {
+                    window.press(key, cx);
+                    assert_eq!(panel.read(cx).selection, [paths[0].into()].into());
+                }
+                window.press("end", cx);
+                window.press("enter", cx);
+                assert_eq!(panel.read(cx).active_file.as_deref(), Some(last));
+                window.click(
+                    if comparison {
+                        "git-select-all-comparison"
+                    } else {
+                        "git-select-all"
+                    },
+                    cx,
+                );
+                panel.update(cx, |panel, cx| {
+                    panel.request(
+                        model::Action::Discard {
+                            paths: vec![last.into()],
+                        },
+                        cx,
+                    )
+                });
+                assert_eq!(panel.read(cx).selection, [paths[0].into()].into());
+            }
+        }
+        panel.update(cx, |panel, cx| {
+            panel.action = None;
+            panel.set_disabled(false, cx);
+            panel.error = Some("Status could not be refreshed".into());
+            panel.request(
+                model::Action::Discard {
+                    paths: vec![paths[1].into()],
+                },
+                cx,
+            );
+        });
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let requests = requests.borrow();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].workspace, directory.path());
+    assert_eq!(requests[0].expected, snapshot);
+    assert!(
+        matches!(&requests[0].action, model::Action::Commit { paths: selected, message } if selected == &[paths[0]] && message == "Reviewed message")
+    );
+    drop(subscription);
+}
+
+#[gpui_kit::test]
+async fn git_tree_diff_completion_rejects_previous_targets(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    git(directory.path(), &["init", "-b", "main"]);
+    std::fs::write(directory.path().join("first.txt"), "first\n").unwrap();
+    std::fs::write(directory.path().join("second.txt"), "second\n").unwrap();
+    let snapshot = model::status(directory.path(), &Cancellation::default()).unwrap();
+    let previous =
+        model::review::load_text(&snapshot, "first.txt", &Cancellation::default()).unwrap();
+    let (panel, generation) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().into());
+                    panel.install_snapshot(snapshot, window, cx);
+                    panel.review("first.txt".into(), window, cx);
+                    let generation = panel.diff_generation;
+                    panel.review("second.txt".into(), window, cx);
+                    panel.finish_review(
+                        generation,
+                        Ok(previous),
+                        "obsolete diff".into(),
+                        window,
+                        cx,
+                    );
+                    assert!(panel.text_review.is_none());
+                    assert_eq!(panel.diff_text, "Loading diff...");
+                    (cx.entity(), generation)
+                })
+            })
+        })
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(10), |_, cx| {
+        panel
+            .read(cx)
+            .text_review
+            .as_ref()
+            .and_then(|review| review.as_ref().ok())
+            .is_some_and(|review| review.after.concat() == "second\n")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        panel.update(cx, |panel, cx| {
+            panel.finish_review(
+                generation,
+                Err("Old failure".into()),
+                "obsolete error".into(),
+                window,
+                cx,
+            );
+            assert_eq!(panel.active_file.as_deref(), Some("second.txt"));
+            assert_eq!(
+                panel
+                    .text_review
+                    .as_ref()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .after
+                    .concat(),
+                "second\n"
+            );
+            let current = panel.diff_generation;
+            panel.finish_review(
+                current,
+                Err("Current failure".into()),
+                "Current fallback".into(),
+                window,
+                cx,
+            );
+            assert_eq!(panel.diff_text, "Current fallback");
+            panel.set_workspace(None, window, cx);
+            panel.finish_review(
+                current,
+                Err("Late workspace failure".into()),
+                "obsolete workspace".into(),
+                window,
+                cx,
+            );
+            assert!(panel.text_review.is_none());
+            assert!(panel.diff_text.is_empty());
+        });
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn git_tree_virtual_scroll_fits_both_groups_and_window_sizes(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) =
+            super::super::tests::editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().into());
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            changes: ["folder", ".regressify/run"]
+                                .into_iter()
+                                .flat_map(|prefix| {
+                                    (0..256).map(move |index| model::Change {
+                                        path: format!("{prefix}/file-{index:04}.txt"),
+                                        original_path: None,
+                                        index: '.',
+                                        worktree: 'M',
+                                        untracked: false,
+                                        conflict: false,
+                                        submodule: false,
+                                    })
+                                })
+                                .collect(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.comparison_open = true;
+                });
+                this.select_view(3, window, cx);
+            });
+            let panel = view.read(cx).git.clone();
+            for dark in [false, true] {
+                super::super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                for (group, last) in [(0, 255_usize), (1, 511_usize)] {
+                    let tree = panel.read(cx).trees[group].clone();
+                    tree.update(cx, |tree, cx| tree.focus(window, cx));
+                    window.press("home", cx);
+                    window.render_frame(cx);
+                    assert!(window.try_find(("git-file", last)).is_none());
+                    let tree_id =
+                        gpui_kit::SharedString::from(format!("tree-{}", tree.entity_id()));
+                    let viewport = window.find(tree_id.clone()).bounds();
+                    assert!(viewport.size.height >= px(45.));
+                    assert!(viewport.bottom() <= px(height));
+                    window.press("end", cx);
+                    window.render_frame(cx);
+                    let last_row = window.find(("git-file", last)).bounds();
+                    assert!(last_row.top() >= viewport.top());
+                    assert!(last_row.bottom() <= viewport.bottom());
+                    assert!(last_row.right() <= viewport.right());
+                    assert!(panel.read(cx).selection.is_empty());
+                    assert!(panel.read(cx).active_file.is_none());
+                    window.scroll(
+                        ("git-file", last),
+                        gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(10_000.))),
+                        cx,
+                    );
+                    window.render_frame(cx);
+                    assert!(window.try_find(("git-file", last)).is_none());
+                    window.press("home", cx);
+                    assert_eq!(tree.read(cx).selected_index(), Some(0));
+                }
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn git_tree_entities_release_after_window_close(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = super::super::tests::editor(cx, directory.path());
+    let (panel, trees) = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.root = Some(directory.path().into());
+                    panel.install_snapshot(
+                        model::Snapshot {
+                            repository: Some(model::Repository {
+                                root: directory.path().into(),
+                                git_dir: directory.path().join(".git"),
+                            }),
+                            changes: ["folder/file.txt", ".regressify/result.json"]
+                                .into_iter()
+                                .map(|path| model::Change {
+                                    path: path.into(),
+                                    original_path: None,
+                                    index: '.',
+                                    worktree: 'M',
+                                    untracked: false,
+                                    conflict: false,
+                                    submodule: false,
+                                })
+                                .collect(),
+                            ..Default::default()
+                        },
+                        window,
+                        cx,
+                    );
+                    panel.comparison_open = true;
+                });
+                this.select_view(3, window, cx);
+            });
+            window.render_frame(cx);
+            assert!(window.find(("git-file", 0_usize)).visible());
+            assert!(window.find(("git-file", 1_usize)).visible());
+            let panel = &view.read(cx).git;
+            (
+                panel.downgrade(),
+                panel.read(cx).trees.each_ref().map(|tree| tree.downgrade()),
+            )
+        })
+        .unwrap();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| {
+        assert!(panel.upgrade().is_none());
+        assert!(
+            trees.iter().all(|tree| tree.upgrade().is_none()),
+            "Rendered Tree states must release with their panel"
+        );
+    });
+}
+
+#[gpui_kit::test]
 fn git_activity_refresh_preserves_editing_focus(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = super::super::tests::editor(cx, directory.path());
@@ -877,7 +1425,7 @@ async fn git_tree_reviews_files_and_commit_preserves_the_unsaved_guard(cx: &mut 
             panel.install_snapshot(snapshot, window, cx);
             assert!(
                 panel.selection.is_empty()
-                    && panel.rows.is_empty()
+                    && panel.trees[0].read(cx).entry(0).is_none()
                     && panel.active_file.is_none()
                     && panel.diff_text.is_empty()
             );
@@ -1497,7 +2045,7 @@ fn incoming_conflict_and_remote_failure_indicators_remain_visible(cx: &mut TestA
                     untracked: false,
                     submodule: false,
                 });
-            panel.rebuild_tree();
+            panel.rebuild_tree(cx);
             assert!(panel.badge().contains("1 conflict"));
             cx.notify();
         });
@@ -1723,7 +2271,9 @@ fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContex
                 window.try_find(("git-file", 4999_usize)).is_none(),
                 "offscreen tree rows must be virtualized"
             );
-            assert_eq!(view.read(cx).git.read(cx).rows.len(), 10_000);
+            let tree = view.read(cx).git.read(cx).trees[0].read(cx);
+            assert!(tree.entry(9_999).is_some());
+            assert!(tree.entry(10_000).is_none());
         })
         .unwrap();
     }

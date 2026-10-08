@@ -1,11 +1,5 @@
 use super::*;
-
-pub(super) struct TreeRow {
-    path: String,
-    label: String,
-    depth: usize,
-    file: Option<usize>,
-}
+use gpui_kit::component::{list::ListItem, tree::TreeEntry};
 
 fn visible_name(value: &str) -> String {
     value
@@ -455,19 +449,50 @@ impl GitPanel {
                 }
             }
         }
+        self.trees[usize::from(comparison)].update(cx, |_, cx| cx.notify());
         cx.notify();
     }
 
-    fn tree_cursor(&self, comparison: bool) -> Option<usize> {
-        let rows = if comparison {
-            &self.comparison_rows
-        } else {
-            &self.rows
-        };
-        self.tree_current[usize::from(comparison)]
+    fn set_tree_checked(
+        &mut self,
+        comparison: bool,
+        path: &str,
+        folder: bool,
+        checked: Option<bool>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.disabled || self.active() || self.error.is_some() {
+            return;
+        }
+        let prefix = format!("{path}/");
+        let allowed = self
+            .snapshot
             .as_ref()
-            .or(self.active_file.as_ref())
-            .and_then(|path| rows.iter().position(|row| &row.path == path))
+            .into_iter()
+            .flat_map(|snapshot| &snapshot.changes)
+            .filter(|change| {
+                change.is_comparison() == comparison
+                    && !change.conflict
+                    && !change.submodule
+                    && if folder {
+                        change.path.starts_with(&prefix)
+                    } else {
+                        change.path == path
+                    }
+            })
+            .map(|change| change.path.clone())
+            .collect::<Vec<_>>();
+        let checked =
+            checked.unwrap_or_else(|| !allowed.iter().all(|path| self.selection.contains(path)));
+        for path in allowed {
+            if checked {
+                self.selection.insert(path);
+            } else {
+                self.selection.remove(&path);
+            }
+        }
+        self.trees[usize::from(comparison)].update(cx, |_, cx| cx.notify());
+        cx.notify();
     }
 
     fn activate_tree(
@@ -477,54 +502,27 @@ impl GitPanel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.disabled || self.active() || self.error.is_some() {
+        if self.error.is_some() || (toggle && (self.disabled || self.active())) {
             return;
         }
-        let rows = if comparison {
-            &self.comparison_rows
-        } else {
-            &self.rows
-        };
-        let Some(row) = rows.get(self.tree_cursor(comparison).unwrap_or(0)) else {
+        let tree = &self.trees[usize::from(comparison)];
+        let target = tree.update(cx, |tree, cx| {
+            let index = tree.selected_index().unwrap_or(0);
+            let entry = tree.entry(index)?;
+            let target = (
+                entry.item().id.split_once(':')?.1.to_string(),
+                entry.is_folder(),
+            );
+            tree.set_selected_index(Some(index), cx);
+            Some(target)
+        });
+        let Some((path, folder)) = target else {
             return;
         };
-        let path = row.path.clone();
-        self.tree_current[usize::from(comparison)] = Some(path.clone());
         if toggle {
-            let prefix = format!("{path}/");
-            let allowed = self
-                .snapshot
-                .as_ref()
-                .into_iter()
-                .flat_map(|snapshot| &snapshot.changes)
-                .filter(|change| {
-                    change.is_comparison() == comparison
-                        && !change.conflict
-                        && !change.submodule
-                        && if row.file.is_some() {
-                            change.path == path
-                        } else {
-                            change.path.starts_with(&prefix)
-                        }
-                })
-                .map(|change| change.path.clone())
-                .collect::<Vec<_>>();
-            let checked = !allowed.iter().all(|path| self.selection.contains(path));
-            for path in allowed {
-                if checked {
-                    self.selection.insert(path);
-                } else {
-                    self.selection.remove(&path);
-                }
-            }
-        } else if row.file.is_some() {
+            self.set_tree_checked(comparison, &path, folder, None, cx);
+        } else if !folder {
             self.review(path, window, cx);
-        } else {
-            let key = format!("{comparison}:{path}");
-            if !self.collapsed.remove(&key) {
-                self.collapsed.insert(key);
-            }
-            self.rebuild_tree();
         }
         cx.notify();
     }
@@ -538,13 +536,28 @@ impl GitPanel {
                 "git-files"
             })
             .key_context("RegressifyList")
-            .track_focus(&self.tree_focus[group])
             .flex_1()
             .min_h_0()
+            .capture_action(cx.listener(
+                move |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
+                    let folder = this.trees[group].update(cx, |tree, cx| {
+                        if tree.selected_index().is_none() && tree.entry(0).is_some() {
+                            tree.set_selected_index(Some(0), cx);
+                        }
+                        tree.selected_entry().is_some_and(TreeEntry::is_folder)
+                    });
+                    if folder {
+                        cx.propagate();
+                    } else {
+                        this.activate_tree(comparison, false, window, cx);
+                        cx.stop_propagation();
+                    }
+                },
+            ))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, _, window, cx| {
-                    window.focus(&this.tree_focus[group], cx);
+                    this.trees[group].update(cx, |tree, cx| tree.focus(window, cx));
                 }),
             )
             .on_action(cx.listener(move |this, _: &SelectAllListItems, _, cx| {
@@ -555,19 +568,19 @@ impl GitPanel {
             }))
             .on_action(
                 cx.listener(move |this, action: &lists::MoveListSelection, _, cx| {
-                    if this.disabled || this.active() || this.error.is_some() {
+                    if this.error.is_some() {
                         return;
                     }
-                    let rows = if comparison {
-                        &this.comparison_rows
-                    } else {
-                        &this.rows
-                    };
-                    if let Some(index) = action.index(this.tree_cursor(comparison), rows.len()) {
-                        this.tree_current[group] = Some(rows[index].path.clone());
-                        this.tree_scroll[group].scroll_to_item(index, ScrollStrategy::Nearest);
-                        cx.notify();
-                    }
+                    this.trees[group].update(cx, |tree, cx| {
+                        let count = (0..)
+                            .take_while(|index| tree.entry(*index).is_some())
+                            .count();
+                        let index = action.index(tree.selected_index(), count);
+                        tree.set_selected_index(index, cx);
+                        if let Some(index) = index {
+                            tree.scroll_to_item(index, ScrollStrategy::Nearest);
+                        }
+                    });
                 }),
             )
             .on_action(cx.listener(move |this, _: &ToggleListItem, window, cx| {
@@ -578,74 +591,132 @@ impl GitPanel {
             }))
     }
 
-    pub(super) fn rebuild_tree(&mut self) {
-        let mut rows = Vec::new();
-        let mut comparison_rows = Vec::new();
-        if let Some(snapshot) = &self.snapshot {
-            fn flatten(
-                tree: &model::ChangeTree,
-                prefix: &str,
-                depth: usize,
-                snapshot: &Snapshot,
-                collapsed: &BTreeSet<String>,
-                comparison: bool,
-                rows: &mut Vec<TreeRow>,
-            ) {
-                for (label, child) in &tree.folders {
-                    let path = format!("{prefix}{label}");
-                    let start = rows.len();
-                    rows.push(TreeRow {
-                        path: path.clone(),
-                        label: visible_name(label),
-                        depth,
-                        file: None,
-                    });
-                    flatten(
-                        child,
-                        &format!("{path}/"),
-                        depth + 1,
-                        snapshot,
-                        collapsed,
-                        comparison,
-                        rows,
+    pub(super) fn rebuild_tree(&mut self, cx: &mut Context<Self>) {
+        self.tree_generation = self.tree_generation.wrapping_add(1);
+        fn items(
+            branch: &model::ChangeTree,
+            prefix: &str,
+            snapshot: &Snapshot,
+            collapsed: &BTreeSet<String>,
+            comparison: bool,
+        ) -> Vec<TreeItem> {
+            let mut result = Vec::new();
+            for (label, child) in &branch.folders {
+                let path = format!("{prefix}{label}");
+                let children = items(child, &format!("{path}/"), snapshot, collapsed, comparison);
+                if !children.is_empty() {
+                    let id = format!("{comparison}:{path}");
+                    result.push(
+                        TreeItem::new(id.clone(), visible_name(label))
+                            .expanded(!collapsed.contains(&id))
+                            .children(children),
                     );
-                    if rows.len() == start + 1 {
-                        rows.pop();
-                    } else if collapsed.contains(&format!("{comparison}:{path}")) {
-                        rows.truncate(start + 1);
-                    }
-                }
-                for index in &tree.files {
-                    let change = &snapshot.changes[*index];
-                    if change.is_comparison() != comparison {
-                        continue;
-                    }
-                    rows.push(TreeRow {
-                        path: change.path.clone(),
-                        label: visible_name(change.path.rsplit('/').next().unwrap_or(&change.path)),
-                        depth,
-                        file: Some(*index),
-                    });
                 }
             }
-            let tree = model::ChangeTree::new(&snapshot.changes);
-            for (comparison, rows) in [(false, &mut rows), (true, &mut comparison_rows)] {
-                flatten(&tree, "", 0, snapshot, &self.collapsed, comparison, rows);
+            for index in &branch.files {
+                let change = &snapshot.changes[*index];
+                if change.is_comparison() == comparison {
+                    result.push(TreeItem::new(
+                        format!("{comparison}:{}", change.path),
+                        visible_name(change.path.rsplit('/').next().unwrap_or(&change.path)),
+                    ));
+                }
             }
+            result
         }
-        self.rows = rows;
-        self.comparison_rows = comparison_rows;
+        let hierarchy = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| model::ChangeTree::new(&snapshot.changes));
+        for comparison in [false, true] {
+            let group = usize::from(comparison);
+            let next = self
+                .snapshot
+                .as_ref()
+                .zip(hierarchy.as_ref())
+                .map_or_else(Vec::new, |(snapshot, hierarchy)| {
+                    items(hierarchy, "", snapshot, &self.collapsed, comparison)
+                });
+            self.trees[group].update(cx, |tree, cx| {
+                let selected = tree.selected_item().map(|item| item.id.clone());
+                tree.set_items(next, cx);
+                tree.set_selected_index(selected.as_ref().and_then(|id| tree.index_of(id)), cx);
+                if let Some(index) = tree.selected_index() {
+                    tree.scroll_to_item(index, ScrollStrategy::Nearest);
+                }
+            });
+        }
     }
 
-    fn tree_row(&self, index: usize, comparison: bool, cx: &mut Context<Self>) -> AnyElement {
-        let row = if comparison {
-            &self.comparison_rows[index]
-        } else {
-            &self.rows[index]
-        };
-        let path = row.path.clone();
-        let focus_path = path.clone();
-        let label = row.label.clone();
+    fn render_tree(&self, comparison: bool, cx: &Context<Self>) -> AnyElement {
+        let owner = cx.entity().downgrade();
+        let tree = &self.trees[usize::from(comparison)];
+        let scroll = tree.read(cx).scroll_handle().clone();
+        // The styled 0.7.1 Tree retains itself in its menu renderer, even without a menu.
+        div()
+            .size_full()
+            .child(
+                gpui_kit::base::Tree::new(tree)
+                    .item(move |index, entry, state, _, cx| {
+                        owner
+                            .upgrade()
+                            .map_or_else(
+                                || ListItem::new(index).disabled(true),
+                                |owner| {
+                                    owner.update(cx, |panel, cx| {
+                                        panel.tree_row(index, entry, comparison, cx)
+                                    })
+                                },
+                            )
+                            .disabled(entry.is_disabled())
+                            .selected(state.is_selected())
+                            .secondary_selected(state.is_right_clicked())
+                            .into_any_element()
+                    })
+                    .list_style(
+                        gpui_kit::StyleRefinement::default()
+                            .flex_grow_1()
+                            .size_full(),
+                    )
+                    .relative()
+                    .size_full(),
+            )
+            .vertical_scrollbar(&scroll)
+            .into_any_element()
+    }
+
+    fn tree_checkbox(&self, comparison: bool, id: SharedString, cx: &mut Context<Self>) -> Div {
+        let generation = self.tree_generation;
+        div().flex_shrink_0().on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this, _, window, cx| {
+                if this.tree_generation == generation {
+                    this.trees[usize::from(comparison)].update(cx, |tree, cx| {
+                        tree.set_selected_index(tree.index_of(&id), cx);
+                        tree.focus(window, cx);
+                    });
+                }
+                // Expanding the row during mouse-down can move the checkbox before mouse-up.
+                cx.stop_propagation();
+            }),
+        )
+    }
+
+    fn tree_row(
+        &self,
+        index: usize,
+        entry: &TreeEntry,
+        comparison: bool,
+        cx: &mut Context<Self>,
+    ) -> ListItem {
+        let id = entry.item().id.clone();
+        let path = id
+            .split_once(':')
+            .expect("Tree IDs include the group")
+            .1
+            .to_string();
+        let label = entry.item().label.clone();
+        let generation = self.tree_generation;
         let mut element = div()
             .id((
                 if comparison {
@@ -656,37 +727,29 @@ impl GitPanel {
                 index,
             ))
             .test_support()
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, _, _, cx| {
-                    this.tree_current[usize::from(comparison)] = Some(focus_path.clone());
-                    cx.notify();
-                }),
-            )
             .flex()
             .items_center()
             .h(px(30.))
             .w_full()
             .min_w_0()
-            .border_l_2()
-            .border_color(
-                if self.tree_current[usize::from(comparison)].as_ref() == Some(&path) {
-                    cx.theme().primary
-                } else {
-                    cx.theme().transparent
-                },
-            )
-            .pl(px(8. + row.depth.min(12) as f32 * 14.))
+            .pl(px(8. + entry.depth().min(12) as f32 * 14.))
             .pr_2()
             .gap_1();
-        if let Some(file) = row.file {
+        if !entry.is_folder() {
+            let Some(file) = self.snapshot.as_ref().and_then(|snapshot| {
+                snapshot
+                    .changes
+                    .iter()
+                    .position(|change| change.path == path && change.is_comparison() == comparison)
+            }) else {
+                return ListItem::new(id).disabled(true);
+            };
             let change = &self
                 .snapshot
                 .as_ref()
                 .expect("tree requires snapshot")
                 .changes[file];
             let selected = self.selection.contains(&path);
-            let panel = cx.entity();
             let checkbox_path = path.clone();
             let conflict = change.conflict;
             let status = change.label();
@@ -707,20 +770,25 @@ impl GitPanel {
                     row.bg(cx.theme().accent)
                 })
                 .child(
-                    Checkbox::new(("git-select", file))
-                        .checked(selected)
-                        .disabled(self.disabled || self.active() || conflict || change.submodule)
-                        .accessibility_label(format!("Select {}", visible_name(&path)))
-                        .on_change(move |checked, _, cx| {
-                            panel.update(cx, |this, cx| {
-                                if *checked {
-                                    this.selection.insert(checkbox_path.clone());
-                                } else {
-                                    this.selection.remove(&checkbox_path);
+                    self.tree_checkbox(comparison, id.clone(), cx).child(
+                        Checkbox::new(("git-select", file))
+                            .checked(selected)
+                            .disabled(
+                                self.disabled || self.active() || conflict || change.submodule,
+                            )
+                            .accessibility_label(format!("Select {}", visible_name(&path)))
+                            .on_click(cx.listener(move |this, checked, _, cx| {
+                                if this.tree_generation == generation {
+                                    this.set_tree_checked(
+                                        comparison,
+                                        &checkbox_path,
+                                        false,
+                                        Some(*checked),
+                                        cx,
+                                    );
                                 }
-                                cx.notify();
-                            })
-                        }),
+                            })),
+                    ),
                 )
                 .child(
                     Button::new(("git-file", file))
@@ -741,7 +809,9 @@ impl GitPanel {
                         )
                         .child(div().flex_1().min_w_0().text_left().truncate().child(label))
                         .on_click(cx.listener(move |this, _, window, cx| {
-                            this.review(path.clone(), window, cx)
+                            if this.tree_generation == generation {
+                                this.review(path.clone(), window, cx);
+                            }
                         })),
                 )
                 .child(
@@ -764,8 +834,7 @@ impl GitPanel {
                         }),
                 );
         } else {
-            let collapse_key = format!("{comparison}:{path}");
-            let collapsed = self.collapsed.contains(&collapse_key);
+            let collapsed = !entry.is_expanded();
             let prefix = format!("{path}/");
             let allowed = self
                 .snapshot
@@ -785,35 +854,42 @@ impl GitPanel {
                 .iter()
                 .filter(|path| self.selection.contains(*path))
                 .count();
-            let panel = cx.entity();
+            let owner = cx.entity().downgrade();
+            let checkbox_path = path.clone();
             element = element.child(
-                design::selection_checkbox(
-                    SharedString::from(format!(
-                        "{}:{path}",
-                        if comparison {
-                            "git-select-comparison-folder"
-                        } else {
-                            "git-select-folder"
-                        }
-                    )),
-                    !allowed.is_empty() && selected == allowed.len(),
-                    selected > 0 && selected < allowed.len(),
-                    self.disabled || self.active() || self.error.is_some() || allowed.is_empty(),
-                    cx,
-                )
-                .accessibility_label(format!("Select folder {}", visible_name(&path)))
-                .on_change(move |state, _, _, cx| {
-                    panel.update(cx, |this, cx| {
-                        if state == gpui_kit::base::CheckboxState::Checked {
-                            this.selection.extend(allowed.iter().cloned());
-                        } else {
-                            for path in &allowed {
-                                this.selection.remove(path);
+                self.tree_checkbox(comparison, id.clone(), cx).child(
+                    design::selection_checkbox(
+                        SharedString::from(format!(
+                            "{}:{path}",
+                            if comparison {
+                                "git-select-comparison-folder"
+                            } else {
+                                "git-select-folder"
                             }
-                        }
-                        cx.notify();
-                    })
-                }),
+                        )),
+                        !allowed.is_empty() && selected == allowed.len(),
+                        selected > 0 && selected < allowed.len(),
+                        self.disabled
+                            || self.active()
+                            || self.error.is_some()
+                            || allowed.is_empty(),
+                        cx,
+                    )
+                    .accessibility_label(format!("Select folder {}", visible_name(&path)))
+                    .on_change(move |state, _, _, cx| {
+                        let _ = owner.update(cx, |this, cx| {
+                            if this.tree_generation == generation {
+                                this.set_tree_checked(
+                                    comparison,
+                                    &checkbox_path,
+                                    true,
+                                    Some(state == gpui_kit::base::CheckboxState::Checked),
+                                    cx,
+                                );
+                            }
+                        });
+                    }),
+                ),
             );
             element = element.child(
                 Button::new(SharedString::from(format!(
@@ -837,20 +913,14 @@ impl GitPanel {
                 .accessibility_label(format!("Folder {}", visible_name(&path)))
                 .tooltip(visible_name(&path))
                 .child(Icon::new(gpui_kit::assets::IconName::Folder).size_3())
-                .child(div().flex_1().min_w_0().text_left().truncate().child(label))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    if !this.collapsed.remove(&collapse_key) {
-                        this.collapsed.insert(collapse_key.clone());
-                    }
-                    this.rebuild_tree();
-                    cx.notify();
-                })),
+                .child(div().flex_1().min_w_0().text_left().truncate().child(label)),
             );
         }
-        element.into_any_element()
+        ListItem::new(id).h(px(30.)).w_full().p_0().child(element)
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let generation = self.tree_generation;
         let count = self.snapshot.as_ref().map_or(0, |snapshot| {
             snapshot
                 .changes
@@ -916,14 +986,9 @@ impl GitPanel {
                             .checked(all)
                             .disabled(disabled || allowed.is_empty())
                             .on_click(cx.listener(move |this, checked, _, cx| {
-                                if *checked {
-                                    this.selection.extend(allowed.iter().cloned());
-                                } else {
-                                    for path in &allowed {
-                                        this.selection.remove(path);
-                                    }
+                                if this.tree_generation == generation {
+                                    this.select_tree(false, *checked, cx);
                                 }
-                                cx.notify();
                             })),
                     ),
             )
@@ -937,21 +1002,7 @@ impl GitPanel {
                                 .child("No file changes"),
                         )
                     })
-                    .when(count > 0, |tree| {
-                        tree.child(
-                            uniform_list(
-                                "git-change-tree",
-                                self.rows.len(),
-                                cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                    range
-                                        .map(|index| this.tree_row(index, false, cx))
-                                        .collect::<Vec<_>>()
-                                }),
-                            )
-                            .track_scroll(&self.tree_scroll[0])
-                            .size_full(),
-                        )
-                    }),
+                    .when(count > 0, |tree| tree.child(self.render_tree(false, cx))),
             )
             .child(self.render_comparison_changes(cx))
             .child(
@@ -1040,6 +1091,7 @@ impl GitPanel {
     }
 
     fn render_comparison_changes(&self, cx: &mut Context<Self>) -> AnyElement {
+        let generation = self.tree_generation;
         let changes = self
             .snapshot
             .as_ref()
@@ -1140,14 +1192,9 @@ impl GitPanel {
                                         || allowed.is_empty(),
                                 )
                                 .on_click(cx.listener(move |this, checked, _, cx| {
-                                    for path in &allowed {
-                                        if *checked {
-                                            this.selection.insert(path.clone());
-                                        } else {
-                                            this.selection.remove(path);
-                                        }
+                                    if this.tree_generation == generation {
+                                        this.select_tree(true, *checked, cx);
                                     }
-                                    cx.notify();
                                 })),
                         )
                     }),
@@ -1159,19 +1206,7 @@ impl GitPanel {
                             tree.child(div().p_3().child("No comparison changes"))
                         })
                         .when(!changes.is_empty(), |tree| {
-                            tree.child(
-                                uniform_list(
-                                    "git-comparison-tree",
-                                    self.comparison_rows.len(),
-                                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                                        range
-                                            .map(|index| this.tree_row(index, true, cx))
-                                            .collect::<Vec<_>>()
-                                    }),
-                                )
-                                .track_scroll(&self.tree_scroll[1])
-                                .size_full(),
-                            )
+                            tree.child(self.render_tree(true, cx))
                         }),
                 )
             })

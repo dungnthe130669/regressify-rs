@@ -126,6 +126,11 @@ pub(super) fn bind_keys(modifier: &str, cx: &mut App) {
             Some("RegressifyList"),
         ),
         KeyBinding::new("enter", OpenListItem, Some("RegressifyList")),
+        KeyBinding::new(
+            "enter",
+            gpui_kit::base::actions::Confirm { secondary: false },
+            Some("RegressifyList > Tree"),
+        ),
     ]);
     for (key, destination) in [
         ("up", Destination::Previous),

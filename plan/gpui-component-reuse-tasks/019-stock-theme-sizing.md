@@ -60,3 +60,9 @@ task 013: `git_large_tree_and_status_fit_compact_and_wide_windows` finds
 `open-workspace` beyond `width - 95`. The owner retained the header exception.
 Close it with the unchanged geometry assertion and native long-status coverage;
 passing compact body tests is not a substitute.
+
+Task 015 native Git smoke reached the compact conflict view, then could not
+find Light because the appearance control was clipped. The owner approved
+wide-only theme selection at that step, retaining both 1080x720 conflict captures
+and all assertions. Remove the Git workaround alongside Schema/default, and
+prove theme switching with the long conflict status at the chosen minimum.
