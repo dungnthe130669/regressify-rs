@@ -595,6 +595,10 @@ because they save fewer lines than the first batch.
   Force the full group open while it contains visible errors or search results,
   retaining the user's underlying collapse preference. Restore that preference
   when the condition clears; do not add a partial-error adapter.
+- Task 013's owner-approved public label-focus adapter preserves Tab/Enter/Space
+  because the published AccordionTrigger has no keyboard setup. Closed inputs
+  unmount immediately; raw and unsupported-choice errors both force groups open.
+  Rich workspace/activity triggers remain toolkit Buttons inside Collapsible.
 - **Theme defaults:** adopt the stock toolkit palette with no brand color
   overrides and stock toolkit UI typography. Preserve Source editor font
   preferences separately. Use normal toolkit sizing for all desktop controls,
@@ -954,10 +958,9 @@ bypass its guards or close the user's windows. Use `-SkipBuild` only with a
 current binary. Browser/Playwright tests are not a substitute for native GPUI
 interaction tests, and live publishing is not required for this migration.
 
-Planning and interview work was committed as `278be67`. Task 001 has a compiled
-0.7.1 candidate, focused native regressions and passing Windows smoke flows;
-the task bundle records exact outcomes, approved exceptions and remaining gates.
-Component adoption has not started. No binary-size measurement is claimed.
+Planning and interview work was committed as `278be67`. Implementation status,
+exact outcomes, approved exceptions and remaining gates are maintained in the
+task bundle. No binary-size measurement is claimed.
 
 [kit-registry]: https://crates.io/api/v1/crates/gpui-kit
 [kit-window]: https://github.com/longbridge/gpui-kit/blob/v0.7.1/crates/kit/src/lib.rs#L149

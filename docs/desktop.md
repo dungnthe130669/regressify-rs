@@ -1274,7 +1274,15 @@ navigate without changing source or bypassing draft validation.
 
 Find a setting searches names, keys, descriptions, and groups, including advanced
 settings. Overrides only narrows the form to explicit values. Groups can be
-collapsed independently or expanded together without changing the draft. Numeric
+collapsed independently or expanded together without changing the draft. Search
+matches and field errors, including unsupported choice values, keep the full
+matching group open without overwriting its collapse preference. When those
+conditions clear, the preference is restored. Disclosure labels support Tab,
+Enter, and Space; correcting the last error returns focus to the label if the
+group closes. Failed suite activity also remains expanded while preserving a
+requested collapsed state.
+
+Numeric
 steppers start from the effective inherited value; mismatch percentages remain
 within 0-100 and concurrency counts remain positive. File pickers sit beside
 their input. Field-issue links reveal the affected control even under filters.

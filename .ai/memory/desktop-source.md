@@ -1,7 +1,14 @@
 # Desktop Source Editing
 
-Verified: 2026-10-07
+Verified: 2026-10-08
 
+- [Fields groups](../../src/desktop/ui/mod.rs) use controlled Accordion with
+  stable IDs and separate collapse preference. Search/errors/unsupported choices
+  force open; closed inputs unmount and return focus to the disclosure.
+- Kit 0.7.1 AccordionTrigger is pointer-only; the approved label-focus adapter
+  scopes Enter/Space away from inputs/popups. Ignore no-op content clicks.
+  `controlled_group_` verifies these contracts. Workspace Button keyboard tests
+  use Tab and the observed `workspace-files` wrapper, not pointer-focus assumptions.
 - [Application menus](../../src/desktop/ui/files.rs) route File actions with a
   distinct AppFileCommand, preserving the open document despite suite-row focus.
   The shared registry is copied only on changed flags. Public scoped Cancel
@@ -42,9 +49,8 @@ Verified: 2026-10-07
   The two `root_overlay_` tests pass for single dialog mounting, pointer/Escape
   dismissal, focus return and workbench release after closing the window.
 - The schema jump/hover/save-guard test failed on both retained 0.6.1 and 0.7.1
-  binaries when diagnostic 3 was offscreen. Scrolling the diagnostic table
-  before clicking preserves all cursor, hover, draft and save assertions; the
-  focused native test passes. Visibility checks must exercise actual scrolling.
+  binaries on offscreen diagnostic 3. Scroll before clicking; preserve every
+  cursor, hover, draft and save assertion.
 - [Action viewport choices](../../src/desktop/ui/choices.rs) reuse the native
   list picker and effective consumer labels. Workspace diagnostics call the
   shared CLI validator, point to own/inherited action fields, and retain invalid

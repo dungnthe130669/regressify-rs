@@ -1,6 +1,7 @@
 # 013: Controlled Collapsible Groups
 
-Status: Not started. Depends on 001 and 004.
+Status: Acceptance passed; authorized local commit pending. Depends on completed
+001 and 004. Approved compact-header exception remains owned by task 019.
 
 ## Scope
 
@@ -37,3 +38,24 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 Commit groups/tests/maintenance only. Reopen if controlled multi-open or
 independent user preference cannot be preserved. Keep tri-state checkboxes and
 flat page sections; do not add nested decorative cards.
+
+## Approved Implementation Decision
+
+The released AccordionTrigger has no focus/keyboard setup. The new actual
+pointer-then-Space test reproduced failed activation after collapse while the
+whole-group error test passed. The owner explicitly approved a scoped public
+focus/keyboard adapter retaining styled Accordion, with no toolkit edits.
+Keep the unchanged failing assertion and extend coverage for Enter/Space,
+actual focus, modified keys, hosted inputs, forced-open state and native names.
+
+The final `controlled_group_` filter passes five cases. Fields, workspace files
+and activity use controlled toolkit disclosures; errors/search preserve the
+separate collapse preference, and closed fields unmount with focus recovery.
+Existing field/navigation/log/root checks, production Clippy/build, Rustfmt,
+guidance and native Schema/default checks pass. Final native checks positively
+establish Fields and the actual filter before testing collapse restoration.
+
+The user approved selecting themes at wide size for intermediate body checks
+after native evidence showed compact title-bar clipping. Task 019 must repair
+the header and remove the workaround; the existing Linux exception is unchanged.
+Exact outcomes, screenshot review and code accounting are in the bundle README.

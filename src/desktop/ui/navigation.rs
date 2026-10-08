@@ -1366,16 +1366,15 @@ impl Workbench {
             .enumerate()
             .filter(|(_, entry)| entry.kind != DocumentKind::Suite)
             .collect::<Vec<_>>();
-        let mut section = div()
-            .flex()
-            .flex_col()
+        let mut section = gpui_kit::component::collapsible::Collapsible::new()
+            .open(self.workspace_files_open)
             .flex_shrink_0()
             .border_t_1()
             .border_color(cx.theme().border)
             .child(
                 Button::new("workspace-files-toggle")
                     .ghost()
-                    .small()
+                    .open(self.workspace_files_open)
                     .w_full()
                     .justify_start()
                     .icon(if self.workspace_files_open {
@@ -1483,7 +1482,7 @@ impl Workbench {
                         })),
                 );
             }
-            section = section.child(div().id("workspace-files").test_support().child(
+            section = section.content(div().id("workspace-files").test_support().child(
                 files.scrollbar(&self.workspace_list.scroll, scroll::ScrollbarAxis::Vertical),
             ));
         }

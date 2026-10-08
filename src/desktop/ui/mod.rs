@@ -172,6 +172,7 @@ pub struct Workbench {
     field_search: Entity<InputState>,
     overrides_only: bool,
     collapsed_fields: BTreeSet<usize>,
+    field_group_focus: [FocusHandle; 6],
     viewport_choices: choices::ViewportChoices,
     updates: Entity<updates::UpdatePanel>,
     deployment: Entity<deployment::DeploymentPanel>,
@@ -446,6 +447,7 @@ impl Workbench {
             field_search,
             overrides_only: false,
             collapsed_fields: BTreeSet::new(),
+            field_group_focus: std::array::from_fn(|_| cx.focus_handle().tab_index(0)),
             viewport_choices: choices::ViewportChoices::default(),
             updates: cx.new(|_| updates::UpdatePanel::default()),
             deployment: cx.new(|cx| deployment::DeploymentPanel::new(window, cx)),
@@ -1568,6 +1570,7 @@ impl Workbench {
         {
             Ok(()) => {
                 self.field_errors.remove(&field.key);
+                self.restore_collapsed_field_focus(field, window, cx);
                 self.refresh_value();
                 self.refresh_effective(window, cx);
                 if let Some(open) = &self.session.open {
@@ -1987,6 +1990,135 @@ impl Workbench {
         cx.notify();
     }
 
+    fn field_has_error(&self, field: &Field) -> bool {
+        if self.field_errors.contains_key(&field.key) {
+            return true;
+        }
+        let value = self
+            .value
+            .pointer(&self.session.selection.path())
+            .and_then(|selected| selected.get(&field.key))
+            .unwrap_or(&Value::Null);
+        !value.is_null()
+            && matches!(&field.kind, FieldKind::Choice(choices) if !choices.contains(&field.display(value)))
+    }
+
+    fn restore_collapsed_field_focus(
+        &self,
+        field: &Field,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let action = matches!(self.session.selection, Selection::Action { .. });
+        let group = if action {
+            0
+        } else {
+            design::group(&field.key).0
+        };
+        if !self.collapsed_fields.contains(&group)
+            || !self.field_search.read(cx).value().trim().is_empty()
+            || self.bindings.iter().any(|binding| {
+                (action || design::group(&binding.field.key).0 == group)
+                    && self.field_has_error(&binding.field)
+            })
+        {
+            return;
+        }
+        let owns_focus = self.bindings.iter().any(|binding| {
+            if !action && design::group(&binding.field.key).0 != group {
+                return false;
+            }
+            match &binding.control {
+                Control::Input(input) => input.read(cx).focus_handle(cx).is_focused(window),
+                Control::Textarea(input) => input.read(cx).focus_handle(cx).is_focused(window),
+                Control::Choice(input) => input.read(cx).focus_handle(cx).is_focused(window),
+                Control::Boolean => false,
+            }
+        });
+        if owns_focus {
+            window.focus(&self.field_group_focus[group], cx);
+        }
+    }
+
+    fn render_field_group(
+        &self,
+        group: (usize, &'static str),
+        content: Form,
+        forced: bool,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let open = forced || !self.collapsed_fields.contains(&group.0);
+        div()
+            .id(("field-group", group.0))
+            .test_support()
+            .flex_shrink_0()
+            .child(
+                gpui_kit::component::accordion::Accordion::new("field-disclosure")
+                    .multiple(true)
+                    .bordered(false)
+                    .h_auto()
+                    .item(|item| {
+                        item.open(open)
+                            .title(
+                                div()
+                                    .id("field-group-title")
+                                    .role(Role::Label)
+                                    .aria_value(group.1)
+                                    .aria_expanded(open)
+                                    .track_focus(&self.field_group_focus[group.0])
+                                    .rounded(cx.theme().radius)
+                                    .border_1()
+                                    .border_color(cx.theme().transparent)
+                                    .focus({
+                                        let ring = cx.theme().ring;
+                                        move |style| style.border_color(ring)
+                                    })
+                                    .on_key_down(cx.listener(
+                                        move |this, event: &KeyDownEvent, window, cx| {
+                                            if event.keystroke.modifiers != Modifiers::default()
+                                                || !matches!(event.keystroke.key.as_str(), "enter" | "space")
+                                                || !this.field_group_focus[group.0].is_focused(window)
+                                                || gpui_kit::base::GlobalState::is_in_deferred_context(cx)
+                                            {
+                                                return;
+                                            }
+                                            if open {
+                                                this.collapsed_fields.insert(group.0);
+                                            } else {
+                                                this.collapsed_fields.remove(&group.0);
+                                            }
+                                            window.prevent_default();
+                                            cx.stop_propagation();
+                                            cx.notify();
+                                        },
+                                    ))
+                                    .child(group.1),
+                            )
+                                .when(open, |item| item.child(content))
+                    })
+                    .on_toggle_click({
+                        let view = cx.entity().downgrade();
+                        move |indices, window, cx| {
+                            let requested_open = indices.contains(&0);
+                            // Content clicks bubble too; only a trigger transition changes preference.
+                            if requested_open == open {
+                                return;
+                            }
+                            let _ = view.update(cx, |this, cx| {
+                                if requested_open {
+                                    this.collapsed_fields.remove(&group.0);
+                                } else {
+                                    this.collapsed_fields.insert(group.0);
+                                }
+                                window.focus(&this.field_group_focus[group.0], cx);
+                                cx.notify();
+                            });
+                        }
+                    }),
+            )
+            .into_any_element()
+    }
+
     fn render_fields(&self, cx: &mut Context<Self>) -> AnyElement {
         let selected = self
             .value
@@ -2019,13 +2151,14 @@ impl Workbench {
         });
         let mut current_group = None;
         let mut section = Form::new().columns(2);
+        let mut group_error = false;
         let mut matching = 0;
         for (_, binding) in bindings {
             let field = &binding.field;
             let explicit = selected
                 .get(&field.key)
                 .is_some_and(|value| !value.is_null());
-            let error = self.field_errors.contains_key(&field.key);
+            let error = self.field_has_error(field);
             let group = if action {
                 (0, "Action properties")
             } else {
@@ -2073,10 +2206,15 @@ impl Workbench {
                 continue;
             }
             matching += 1;
-            if current_group != Some(group.0) {
-                if current_group.is_some() {
-                    form = form.child(section);
-                    if current_group == Some(0)
+            if current_group != Some(group) {
+                if let Some(previous) = current_group {
+                    form = form.child(self.render_field_group(
+                        previous,
+                        section,
+                        group_error || !query.is_empty(),
+                        cx,
+                    ));
+                    if previous.0 == 0
                         && query.is_empty()
                         && !self.overrides_only
                         && let Selection::Scenario(scenario) = self.session.selection
@@ -2084,42 +2222,11 @@ impl Workbench {
                         form = form.child(self.render_sequence(scenario, cx));
                     }
                 }
-                let collapsed = self.collapsed_fields.contains(&group.0) && query.is_empty();
-                form = form.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .pt_1()
-                        .child(
-                            Button::new(("field-group", group.0))
-                                .ghost()
-                                .small()
-                                .icon(if collapsed {
-                                    IconName::ChevronRight
-                                } else {
-                                    IconName::ChevronDown
-                                })
-                                .label(group.1)
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if !this.collapsed_fields.remove(&group.0) {
-                                        this.collapsed_fields.insert(group.0);
-                                    }
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            gpui_kit::component::separator::Separator::horizontal()
-                                .flex_1()
-                                .min_w_0(),
-                        ),
-                );
                 section = Form::new().columns(2);
-                current_group = Some(group.0);
+                current_group = Some(group);
+                group_error = false;
             }
-            if self.collapsed_fields.contains(&group.0) && query.is_empty() && !error {
-                continue;
-            }
+            group_error |= error;
             let value = selected.get(&field.key).unwrap_or(&Value::Null);
             let explicit = !value.is_null();
             let field_id = SharedString::from(format!("field-{}", field.key));
@@ -2307,8 +2414,13 @@ impl Workbench {
             }
             section = section.child(row.when(wide, |field| field.col_span(2)));
         }
-        if current_group.is_some() {
-            form = form.child(section);
+        if let Some(group) = current_group {
+            form = form.child(self.render_field_group(
+                group,
+                section,
+                group_error || !query.is_empty(),
+                cx,
+            ));
         }
         if query == "actions"
             && let Selection::Scenario(scenario) = self.session.selection

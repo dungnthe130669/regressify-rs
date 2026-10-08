@@ -4402,6 +4402,14 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
             window.find(("live-status", 2_usize)).label(),
             Some("Failed")
         );
+        window.click("toggle-suite-account", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).runs.read(cx).group_collapsed("account"));
+        assert!(window.find(("live-status", 2_usize)).visible());
+        window.press("space", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).runs.read(cx).group_collapsed("account"));
+        assert!(window.find(("live-status", 2_usize)).visible());
         assert_eq!(
             window.find("run-outcome-heading").label(),
             Some("1 failed, 1 passed")
@@ -4427,6 +4435,18 @@ fn live_dashboard_tracks_parallel_scenarios_and_filters_failures(cx: &mut TestAp
         );
         assert!(window.try_find("activity-view-results").is_none());
         assert!(window.find("activity-view-log").visible());
+        window.click("activity-failed-only", cx);
+        view.update(cx, |this, cx| {
+            this.runs.update(cx, |panel, cx| {
+                panel.manager.progress.scenarios.get_mut(&2).unwrap().status =
+                    crate::progress::Status::Passed;
+                cx.notify();
+            });
+        });
+        window.render_frame(cx);
+        assert!(view.read(cx).runs.read(cx).group_collapsed("account"));
+        assert!(window.try_find(("live-status", 2_usize)).is_none());
+        assert!(window.try_find(("live-status", 1_usize)).is_some());
     })
     .unwrap();
 }
@@ -6643,6 +6663,336 @@ async fn setting_search_reveals_advanced_fields_without_changing_the_draft(
                 .is_none()
         );
         assert!(window.try_find("field-debug").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn controlled_group_errors_expand_peers_without_changing_collapse_preference(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.select(Selection::Root, window, cx);
+            this.select_editor_tab(0, window, cx);
+            this.collapsed_fields.extend([1, 3]);
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("field-misMatchThreshold").is_none()
+            && window.try_find("field-asyncCompareLimit").is_none()
+    })
+    .await;
+    let source = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("field-misMatchThreshold").is_none());
+        assert!(window.try_find("field-asyncCompareLimit").is_none());
+        view.update(cx, |this, cx| {
+            this.field_errors
+                .insert("pixelMatchThreshold".into(), "Invalid threshold".into());
+            this.field_errors
+                .insert("asyncCaptureLimit".into(), "Invalid concurrency".into());
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("field-misMatchThreshold").is_some());
+        assert!(window.try_find("field-asyncCompareLimit").is_some());
+        assert!(view.read(cx).collapsed_fields.contains(&1));
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        view.update(cx, |this, cx| {
+            this.field_errors.remove("pixelMatchThreshold");
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("field-misMatchThreshold").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("field-misMatchThreshold").is_none());
+        assert!(window.try_find("field-asyncCompareLimit").is_some());
+        view.update(cx, |this, cx| {
+            this.field_errors.clear();
+            cx.notify();
+        });
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("field-asyncCompareLimit").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.try_find("field-asyncCompareLimit").is_none());
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            source
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn controlled_group_trigger_supports_pointer_then_keyboard_activation(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.select(Selection::Root, window, cx);
+            this.select_editor_tab(0, window, cx);
+        });
+        window.render_frame(cx);
+        window
+            .within(("field-group", 0_usize))
+            .click(("trigger", 0_usize), cx);
+        assert!(view.read(cx).collapsed_fields.contains(&0));
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("field-displayName").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("space", cx);
+        assert!(
+            !view.read(cx).collapsed_fields.contains(&0),
+            "Space must activate the disclosure that was focused by the pointer"
+        );
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn controlled_group_search_and_error_restore_preference_without_losing_input(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.select(Selection::Root, window, cx);
+            this.select_editor_tab(0, window, cx);
+        });
+        window.render_frame(cx);
+        window.click("field-search", cx);
+        window.input("asyncCaptureLimit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let input = numeric_input_id(&view, "asyncCaptureLimit", cx);
+        window.within("field-asyncCaptureLimit").click(input, cx);
+        assert!(!view.read(cx).collapsed_fields.contains(&3));
+        window.press("ctrl-a", cx);
+        window.input("-", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).field_errors.contains_key("asyncCaptureLimit")
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within(("field-group", 3_usize))
+            .click(("trigger", 0_usize), cx);
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        window.press("space", cx);
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        window.click("field-search", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("field-asyncCompareLimit").is_some());
+        let input = numeric_input_id(&view, "asyncCaptureLimit", cx);
+        assert_eq!(
+            window
+                .within("field-asyncCaptureLimit")
+                .find(input.clone())
+                .value(),
+            Some("-")
+        );
+        window.within("field-asyncCaptureLimit").click(input, cx);
+        window.press("ctrl-a", cx);
+        window.input("6", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !view.read(cx).field_errors.contains_key("asyncCaptureLimit")
+            && window.try_find("field-asyncCompareLimit").is_none()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        assert_eq!(
+            view.read(cx).session.value().unwrap()["asyncCaptureLimit"],
+            6
+        );
+        assert!(view.read(cx).field_group_focus[3].is_focused(window));
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+async fn controlled_group_filter_identity_and_workspace_keyboard_preserve_drafts(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.workspace_files_open = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("workspace-files-toggle", cx);
+        window.render_frame(cx);
+        assert!(!view.read(cx).workspace_files_open);
+        assert!(window.try_find("workspace-files").is_none());
+        for _ in 0..128 {
+            if window.find("workspace-files-toggle").focused() == Some(true) {
+                break;
+            }
+            window.press("tab", cx);
+            window.render_frame(cx);
+        }
+        assert_eq!(window.find("workspace-files-toggle").focused(), Some(true));
+        window.press("space", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).workspace_files_open);
+        assert!(window.try_find("workspace-files").is_some());
+        let first_file = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.kind != crate::desktop::document::DocumentKind::Suite)
+            .unwrap();
+        assert!(
+            window
+                .within("workspace-files")
+                .try_find(("file", first_file))
+                .is_some()
+        );
+        view.update(cx, |this, cx| {
+            this.select(Selection::Root, window, cx);
+            this.select_editor_tab(0, window, cx);
+            this.collapsed_fields.extend([1, 3]);
+            this.bindings.reverse();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.click("field-search", cx);
+        window.input("pixelMatchThreshold", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("field-group", 1_usize)).is_some());
+        assert!(window.try_find(("field-group", 3_usize)).is_none());
+        window
+            .within(("field-group", 1_usize))
+            .click(("trigger", 0_usize), cx);
+        window.press("enter", cx);
+        assert!(view.read(cx).collapsed_fields.contains(&1));
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        window.click("field-search", cx);
+        window.press("ctrl-a", cx);
+        window.input("asyncCaptureLimit", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find(("field-group", 1_usize)).is_none());
+        assert!(window.try_find(("field-group", 3_usize)).is_some());
+        assert!(view.read(cx).collapsed_fields.contains(&1));
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        window.click("field-search", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(window.try_find("field-pixelMatchThreshold").is_none());
+        assert!(window.try_find("field-asyncCaptureLimit").is_none());
+        window.click("expand-fields", cx);
+        window.render_frame(cx);
+        assert!(view.read(cx).collapsed_fields.is_empty());
+        assert!(window.try_find("field-pixelMatchThreshold").is_some());
+        assert!(window.try_find("field-asyncCaptureLimit").is_some());
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn controlled_group_unknown_choice_forces_open_without_rewriting_source(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let source = "browser: mystery\nscenarios:\n  - url: https://example.test/\n";
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session.open.as_mut().unwrap().document = super::Document::new(
+                super::DocumentKind::Suite,
+                super::Format::Yaml,
+                source.into(),
+            )
+            .unwrap();
+            this.session.selection = Selection::Root;
+            this.sync_editor(window, cx);
+            this.tab = 0;
+            this.collapsed_fields.insert(3);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(!view.read(cx).field_errors.contains_key("browser"));
+        assert!(window.try_find("choice-error-browser").is_some());
+        assert!(window.try_find("field-asyncCompareLimit").is_some());
+        assert_eq!(window.find("field-browser").value(), Some("mystery"));
+        assert!(view.read(cx).collapsed_fields.contains(&3));
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            source
+        );
     })
     .unwrap();
 }

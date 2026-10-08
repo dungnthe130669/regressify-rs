@@ -12,6 +12,11 @@ pub(crate) fn status_color(status: Status, cx: &App) -> Hsla {
 }
 
 impl RunPanel {
+    #[cfg(test)]
+    pub(in crate::desktop::ui) fn group_collapsed(&self, suite: &str) -> bool {
+        self.collapsed.contains(suite)
+    }
+
     fn outcome_heading(&self) -> String {
         let comparisons = self.manager.progress.comparison_counts(None);
         let counts = if comparisons.total > 0 {
@@ -359,7 +364,7 @@ impl RunPanel {
                 if self.failed_only && counts.failed == 0 {
                     continue;
                 }
-                let expanded = !self.collapsed.contains(&suite.id);
+                let expanded = counts.failed > 0 || !self.collapsed.contains(&suite.id);
                 let state = suite_status(counts, suite.finished || progress.finished);
                 let label = self
                     .suites
@@ -367,8 +372,7 @@ impl RunPanel {
                     .find(|entry| entry.output_id == suite.id)
                     .map(|entry| entry.label())
                     .unwrap_or(&suite.name);
-                content =
-                    content.child(self.suite_header(&suite.id, label, counts, state, expanded, cx));
+                let mut group_rows = div().flex().flex_col().gap_3();
                 if expanded {
                     for scenario in progress
                         .scenarios
@@ -386,7 +390,7 @@ impl RunPanel {
                         });
                         let status = scenario.status;
                         let job_id = scenario.job.id;
-                        content = content.child(
+                        group_rows = group_rows.child(
                             Button::new(("live-row", scenario.job.id))
                                 .ghost()
                                 .w_full()
@@ -520,6 +524,21 @@ impl RunPanel {
                         );
                     }
                 }
+                content =
+                    content.child(
+                        div()
+                            .id(SharedString::from(format!("activity-group-{}", suite.id)))
+                            .test_support()
+                            .child(
+                                gpui_kit::component::collapsible::Collapsible::new()
+                                    .open(expanded)
+                                    .gap_3()
+                                    .child(self.suite_header(
+                                        &suite.id, label, counts, state, expanded, cx,
+                                    ))
+                                    .content(group_rows),
+                            ),
+                    );
             }
         } else {
             for suite in self
@@ -527,7 +546,8 @@ impl RunPanel {
                 .iter()
                 .filter(|suite| self.selection.contains(&suite.name))
             {
-                content = content.child(self.suite_header(
+                let expanded = !self.collapsed.contains(&suite.output_id);
+                let header = self.suite_header(
                     &suite.output_id,
                     suite.label(),
                     Counts {
@@ -536,16 +556,17 @@ impl RunPanel {
                         ..Default::default()
                     },
                     Status::Queued,
-                    !self.collapsed.contains(&suite.output_id),
+                    expanded,
                     cx,
-                ));
-                if !self.collapsed.contains(&suite.output_id) {
+                );
+                let mut group_rows = div().flex().flex_col().gap_3();
+                if expanded {
                     for scenario in suite
                         .scenarios
                         .iter()
                         .filter(|scenario| self.scenario_selected(&suite.name, &scenario.id))
                     {
-                        content = content.child(
+                        group_rows = group_rows.child(
                             div()
                                 .flex()
                                 .items_center()
@@ -573,6 +594,21 @@ impl RunPanel {
                         );
                     }
                 }
+                content = content.child(
+                    div()
+                        .id(SharedString::from(format!(
+                            "activity-group-{}",
+                            suite.output_id
+                        )))
+                        .test_support()
+                        .child(
+                            gpui_kit::component::collapsible::Collapsible::new()
+                                .open(expanded)
+                                .gap_3()
+                                .child(header)
+                                .content(group_rows),
+                        ),
+                );
             }
             if self.selection.is_empty() {
                 content = content.child(
@@ -959,16 +995,19 @@ impl RunPanel {
             .child(
                 Button::new(SharedString::from(format!("toggle-suite-{id}")))
                     .ghost()
-                    .xsmall()
+                    .open(expanded)
                     .icon(if expanded {
                         IconName::ChevronDown
                     } else {
                         IconName::ChevronRight
                     })
                     .tooltip("Expand or collapse suite")
+                    .accessibility_label(format!("Expand or collapse suite {name}"))
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed.remove(&id) {
+                        if expanded {
                             this.collapsed.insert(id.clone());
+                        } else {
+                            this.collapsed.remove(&id);
                         }
                         cx.notify();
                     })),

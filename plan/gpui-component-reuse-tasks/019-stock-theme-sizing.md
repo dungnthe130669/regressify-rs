@@ -42,3 +42,15 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 skills for any defects touched. Commit stock theme/sizing, evidence-based layout
 changes, tests and maintenance only. Reopen for insufficient contrast or focus,
 lost specialized geometry, or a minimum above the approved ceiling.
+
+## Open Deferral From Task 013
+
+Native Schema smoke at the compact width clipped the appearance control and
+timed out finding Dark; disclosure checks themselves passed in light mode.
+The owner approved selecting themes at a wide size before retaining all requested
+compact/large body assertions and screenshots in Schema/default smoke.
+
+This task owns the actual title-bar fit repair, native theme switching at the
+chosen minimum without widening, and removal of the temporary smoke workaround.
+The exception does not count as green compact-header acceptance and does not
+authorize raising the minimum without the required layout evidence.

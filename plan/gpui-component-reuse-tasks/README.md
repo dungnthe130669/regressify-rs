@@ -1,8 +1,8 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-011 committed. Task 012 application menus pass
-acceptance and await their authorized local commit. The approved Linux
-baseline exception remains in force.
+Status: Planning and tasks 001-012 committed. Task 013 controlled groups passes
+acceptance and awaits its authorized local commit. The approved Linux baseline
+and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -87,8 +87,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; committed as `b77d5a6`.
 - [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; committed as `41fd5cc`.
 - [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; committed as `521e14f`.
-- [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; commit pending.
-- [ ] 013 Collapsible groups: not started; form prerequisite satisfied.
+- [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; committed as `6b0fbf8`.
+- [x] 013 Collapsible groups: Fields/workspace/activity, focused/native checks and production gates pass; commit pending, task 019 header exception recorded.
 - [ ] 014 Flat collections: not started.
 - [ ] 015 Git Tree: not started; awaits 014.
 - [ ] 016 Overview Table: not started.
@@ -498,8 +498,85 @@ When a task changes state, record the exact focused command, exact outcome and n
 - GUI Clippy/build and diagnostics pass; final Rustfmt/maintenance checks follow.
   Production +141/-25 (net +116), tests +352/-3; state is one bar, non-tab-stop
   focus scope and enabled-flag snapshot, with an eight-line cleanup helper.
-  macOS fallback remains unexecuted on Windows. Task 012 awaits its local commit;
+  macOS fallback remains unexecuted on Windows. Task 012 is committed as `6b0fbf8`;
   no new deferral, and the Linux exception/task 020 remain.
+
+### Task 013 Verification
+
+- Resumed from clean `dc64241`; task 012's `6b0fbf8` commit and acceptance body
+  verified independently of the stale pending-commit notes.
+- Pre-edit baselines with ephemeral `CARGO_INCREMENTAL=0` pass:
+  `setting_search_` (1), `navigator_` (7), `run_log_` (7), and
+  `live_dashboard_tracks_parallel_scenarios_and_filters_failures` (1), using
+  `cargo test --locked --features gui-tests --lib <filter> -- --test-threads=1`.
+- New `controlled_group_errors_expand_peers_without_changing_collapse_preference`
+  failed before the change because a sibling field remained hidden. The Fields
+  Accordion pilot passes it after accounting for the kit's animated panel
+  mounting with bounded waits; all absence/presence assertions remain.
+- The actual pointer-then-Space regression reproduced a 0.7.1 trigger keyboard
+  gap: the focused filter had 1 pass and 1 failure. The owner approved a scoped
+  public focus/keyboard adapter, not a toolkit edit or weaker assertion.
+- The approved pilot retains one focus handle per stable field group, guards
+  Enter/Space by actual label focus and modifiers, yields to open popups, and
+  leaves field input keys alone. Content clicks do not change forced-open
+  collapse preference. `controlled_group_` now passes 2 tests with the same
+  command flags; task 013 is not yet complete or committed.
+- Remaining: overlapping forced-state and interaction tests, navigation/activity
+  disclosure migration, native smoke/screenshots, feature gates, documentation,
+  guidance and final code accounting. Tasks 014-020 remain unstarted.
+- Subsequent focused checks pass: `controlled_group_` (5), `numeric_stepper_`
+  (2), `setting_search_` (1), `workspace_files_` (3), and the expanded live
+  dashboard regression (1). The unsupported-choice regression failed before
+  extending the forcing predicate. Existing numeric collapse assertions remain
+  unchanged; closed form content now unmounts immediately.
+- The owner approved correcting the new workspace test's observation target to
+  the existing `workspace-files` wrapper and a real file row. Actual Tab focus
+  precedes Space because styled Button intentionally avoids pointer-down focus.
+- Schema smoke now includes disclosure focus, forced unknown-choice visibility,
+  clearing conditions, exact source, and both window sizes/themes. Headless
+  harness passes (18 modules, 49 helpers, 45 dispatch/cleanup cases); native
+  execution and final production/guidance gates are still pending.
+- Final candidate: `controlled_group_` (5), `setting_search_` (1), `navigator_`
+  (7), `run_log_` (7), `root_overlay_` (2), and the existing unknown-value/reset
+  selector test (1) pass. Numeric checks (2), workspace files (3), and the
+  expanded live-dashboard failure/preference test (1) also pass. All commands
+  use locked gui-tests, lib filters, one test thread and `CARGO_INCREMENTAL=0`.
+- Rustfmt, production GUI Clippy with `-D warnings`, desktop build and editor
+  diagnostics pass. Guidance self-tests pass 10/10; validation passes for 46
+  skills using existing `target/release-test-deps` on temporary PYTHONPATH. The
+  first plain-Python attempt lacked PyYAML; no global package was installed.
+- Native Schema and default smoke pass in fresh STA hosts with preferences,
+  clipboard and drafts restored. Initial attempts stopped at process/focus
+  prerequisites. The user-approved header exception is recorded below.
+- Screenshot review caught a false-positive absence check while still in Source.
+  Final Schema smoke explicitly waits for Fields and verifies the actual search
+  input before disclosure clicks. The unchanged focus/state/source assertions
+  pass at both sizes/themes; reviewed final forced/restored Fields screenshots,
+  default compact views and activity output. No native header-fit pass is claimed.
+- Production owners are +202/-57 (net +145), excluding the five-line test-only
+  activity accessor; UI tests add 350 lines. Smoke changes are separate coverage.
+  Six retained group focus handles implement the approved adapter; no document
+  state, new subscriptions, toolkit code or dependency changes were introduced.
+- Task 013 is ready for its local commit. Tasks 014-020 remain unstarted;
+  task 019 owns the compact header repair and task 020 owns fresh final gates.
+
+### Approved Compact Header Exception
+
+- Origin: task 013 native Schema retry passed disclosure/focus/source checks in
+  large and compact light layouts, then failed `Native control 'Dark' was not
+  found`. The compact screenshot (requested 1000x720, rendered 1016x720) shows
+  the appearance control clipped beyond the title bar's right edge.
+- Owner decision: defer compact header fit to existing task 019 and select themes
+  at a wide size before exercising compact/large body checks. Schema/default
+  smoke retain their original assertions and capture dimensions. This is not
+  passing compact-titlebar evidence and does not authorize an increased minimum.
+- Temporary rationale: task 013's disclosure, draft, focus and body geometry can
+  be verified in both themes without changing application data or bypassing any
+  operation guard. All other required task checks must still pass before commit.
+- Closure owner: task 019 must keep all title-bar controls visible/actionable at
+  the evidence-based minimum (at most 1200x720), verify native theme switching
+  there without widening, and remove this workaround before final task 020
+  acceptance. Keep the source plan and bundle; no release is authorized.
 
 ### Approved Linux Baseline Exception
 

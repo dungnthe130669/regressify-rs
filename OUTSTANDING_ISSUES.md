@@ -2,6 +2,29 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Controlled Disclosure Keyboard Compatibility (2026-10-08)
+
+- Mitigated locally: published Kit 0.7.1 AccordionTrigger lacks keyboard focus
+  and activation. A new pointer-then-Space regression failed before the approved
+  public label-focus adapter in [Fields](src/desktop/ui/mod.rs).
+- Five `controlled_group_` cases cover raw/unsupported-choice errors, independent
+  collapse preference, actual input, keyboard activation, filter identity and
+  focus return. Native Schema verifies positive Fields/search state and exact
+  source at both sizes/themes. Rich workspace/activity headers keep toolkit
+  Buttons within Collapsible; no toolkit edits or new keyboard deferral remain.
+
+## Compact Desktop Header (2026-10-08)
+
+- Confirmed during task 013 native Schema smoke: at requested 1000x720
+  (1016x720 captured outer bounds), the title bar clips the appearance control
+  and the next Dark menu choice is unavailable. Disclosure/focus/source checks
+  passed in large and compact light mode before this failure.
+- The owner approved wide-size theme selection for intermediate Schema/default
+  body checks. [Task 019](plan/gpui-component-reuse-tasks/019-stock-theme-sizing.md)
+  owns actual header fit, native theme switching at the approved minimum without
+  widening, and removal of the workaround before final acceptance. This is not
+  green compact-header evidence or permission to exceed the 1200x720 ceiling.
+
 ## GPUI Upgrade Baseline (2026-10-06)
 
 - Resolved in the native test: the schema jump/hover/save-guard test clicked its

@@ -37,6 +37,61 @@ function Test-SchemaFlows {
             throw 'Switching Source and Fields changed the invalid draft.'
         }
     }
+    function Test-ControlledFieldGroups {
+        foreach ($theme in @('Light', 'Dark')) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
+            Select-Theme $theme
+            foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
+                [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+                $invalid = "browser: mystery`nscenarios: []`n"
+                Write-SchemaSource $invalid
+                Send-FixtureKeys Escape
+                Invoke-Control 'Fields' -Pointer
+                Wait-Control 'Overrides only' | Out-Null
+                Invoke-Control 'Find a setting' -Pointer
+                Send-FixtureKeys A -Control
+                Send-FixtureText 'browser'
+                Wait-WindowState { (Read-ControlText 'Find a setting') -ceq 'browser' } 'The disclosure fixture did not enter its setting filter.'
+                Wait-Control 'Unsupported value' | Out-Null
+                Invoke-Control 'Execution' -Pointer
+                try {
+                    Wait-WindowState {
+                        [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'Execution'
+                    } 'The Fields disclosure did not retain native keyboard focus.'
+                } catch {
+                    $focused = [System.Windows.Automation.AutomationElement]::FocusedElement
+                    $fixtureFocus = $focused.Current.ProcessId -eq $process.Id
+                    $focusName = if ($fixtureFocus) { $focused.Current.Name } else { 'Outside fixture' }
+                    Write-Output ("Disclosure focus: name='{0}', type='{1}', fixtureProcess={2}" -f $focusName, $focused.Current.ControlType.ProgrammaticName, $fixtureFocus)
+                    Capture-Window 'controlled-fields-focus-failure'
+                    throw
+                }
+                Send-FixtureKeys Spacebar
+                Wait-Control 'Unsupported value' | Out-Null
+                Capture-Window ('controlled-fields-forced-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+                Invoke-Control 'Source' -Pointer
+                if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $invalid) {
+                    throw 'Disclosure interaction changed the invalid source draft.'
+                }
+                $valid = "browser: chromium`nscenarios: []`n"
+                Write-SchemaSource $valid
+                Send-FixtureKeys Escape
+                Invoke-Control 'Fields' -Pointer
+                Wait-Control 'Overrides only' | Out-Null
+                Invoke-Control 'Find a setting' -Pointer
+                Send-FixtureKeys A -Control
+                Send-FixtureKeys Backspace
+                Wait-WindowState { (Read-ControlText 'Find a setting') -ceq '' } 'The disclosure fixture did not clear its setting filter.'
+                Wait-Control 'Overrides only' | Out-Null
+                Wait-WindowState { $null -eq (Find-Control 'Browser') } 'Clearing search and the error did not restore the collapsed group preference.'
+                Capture-Window ('controlled-fields-restored-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+                Invoke-Control 'Source' -Pointer
+                if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $valid) {
+                    throw 'Restoring the collapse preference changed the corrected source.'
+                }
+            }
+        }
+    }
     function Test-SchemaCompletionTyping {
         $draft = "scenarios:`n  - url: /`n    de"
         Write-SchemaSource $draft
@@ -275,6 +330,7 @@ function Test-SchemaFlows {
     Invoke-Control 'schema.tests.yaml'
     Wait-Control 'Configuration source' | Out-Null
     Test-SchemaCompletionTyping
+    Test-ControlledFieldGroups
     $incomplete = "scenarios:`n  - url: https://example.com`n    actions:`n      - click:`n      - hover:`n"
     Write-SchemaSource $incomplete
     Send-FixtureKeys Escape
@@ -314,6 +370,7 @@ function Test-SchemaFlows {
     Test-SchemaIssueCopy 4
     if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $invalid) { throw 'Selecting issue text changed the source draft.' }
     foreach ($theme in @('Light', 'Dark')) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
@@ -356,6 +413,7 @@ function Test-SchemaFlows {
     Wait-Control $notice | Out-Null
     if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) { throw 'An external save replaced an unsaved desktop draft.' }
     foreach ($theme in @('Light', 'Dark')) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
         Select-Theme $theme
         foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
             [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
