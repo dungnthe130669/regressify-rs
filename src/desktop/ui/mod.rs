@@ -165,8 +165,8 @@ pub struct Workbench {
     suite_list: lists::ListState<PathBuf>,
     suite_menu_epoch: u64,
     scenario_list: lists::ListState<(PathBuf, usize)>,
-    workspace_list: lists::ListState<PathBuf>,
-    sequence_list: lists::ListState<(PathBuf, usize, usize)>,
+    workspace_list: Entity<navigation::WorkspaceListState>,
+    sequence_list: Entity<sequence::SequenceListState>,
     workspace_files_open: bool,
     selected_only: bool,
     field_search: Entity<InputState>,
@@ -378,6 +378,22 @@ impl Workbench {
         let app_menu_bar = gpui_kit::component::menu::AppMenuBar::new(cx);
         let app_menu_release =
             cx.on_release(|this, cx| design::release_app_menu(&this.app_menu_bar, cx));
+        let workspace_owner = cx.entity().downgrade();
+        let workspace_list = cx.new(|cx| {
+            navigation::WorkspaceListState::new(
+                navigation::WorkspaceFiles::new(workspace_owner),
+                window,
+                cx,
+            )
+        });
+        let sequence_owner = cx.entity().downgrade();
+        let sequence_list = cx.new(|cx| {
+            sequence::SequenceListState::new(
+                sequence::SequenceRows::new(sequence_owner),
+                window,
+                cx,
+            )
+        });
         Self {
             app_menu_bar,
             app_menu_focus: cx.focus_handle().tab_stop(false),
@@ -440,8 +456,8 @@ impl Workbench {
             suite_list: lists::ListState::new(cx),
             suite_menu_epoch: 0,
             scenario_list: lists::ListState::new(cx),
-            workspace_list: lists::ListState::new(cx),
-            sequence_list: lists::ListState::new(cx),
+            workspace_list,
+            sequence_list,
             workspace_files_open: false,
             selected_only: false,
             field_search,
@@ -2970,6 +2986,8 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_workspace_list(window, cx);
+        self.sync_sequence_list(window, cx);
         self.sync_app_menus(window, cx);
         self.sync_list_choice_pickers(window, cx);
         self.results

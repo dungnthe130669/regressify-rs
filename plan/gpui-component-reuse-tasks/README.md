@@ -1,8 +1,8 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-012 committed. Task 013 controlled groups passes
-acceptance and awaits its authorized local commit. The approved Linux baseline
-and task 019 compact-header exceptions remain in force.
+Status: Planning and tasks 001-013 committed. Task 014 flat collections is verified, pending commit;
+the workspace List pilot passes its focused checks.
+The approved Linux baseline and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -88,8 +88,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; committed as `41fd5cc`.
 - [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; committed as `521e14f`.
 - [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; committed as `6b0fbf8`.
-- [x] 013 Collapsible groups: Fields/workspace/activity, focused/native checks and production gates pass; commit pending, task 019 header exception recorded.
-- [ ] 014 Flat collections: not started.
+- [x] 013 Collapsible groups: Fields/workspace/activity and acceptance pass; committed as `ad26ca0`, with task 019 header exception recorded.
+- [x] 014 Flat collections: all surfaces and native acceptance verified; pending commit with the approved task 019 header exception.
 - [ ] 015 Git Tree: not started; awaits 014.
 - [ ] 016 Overview Table: not started.
 - [ ] 017 Command palette: not started.
@@ -557,8 +557,95 @@ When a task changes state, record the exact focused command, exact outcome and n
   activity accessor; UI tests add 350 lines. Smoke changes are separate coverage.
   Six retained group focus handles implement the approved adapter; no document
   state, new subscriptions, toolkit code or dependency changes were introduced.
-- Task 013 is ready for its local commit. Tasks 014-020 remain unstarted;
+- Task 013 is committed as `ad26ca0`. Task 014 is in progress; 015-020 remain unstarted;
   task 019 owns the compact header repair and task 020 owns fresh final gates.
+
+### Task 014 Verification
+
+- Fresh pre-edit baselines pass with locked gui-tests/lib/one test thread and
+  ephemeral `CARGO_INCREMENTAL=0`: `navigator_` (7), `workspace_files_` (3),
+  `image_previews_` (3), `scenario_sequence_` (1), `sequence_removal_` (1).
+- Workspace files now use retained Kit List/ListItem with stable selected paths,
+  weak deferred activation through the existing open guards, native scrolling,
+  no duplicate search, and retained filename/non-editable tooltips.
+- The initial scrolling test assumed every offscreen row had bounds and failed
+  on the 12-row virtualized case. The owner approved allowing an absent/offscreen
+  last row before scrolling; all exact short-list, post-scroll, drag, Home/End,
+  activation and binary assertions remain. Added 64-row cases in both themes
+  and sizes; final `workspace_files_` passes all 3 tests.
+- `flat_collection_workspace_` passes (1), covering reordered stable identity,
+  cursor versus activation, Up/Down wrapping, binary/busy guards and input-scope
+  exclusion. Toolkit deferred scrolling is followed by a layout frame before
+  inspecting existing Home/End bounds. No task 014 commit or native acceptance
+  is claimed by this pilot evidence; remaining surfaces are recorded below.
+- Capture rows now use Kit List/ListItem virtualization while the existing
+  controller preserves keyboard preview selection and approval cleanup. The
+  unchanged 152-capture scroll/filter test passes (1). `flat_collection_capture_`
+  passes (2): reordered refresh failed before unique-key restoration, and
+  duplicate-key clicks failed before catalog-scoped identity/activation guards.
+- The bounded action-sequence delegate migrated only sequence ownership/rendering
+  and its tests. UI-only IDs follow known moves/duplicates and ambiguous external
+  duplicates invalidate the cursor. Existing `scenario_sequence_` (1) and
+  `sequence_removal_` (1) pass; `sequence_identity_` (2) and
+  `flat_collection_sequence_` (3) pass (one test overlaps those last filters).
+- Suite/scenario rows now use ListItem selected/secondary presentation while
+  retaining named Buttons, explicit actions, managed menu scope and the existing
+  checked-range controller. Final `navigator_` passes all 7 cases. No native
+  task 014 acceptance or commit is claimed yet; broad gates follow integration.
+- First integrated `cargo test --locked --features gui-tests --lib desktop::ui
+  -- --test-threads=1 --quiet`: 250 passed, 6 failed. Production GUI Clippy,
+  desktop build, rustfmt and guidance checks passed (10 validator self-tests,
+  46 discoverable skills). This was not a passing UI gate.
+- Isolated `git archive` of `ad26ca0`, with the same dependency lock and exact
+  filters, reproduced five failures: `missing_output_has_a_recoverable_empty_results_view`,
+  `compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes`,
+  `suite_commands_request_execution_directly_and_keep_editor_state`,
+  `panel_tabs_align_with_content_at_both_window_sizes`, and
+  `git_large_tree_and_status_fit_compact_and_wide_windows`. The independent
+  preview-mode test passed on that baseline and failed in the candidate.
+- Owner approved adjacent field-remount timing and Run-tab alignment repairs,
+  retaining only the existing title-bar exception. A diagnostic preserved the
+  failing immediate visibility assertion and proved the URL field becomes visible
+  on the next layout frame with unchanged bounds. The three affected tests now
+  render that frame before their unchanged visibility assertions; all three pass.
+- Run toolbar padding now matches the existing panel/tab inset. The unchanged
+  alignment test failed at 270px versus 263px before the fix and passes afterward
+  in both themes/sizes. No geometry assertion was relaxed.
+- The zoom fixture reused one image path for five captures, accidentally giving
+  them duplicate keys. Unique `fileName` values now express its five identities
+  without changing image data, legacy scenario IDs or any zoom assertions;
+  `image_previews_` passes all 3 tests. The separate duplicate-key regression now
+  explicitly verifies refresh fallback, approval dismissal and distinct row clicks.
+  Final `flat_collection_capture_` passes 2 tests.
+- The Git long-status header failure also reproduces at `ad26ca0` and remains
+  with the owner-approved task 019 title-bar exception below. The full UI gate
+  will continue reporting it; do not suppress or mark that test passing.
+- Final integrated rerun: 255 passed, 1 failed, 0 ignored, 903 filtered out
+  (1263.53s), using the same full `desktop::ui` command without exclusions.
+  The sole failure is the approved task 019 Git header assertion. GUI Clippy
+  with `-D warnings`, the desktop build, rustfmt, guidance validation and all
+  10 guidance self-tests pass. No broader CLI, Linux or worker gate is claimed.
+- Current-binary native default, Schema, Comparison and Artifact flows pass
+  through `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild` with
+  the matching flow switch. Schema's first attempt stopped at the focus guard;
+  the owner confirmed readiness and the retry passed. Preferences, clipboard
+  and synthetic drafts were restored; no focus or operation guard was bypassed.
+- Inspected `editor.png`, `editor-compact.png`,
+  `comparison-light-1600-fit.png`, `comparison-dark-1080-fit.png`,
+  `run-settings-dark-compact.png`, `controlled-fields-forced-dark-1000.png` and
+  `suite-context-menu.png` under `target/desktop-smoke`. Row content, selection,
+  sequence controls, image panes and context menus render in the expected body
+  layouts. Compact header clipping remains the explicit exception, not a pass.
+- Production line net by owner: Workbench +18, navigation +150, reports +112,
+  runs +1, sequence +310, total +591. Test net: reports +139, sequence +497,
+  UI tests +157, total +793. Three retained Kit List entities replace two manual
+  list states and one capture scroll handle; weak owners, sequence snapshots/IDs
+  and capture catalog generation support identity guards. No new application
+  subscriptions, dependency edits or toolkit fork. Existing suite/scenario
+  selection controllers remain. Reviewed callback scope, busy/draft checks,
+  weak ownership, refresh ambiguity and known action permutations.
+- Task 014 acceptance is complete with the approved header exception; the local
+  commit is pending. Source plan and bundle are retained. Task 015 is next.
 
 ### Approved Compact Header Exception
 
@@ -570,6 +657,11 @@ When a task changes state, record the exact focused command, exact outcome and n
   at a wide size before exercising compact/large body checks. Schema/default
   smoke retain their original assertions and capture dimensions. This is not
   passing compact-titlebar evidence and does not authorize an increased minimum.
+- Task 014 integrated testing also reproduces
+  `git_large_tree_and_status_fit_compact_and_wide_windows` at `ad26ca0`: its long
+  Git status pushes `open-workspace` beyond `width - 95`. The owner retained this
+  header exception while approving adjacent non-header repairs. Task 019 must
+  rerun this unchanged assertion as well as native theme switching.
 - Temporary rationale: task 013's disclosure, draft, focus and body geometry can
   be verified in both themes without changing application data or bypassing any
   operation guard. All other required task checks must still pass before commit.

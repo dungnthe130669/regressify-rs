@@ -5,6 +5,131 @@ use gpui_kit::component::resizable::v_resizable;
 
 use super::*;
 
+pub(super) type WorkspaceListState = gpui_kit::component::list::ListState<WorkspaceFiles>;
+
+pub(super) struct WorkspaceFiles {
+    owner: WeakEntity<Workbench>,
+    root: Option<PathBuf>,
+    rows: Vec<(usize, Entry)>,
+    pub(super) current: Option<PathBuf>,
+    disabled: bool,
+}
+
+impl WorkspaceFiles {
+    pub(super) fn new(owner: WeakEntity<Workbench>) -> Self {
+        Self {
+            owner,
+            root: None,
+            rows: Vec::new(),
+            current: None,
+            disabled: false,
+        }
+    }
+}
+
+impl gpui_kit::component::list::ListDelegate for WorkspaceFiles {
+    type Item = gpui_kit::component::list::ListItem;
+
+    fn items_count(&self, _: usize, _: &App) -> usize {
+        self.rows.len()
+    }
+
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        _: &mut Context<WorkspaceListState>,
+    ) -> Option<Self::Item> {
+        let (original, entry) = self.rows.get(index.row)?;
+        let label = entry.label();
+        let tooltip = if entry.supports_editing() {
+            label.clone()
+        } else {
+            format!("{label} (not editable UTF-8 text; 4 MiB limit)")
+        };
+        Some(
+            gpui_kit::component::list::ListItem::new(SharedString::from(format!(
+                "workspace-file-{}",
+                label
+            )))
+            .h(rems(2.))
+            .disabled(self.disabled || !entry.supports_editing())
+            .accessibility_label(label.clone())
+            .tooltip(move |window, cx| {
+                gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+            })
+            .child(
+                div()
+                    .id(("file", *original))
+                    .role(Role::ListBoxOption)
+                    .aria_label(label.clone())
+                    .test_support()
+                    .w_full()
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .min_w_0()
+                    .child(Icon::new(gpui_kit::assets::IconName::FileCog))
+                    .child(div().flex_1().min_w_0().truncate().child(label)),
+            ),
+        )
+    }
+
+    fn set_selected_index(
+        &mut self,
+        index: Option<IndexPath>,
+        _: &mut Window,
+        _: &mut Context<WorkspaceListState>,
+    ) {
+        self.current = index.and_then(|index| {
+            self.rows
+                .get(index.row)
+                .map(|(_, entry)| entry.path.clone())
+        });
+    }
+
+    fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<WorkspaceListState>) {
+        if self.disabled {
+            return;
+        }
+        let Some(entry) = self
+            .rows
+            .iter()
+            .find(|(_, entry)| Some(&entry.path) == self.current.as_ref())
+            .map(|(_, entry)| entry.clone())
+            .filter(Entry::supports_editing)
+        else {
+            return;
+        };
+        let owner = self.owner.clone();
+        let root = self.root.clone();
+        window.defer(cx, move |window, cx| {
+            let _ = owner.update(cx, |this, cx| {
+                if this.busy
+                    || this
+                        .session
+                        .workspace
+                        .as_ref()
+                        .map(|workspace| &workspace.root)
+                        != root.as_ref()
+                {
+                    return;
+                }
+                if let Some(current) = this
+                    .session
+                    .entries
+                    .iter()
+                    .find(|current| current.path == entry.path && current.supports_editing())
+                    .cloned()
+                {
+                    this.open_location(current, Selection::Root, window, cx);
+                }
+            });
+        });
+    }
+}
+
 fn empty_list(id: &'static str, text: &'static str, cx: &App) -> AnyElement {
     div()
         .id(id)
@@ -628,23 +753,18 @@ impl Workbench {
                 } else {
                     cx.theme().muted_foreground
                 };
-            let row = div()
-                .id(menu_id)
+            let row = gpui_kit::component::list::ListItem::new(menu_id)
                 .flex()
                 .items_center()
                 .w_full()
                 .h(px(44.))
+                .p_0()
                 .flex_shrink_0()
                 .min_w_0()
-                .border_l_2()
-                .border_color(
-                    if current || self.suite_list.current.as_ref() == Some(&entry.path) {
-                        cx.theme().primary
-                    } else {
-                        cx.theme().transparent
-                    },
+                .selected(selected)
+                .secondary_selected(
+                    current || self.suite_list.current.as_ref() == Some(&entry.path),
                 )
-                .when(selected, |row| row.bg(cx.theme().accent))
                 .on_click(|_, _, cx| cx.stop_propagation())
                 .capture_any_mouse_down(cx.listener(
                     move |this, event: &MouseDownEvent, window, cx| {
@@ -664,10 +784,10 @@ impl Workbench {
                     Button::new(("file", index))
                         .ghost()
                         .h_full()
+                        .w_full()
                         .flex_1()
                         .min_w_0()
                         .justify_start()
-                        .selected(selected)
                         .accessibility_label(if label == name {
                             filename
                         } else {
@@ -1065,150 +1185,152 @@ impl Workbench {
             let has_log = scenario_id
                 .as_ref()
                 .is_some_and(|id| runs.has_scenario_log(&owner, id));
-            rows =
-                rows.child(
-                    div()
-                        .id(("scenario-row", index))
-                        .test_support()
-                        .flex()
-                        .items_center()
-                        .h(px(54.))
-                        .flex_shrink_0()
-                        .w_full()
-                        .min_w_0()
-                        .border_l_2()
-                        .border_color(
-                            if current
-                                || self.scenario_list.current.as_ref().is_some_and(
-                                    |(path, item)| {
-                                        *item == index
-                                            && open.is_some_and(|open| &open.entry.path == path)
-                                    },
-                                )
-                            {
-                                cx.theme().primary
-                            } else {
-                                cx.theme().transparent
-                            },
-                        )
-                        .when(selected, |row| row.bg(cx.theme().accent))
-                        .on_click(|_, _, cx| cx.stop_propagation())
-                        .child(
-                            Button::new(("scenario", index))
-                                .ghost()
-                                .h_full()
-                                .flex_1()
-                                .min_w_0()
-                                .justify_start()
-                                .selected(selected)
-                                .accessibility_label(label.clone())
-                                .tooltip(format!(
-                                    "{label}\n{}\n{}",
-                                    if viewport { detail.as_str() } else { url },
-                                    item["id"].as_str().unwrap_or_default()
-                                ))
-                                .child(
-                                    div()
-                                        .w(px(22.))
-                                        .flex_shrink_0()
-                                        .text_center()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child((index + 1).to_string()),
-                                )
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap_1()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .text_left()
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .font_weight(if current {
-                                                    FontWeight::SEMIBOLD
-                                                } else {
-                                                    FontWeight::NORMAL
-                                                })
-                                                .child(label.clone()),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_xs()
-                                                .truncate()
-                                                .text_color(cx.theme().muted_foreground)
-                                                .child(detail),
-                                        ),
-                                )
-                                .disabled(self.busy)
-                                .on_click(cx.listener(
-                                    move |this, event: &gpui_kit::ClickEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        if suite {
-                                            this.select_open_scenario(
-                                                index,
-                                                &visible,
-                                                event.modifiers(),
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        this.select(selection, window, cx);
-                                        if let Some(open) = &this.session.open {
-                                            this.scenario_list.focus_item(
-                                                (open.entry.path.clone(), index),
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    },
-                                )),
-                        )
-                        .when(suite, |row| {
-                            row.child(
-                                Button::new(("sidebar-scenario-log", index))
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(gpui_kit::assets::IconName::Terminal)
-                                    .tooltip(format!("View run log: {label}"))
-                                    .accessibility_label(format!("View run log: {label}"))
-                                    .disabled(self.busy || !has_log)
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if let Some(id) = &log_scenario {
-                                            this.main_tab = 1;
-                                            this.runs.update(cx, |panel, cx| {
-                                                panel.show_scenario_log(&log_suite, id, window, cx)
-                                            });
-                                            cx.notify();
-                                        }
-                                    })),
-                            )
+            rows = rows.child(
+                gpui_kit::component::list::ListItem::new(("scenario-row", index))
+                    .flex()
+                    .items_center()
+                    .h(px(54.))
+                    .p_0()
+                    .flex_shrink_0()
+                    .w_full()
+                    .min_w_0()
+                    .selected(selected)
+                    .secondary_selected(
+                        current
+                            || self
+                                .scenario_list
+                                .current
+                                .as_ref()
+                                .is_some_and(|(path, item)| {
+                                    *item == index
+                                        && open.is_some_and(|open| &open.entry.path == path)
+                                }),
+                    )
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .w_full()
+                            .min_w_0()
                             .child(
-                                Button::new(("sidebar-scenario-test", index))
+                                Button::new(("scenario", index))
                                     .ghost()
-                                    .xsmall()
-                                    .icon(gpui_kit::assets::IconName::Play)
-                                    .tooltip(format!("Run Test: {label}"))
-                                    .accessibility_label(format!("Run Test: {label}"))
-                                    .disabled(
-                                        self.busy
-                                            || runs.running()
-                                            || scenario_id.is_none()
-                                            || !runs.has_reference(&owner),
+                                    .h_full()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .justify_start()
+                                    .accessibility_label(label.clone())
+                                    .tooltip(format!(
+                                        "{label}\n{}\n{}",
+                                        if viewport { detail.as_str() } else { url },
+                                        item["id"].as_str().unwrap_or_default()
+                                    ))
+                                    .child(
+                                        div()
+                                            .w(px(22.))
+                                            .flex_shrink_0()
+                                            .text_center()
+                                            .text_xs()
+                                            .text_color(cx.theme().muted_foreground)
+                                            .child((index + 1).to_string()),
                                     )
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        this.run_scenario(
-                                            super::super::runner::RunCommand::Test,
-                                            index,
-                                            window,
-                                            cx,
-                                        )
-                                    })),
+                                    .child(
+                                        div()
+                                            .flex()
+                                            .flex_col()
+                                            .gap_1()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .text_left()
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .font_weight(if current {
+                                                        FontWeight::SEMIBOLD
+                                                    } else {
+                                                        FontWeight::NORMAL
+                                                    })
+                                                    .child(label.clone()),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .truncate()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child(detail),
+                                            ),
+                                    )
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(
+                                        move |this, event: &gpui_kit::ClickEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            if suite {
+                                                this.select_open_scenario(
+                                                    index,
+                                                    &visible,
+                                                    event.modifiers(),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                            this.select(selection, window, cx);
+                                            if let Some(open) = &this.session.open {
+                                                this.scenario_list.focus_item(
+                                                    (open.entry.path.clone(), index),
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                        },
+                                    )),
                             )
-                        }),
-                );
+                            .when(suite, |row| {
+                                row.child(
+                                    Button::new(("sidebar-scenario-log", index))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(gpui_kit::assets::IconName::Terminal)
+                                        .tooltip(format!("View run log: {label}"))
+                                        .accessibility_label(format!("View run log: {label}"))
+                                        .disabled(self.busy || !has_log)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            if let Some(id) = &log_scenario {
+                                                this.main_tab = 1;
+                                                this.runs.update(cx, |panel, cx| {
+                                                    panel.show_scenario_log(
+                                                        &log_suite, id, window, cx,
+                                                    )
+                                                });
+                                                cx.notify();
+                                            }
+                                        })),
+                                )
+                                .child(
+                                    Button::new(("sidebar-scenario-test", index))
+                                        .ghost()
+                                        .xsmall()
+                                        .icon(gpui_kit::assets::IconName::Play)
+                                        .tooltip(format!("Run Test: {label}"))
+                                        .accessibility_label(format!("Run Test: {label}"))
+                                        .disabled(
+                                            self.busy
+                                                || runs.running()
+                                                || scenario_id.is_none()
+                                                || !runs.has_reference(&owner),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.run_scenario(
+                                                super::super::runner::RunCommand::Test,
+                                                index,
+                                                window,
+                                                cx,
+                                            )
+                                        })),
+                                )
+                            }),
+                    ),
+            );
         }
         if count == 0 {
             rows = rows.child(empty_list(
@@ -1335,17 +1457,92 @@ impl Workbench {
             .into_any_element()
     }
 
-    fn open_workspace_list_item(
-        &mut self,
-        visible: &[PathBuf],
+    pub(super) fn sync_workspace_list(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self
+            .session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root.clone());
+        let rows = self
+            .session
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.kind != DocumentKind::Suite)
+            .map(|(index, entry)| (index, entry.clone()))
+            .collect::<Vec<_>>();
+        let fallback = self
+            .session
+            .open
+            .as_ref()
+            .map(|open| open.entry.path.clone());
+        self.workspace_list.update(cx, |list, cx| {
+            let current = list.delegate();
+            let changed = current.root != root
+                || current.rows.len() != rows.len()
+                || current.rows.iter().zip(&rows).any(
+                    |((before_index, before), (after_index, after))| {
+                        before_index != after_index
+                            || before.path != after.path
+                            || before.kind != after.kind
+                            || before.editable != after.editable
+                    },
+                );
+            let disabled_changed = current.disabled != self.busy;
+            if !changed && !disabled_changed {
+                return;
+            }
+            let selected = current
+                .current
+                .as_ref()
+                .filter(|_| current.root == root)
+                .filter(|path| rows.iter().any(|(_, entry)| &entry.path == *path))
+                .cloned()
+                .or_else(|| {
+                    fallback.filter(|path| rows.iter().any(|(_, entry)| &entry.path == path))
+                });
+            let index = selected
+                .as_ref()
+                .and_then(|path| rows.iter().position(|(_, entry)| &entry.path == path))
+                .map(IndexPath::new);
+            let delegate = list.delegate_mut();
+            delegate.root = root;
+            delegate.rows = rows;
+            delegate.disabled = self.busy;
+            list.set_selected_index(index, window, cx);
+            if disabled_changed {
+                list.set_selectable(!self.busy, cx);
+            }
+            cx.notify();
+        });
+    }
+
+    pub(super) fn focus_workspace_file(
+        &self,
+        path: PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.workspace_list.update(cx, |list, cx| {
+            let index = list
+                .delegate()
+                .rows
+                .iter()
+                .position(|(_, entry)| entry.path == path)
+                .map(IndexPath::new);
+            list.set_selected_index(index, window, cx);
+            list.scroll_to_selected_item(window, cx);
+            list.focus(window, cx);
+            cx.notify();
+        });
+    }
+
+    fn open_workspace_list_item(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
-        let fallback = self.session.open.as_ref().map(|open| &open.entry.path);
-        if let Some(path) = self.workspace_list.current_item(visible, fallback)
+        let selected = self.workspace_list.read(cx).delegate().current.clone();
+        if let Some(path) = selected
             && let Some(entry) = self
                 .session
                 .entries
@@ -1353,7 +1550,7 @@ impl Workbench {
                 .find(|entry| entry.path == path && entry.supports_editing())
                 .cloned()
         {
-            self.workspace_list.focus_item(path, window, cx);
+            self.focus_workspace_file(path, window, cx);
             self.open_location(entry, Selection::Root, window, cx);
         }
     }
@@ -1397,94 +1594,47 @@ impl Workbench {
                     })),
             );
         if self.workspace_files_open {
-            let row_height_rems = 1.5;
-            let visible = std::sync::Arc::new(
-                entries
-                    .iter()
-                    .map(|(_, entry)| entry.path.clone())
-                    .collect::<Vec<_>>(),
-            );
-            let move_visible = visible.clone();
-            let open_visible = visible.clone();
-            let mut files = div()
+            let focus = self.workspace_list.read(cx).focus_handle(cx);
+            let files = div()
                 .id("workspace-file-rows")
                 .key_context("RegressifyList")
-                .track_focus(&self.workspace_list.focus)
-                .track_scroll(&self.workspace_list.scroll)
+                .track_focus(&focus)
                 .relative()
                 .on_mouse_down(
                     MouseButton::Left,
                     cx.listener(|this, _, window, cx| {
-                        window.focus(&this.workspace_list.focus, cx);
+                        this.workspace_list
+                            .update(cx, |list, cx| list.focus(window, cx));
                     }),
                 )
-                .on_action(
-                    cx.listener(move |this, action: &lists::MoveListSelection, _, cx| {
+                .on_action(cx.listener(
+                    move |this, action: &lists::MoveListSelection, window, cx| {
                         if !this.busy {
-                            let fallback = this.session.open.as_ref().map(|open| &open.entry.path);
-                            this.workspace_list.move_to(action, &move_visible, fallback);
-                            cx.notify();
+                            this.workspace_list.update(cx, |list, cx| {
+                                let index = action
+                                    .index(
+                                        list.selected_index().map(|index| index.row),
+                                        list.delegate().rows.len(),
+                                    )
+                                    .map(IndexPath::new);
+                                list.set_selected_index(index, window, cx);
+                                list.scroll_to_selected_item(window, cx);
+                                cx.notify();
+                            });
                         }
-                    }),
-                )
+                    },
+                ))
                 .on_action(cx.listener(move |this, _: &OpenListItem, window, cx| {
-                    this.open_workspace_list_item(&open_visible, window, cx);
+                    this.open_workspace_list_item(window, cx);
                 }))
                 .on_action(cx.listener(move |this, _: &ToggleListItem, window, cx| {
-                    this.open_workspace_list_item(&visible, window, cx);
+                    this.open_workspace_list_item(window, cx);
                 }))
                 .flex()
                 .flex_col()
-                .h(gpui_kit::rems(
-                    row_height_rems * entries.len().min(8) as f32,
-                ))
-                .overflow_y_scroll();
-            for (index, entry) in entries {
-                let entry = entry.clone();
-                let editable = entry.supports_editing();
-                files = files.child(
-                    Button::new(("file", index))
-                        .ghost()
-                        .small()
-                        .h(gpui_kit::rems(row_height_rems))
-                        .flex_shrink_0()
-                        .w_full()
-                        .min_w_0()
-                        .justify_start()
-                        .selected(
-                            self.workspace_list.current.as_ref() == Some(&entry.path)
-                                || self
-                                    .session
-                                    .open
-                                    .as_ref()
-                                    .is_some_and(|open| open.entry.path == entry.path),
-                        )
-                        .icon(gpui_kit::assets::IconName::FileCog)
-                        .accessibility_label(entry.label())
-                        .tooltip(if editable {
-                            entry.label()
-                        } else {
-                            format!("{} (not editable UTF-8 text; 4 MiB limit)", entry.label())
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_left()
-                                .child(entry.label()),
-                        )
-                        .disabled(self.busy || !editable)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.workspace_list
-                                .focus_item(entry.path.clone(), window, cx);
-                            this.open_location(entry.clone(), Selection::Root, window, cx);
-                        })),
-                );
-            }
-            section = section.content(div().id("workspace-files").test_support().child(
-                files.scrollbar(&self.workspace_list.scroll, scroll::ScrollbarAxis::Vertical),
-            ));
+                .h(rems(2. * entries.len().min(8) as f32))
+                .child(gpui_kit::component::list::List::new(&self.workspace_list));
+            section = section.content(div().id("workspace-files").test_support().child(files));
         }
         section.into_any_element()
     }

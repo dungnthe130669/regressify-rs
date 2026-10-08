@@ -298,6 +298,42 @@ impl Render for PointerLayer {
     }
 }
 
+type CaptureListState = gpui_kit::component::list::ListState<CaptureRows>;
+
+struct CaptureRows {
+    owner: WeakEntity<ResultsPanel>,
+}
+
+impl gpui_kit::component::list::ListDelegate for CaptureRows {
+    type Item = gpui_kit::component::list::ListItem;
+
+    fn items_count(&self, _: usize, cx: &App) -> usize {
+        self.owner
+            .upgrade()
+            .map_or(0, |owner| owner.read(cx).visible_captures.len())
+    }
+
+    fn render_item(
+        &mut self,
+        index: IndexPath,
+        _: &mut Window,
+        cx: &mut Context<CaptureListState>,
+    ) -> Option<Self::Item> {
+        let owner = self.owner.upgrade()?;
+        let panel = owner.read(cx);
+        let capture = *panel.visible_captures.get(index.row)?;
+        panel.render_capture_row(capture, self.owner.clone(), cx)
+    }
+
+    fn set_selected_index(
+        &mut self,
+        _: Option<IndexPath>,
+        _: &mut Window,
+        _: &mut Context<CaptureListState>,
+    ) {
+    }
+}
+
 pub(super) struct ResultsPanel {
     capture_log: log::CaptureLogView,
     root: Option<PathBuf>,
@@ -308,7 +344,7 @@ pub(super) struct ResultsPanel {
     capture: Option<usize>,
     visible_captures: Vec<usize>,
     filter: usize,
-    capture_scroll: gpui_kit::UniformListScrollHandle,
+    capture_list: Entity<CaptureListState>,
     image_mode: usize,
     preview_views: [PreviewView; 4],
     preview_scenario: Option<(PathBuf, String)>,
@@ -330,6 +366,7 @@ pub(super) struct ResultsPanel {
     loading: bool,
     image_loading: bool,
     generation: u64,
+    catalog_generation: u64,
     preferred_run: Option<String>,
     preferred_reports: Option<Vec<(String, String)>>,
     approval_confirmation: bool,
@@ -355,9 +392,9 @@ impl CaptureList {
 }
 
 impl Render for CaptureList {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.results
-            .update(cx, |panel, cx| panel.render_captures(cx))
+            .update(cx, |panel, cx| panel.render_captures(window, cx))
     }
 }
 
@@ -526,7 +563,7 @@ impl ResultsPanel {
         self.report = self.suite_report();
         self.capture = None;
         self.visible_captures.clear();
-        self.capture_scroll = Default::default();
+        self.reset_capture_list(window, cx);
         self.preview_scenario = None;
         self.reset_view();
         self.reset_previews(Some(window), cx);
@@ -559,6 +596,7 @@ impl ResultsPanel {
 
     pub(super) fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.generation += 1;
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.root = None;
         self.preferred_run = None;
         self.preferred_reports = None;
@@ -569,7 +607,7 @@ impl ResultsPanel {
         self.capture = None;
         self.visible_captures.clear();
         self.filter = 0;
-        self.capture_scroll = Default::default();
+        self.reset_capture_list(window, cx);
         self.preview_scenario = None;
         self.reset_view();
         self.reset_previews(Some(window), cx);
@@ -597,6 +635,17 @@ impl ResultsPanel {
                 guides: pointer_guides.clone(),
             })
         });
+        let capture_owner = cx.entity().downgrade();
+        let capture_list = cx.new(|cx| {
+            CaptureListState::new(
+                CaptureRows {
+                    owner: capture_owner,
+                },
+                window,
+                cx,
+            )
+            .selectable(false)
+        });
         Self {
             capture_log: log::CaptureLogView::new(window, cx),
             root: None,
@@ -607,7 +656,7 @@ impl ResultsPanel {
             capture: None,
             visible_captures: Vec::new(),
             filter: 0,
-            capture_scroll: Default::default(),
+            capture_list,
             image_mode: 3,
             preview_views: Default::default(),
             preview_scenario: None,
@@ -629,6 +678,7 @@ impl ResultsPanel {
             loading: false,
             image_loading: false,
             generation: 0,
+            catalog_generation: 0,
             preferred_run: None,
             preferred_reports: None,
             approval_confirmation: false,
@@ -638,6 +688,7 @@ impl ResultsPanel {
     }
 
     pub(super) fn refresh(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.catalog_generation = self.catalog_generation.wrapping_add(1);
         self.capture_log.generation = self.capture_log.generation.wrapping_add(1);
         self.capture_log.page = None;
         self.capture_log.editor.update(cx, |state, cx| {
@@ -645,9 +696,23 @@ impl ResultsPanel {
         });
         let requested_run = self.preferred_run.clone();
         let requested_reports = self.preferred_reports.clone();
-        let previous = self
-            .selected_report()
-            .map(|report| (report.path.clone(), self.capture));
+        let previous = self.selected_report().map(|report| {
+            (
+                report.path.clone(),
+                self.capture
+                    .and_then(|index| report.report.tests.get(index))
+                    .filter(|selected| {
+                        report
+                            .report
+                            .tests
+                            .iter()
+                            .filter(|test| test.pair.capture_key() == selected.pair.capture_key())
+                            .count()
+                            == 1
+                    })
+                    .map(|test| test.pair.capture_key().to_string()),
+            )
+        });
         self.generation += 1;
         let generation = self.generation;
         self.root = Some(root.clone());
@@ -685,7 +750,7 @@ impl ResultsPanel {
                         }
                         this.report = this.suite_report();
                         this.capture = None;
-                        this.capture_scroll = Default::default();
+                        this.reset_capture_list(window, cx);
                         this.rebuild_capture_filter(cx);
                         this.status = format!(
                             "{} {}, {} {}",
@@ -708,8 +773,23 @@ impl ResultsPanel {
                             let capture = previous
                                 .as_ref()
                                 .filter(|(path, _)| *path == report.path)
-                                .and_then(|(_, index)| *index)
-                                .filter(|index| *index < report.report.tests.len())
+                                .and_then(|(_, key)| key.as_ref())
+                                .filter(|key| {
+                                    report
+                                        .report
+                                        .tests
+                                        .iter()
+                                        .filter(|test| test.pair.capture_key() == key.as_str())
+                                        .count()
+                                        == 1
+                                })
+                                .and_then(|key| {
+                                    report
+                                        .report
+                                        .tests
+                                        .iter()
+                                        .position(|test| test.pair.capture_key() == key)
+                                })
                                 .unwrap_or(0);
                             if this.visible_captures.contains(&capture) {
                                 this.select_capture(capture, window, cx);
@@ -754,6 +834,21 @@ impl ResultsPanel {
         })
     }
 
+    fn reset_capture_list(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_list.update(cx, |list, cx| {
+            list.set_selected_index(None, window, cx);
+            list.scroll_to_item(IndexPath::new(0), ScrollStrategy::Top, window, cx);
+        });
+    }
+
+    fn scroll_capture_to(&self, position: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.capture_list.update(cx, |list, cx| {
+            let index = IndexPath::new(position);
+            list.set_selected_index(Some(index), window, cx);
+            list.scroll_to_item(index, ScrollStrategy::Nearest, window, cx);
+        });
+    }
+
     /// Keep selection inside the current filter without reloading unchanged images.
     fn reconcile_capture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.loading {
@@ -768,8 +863,7 @@ impl ResultsPanel {
         if let Some(position) =
             selection.and_then(|capture| filtered.iter().position(|index| *index == capture))
         {
-            self.capture_scroll
-                .scroll_to_item(position, gpui_kit::ScrollStrategy::Nearest);
+            self.scroll_capture_to(position, window, cx);
         }
         if selection != self.capture {
             if let Some(capture) = selection {
@@ -854,8 +948,7 @@ impl ResultsPanel {
             .iter()
             .position(|index| *index == capture)
         {
-            self.capture_scroll
-                .scroll_to_item(position, gpui_kit::ScrollStrategy::Nearest);
+            self.scroll_capture_to(position, window, cx);
         }
         self.capture = Some(capture);
         if self.capture_log.active {
@@ -1058,7 +1151,7 @@ impl ResultsPanel {
         self.open_external(target, window, cx);
     }
 
-    fn render_captures(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_captures(&self, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let filtered = &self.visible_captures;
         let list = div()
             .id("capture-list")
@@ -1164,34 +1257,37 @@ impl ResultsPanel {
             );
         }
         if !filtered.is_empty() {
-            let scroll = self.capture_scroll.0.borrow().base_handle.clone();
-            rows = rows
-                .child(
-                    uniform_list(
-                        "capture-rows",
-                        filtered.len(),
-                        cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
-                            range
-                                .map(|position| {
-                                    this.render_capture_row(this.visible_captures[position], cx)
-                                })
-                                .collect::<Vec<_>>()
-                        }),
-                    )
-                    .track_scroll(&self.capture_scroll)
-                    .size_full(),
-                )
-                .scrollbar(&scroll, scroll::ScrollbarAxis::Vertical);
+            rows = rows.child(gpui_kit::component::list::List::new(&self.capture_list));
         }
         list.child(rows).into_any_element()
     }
 
-    fn render_capture_row(&self, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let Some(test) = self
-            .selected_report()
-            .and_then(|report| report.report.tests.get(index))
-        else {
-            return div().into_any_element();
+    fn render_capture_row(
+        &self,
+        index: usize,
+        owner: WeakEntity<Self>,
+        cx: &App,
+    ) -> Option<gpui_kit::component::list::ListItem> {
+        let report = self.selected_report()?;
+        let test = report.report.tests.get(index)?;
+        let path = report.path.clone();
+        let root = self.root.clone();
+        let key = test.pair.capture_key().to_string();
+        let catalog_generation = self.catalog_generation;
+        let duplicate_key = report
+            .report
+            .tests
+            .iter()
+            .filter(|test| test.pair.capture_key() == key)
+            .count()
+            > 1;
+        let identity = if duplicate_key {
+            format!(
+                "{}:{key}:duplicate-{catalog_generation}-{index}",
+                display_path(&path)
+            )
+        } else {
+            format!("{}:{key}", display_path(&path))
         };
         let outcome = test.outcome();
         let color = match outcome {
@@ -1199,78 +1295,94 @@ impl ResultsPanel {
             Outcome::Mismatch => cx.theme().warning,
             _ => cx.theme().danger,
         };
-        div()
-            .h(px(60.))
-            .pb_1()
-            .child(
-                Button::new(("capture", index))
-                    .ghost()
-                    .w_full()
-                    .h(px(56.))
-                    .justify_start()
-                    .selected(self.capture == Some(index))
-                    .accessibility_label(format!("{} {}", outcome.label(), test.pair.display.title))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .w_full()
-                            .min_w_0()
-                            .child(
-                                Icon::new(match outcome {
-                                    Outcome::Passed => gpui_kit::assets::IconName::CircleCheck,
-                                    Outcome::Mismatch => gpui_kit::assets::IconName::Split,
-                                    _ => gpui_kit::assets::IconName::CircleAlert,
-                                })
-                                .small()
-                                .text_color(color),
-                            )
-                            .child(
-                                div()
-                                    .flex()
-                                    .flex_col()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .text_left()
-                                    .child(
-                                        gpui_kit::component::label::Label::new(
-                                            test.pair.display.title.clone(),
+        let tooltip = test
+            .pair
+            .engine_error_msg
+            .clone()
+            .map(|error| format!("{error}\n{key}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "{}\n{}\n{key}",
+                    test.pair.display.title, test.pair.display.detail
+                )
+            });
+        Some(
+            gpui_kit::component::list::ListItem::new(SharedString::from(identity))
+                .w_full()
+                .h(rems(3.5))
+                .justify_start()
+                .selected(self.capture == Some(index))
+                .accessibility_label(format!("{} {}", outcome.label(), test.pair.display.title))
+                .child(
+                    div()
+                        .id(("capture", index))
+                        .role(Role::ListBoxOption)
+                        .aria_label(format!("{} {}", outcome.label(), test.pair.display.title))
+                        .test_support()
+                        .flex()
+                        .items_center()
+                        .gap_3()
+                        .w_full()
+                        .min_w_0()
+                        .child(
+                            Icon::new(match outcome {
+                                Outcome::Passed => gpui_kit::assets::IconName::CircleCheck,
+                                Outcome::Mismatch => gpui_kit::assets::IconName::Split,
+                                _ => gpui_kit::assets::IconName::CircleAlert,
+                            })
+                            .small()
+                            .text_color(color),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_col()
+                                .flex_1()
+                                .min_w_0()
+                                .text_left()
+                                .child(
+                                    gpui_kit::component::label::Label::new(
+                                        test.pair.display.title.clone(),
+                                    )
+                                    .secondary(if test.pair.display.detail.is_empty() {
+                                        outcome.label().to_string()
+                                    } else {
+                                        format!(
+                                            "{} / {}",
+                                            outcome.label(),
+                                            test.pair.display.detail
                                         )
-                                        .secondary(if test.pair.display.detail.is_empty() {
-                                            outcome.label().to_string()
-                                        } else {
-                                            format!(
-                                                "{} / {}",
-                                                outcome.label(),
-                                                test.pair.display.detail
-                                            )
-                                        })
-                                        .truncate(),
-                                    ),
-                            ),
-                    )
-                    .tooltip(
-                        test.pair
-                            .engine_error_msg
-                            .clone()
-                            .map(|error| format!("{error}\n{}", test.pair.capture_key()))
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "{}\n{}\n{}",
-                                    test.pair.display.title,
-                                    test.pair.display.detail,
-                                    test.pair.capture_key()
-                                )
-                            }),
-                    )
-                    .text_color(color)
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        window.focus(&this.capture_focus, cx);
-                        this.select_capture(index, window, cx);
-                    })),
-            )
-            .into_any_element()
+                                    })
+                                    .truncate(),
+                                ),
+                        ),
+                )
+                .tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tooltip.clone()).build(window, cx)
+                })
+                .text_color(color)
+                .on_click(move |_, window, cx| {
+                    let _ = owner.update(cx, |this, cx| {
+                        if this.root != root
+                            || this.loading
+                            || this.catalog_generation != catalog_generation
+                        {
+                            return;
+                        }
+                        let selected = this
+                            .selected_report()
+                            .filter(|report| report.path == path)
+                            .and_then(|report| report.report.tests.get(index))
+                            .filter(|test| test.pair.capture_key() == key)
+                            .map(|_| index)
+                            .filter(|capture| this.visible_captures.contains(capture));
+                        if let Some(capture) = selected {
+                            window.focus(&this.capture_focus, cx);
+                            this.select_capture(capture, window, cx);
+                        }
+                    });
+                }),
+        )
     }
 
     fn comparison_preview_count(&self) -> usize {
@@ -3165,6 +3277,145 @@ mod pointer_tests {
             })
             .unwrap();
         }
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn flat_collection_capture_refresh_retains_key_and_clears_approval(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use gpui_kit::{AppContext, Focusable};
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join(".regressify");
+        let report_path = output.join("ui-test/bitmaps_test/run-1/report.json");
+        std::fs::create_dir_all(report_path.parent().unwrap()).unwrap();
+        let first = serde_json::json!({"status": "pass", "pair": {"fileName": "first.png", "label": "First"}});
+        let second = serde_json::json!({"status": "fail", "pair": {"fileName": "second.png", "label": "Second"}});
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": [first, second],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let results = cx.update(|cx| view.read(cx).results.clone());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            !panel.loading && panel.capture.is_some() && !panel.image_loading
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(("capture", 1_usize), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.capture == Some(1) && !panel.image_loading
+        })
+        .await;
+        std::fs::write(
+            &report_path,
+            serde_json::to_vec(&serde_json::json!({
+                "id": "ui-test", "tests": [second, first],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click("capture-search", cx);
+            results.update(cx, |panel, cx| {
+                panel.approval_confirmation = true;
+                panel.refresh(output.clone(), window, cx);
+                assert!(!panel.approval_confirmation);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            !panel.loading && !panel.image_loading && panel.capture.is_some()
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let panel = results.read(cx);
+            let test = &panel.selected_report().unwrap().report.tests[panel.capture.unwrap()];
+            assert_eq!(test.pair.capture_key(), "second");
+            assert_eq!(panel.capture, Some(0));
+            assert!(!panel.approval_confirmation);
+            assert!(panel.search.read(cx).focus_handle(cx).is_focused(window));
+            assert!(!view.read(cx).session.dirty());
+        })
+        .unwrap();
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn flat_collection_capture_duplicate_keys_remain_distinct(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+        let directory = tempfile::tempdir().unwrap();
+        let run = directory
+            .path()
+            .join(".regressify/ui-test/bitmaps_test/run-1");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
+            "id": "ui-test", "tests": [
+                {"status": "pass", "pair": {"fileName": "same.png", "label": "First duplicate"}},
+                {"status": "fail", "pair": {"fileName": "same.png", "label": "Second duplicate"}}
+            ]
+        })).unwrap()).unwrap();
+        let (handle, view) = crate::desktop::ui::tests::editor(cx, directory.path());
+        let results = cx.update(|cx| view.read(cx).results.clone());
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.within("workbench-tabs").click(2_usize, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            panel.capture == Some(0) && !panel.loading && !panel.image_loading
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(("capture", 1_usize), cx);
+            assert_eq!(results.read(cx).capture, Some(1));
+            window.click(("capture", 0_usize), cx);
+            assert_eq!(results.read(cx).capture, Some(0));
+            window.click(("capture", 1_usize), cx);
+            assert_eq!(results.read(cx).capture, Some(1));
+            results.update(cx, |panel, cx| {
+                panel.approval_confirmation = true;
+                panel.refresh(directory.path().join(".regressify"), window, cx);
+                assert!(!panel.approval_confirmation);
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+            let panel = results.read(cx);
+            !panel.loading && !panel.image_loading
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            assert_eq!(results.read(cx).capture, Some(0));
+            assert!(!results.read(cx).approval_confirmation);
+            window.render_frame(cx);
+            window.click(("capture", 1_usize), cx);
+            assert_eq!(results.read(cx).capture, Some(1));
+        })
+        .unwrap();
     }
 
     #[cfg(feature = "gui-tests")]

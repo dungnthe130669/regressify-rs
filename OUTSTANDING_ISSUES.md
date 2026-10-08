@@ -2,6 +2,16 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Capture List Refresh Identity (2026-10-08)
+
+- Resolved in the task 014 candidate: report refresh retained a numeric index,
+  selecting another capture after rows were reordered. The new native-event
+  regression failed with the prior logic and passes with unique-key restoration.
+- The List pilot also reproduced duplicate-key row retargeting. Ambiguous rows
+  now have catalog-scoped identities and stale click callbacks are rejected;
+  the two `flat_collection_capture_` cases pass. Native migration acceptance
+  remains tracked in the task bundle rather than implied by these regressions.
+
 ## Controlled Disclosure Keyboard Compatibility (2026-10-08)
 
 - Mitigated locally: published Kit 0.7.1 AccordionTrigger lacks keyboard focus
@@ -15,6 +25,10 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Compact Desktop Header (2026-10-08)
 
+- Task 014's integrated gate and an isolated `ad26ca0` baseline also fail
+  `git_large_tree_and_status_fit_compact_and_wide_windows`: a long Git status
+  pushes `open-workspace` beyond the window-control reserve. The owner retained
+  the task 019 header exception; the assertion remains active and non-green.
 - Confirmed during task 013 native Schema smoke: at requested 1000x720
   (1016x720 captured outer bounds), the title bar clips the appearance control
   and the next Dark menu choice is unavailable. Disclosure/focus/source checks

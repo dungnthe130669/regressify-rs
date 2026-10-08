@@ -1688,6 +1688,7 @@ impl Render for RunPanel {
                         gpui_kit::component::toolbar::Toolbar::new("run-command-toolbar")
                             .with_size(gpui_kit::component::Size::Medium)
                             .h_auto()
+                            .px_4()
                             .flex_wrap()
                             .children(
                                 [

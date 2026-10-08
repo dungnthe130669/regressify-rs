@@ -3612,18 +3612,18 @@ fn scenario_sequence_supports_reordering_duplication_and_direct_editing(cx: &mut
         assert_eq!(
             view.read(cx)
                 .sequence_list
-                .current
-                .as_ref()
-                .map(|item| item.2),
+                .read(cx)
+                .selected_index()
+                .map(|item| item.row),
             Some(2)
         );
         window.press("up", cx);
         assert_eq!(
             view.read(cx)
                 .sequence_list
-                .current
-                .as_ref()
-                .map(|item| item.2),
+                .read(cx)
+                .selected_index()
+                .map(|item| item.row),
             Some(1)
         );
         window.press("home", cx);
@@ -6119,6 +6119,147 @@ async fn navigator_search_lists_suites_but_only_shows_scenarios_from_the_open_su
 }
 
 #[gpui_kit::test]
+fn flat_collection_workspace_identity_activation_and_scope(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(directory.path().join("common")).unwrap();
+    std::fs::write(directory.path().join("common/binary.bin"), b"binary\0data").unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.workspace_files_open = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let opened = view
+            .read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .entry
+            .path
+            .clone();
+        let target = std::path::PathBuf::from("common/_on-ready.js");
+        view.update(cx, |this, cx| {
+            this.focus_workspace_file(target.clone(), window, cx)
+        });
+        view.update(cx, |this, cx| {
+            this.session.entries.reverse();
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            Some(&target)
+        );
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            opened
+        );
+        let paths = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .filter(|entry| entry.kind != super::DocumentKind::Suite)
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        window.press("end", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            paths.last()
+        );
+        window.press("down", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            paths.first()
+        );
+        window.press("up", cx);
+        window.render_frame(cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            paths.last()
+        );
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            opened
+        );
+        view.update(cx, |this, cx| {
+            this.focus_workspace_file("common/binary.bin".into(), window, cx);
+        });
+        window.press("enter", cx);
+        window.press("space", cx);
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            opened
+        );
+        view.update(cx, |this, cx| {
+            this.focus_workspace_file(target.clone(), window, cx);
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+        window.press("space", cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            Some(&target)
+        );
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            opened
+        );
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            window.focus(&this.search.read(cx).focus_handle(cx), cx);
+            cx.notify();
+        });
+        window.render_frame(cx);
+        window.input("needle", cx);
+        window.press("home", cx);
+        window.press("end", cx);
+        assert_eq!(
+            view.read(cx)
+                .workspace_list
+                .read(cx)
+                .delegate()
+                .current
+                .as_ref(),
+            Some(&target)
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn workspace_files_text_documents_support_source_editing_and_save(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(directory.path().join("common")).unwrap();
@@ -6166,8 +6307,7 @@ async fn workspace_files_text_documents_support_source_editing_and_save(cx: &mut
         assert!(!view.read(cx).session.entries[index].supports_editing());
         window.click(("file", index), cx);
         view.update(cx, |this, cx| {
-            this.workspace_list
-                .focus_item("common/0-binary.css".into(), window, cx);
+            this.focus_workspace_file("common/0-binary.css".into(), window, cx);
         });
         window.press("enter", cx);
         window.press("space", cx);
@@ -6190,7 +6330,7 @@ async fn workspace_files_text_documents_support_source_editing_and_save(cx: &mut
             assert!(view.read(cx).session.entries[index].supports_editing());
             if path.ends_with(".js") {
                 view.update(cx, |this, cx| {
-                    this.workspace_list.focus_item(path.into(), window, cx);
+                    this.focus_workspace_file(path.into(), window, cx);
                 });
                 window.press("enter", cx);
             } else {
@@ -6301,6 +6441,8 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
             (true, 9),
             (false, 12),
             (true, 12),
+            (false, 64),
+            (true, 64),
         ] {
             let directory = tempfile::tempdir().unwrap();
             let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
@@ -6361,7 +6503,7 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                 assert!(files.top() >= window.find("scenario-pane").bounds().bottom());
                 assert!(files.bottom() <= sidebar.bottom());
                 assert_eq!(
-                    window.find(("file", last_index)).bounds().bottom() > files.bottom(),
+                    window.try_find(("file", last_index)).is_none_or(|last| last.bounds().bottom() > files.bottom()),
                     file_count > 8,
                     "Short file lists must fit without scrolling"
                 );
@@ -6419,15 +6561,27 @@ async fn workspace_files_scroll_within_sidebar_at_both_window_sizes(cx: &mut Tes
                     .unwrap();
                 let last_index = view.read(cx).session.entries.len() - 1;
                 window.press("home", cx);
+                window.render_frame(cx);
                 assert_eq!(
-                    view.read(cx).workspace_list.current.as_ref(),
+                    view.read(cx)
+                        .workspace_list
+                        .read(cx)
+                        .delegate()
+                        .current
+                        .as_ref(),
                     Some(&view.read(cx).session.entries[first_index].path)
                 );
                 let files = window.find("workspace-files").bounds();
                 assert!(window.find(("file", first_index)).bounds().top() >= files.top());
                 window.press("end", cx);
+                window.render_frame(cx);
                 assert_eq!(
-                    view.read(cx).workspace_list.current.as_ref(),
+                    view.read(cx)
+                        .workspace_list
+                        .read(cx)
+                        .delegate()
+                        .current
+                        .as_ref(),
                     Some(&last_path)
                 );
                 assert!(
@@ -9124,6 +9278,7 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             assert_eq!(view.read(cx).main_tab, 1);
             window.within("workbench-tabs").click(0_usize, cx);
             assert_eq!(view.read(cx).main_tab, 0);
+            window.render_frame(cx);
             assert!(window.find("field-url").visible());
             window.within("workbench-tabs").click(2_usize, cx);
             assert!(window.find("results-panel").bounds().bottom() >= px(height - 2.));
@@ -10672,6 +10827,7 @@ async fn suite_commands_request_execution_directly_and_keep_editor_state(cx: &mu
         assert!(window.try_find("run-field-asyncCaptureLimit").is_some());
         assert!(window.try_find("run-field-heading").is_some());
         window.within("workbench-tabs").click(0_usize, cx);
+        window.render_frame(cx);
         assert!(window.find("field-url").visible());
         assert!(!view.read(cx).session.dirty());
     })
@@ -11719,11 +11875,11 @@ async fn image_previews_keep_independent_modes_until_scenario_or_results_exit(
     let image = "../bitmaps_test/run-1/capture.png";
     std::fs::write(run.join("report.json"), serde_json::to_vec(&serde_json::json!({
         "id": "ui-test", "tests": [
-            {"status": "fail", "pair": {"label": "First viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
-            {"status": "fail", "pair": {"label": "Second viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
-            {"status": "pass", "pair": {"label": "Other scenario", "scenarioId": "second", "reference": image, "test": image}},
-            {"status": "pass", "pair": {"label": "Legacy capture", "reference": image, "test": image}},
-            {"status": "pass", "pair": {"label": "Empty scenario ID", "scenarioId": "", "reference": image, "test": image}}
+            {"status": "fail", "pair": {"fileName": "first-desktop.png", "label": "First viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
+            {"status": "fail", "pair": {"fileName": "first-mobile.png", "label": "Second viewport", "scenarioId": "first", "reference": image, "test": image, "diffImage": image}},
+            {"status": "pass", "pair": {"fileName": "second.png", "label": "Other scenario", "scenarioId": "second", "reference": image, "test": image}},
+            {"status": "pass", "pair": {"fileName": "legacy.png", "label": "Legacy capture", "reference": image, "test": image}},
+            {"status": "pass", "pair": {"fileName": "empty-id.png", "label": "Empty scenario ID", "scenarioId": "", "reference": image, "test": image}}
         ]
     })).unwrap()).unwrap();
     let (handle, _) = editor(cx, directory.path());
@@ -12489,6 +12645,7 @@ async fn missing_output_has_a_recoverable_empty_results_view(cx: &mut TestAppCon
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.find("refresh-results").visible());
         window.within("workbench-tabs").click(0_usize, cx);
+        window.render_frame(cx);
         assert!(window.find("field-url").visible());
     })
     .unwrap();

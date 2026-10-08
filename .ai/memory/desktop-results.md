@@ -1,7 +1,16 @@
 # Results Review
 
-Verified: 2026-10-07
+Verified: 2026-10-08
 
+- [Capture rows](../../src/desktop/ui/reports.rs) use Kit List/ListItem while
+  `select_capture` retains preview/approval policy. `flat_collection_capture_`
+  reproduces old index-based refresh drift and duplicate-key click retargeting;
+  both pass with unique-key refresh and catalog-scoped ambiguous row identity.
+  The 152-row native-event regression preserves wheel/filter/keyboard behavior.
+- Preview fixtures sharing one PNG need distinct `fileName` capture keys when
+  asserting refresh preservation. The independent-mode zoom test passes with
+  explicit keys; duplicate-key refresh deliberately falls back and has separate
+  coverage in `flat_collection_capture_duplicate_keys_remain_distinct`.
 - [Managed image menus](../../src/desktop/ui/reports.rs) use ContextMenuExt with
   generation-scoped scroll triggers and captured validated path/URL targets.
   Mode/capture/refresh/Results exit remove old menus. The shared weak

@@ -54,3 +54,9 @@ This task owns the actual title-bar fit repair, native theme switching at the
 chosen minimum without widening, and removal of the temporary smoke workaround.
 The exception does not count as green compact-header acceptance and does not
 authorize raising the minimum without the required layout evidence.
+
+Task 014 also reproduced the Git long-status title-bar failure on committed
+task 013: `git_large_tree_and_status_fit_compact_and_wide_windows` finds
+`open-workspace` beyond `width - 95`. The owner retained the header exception.
+Close it with the unchanged geometry assertion and native long-status coverage;
+passing compact body tests is not a substitute.

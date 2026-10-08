@@ -1,6 +1,8 @@
 # 014: Flat Collections And Row Presentation
 
-Status: Not started. Depends on 001. Task 015 depends on this task.
+Status: Verified, pending commit. Integrated UI: 255 pass, only the approved
+task 019 Git header failure remains. Default/Schema/Comparison/Artifact native
+flows pass. Depends on 001. Task 015 depends on this task.
 
 ## Scope
 
@@ -44,3 +46,21 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 Commit this unit only when its surfaces are verified, or request an explicit
 subunit split. Reopen for lost identity, virtualization, focus or selection
 distinctions. SidebarMenuItem is not a keyboard-equivalent substitute by itself.
+
+## Approved Test Adaptation
+
+The owner approved replacing only the old pre-scroll assumption that every
+offscreen row has bounds: the virtualized List may not mount the last row until
+scrolled. Short lists must still fit completely; all exact post-scroll, scrollbar
+drag, Home/End, activation and binary assertions remain. Added 64-row cases in
+both themes/sizes. The final workspace filter passes 3 tests and the new
+`flat_collection_workspace_` identity/guard filter passes 1.
+
+The owner also approved adjacent acceptance repairs after five of six integrated
+failures reproduced at committed task 013. Fields remount checks retain their
+visibility assertions after the next layout frame; Run toolbar padding matches
+the existing tab inset. The zoom fixture now identifies its five captures with
+unique keys, while a separate duplicate-key test verifies deliberate refresh
+fallback. Exact commands and results are in the bundle README. Only the existing
+compact-titlebar exception remains assigned to task 019; do not suppress its
+failing Git long-status geometry assertion.

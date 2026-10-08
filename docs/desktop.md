@@ -1095,6 +1095,9 @@ Viewports and Captures remain single-selection lists with Up/Down and Home/End
 navigation. Workspace files and action sequences use these keys to move focus,
 then Enter or Space opens the focused item. Keyboard navigation scrolls off-screen
 rows into view and retains the existing unsaved-draft guards.
+Workspace-file and action rows are virtualized; Up/Down wraps at their ends,
+while Home/End moves directly to the first/last row without opening it. Refresh
+keeps workspace selection by file path rather than a formerly occupied row.
 
 In Results, the lower pane becomes Captures for the active suite. Selecting a
 suite there changes the report being reviewed without opening another editor
@@ -1340,7 +1343,10 @@ scoped `persist` writes consumed through another scenario's `state` or `restore`
 Scenario fields include an action sequence with step icons and target summaries.
 Open a step directly, move it earlier/later, duplicate it, or remove it with
 confirmation. Reorder and duplicate keep the scenario selected and participate
-in document undo. The Add action menu groups navigation, interactions, page
+in document undo. The focused action follows a known reorder, and duplicate
+actions remain distinct. A stale action command cannot edit a changed document;
+ambiguous identities after external edits clear the row cursor without rewriting
+the action data. The Add action menu groups navigation, interactions, page
 utilities, and capture/state actions. Search settings for `actions` to isolate
 the sequence. Input values are not included in the sequence summaries.
 
@@ -1851,8 +1857,9 @@ Results refreshes on opening and after commands finish using current output
 options. It loads each suite's `bitmaps_test/<run>/report.json`, newest first,
 and shows the latest report for the active suite. Open Report pins its requested
 runs, including on refresh and while switching between their suites. Selecting a
-suite outside that request returns to latest-report browsing. A selected capture is
-retained when its report is unchanged. Filter
+suite outside that request returns to latest-report browsing. Refresh retains a
+selected capture by its unique capture key even when report rows are reordered;
+missing or ambiguous keys fall back within the current filter. Filter
 All/Failed/Passed and search labels or errors. The preview follows the filtered
 selection and clears when nothing matches. Captures use a continuously scrolling,
 virtualized list without pagination. Select a capture directly from the list;

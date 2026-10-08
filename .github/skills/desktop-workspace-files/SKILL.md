@@ -44,6 +44,11 @@ Cover repairs of existing syntax/schema errors, suite status refresh after savin
 
 GUI fixtures use `Session::connect`, so initialized default files already exist. Validate only editable documents, and assert `_on-ready.js` and `_override.css` are listed and editable. `common_text_files_` covers raw saves, content/size boundaries, conflicts, and Save As; `workspace_files_text_documents_support_source_editing_and_save` covers native editing and binary activation guards. Suite-creation assertions preserve the runtime inventory; sidebar-scroll fixtures count all non-suite entries and cover the eight/nine-row boundary in `desktop::ui::tests::workspace_files_scroll_within_sidebar_at_both_window_sizes`.
 
+Workspace UI uses retained Kit List state with stable paths and guarded deferred
+activation. The sidebar-scroll test also covers 64 rows: offscreen rows may be
+unmounted, but the last row must be visible after wheel/drag/End. `flat_collection_workspace_`
+verifies refresh/reorder identity, wrapping, binary/busy gates and input scope.
+
 ## Maintain
 
 Update [desktop docs](../../../docs/desktop.md) and this skill. Comment why conflict and no-clobber guards exist; retain failure-path tests whenever I/O is refactored.

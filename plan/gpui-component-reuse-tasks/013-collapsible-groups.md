@@ -1,7 +1,7 @@
 # 013: Controlled Collapsible Groups
 
-Status: Acceptance passed; authorized local commit pending. Depends on completed
-001 and 004. Approved compact-header exception remains owned by task 019.
+Status: Committed as `ad26ca0` after acceptance. Depends on completed 001 and 004.
+Approved compact-header exception remains owned by task 019.
 
 ## Scope
 
