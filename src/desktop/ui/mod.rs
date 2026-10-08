@@ -150,6 +150,7 @@ pub struct Workbench {
     source_wrap: bool,
     source_line_numbers: bool,
     source_font_size: f32,
+    source_font_size_input: Entity<InputState>,
     preferences: Preferences,
     preferences_path: Option<PathBuf>,
     preferences_saving: bool,
@@ -239,6 +240,34 @@ impl Workbench {
             .map(|error| format!("{error:#}"))
             .unwrap_or_else(|| "Ready".into());
         let preferences = preferences.unwrap_or_default();
+        let source_font_size_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx)
+                .mask_pattern(gpui_kit::component::input::MaskPattern::None)
+                .default_value(preferences.source_font_size.to_string());
+            state.set_step(None, window, cx);
+            state
+        });
+        let source_font_size_subscription = cx.subscribe_in(
+            &source_font_size_input,
+            window,
+            |this, state, event, window, cx| match event {
+                InputEvent::Change => {
+                    if let Ok(size) = state.read(cx).value().parse::<u8>() {
+                        this.change_source_size(size, window, cx);
+                    }
+                }
+                InputEvent::Blur => this.restore_source_size(window, cx),
+                _ => {}
+            },
+        );
+        let source_font_step_subscription = cx.subscribe_in(
+            &source_font_size_input,
+            window,
+            |this, _, event: &NumberInputEvent, window, cx| {
+                let NumberInputEvent::Step(action) = event;
+                this.step_source_size(*action, window, cx);
+            },
+        );
         source.update(cx, |state, cx| {
             state.set_soft_wrap(preferences.source_wrap, window, cx);
             state.set_line_number(preferences.source_line_numbers, window, cx);
@@ -428,6 +457,8 @@ impl Workbench {
             _subscriptions: vec![
                 app_menu_release,
                 source_subscription,
+                source_font_size_subscription,
+                source_font_step_subscription,
                 search_subscription,
                 run_subscription,
                 field_search_subscription,
@@ -454,6 +485,7 @@ impl Workbench {
             source_wrap: preferences.source_wrap,
             source_line_numbers: preferences.source_line_numbers,
             source_font_size: f32::from(preferences.source_font_size),
+            source_font_size_input,
             preferences,
             preferences_path: Preferences::path().ok(),
             preferences_saving: false,

@@ -4,6 +4,20 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Native Smoke Clipboard Restoration (2026-10-08)
 
+- Task 018's authorized adjacent repair moves Overview Details to the existing
+  clipboard sequence-before-read helper. A new headless regression fails before
+  the change and passes afterward; final full native Default and cleanup pass.
+  The shared helper still retries only clipboard-open contention for two seconds
+  and rethrows failures, now with data-free type/HRESULT/elapsed diagnostics.
+  This passing run does not recover earlier failed backups or prove every
+  historical restoration failure solved; retain this residual issue.
+- Task 018's rebuilt Default attempt failed at `default.ps1:20` reading the
+  Overview Details clipboard. One unchanged retry reached all Overview/Command
+  size/theme checks, then failed at `default.ps1:40` restoring its clipboard
+  backup with `SetDataObject`. Both reported that the requested Clipboard
+  operation did not succeed. Preferences were restored, but the retry's
+  clipboard backup was not. Neither attempt reached the font-size checks;
+  native acceptance remains blocked, with no relaxed clipboard assertions.
 - Task 017 Default smoke passed its palette checks, then failed at
   [Results cleanup](ci/desktop-smoke/flows/results.ps1#L40): WinForms
   `Clipboard.SetDataObject` reported that the requested operation did not succeed.

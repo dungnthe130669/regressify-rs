@@ -847,10 +847,14 @@ contrast for the principal text/status color pairs, not full accessibility
 certification.
 
 Source wrapping, line numbers, and text size are saved across restarts. Text size
-is bounded to 10-24 pixels; the reset control returns it to 14. These changes do
-not edit the document. Preference writes are serialized and coalesced without
-blocking editing; normal close waits for the final write. A settings-write error
-is reported without locking the editor or discarding a draft.
+accepts integers from 10 to 24 pixels, entered directly or adjusted with Up/Down
+and the step buttons. Valid sizes apply immediately and are saved automatically.
+Invalid text, fractions, and out-of-range values do not change the saved size;
+leaving the input restores the last valid size. Reset text size returns it to
+14 pixels. These changes do not edit the document. Preference writes are
+serialized and coalesced without blocking editing; normal close waits for the
+final write. A settings-write error is reported without locking the editor or
+discarding a draft.
 
 Open Commands from the header or Ctrl+Shift+P (Cmd+Shift+P on macOS). Search by
 command name or category, use arrow keys to select, Enter to execute, and Escape
@@ -1495,7 +1499,7 @@ it does not overwrite existing exported schemas or VS Code settings. The desktop
 uses the schema built into its current version, independent of those files.
 
 The source toolbar provides an Edit source lines menu, Find, Replace, and Suggest,
-plus word wrapping and text sizes from 10 to 24 pixels. Wrapping, line-number,
+plus word wrapping and integer text sizes from 10 to 24 pixels. Wrapping, line-number,
 and text-size changes preserve source and undo history.
 
 Line commands operate on the current line or all lines touched by the selection.

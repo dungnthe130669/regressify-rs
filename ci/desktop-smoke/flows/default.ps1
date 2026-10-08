@@ -15,13 +15,15 @@ function Test-DefaultFlows {
                 }
                 Invoke-Control 'Suite details text' -Pointer
                 Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('overview-details-sentinel') }
+                $detailsSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
                 Send-FixtureKeys A -Control
                 Send-FixtureKeys C -Control
-                Wait-WindowState { (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $details } 'Selecting suite details did not copy its exact full text.'
+                Wait-FixtureClipboardText $detailsSequence $details 'Selecting suite details did not copy its exact full text.'
                 Capture-Window "overview-details-$($theme.ToLowerInvariant())-$($dimensions[0])"
                 Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('overview-details-sentinel') }
+                $detailsSequence = [RegressifySmokeClipboard]::GetClipboardSequenceNumber()
                 Invoke-Control 'Copy suite details' -Pointer
-                Wait-WindowState { (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $details } 'Copy suite details did not preserve its exact full text.'
+                Wait-FixtureClipboardText $detailsSequence $details 'Copy suite details did not preserve its exact full text.'
                 Invoke-Control 'Close suite details' -Pointer
                 Wait-WindowState { $null -eq (Find-Control 'Suite details text') } 'Suite details did not close.'
                 Send-FixtureKeys P -Control -Shift
@@ -155,7 +157,102 @@ function Test-DefaultFlows {
     $savedSuite = Get-Content (Join-Path $workspace 'visual_tests/smoke.tests.json') -Raw | ConvertFrom-Json
     if ($savedSuite.debug -ne $false) { throw 'Native completion did not save the expected property.' }
     if ($savedSuite.scenarios[0].viewportNames -notcontains 'phone') { throw 'Guided viewport choice was not saved.' }
-    Invoke-Control 'Larger source text'
+    $sourceBeforeSizeChecks = Read-ControlText 'Configuration source'
+    $sourceSizePath = Join-Path $workspace 'visual_tests/smoke.tests.json'
+    $sourceSizeHash = (Get-FileHash -LiteralPath $sourceSizePath -Algorithm SHA256).Hash
+    Invoke-Control 'Configuration source' -Pointer
+    Send-FixtureKeys End -Control
+    Send-FixtureText 'source-font-size-draft'
+    $sourceSizeDraft = $sourceBeforeSizeChecks + 'source-font-size-draft'
+    Wait-WindowState { (Read-ControlText 'Configuration source') -ceq $sourceSizeDraft } 'The source font-size probe did not preserve the exact original source.'
+    $sourceSizeInputCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Edit)
+    $sourceSizeInputs = (Wait-Control 'Source font size').FindAll([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeInputCondition)
+    if ($sourceSizeInputs.Count -ne 1) { throw 'Source font size must expose exactly one native edit input.' }
+    $sourceSizeInput = $sourceSizeInputs[0]
+    $sourceSizeSpinnerCondition = [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Spinner)
+    $sourceSizeSpinners = (Wait-Control 'Source font size').FindAll([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeSpinnerCondition)
+    if ($sourceSizeSpinners.Count -ne 1) { throw 'Source font size must expose exactly one native spin button.' }
+    $sourceSizeSpinner = $sourceSizeSpinners[0]
+    if (-not [System.Windows.Automation.Automation]::Compare($sourceSizeSpinner.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeInputCondition), $sourceSizeInput)) { throw 'The source font-size spin button must own its actual edit input.' }
+    $sourceSizePattern = $null
+    if (-not $sourceSizeInput.TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$sourceSizePattern)) { throw 'Source font size must expose the actual input value.' }
+    $sourceSizeValue = [System.Windows.Automation.ValuePattern]$sourceSizePattern
+    if ($sourceSizeValue.Current.IsReadOnly) { throw 'Source font size must be editable.' }
+    Wait-WindowState { $sourceSizeValue.Current.Value -ceq '14' } 'Source font size did not start at the default 14 pixels.'
+    foreach ($sizeCase in @(
+        @{ Text = '10'; Steps = @(
+            @{ Key = 'DownArrow'; Value = '10' },
+            @{ Button = 'Decrement'; Value = '10' },
+            @{ Key = 'UpArrow'; Value = '11' },
+            @{ Button = 'Decrement'; Value = '10' }
+        ) },
+        @{ Text = '24'; Steps = @(
+            @{ Key = 'UpArrow'; Value = '24' },
+            @{ Button = 'Increment'; Value = '24' },
+            @{ Key = 'DownArrow'; Value = '23' },
+            @{ Button = 'Increment'; Value = '24' }
+        ) },
+        @{ Text = '17'; Steps = @(
+            @{ Key = 'UpArrow'; Value = '18' },
+            @{ Key = 'DownArrow'; Value = '17' },
+            @{ Button = 'Increment'; Value = '18' },
+            @{ Button = 'Decrement'; Value = '17' }
+        ) }
+    )) {
+        Invoke-Control 'Source font size' -Pointer
+        Wait-WindowState { [System.Windows.Automation.Automation]::Compare([System.Windows.Automation.AutomationElement]::FocusedElement, $sourceSizeSpinner) } 'Source font size did not receive native keyboard focus.'
+        Send-FixtureKeys A -Control
+        Send-FixtureText $sizeCase.Text
+        Wait-WindowState { $sourceSizeValue.Current.Value -ceq $sizeCase.Text } "Source font size did not accept '$($sizeCase.Text)' exactly."
+        Wait-Settings { param($settings) $settings.sourceFontSize -eq [int]$sizeCase.Text }
+        foreach ($sizeStep in $sizeCase.Steps) {
+            if ($sizeStep.ContainsKey('Key')) {
+                Invoke-Control 'Source font size' -Pointer
+                Wait-WindowState { [System.Windows.Automation.Automation]::Compare([System.Windows.Automation.AutomationElement]::FocusedElement, $sourceSizeSpinner) } 'Source font size did not receive native keyboard focus for stepping.'
+                Send-FixtureKeys $sizeStep.Key
+            } else {
+                Invoke-Control $sizeStep.Button -Within 'Source font size' -Pointer
+            }
+            Wait-WindowState { $sourceSizeValue.Current.Value -ceq $sizeStep.Value } "Source font-size step did not produce '$($sizeStep.Value)'."
+            Wait-Settings { param($settings) $settings.sourceFontSize -eq [int]$sizeStep.Value }
+        }
+        if ((Read-ControlText 'Configuration source') -cne $sourceSizeDraft) { throw 'Source font-size entry or stepping changed the exact configuration draft.' }
+        if ((Get-FileHash -LiteralPath $sourceSizePath -Algorithm SHA256).Hash -ne $sourceSizeHash) { throw 'Source font-size entry or stepping changed saved configuration bytes.' }
+    }
+    foreach ($invalidSize in @('', 'invalid', '17.5', '9', '25', '256')) {
+        Invoke-Control 'Source font size' -Pointer
+        Wait-WindowState { [System.Windows.Automation.Automation]::Compare([System.Windows.Automation.AutomationElement]::FocusedElement, $sourceSizeSpinner) } 'Source font size did not receive native keyboard focus for invalid entry.'
+        Send-FixtureKeys A -Control
+        Send-FixtureKeys Backspace
+        if ($invalidSize.Length -gt 0) { Send-FixtureText $invalidSize }
+        Wait-WindowState { $sourceSizeValue.Current.Value -ceq $invalidSize } 'Invalid source font-size text was coerced while editing.'
+        foreach ($sizeKey in @('UpArrow', 'DownArrow')) {
+            Send-FixtureKeys $sizeKey
+            Wait-WindowState { $sourceSizeValue.Current.Value -ceq $invalidSize } 'Keyboard stepping changed an invalid source font-size draft.'
+        }
+        $sourceSizeSettling = [System.Diagnostics.Stopwatch]::StartNew()
+        Wait-WindowState {
+            if ($sourceSizeValue.Current.Value -cne $invalidSize) { throw 'Deferred input handling changed an invalid source font-size draft.' }
+            $persistedSize = (Get-Content -LiteralPath $settingsPath -Raw | ConvertFrom-Json).sourceFontSize
+            if ($persistedSize -ne 17) { throw 'Invalid source font-size text changed the saved preference.' }
+            $sourceSizeSettling.ElapsedMilliseconds -ge 500
+        } 'Invalid source font size did not settle without changing the saved preference.'
+        Invoke-Control 'Configuration source' -Pointer
+        Wait-WindowState { $sourceSizeValue.Current.Value -ceq '17' } 'Leaving an invalid source font size did not restore the last valid value.'
+        Wait-Settings { param($settings) $settings.sourceFontSize -eq 17 }
+        if ((Read-ControlText 'Configuration source') -cne $sourceSizeDraft) { throw 'Invalid source font-size entry or blur changed the exact configuration draft.' }
+        if ((Get-FileHash -LiteralPath $sourceSizePath -Algorithm SHA256).Hash -ne $sourceSizeHash) { throw 'Invalid source font-size entry or blur changed saved configuration bytes.' }
+    }
+    Invoke-Control 'Reset text size' -Pointer
+    Wait-WindowState { $sourceSizeValue.Current.Value -ceq '14' } 'Reset text size did not restore the default input value.'
+    Wait-Settings { param($settings) $settings.sourceFontSize -eq 14 }
+    if ((Read-ControlText 'Configuration source') -cne $sourceSizeDraft) { throw 'Reset text size changed the exact configuration draft.' }
+    Invoke-Control 'Configuration source' -Pointer
+    Send-FixtureKeys Z -Control
+    Wait-WindowState { (Read-ControlText 'Configuration source') -ceq $sourceBeforeSizeChecks } 'Source font-size controls changed the source undo history.'
+    if ((Get-FileHash -LiteralPath $sourceSizePath -Algorithm SHA256).Hash -ne $sourceSizeHash) { throw 'Source font-size controls changed saved configuration bytes.' }
+    Invoke-Control 'Increment' -Within 'Source font size' -Pointer
+    Wait-WindowState { $sourceSizeValue.Current.Value -ceq '15' } 'Source font-size increment did not produce 15 pixels.'
     Invoke-Control 'Wrap'
     Invoke-Control 'Line numbers'
     Wait-Settings { param($settings) $settings.sourceFontSize -eq 15 -and $settings.sourceWrap -eq $false -and $settings.sourceLineNumbers -eq $false }
@@ -343,7 +440,11 @@ function Test-DefaultFlows {
     Invoke-Control 'smoke.tests.json'
     Invoke-Control 'Checkout'
     Invoke-Control 'Source'
-    Wait-Control '15 px' | Out-Null
+    $restoredSizeInputs = (Wait-Control 'Source font size').FindAll([System.Windows.Automation.TreeScope]::Descendants, $sourceSizeInputCondition)
+    if ($restoredSizeInputs.Count -ne 1) { throw 'Restored source font size must expose exactly one native edit input.' }
+    $restoredSizePattern = $null
+    if (-not $restoredSizeInputs[0].TryGetCurrentPattern([System.Windows.Automation.ValuePattern]::Pattern, [ref]$restoredSizePattern)) { throw 'Restored source font size must expose the actual input value.' }
+    Wait-WindowState { ([System.Windows.Automation.ValuePattern]$restoredSizePattern).Current.Value -ceq '15' } 'Source font size did not restore its saved input value after restart.'
     Wait-Settings { param($settings) $settings.theme -eq 'dark' -and $settings.sourceFontSize -eq 15 -and $settings.sourceWrap -eq $false -and $settings.sourceLineNumbers -eq $false }
     Capture-Window 'appearance-restored'
     if (-not $KeepOpen) {

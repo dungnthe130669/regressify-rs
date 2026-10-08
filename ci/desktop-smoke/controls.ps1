@@ -121,7 +121,10 @@ function Invoke-FixtureClipboard([scriptblock]$Operation, [ValidateRange(0, 1000
             $cause = $_.Exception.GetBaseException()
             if ($cause -isnot [System.Runtime.InteropServices.ExternalException] -or
                 $cause.HResult -ne -2147221040 -or
-                $deadline.ElapsedMilliseconds -ge $TimeoutMilliseconds) { throw }
+                $deadline.ElapsedMilliseconds -ge $TimeoutMilliseconds) {
+                Write-Warning ('Clipboard access failed after {0}ms ({1}, HRESULT 0x{2:X8}).' -f $deadline.ElapsedMilliseconds, $cause.GetType().FullName, $cause.HResult)
+                throw
+            }
             [RegressifySmokeNative]::DwmFlush() | Out-Null
         }
     } while ($true)

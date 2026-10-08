@@ -214,6 +214,15 @@ $clipboardProbe = $definitions['Invoke-FixtureClipboard'].Extent.Text.Replace('[
 }
 
 $sequenceProbe = $definitions['Wait-FixtureClipboardText'].Extent.Text.Replace('[RegressifySmokeClipboard]', "[$pointerTypeName]")
+$overviewClipboard = @($definitions['Test-DefaultFlows'].Body.EndBlock.Statements | Where-Object {
+    $_ -is [System.Management.Automation.Language.TryStatementAst]
+})[0]
+$overviewCopyWaits = @($overviewClipboard.Body.FindAll({
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+        $node.GetCommandName() -eq 'Wait-FixtureClipboardText'
+}, $true))
+Assert-SmokeEqual $overviewCopyWaits.Count 2 'Both Overview Details copy checks must wait for the clipboard sequence before reading exact text'
 foreach ($mode in @('success', 'wrong-text', 'no-write')) {
     & {
         . ([scriptblock]::Create($sequenceProbe))

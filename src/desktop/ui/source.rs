@@ -653,13 +653,58 @@ impl Workbench {
             state.set_soft_wrap(self.source_wrap, window, cx);
             state.set_line_number(self.source_line_numbers, window, cx);
         });
+        if !self
+            .source_font_size_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window)
+        {
+            self.restore_source_size(window, cx);
+        }
         cx.notify();
     }
 
-    fn change_source_size(&mut self, size: u8, window: &mut Window, cx: &mut Context<Self>) {
-        self.preferences.source_font_size = size.clamp(10, 24);
+    pub(super) fn change_source_size(
+        &mut self,
+        size: u8,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !(10..=24).contains(&size) || size == self.preferences.source_font_size {
+            return;
+        }
+        self.preferences.source_font_size = size;
         self.apply_editor_display(window, cx);
         self.save_preferences(window, cx);
+    }
+
+    pub(super) fn restore_source_size(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let value = self.preferences.source_font_size.to_string();
+        self.source_font_size_input.update(cx, |state, cx| {
+            if state.value().as_ref() != value {
+                state.set_value(value, window, cx);
+            }
+        });
+    }
+
+    pub(super) fn step_source_size(
+        &mut self,
+        action: StepAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(size) = self.source_font_size_input.read(cx).value().parse::<u8>() else {
+            return;
+        };
+        if !(10..=24).contains(&size) {
+            return;
+        }
+        let next = match action {
+            StepAction::Increment => size.saturating_add(1),
+            StepAction::Decrement => size.saturating_sub(1),
+        };
+        self.change_source_size(next, window, cx);
+        self.restore_source_size(window, cx);
     }
 
     fn route_completion<Command: Action + Clone>(
@@ -1160,47 +1205,6 @@ impl Workbench {
                             )
                             .content(div().flex_1())
                             .child(
-                                Button::new("source-smaller")
-                                    .ghost()
-                                    .icon(gpui_kit::assets::IconName::ZoomOut)
-                                    .accessibility_label("Smaller source text")
-                                    .tooltip("Smaller source text")
-                                    .disabled(self.source_font_size <= 10.)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.change_source_size(
-                                            (this.source_font_size as u8).saturating_sub(1),
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .content(
-                                div()
-                                    .id("source-text-size")
-                                    .role(Role::Status)
-                                    .aria_label(format!("{} px", self.source_font_size))
-                                    .test_support()
-                                    .w(px(40.))
-                                    .text_center()
-                                    .text_xs()
-                                    .child(format!("{} px", self.source_font_size)),
-                            )
-                            .child(
-                                Button::new("source-larger")
-                                    .ghost()
-                                    .icon(gpui_kit::assets::IconName::ZoomIn)
-                                    .accessibility_label("Larger source text")
-                                    .tooltip("Larger source text")
-                                    .disabled(self.source_font_size >= 24.)
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.change_source_size(
-                                            this.source_font_size as u8 + 1,
-                                            window,
-                                            cx,
-                                        );
-                                    })),
-                            )
-                            .child(
                                 Button::new("source-reset-size")
                                     .ghost()
                                     .icon(gpui_kit::assets::IconName::RotateCcw)
@@ -1208,8 +1212,22 @@ impl Workbench {
                                     .accessibility_label("Reset text size")
                                     .disabled(self.source_font_size == 14.)
                                     .on_click(cx.listener(|this, _, window, cx| {
-                                        this.change_source_size(14, window, cx)
+                                        this.change_source_size(14, window, cx);
+                                        this.restore_source_size(window, cx);
                                     })),
+                            )
+                            .content(
+                                div()
+                                    .id("source-text-size")
+                                    .role(Role::Group)
+                                    .aria_label("Source font size")
+                                    .test_support()
+                                    .w(px(132.))
+                                    .flex_shrink_0()
+                                    .child(
+                                        NumberInput::new(&self.source_font_size_input)
+                                            .with_size(gpui_kit::component::Size::Medium),
+                                    ),
                             ),
                     )),
             )

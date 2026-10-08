@@ -2,6 +2,8 @@
 
 Verified: 2026-10-08
 
+- [Source font size](../../src/desktop/ui/source.rs) uses a separate unmasked integer 10..24 NumberInput: invalid text never saves; Blur restores the last valid size.
+  `source_font_size_` covers input/saved bytes, steps, Reset, reload and unchanged drafts. Activate GPUI fixtures for Blur; inactive windows suppress focus events.
 - [Command search](../../src/desktop/ui/commands.rs): actionless items, one-shot close/focus/dispatch, stock title/category substring matching and two-step Escape.
   `command_palette_` covers duplicate confirmation, focus/drafts and disabled/empty results; refocus query input after a row click before further typing.
 - [Fields groups](../../src/desktop/ui/mod.rs) use controlled Accordion with
@@ -65,8 +67,7 @@ Verified: 2026-10-08
 - [Viewport completion](../../src/desktop/completion.rs) uses parsed full value
   spans for spaces/hyphens and forces YAML block-list probes into value mode.
   The `action_viewport` desktop tests cover source preservation and these cases.
-- [Source commands](../../src/desktop/ui/source.rs) bind inside
-  `RegressifySource > Input` and additionally check the source focus handle and
+- [Source commands](../../src/desktop/ui/source.rs) bind inside `RegressifySource > Input` and check the source focus handle and
   busy/editable state. The Edit menu uses the same actions with `action_context`.
 - Line edits are a single `apply_lsp_edits` replacement, followed by selection
   restoration. Do not use `set_value` for interactive commands: it resets native

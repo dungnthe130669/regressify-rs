@@ -1,7 +1,8 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-016 committed. Task 017 Command palette is
-verified and awaiting its authorized local commit.
+Status: Planning and tasks 001-017 committed. Task 018 Source font size is
+verified and awaiting its authorized local commit. Native Default passes after
+the owner-approved bounded clipboard-harness repair.
 The approved Linux baseline and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -92,8 +93,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 014 Flat collections: committed as `23d805c`; all surfaces and native acceptance verified with the approved task 019 header exception.
 - [x] 015 Git Tree: committed as `55a6142`, with the approved public base adapter and task 019 header exception.
 - [x] 016 Overview Table: committed as `d8e9965`; native Default/Schema pass, with the approved task 019 header exception.
-- [x] 017 Command palette: verified, awaiting commit; native Default passes with the approved task 019 header exception.
-- [ ] 018 Source font size: not started; awaits 003 and 007.
+- [x] 017 Command palette: committed as `6dfd54d`; native Default passes with the approved task 019 header exception.
+- [x] 018 Source font size: verified, awaiting commit; native Default passes and integrated UI has only the approved task 019 header failure.
 - [ ] 019 Stock theme and normal sizing: not started; awaits remaining 003-018.
 - [ ] 020 Final acceptance: not started; awaits remaining 003-019.
 
@@ -806,7 +807,86 @@ When a task changes state, record the exact focused command, exact outcome and n
 - Final review preserves the catalog, existing guarded actions, actionless
   items, close/focus/dispatch ordering and one-shot confirmation. No new palette
   defect found. Production net -78 lines; tests net +161; smoke +9. Linux remains
-  deferred; no task 017 commit is claimed yet.
+  deferred. Committed as `6dfd54d`; the clean resume independently verified the
+  commit and its acceptance body before starting task 018.
+
+### Task 018 Verification
+
+- Resumed from clean `6dfd54d`; task 017's pending-commit text was stale, not
+  missing implementation. Tasks 001-017 and their recorded dependencies are
+  reconciled; the approved Linux and task 019 header exceptions remain.
+- Fresh baselines with temporary `CARGO_INCREMENTAL=0` pass:
+  `cargo test --locked --features gui-tests --lib source_line_commands -- --test-threads=1`
+  (12 tests), and the same command with filter `preferences` (5 tests).
+- New `source_font_size_accepts_direct_integer_entry` failed before migration
+  (0 passed, 1 failed) and passes with a retained normal Kit NumberInput. The
+  source-only adapter accepts integers 10..24, leaves invalid text unpersisted,
+  ignores invalid/boundary steps, restores the last valid value on blur and
+  preserves serialized saves and Reset. Configuration field policy is unchanged.
+- `cargo test --locked --features gui-tests --lib source_font_size_ -- --test-threads=1`:
+  3 passed. Coverage includes actual child values, empty/fractional/exponent/
+  invalid/out-of-range text, blur, keyboard/pointer steps, saved bytes, reload,
+  Reset, exact invalid Source drafts and both themes at 1000x640/1600x1000.
+- The new blur fixture initially omitted window activation: GPUI suppresses
+  focus events for inactive windows. Activating and waiting for the real Blur
+  event preserves every assertion. Its invalid Source fixture now uses an
+  unmatched closing bracket to avoid native auto-pairing; no production focus
+  workaround or diagnostic trace remains.
+- Neighbor checks with the same locked gui-tests/lib/one-thread flags pass:
+  `preferences` (5), `preference_write_failures_do_not_lock_the_editor_and_can_be_retried`
+  (1), `source_tools_preserve_text_and_jump_to_syntax_errors` (1),
+  `source_line_commands` (12), `numeric_stepper_` (2), and
+  `toolbar_editor_controls_fit_supported_window_sizes` (1). Obsolete button
+  targets now address built-in steps and the actual editable child. Normal size
+  is checked on the 28px frame; its step buttons have exact 1px inner insets.
+- `cargo fmt --all -- --check`, `cargo clippy --locked --features gui --lib -- -D warnings`
+  and `cargo build --locked --features gui --bin regressify-desktop` pass.
+  Final `cargo test --locked --features gui-tests --lib desktop::ui -- --test-threads=1 --quiet`:
+  270 passed, 1 failed, 0 ignored, 903 filtered (2466.31s). The sole failure is
+  the unchanged task 019 `git_large_tree_and_status_fit_compact_and_wide_windows`
+  header assertion. This is not a fully passing gate despite the shell wrapper's
+  reported zero exit status; the test aggregate is authoritative.
+- Native Default now checks exact entry, steps, invalid drafts, blur, Reset,
+  persisted JSON, restart and unchanged Source undo/file bytes. Headless harness
+  passes: 18 modules, 49 helpers, 45 dispatch/cleanup cases. Scoped Markdown,
+  guidance validation (46 skills) and all 10 validator self-tests pass using
+  the existing `target/agent-guidance-venv` environment. The earlier plain-Python
+  attempt lacked PyYAML; no global dependency was installed.
+- Rebuilt `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild` stopped
+  in the existing Overview Details copy check: `default.ps1:20`, `GetText`,
+  requested Clipboard operation did not succeed. One complete unchanged retry
+  passed the Overview/Command size/theme cases but failed at `default.ps1:40`,
+  restoring its clipboard backup with `SetDataObject`. Both attempts restored
+  preferences; the second attempt's clipboard backup was not restored.
+- Neither initial attempt reached task 018's font-size checks. The owner then
+  explicitly authorized bounded adjacent clipboard-harness diagnosis/repair
+  with regression tests and unchanged exact-copy/cleanup guards.
+- The new headless regression failed before replacing Overview's immediate
+  reads with the existing sequence-before-read helper, then passed. Unrecovered
+  clipboard failures now report only elapsed time, exception type and HRESULT;
+  the same two-second busy-only retry policy and original exception remain.
+  This does not claim that every historical clipboard-restoration failure is
+  solved or that a previously lost backup can be recovered.
+- Native focus tracing identified the new test's wrong observation target:
+  NumberInput reports focus on its Spinner, with the value on its Edit child.
+  Final checks require exactly one Spinner owning exactly one Edit, actual
+  pointer/keyboard focus and exact input/persisted values. Temporary focus
+  tracing was removed; no production focus adapter was needed.
+- Final rebuilt `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild`
+  passes all Default workflows, including entry at 10/24/17, keyboard/pointer
+  steps and limits, invalid/fractional/out-of-range drafts, blur, Reset, exact
+  configuration bytes/undo, saved preferences and restart. Clipboard cleanup,
+  dirty-fixture cleanup and preference restoration complete on this run.
+- Inspected final `source.png`, `source-dark.png`, `source-compact.png` and
+  `source-dark-compact.png` under `target/desktop-smoke`: Source controls fit at
+  1600x1000 and 1080x720 in both themes. Native compact-header fit remains the
+  task 019 exception, not a pass. Final harness and guidance checks pass.
+- Production +94/-44 (net +50): one retained InputState and two subscriptions;
+  GUI tests +313/-11, native Default +105/-4, shared helper +4/-1 and headless
+  regression +9. Reviewed strict parsing, no-op/rejected steps, serialized
+  saves, weak subscription ownership and unchanged configuration/history.
+  No new dependency or toolkit change. Task 018 is verified, awaiting commit;
+  tasks 019-020 remain unstarted and the Linux exception is unchanged.
 
 ### Approved Compact Header Exception
 

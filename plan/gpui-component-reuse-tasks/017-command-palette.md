@@ -1,6 +1,6 @@
 # 017: Command Palette
 
-Status: Verified, awaiting the authorized local commit. Focused and native gates
+Status: Committed as `6dfd54d`. Focused and native gates
 pass; the integrated gate has only the approved task 019 header failure.
 Depends on 001.
 

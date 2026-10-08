@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-07
+Verified: 2026-10-08
 
 - Run/download bars use Kit Progress with percentages and accessible names.
   Native default smoke checks `Scenario job progress` as a ProgressBar with
@@ -52,9 +52,13 @@ Verified: 2026-10-07
 - [Clipboard checks](../../ci/desktop-smoke/controls.ps1) wait for the native
   sequence number to change after a synthetic sentinel and copy action before
   reading exact text. This avoids a tight read loop competing with GPUI's write.
+  Overview Details now uses that helper too; its headless regression failed
+  before the fix, then passed along with the complete native Default flow.
   Only clipboard-busy `CLIPBRD_E_CANT_OPEN` is retried, for a bounded duration;
   non-busy errors propagate. Results/deployment preserve the clipboard in
   `finally`; headless checks cover order, exact text, retries, and failure cases.
+  Failure diagnostics contain only type/HRESULT/elapsed time. Historical failed
+  clipboard backups are not recovered by a later passing run.
 - [Schema smoke](../../ci/desktop-smoke/flows/schema.ps1) verifies Enter/Tab/Escape
   after Alt+Tab to an owned temporary window and native return activation without
   clicking the editor. Compare `AutomationElement.FocusedElement` across the switch;

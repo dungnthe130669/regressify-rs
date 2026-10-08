@@ -27,6 +27,10 @@ fn numeric_input_id(
     ("input", input.entity_id()).into()
 }
 
+fn source_font_input_id(view: &Entity<Workbench>, cx: &gpui_kit::App) -> gpui_kit::ElementId {
+    ("input", view.read(cx).source_font_size_input.entity_id()).into()
+}
+
 #[gpui_kit::test]
 async fn root_overlay_mounts_dialog_once_and_restores_content_focus(cx: &mut TestAppContext) {
     use gpui_kit::component::{WindowExt, button::Button};
@@ -1483,6 +1487,275 @@ async fn preference_write_failures_do_not_lock_the_editor_and_can_be_retried(
 }
 
 #[gpui_kit::test]
+async fn source_font_size_accepts_direct_integer_entry(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .document
+            .source()
+            .to_string()
+    });
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.within("editor-tabs").click(0_usize, cx);
+        window.click("source-text-size", cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input("17", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).preferences.source_font_size == 17 && !view.read(cx).preferences_saving
+    })
+    .await;
+    assert_eq!(
+        crate::desktop::workspace::Preferences::load(
+            &directory.path().join("desktop-preferences.json")
+        )
+        .unwrap()
+        .source_font_size,
+        17
+    );
+    cx.update(|cx| {
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .document
+                .source(),
+            original
+        );
+        assert!(!view.read(cx).session.dirty());
+    });
+}
+
+#[gpui_kit::test]
+async fn source_font_size_rejects_invalid_drafts_and_restores_last_valid(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, _| window.activate_window())
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.is_window_active()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.select_editor_tab(1, window, cx);
+            this.source.update(cx, |state, cx| state.focus(window, cx));
+        });
+        window.press("ctrl-a", cx);
+        window.input("scenarios: }\n", cx);
+        window.render_frame(cx);
+        window.click(source_font_input_id(&view, cx), cx);
+        window.press("ctrl-a", cx);
+        window.input("17", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        view.read(cx).preferences.source_font_size == 17 && !view.read(cx).preferences_saving
+    })
+    .await;
+    let path = directory.path().join("desktop-preferences.json");
+    let saved = std::fs::read(&path).unwrap();
+    for draft in [
+        "", "9", "25", "13.5", "17.0", "1e1", "-", "NaN", "invalid", "256",
+    ] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.click(source_font_input_id(&view, cx), cx);
+            window.press("ctrl-a", cx);
+            window.press("backspace", cx);
+            window.input(draft, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(source_font_input_id(&view, cx)).value(),
+                Some(draft)
+            );
+            assert_eq!(view.read(cx).preferences.source_font_size, 17);
+            assert!(!view.read(cx).preferences_saving);
+            window.press("up", cx);
+            window.press("down", cx);
+            window.within("source-text-size").click("increment", cx);
+            window.within("source-text-size").click("decrement", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(source_font_input_id(&view, cx)).value(),
+                Some(draft)
+            );
+            assert_eq!(view.read(cx).source_font_size, 17.);
+            window.focus(&view.read(cx).source.read(cx).focus_handle(cx), cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            view.read(cx)
+                .source_font_size_input
+                .read(cx)
+                .value()
+                .as_ref()
+                == "17"
+                && view
+                    .read(cx)
+                    .source
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window)
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(source_font_input_id(&view, cx)).value(),
+                Some("17")
+            );
+            assert_eq!(
+                view.read(cx).source.read(cx).value().as_ref(),
+                "scenarios: }\n"
+            );
+            assert_eq!(
+                view.read(cx)
+                    .session
+                    .open
+                    .as_ref()
+                    .unwrap()
+                    .document
+                    .source(),
+                "scenarios: }\n"
+            );
+            assert!(view.read(cx).session.dirty());
+            assert_eq!(view.read(cx).preferences.source_font_size, 17);
+        })
+        .unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+    }
+}
+
+#[gpui_kit::test]
+async fn source_font_size_steps_reset_and_reload_at_both_sizes(cx: &mut TestAppContext) {
+    for (width, height, dark) in [
+        (1000., 640., false),
+        (1000., 640., true),
+        (1600., 1000., false),
+        (1600., 1000., true),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        let path = directory.path().join("desktop-preferences.json");
+        cx.update_window(handle.into(), |_, window, cx| {
+            super::design::apply_theme(dark, Some(window), cx);
+            view.update(cx, |this, cx| this.select_editor_tab(1, window, cx));
+        })
+        .unwrap();
+        for (value, key, expected) in [("10", "down", 10), ("24", "up", 24), ("17", "up", 18)] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                let input = window.find(source_font_input_id(&view, cx));
+                let toolbar = window.find("source-toolbar").bounds();
+                assert!(input.visible());
+                assert!(input.bounds().size.width >= px(40.));
+                assert!(input.bounds().size.height >= px(28.));
+                assert!(input.bounds().right() <= toolbar.right());
+                assert!(input.bounds().bottom() <= toolbar.bottom());
+                window.click(source_font_input_id(&view, cx), cx);
+                window.press("ctrl-a", cx);
+                window.input(value, cx);
+            })
+            .unwrap();
+            cx.run_until_parked();
+            cx.update_window(handle.into(), |_, window, cx| window.press(key, cx))
+                .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+                view.read(cx).preferences.source_font_size == expected
+                    && !view.read(cx).preferences_saving
+            })
+            .await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                assert_eq!(
+                    window.find(source_font_input_id(&view, cx)).value(),
+                    Some(expected.to_string().as_str())
+                );
+                assert!(!view.read(cx).session.dirty());
+            })
+            .unwrap();
+            assert_eq!(
+                crate::desktop::workspace::Preferences::load(&path)
+                    .unwrap()
+                    .source_font_size,
+                expected
+            );
+        }
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.within("source-text-size").click("decrement", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).preferences.source_font_size == 17 && !view.read(cx).preferences_saving
+        })
+        .await;
+        let loaded = crate::desktop::workspace::Preferences::load(&path).unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                window.focus(&this.focus, cx);
+                this.preferences = loaded;
+                this.source_font_size = 14.;
+                this.source_font_size_input
+                    .update(cx, |state, cx| state.set_value("14", window, cx));
+                this.apply_editor_display(window, cx);
+            });
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(source_font_input_id(&view, cx)).value(),
+                Some("17")
+            );
+            assert_eq!(view.read(cx).source_font_size, 17.);
+            window.click("source-reset-size", cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+            view.read(cx).preferences.source_font_size == 14 && !view.read(cx).preferences_saving
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.render_frame(cx);
+            assert_eq!(
+                window.find(source_font_input_id(&view, cx)).value(),
+                Some("14")
+            );
+            assert!(!view.read(cx).session.dirty());
+            window.remove_window();
+        })
+        .unwrap();
+        assert_eq!(
+            crate::desktop::workspace::Preferences::load(&path)
+                .unwrap()
+                .source_font_size,
+            14
+        );
+    }
+}
+
+#[gpui_kit::test]
 async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
     cx: &mut TestAppContext,
 ) {
@@ -1502,10 +1775,10 @@ async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.within("editor-tabs").click(0_usize, cx);
-        window.click("source-larger", cx);
+        window.within("source-text-size").click("increment", cx);
         assert!(!view.read(cx).busy);
-        window.click("source-larger", cx);
-        window.click("source-larger", cx);
+        window.within("source-text-size").click("increment", cx);
+        window.within("source-text-size").click("increment", cx);
         window.click("source-wrap", cx);
         window.click("source-line-numbers", cx);
         view.update(cx, |this, cx| {
@@ -1518,13 +1791,20 @@ async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
             )
         });
         assert!(!view.read(cx).busy);
-        assert_eq!(window.find("source-text-size").label(), Some("17 px"));
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
         !view.read(cx).preferences_saving
     })
     .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(source_font_input_id(&view, cx)).value(),
+            Some("17")
+        );
+    })
+    .unwrap();
     let preferences =
         Preferences::load(&directory.path().join("desktop-preferences.json")).unwrap();
     assert_eq!(preferences.source_font_size, 17);
@@ -1544,7 +1824,10 @@ async fn display_preferences_are_nonblocking_and_latest_changes_are_persisted(
         );
         assert!(!view.read(cx).session.dirty());
         window.click("source-reset-size", cx);
-        assert_eq!(window.find("source-text-size").label(), Some("14 px"));
+        assert_eq!(
+            window.find(source_font_input_id(&view, cx)).value(),
+            Some("14")
+        );
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
@@ -2292,15 +2575,23 @@ async fn schema_issues_have_precise_jumps_hover_help_and_keep_the_save_guard(
 async fn source_tools_preserve_text_and_jump_to_syntax_errors(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());
+    let original = cx.update(|cx| view.read(cx).source.read(cx).value());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.within("editor-tabs").click(0_usize, cx);
-        let original = view.read(cx).source.read(cx).value();
         window.click("source-wrap", cx);
         assert!(!view.read(cx).source_wrap);
-        window.click("source-larger", cx);
-        assert_eq!(window.find("source-text-size").label(), Some("15 px"));
-        window.click("source-smaller", cx);
+        window.within("source-text-size").click("increment", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert_eq!(
+            window.find(source_font_input_id(&view, cx)).value(),
+            Some("15")
+        );
+        window.within("source-text-size").click("decrement", cx);
         window.click("source-find", cx);
         assert!(view.read(cx).source.read(cx).search_session().open);
         view.read(cx)
@@ -9347,9 +9638,7 @@ fn toolbar_editor_controls_fit_supported_window_sizes(cx: &mut TestAppContext) {
                 "source-suggest",
                 "source-wrap",
                 "source-line-numbers",
-                "source-smaller",
                 "source-text-size",
-                "source-larger",
                 "source-reset-size",
             ] {
                 let element = window.find(control);
@@ -9363,6 +9652,19 @@ fn toolbar_editor_controls_fit_supported_window_sizes(cx: &mut TestAppContext) {
                     bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom(),
                     "{control} overflows Source toolbar height"
                 );
+            }
+            let toolbar = window.find("source-toolbar").bounds();
+            let number_input = window.find("source-text-size").bounds();
+            assert!(number_input.size.height >= px(28.));
+            for control in ["decrement", "increment"] {
+                let element = window.within("source-text-size").find(control);
+                let bounds = element.bounds();
+                assert!(element.visible());
+                assert_eq!(bounds.top(), number_input.top() + px(1.));
+                assert_eq!(bounds.bottom(), number_input.bottom() - px(1.));
+                assert!(bounds.size.width >= px(28.));
+                assert!(bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right());
+                assert!(bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom());
             }
             window.within("workbench-tabs").click(1_usize, cx);
             window.render_frame(cx);

@@ -1,6 +1,8 @@
 # 018: Source Font Size NumberInput
 
-Status: Not started. Depends on 001, 003 and 007.
+Status: Verified, awaiting the authorized local commit. Native Default passes;
+integrated UI has only the approved task 019 header failure.
+Depends on 001, 003 and 007 (all committed).
 
 ## Scope
 
@@ -35,3 +37,27 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 [workspace files](../../.github/skills/desktop-workspace-files/SKILL.md).
 Commit font-size control/tests/maintenance only. Reopen for unrecoverable invalid
 input or lost last-valid behavior; never coerce source configuration drafts.
+
+## Verification
+
+- Pre-edit Source line commands (12) and preferences (5) pass. Direct-entry
+  regression failed before migration and passes afterward.
+- `source_font_size_` passes all 3 cases for typed values, invalid drafts and
+  actual blur, keyboard/pointer bounds, Reset, persistence/reload, exact invalid
+  Source preservation and both themes/sizes. See the [ledger](README.md#task-018-verification)
+  for exact commands, neighbor counts and fixture corrections.
+- Rustfmt, production GUI Clippy and desktop build pass. Native harness
+  passes. Full UI: 270 passed, 1 failed (only the approved task 019 header),
+  0 ignored. Scoped Markdown, guidance validation and 10 self-tests pass.
+- Two rebuilt Default attempts failed in existing Overview clipboard handling
+  before reaching the font-size checks; the retry also failed to restore its
+  clipboard backup. Preferences were restored. The owner authorized a bounded
+  harness repair: Overview now uses the existing sequence-before-read helper,
+  with a failing-before/passing-after headless regression and unchanged guards.
+- Final rebuilt native Default passes all font-size values, steps, invalid
+  drafts, blur, Reset, exact Source/undo, preferences/restart and cleanup. Its
+  new focus check observes the exact Spinner that owns the sole Edit child;
+  actual Edit values remain asserted. Both-theme Source screenshots at
+  1080x720/1600x1000 were inspected; task 019 still owns header fit.
+- Production net +50 lines, one InputState and two subscriptions. No toolkit
+  or dependency edits. Verified; no task commit is claimed yet.
