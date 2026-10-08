@@ -1,4 +1,39 @@
 function Test-DefaultFlows {
+    $detailsClipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
+    try {
+        foreach ($theme in @('Light', 'Dark')) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
+            Select-Theme $theme
+            foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
+                [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+                Capture-Window "overview-table-$($theme.ToLowerInvariant())-$($dimensions[0])"
+                Invoke-Control 'Details: smoke' -Pointer
+                Wait-Control 'Suite details text' | Out-Null
+                $details = Read-ControlText 'Suite details text'
+                if ($details -notmatch 'Suite:' -or $details -notmatch 'File: visual_tests/smoke.tests.json' -or $details -notmatch 'Scenarios: 2' -or $details -notmatch 'Status:') {
+                    throw 'Suite details did not expose the complete fixture metadata.'
+                }
+                Invoke-Control 'Suite details text' -Pointer
+                Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('overview-details-sentinel') }
+                Send-FixtureKeys A -Control
+                Send-FixtureKeys C -Control
+                Wait-WindowState { (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $details } 'Selecting suite details did not copy its exact full text.'
+                Capture-Window "overview-details-$($theme.ToLowerInvariant())-$($dimensions[0])"
+                Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::SetText('overview-details-sentinel') }
+                Invoke-Control 'Copy suite details' -Pointer
+                Wait-WindowState { (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $details } 'Copy suite details did not preserve its exact full text.'
+                Invoke-Control 'Close suite details' -Pointer
+                Wait-WindowState { $null -eq (Find-Control 'Suite details text') } 'Suite details did not close.'
+            }
+        }
+    } finally {
+        Invoke-FixtureClipboard {
+            if ($null -ne $detailsClipboard) { [System.Windows.Forms.Clipboard]::SetDataObject($detailsClipboard, $true) }
+            else { [System.Windows.Forms.Clipboard]::Clear() }
+        }
+    }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
+    Select-Theme 'Light'
     Capture-Window 'overview'
     Invoke-Control 'Appearance: Light' -Pointer
     Wait-Control 'Dark' | Out-Null

@@ -161,6 +161,7 @@ pub struct Workbench {
     captures: Entity<reports::CaptureList>,
     main_tab: usize,
     overview: bool,
+    overview_table: Entity<overview::OverviewTableState>,
     scenario_search: Entity<InputState>,
     suite_list: lists::ListState<PathBuf>,
     suite_menu_epoch: u64,
@@ -394,6 +395,18 @@ impl Workbench {
                 cx,
             )
         });
+        let overview_owner = cx.entity().downgrade();
+        let overview_table = cx.new(|cx| {
+            overview::OverviewTableState::new(
+                overview::OverviewRows::new(overview_owner),
+                window,
+                cx,
+            )
+            .col_selectable(false)
+            .col_movable(false)
+            .col_resizable(false)
+            .sortable(false)
+        });
         Self {
             app_menu_bar,
             app_menu_focus: cx.focus_handle().tab_stop(false),
@@ -452,6 +465,7 @@ impl Workbench {
             captures,
             main_tab: 0,
             overview: true,
+            overview_table,
             scenario_search,
             suite_list: lists::ListState::new(cx),
             suite_menu_epoch: 0,
@@ -2986,6 +3000,7 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_overview_table(cx);
         self.sync_workspace_list(window, cx);
         self.sync_sequence_list(window, cx);
         self.sync_app_menus(window, cx);

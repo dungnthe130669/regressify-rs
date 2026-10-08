@@ -2,6 +2,11 @@
 
 Verified: 2026-10-08
 
+- [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
+  full summaries/errors retained in explicit selectable Details. `overview_table_`
+  covers checkbox/Edit isolation, exact full-text copy, focus return, refresh and
+  release, plus 80 mixed valid/error rows in both themes/sizes. Exact header/body
+  bounds require fixed-width header content because Kit reserves sort-icon padding.
 - [Capture rows](../../src/desktop/ui/reports.rs) use Kit List/ListItem while
   `select_capture` retains preview/approval policy. `flat_collection_capture_`
   reproduces old index-based refresh drift and duplicate-key click retargeting;

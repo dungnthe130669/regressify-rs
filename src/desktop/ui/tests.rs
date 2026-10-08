@@ -4543,6 +4543,312 @@ async fn report_approval_pins_the_viewed_run_and_rejects_changed_output_identity
 }
 
 #[gpui_kit::test]
+fn overview_table_virtual_rows_keep_uniform_geometry(cx: &mut TestAppContext) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                let template = this.session.suites[0].clone();
+                this.session.suites = (0..80)
+                    .map(|index| {
+                        let mut suite = template.clone();
+                        suite.name = format!("suite-{index:03}");
+                        suite.entry.path =
+                            format!("visual_tests/suite-{index:03}.tests.yaml").into();
+                        suite.display_name = Some(format!(
+                            "Suite {index}: {}",
+                            "long label ".repeat(index % 5)
+                        ));
+                        suite.error =
+                            (index % 2 == 1).then(|| "Long full error detail\n".repeat(100));
+                        suite
+                    })
+                    .collect();
+                this.overview = true;
+                cx.notify();
+            });
+            for dark in [false, true] {
+                super::design::apply_theme(dark, Some(window), cx);
+                view.read(cx)
+                    .overview_table
+                    .clone()
+                    .update(cx, |table, cx| table.scroll_to_row(0, cx));
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let table = window.find("overview-table").bounds();
+                let first = window.find(("overview-row", 0_usize)).bounds();
+                let second = window.find(("overview-row", 1_usize)).bounds();
+                assert_eq!(first.size.height, second.size.height);
+                assert!(first.bottom() <= second.top());
+                assert!(window.try_find(("overview-row", 79_usize)).is_none());
+                window.scroll(
+                    ("overview-suite", 1_usize),
+                    gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), px(-20_000.))),
+                    cx,
+                );
+                window.render_frame(cx);
+                let last = window.find(("overview-row", 79_usize)).bounds();
+                assert_eq!(last.size.height, first.size.height);
+                assert!(last.bottom() <= table.bottom());
+                assert!(last.top() >= table.top());
+                let details = window.find(("overview-details", 79_usize)).bounds();
+                assert!(details.right() <= table.right());
+                assert!(window.try_find("overview-details-dialog").is_none());
+            }
+        })
+        .unwrap();
+    }
+}
+
+#[gpui_kit::test]
+fn overview_table_refresh_preserves_cursor_and_controls_without_retaining_owner(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let table = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.session
+                    .workspace
+                    .as_ref()
+                    .unwrap()
+                    .create_suite("second-suite")
+                    .unwrap();
+                this.session.refresh().unwrap();
+                this.sync_suites(cx);
+                this.overview = true;
+                this.runs
+                    .update(cx, |panel, cx| panel.select_all(false, cx));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let index = view
+                .read(cx)
+                .session
+                .suites
+                .iter()
+                .position(|suite| suite.name == "second-suite")
+                .unwrap();
+            window.click(("overview-suite", index), cx);
+            let table = view.read(cx).overview_table.clone();
+            assert_eq!(table.read(cx).selected_row(), Some(index));
+            view.update(cx, |this, cx| {
+                this.session.suites.reverse();
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let reordered = view
+                .read(cx)
+                .session
+                .suites
+                .iter()
+                .position(|suite| suite.name == "second-suite")
+                .unwrap();
+            assert_ne!(index, reordered);
+            assert_eq!(table.read(cx).selected_row(), Some(reordered));
+            assert!(!view.read(cx).runs.read(cx).selected("second-suite"));
+            view.update(cx, |this, cx| {
+                this.busy = true;
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let opened = view
+                .read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .path
+                .clone();
+            window.click(("overview-check", reordered), cx);
+            window.click(("overview-edit", reordered), cx);
+            assert_eq!(
+                view.read(cx).session.open.as_ref().unwrap().entry.path,
+                opened
+            );
+            assert!(!view.read(cx).runs.read(cx).selected("second-suite"));
+            view.update(cx, |this, cx| {
+                this.busy = false;
+                this.search.update(cx, |state, cx| {
+                    state.set_value("no matching suite", window, cx)
+                });
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(table.read(cx).selected_row().is_none());
+            window.press("enter", cx);
+            assert!(window.try_find("overview-details-dialog").is_none());
+            view.update(cx, |this, cx| {
+                this.search
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                cx.notify();
+            });
+            window.render_frame(cx);
+            assert!(table.read(cx).selected_row().is_none());
+            table.downgrade()
+        })
+        .unwrap();
+    let owner = view.downgrade();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| {
+        assert!(owner.upgrade().is_none());
+        assert!(table.upgrade().is_none());
+    });
+}
+
+#[gpui_kit::test]
+async fn overview_table_details_preserve_complete_text_and_explicit_activation(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+        let directory = tempfile::tempdir().unwrap();
+        let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
+        let error = format!(
+            "Validation failed:\n{}Final error detail",
+            "A complete untruncated configuration error.\n".repeat(150)
+        );
+        let label = "Long suite label ".repeat(30);
+        let expected = cx.update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                this.overview = true;
+                this.session.suites[0].error = Some(error.clone());
+                this.session.suites[0].display_name = Some(label.clone());
+                cx.notify();
+            });
+            window.render_frame(cx);
+            let this = view.read(cx);
+            let suite = &this.session.suites[0];
+            format!("Suite: {}\nFile: {}\nScenarios: {}\nStatus: Invalid\n\n{}\n\nConfiguration error:\n{}", suite.label(), super::display_path(&suite.entry.path), suite.scenarios.len(), this.runs.read(cx).artifact_summary(&suite.name), error)
+        }).unwrap();
+        for dark in [false, true] {
+            cx.update_window(handle.into(), |_, window, cx| {
+                super::design::apply_theme(dark, Some(window), cx);
+                window.render_frame(cx);
+                window.click(("overview-suite", 0_usize), cx);
+                assert!(window.try_find("overview-details-dialog").is_none());
+                let table = &view.read(cx).overview_table;
+                assert_eq!(table.read(cx).selected_row(), Some(0));
+                window.press("enter", cx);
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert!(window.find("overview-details-dialog").visible());
+                let body = window.find("overview-details-text").bounds();
+                assert!(body.right() <= px(width));
+                assert!(body.bottom() <= px(height));
+                window.click("overview-details-text", cx);
+                window.press("ctrl-a", cx);
+                window.press("ctrl-c", cx);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
+                window.input("ignored read-only input", cx);
+                window.press("ctrl-a", cx);
+                window.press("ctrl-c", cx);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
+                window.click("overview-details-close", cx);
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                assert!(window.try_find("overview-details-dialog").is_none());
+                assert!(
+                    view.read(cx)
+                        .overview_table
+                        .read(cx)
+                        .focus_handle(cx)
+                        .is_focused(window)
+                );
+                window.click(("overview-details", 0_usize), cx);
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.click("overview-details-copy", cx);
+                assert_eq!(cx.read_from_clipboard().unwrap().text().unwrap(), expected);
+                window.press("escape", cx);
+                assert!(!view.read(cx).session.dirty());
+            })
+            .unwrap();
+            settle_dialog(cx, handle).await;
+        }
+    }
+}
+
+#[gpui_kit::test]
+async fn overview_table_checkbox_and_edit_are_independent(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let target = std::path::PathBuf::from("visual_tests/second-suite.tests.yaml");
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second-suite")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.overview = true;
+            this.runs
+                .update(cx, |panel, cx| panel.select_all(false, cx));
+            cx.notify();
+        });
+        window.render_frame(cx);
+        let before = view
+            .read(cx)
+            .session
+            .open
+            .as_ref()
+            .unwrap()
+            .entry
+            .path
+            .clone();
+        let index = view
+            .read(cx)
+            .session
+            .suites
+            .iter()
+            .position(|suite| suite.name == "second-suite")
+            .unwrap();
+        window.click(("overview-check", index), cx);
+        assert!(view.read(cx).runs.read(cx).selected("second-suite"));
+        assert!(view.read(cx).overview);
+        assert_eq!(
+            view.read(cx).session.open.as_ref().unwrap().entry.path,
+            before
+        );
+        assert!(!view.read(cx).session.dirty());
+        window.click(("overview-suite", index), cx);
+        assert!(view.read(cx).overview);
+        assert!(window.try_find("overview-details-dialog").is_none());
+        assert!(view.read(cx).runs.read(cx).selected("second-suite"));
+        window.click(("overview-edit", index), cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+        view.read(cx)
+            .session
+            .open
+            .as_ref()
+            .is_some_and(|open| open.entry.path == target)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(!view.read(cx).overview);
+        assert!(!view.read(cx).session.dirty());
+        assert!(view.read(cx).runs.read(cx).selected("second-suite"));
+        assert!(window.try_find("overview-details-dialog").is_none());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 async fn overview_opens_multiple_saved_reports_with_independent_run_ids(cx: &mut TestAppContext) {
     let directory = tempfile::tempdir().unwrap();
     let (handle, view) = editor(cx, directory.path());

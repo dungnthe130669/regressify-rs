@@ -1,5 +1,287 @@
 use super::*;
+use gpui_kit::component::table::{Column, DataTable, TableDelegate, TableState};
 use std::sync::{Arc, LazyLock};
+
+pub(super) type OverviewTableState = TableState<OverviewRows>;
+
+#[derive(Clone, PartialEq)]
+struct OverviewRow {
+    index: usize,
+    path: PathBuf,
+    name: String,
+    label: String,
+    summary: String,
+    error: Option<String>,
+    scenarios: usize,
+    status: &'static str,
+    checked: bool,
+    partial: bool,
+    report: bool,
+}
+
+pub(super) struct OverviewRows {
+    owner: WeakEntity<Workbench>,
+    root: Option<PathBuf>,
+    rows: Vec<OverviewRow>,
+    disabled: bool,
+    running: bool,
+    suite_width: Pixels,
+}
+
+impl OverviewRows {
+    pub(super) fn new(owner: WeakEntity<Workbench>) -> Self {
+        Self {
+            owner,
+            root: None,
+            rows: Vec::new(),
+            disabled: false,
+            running: false,
+            suite_width: px(240.),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OverviewAction {
+    Check(bool),
+    Edit,
+    Report,
+    Details,
+}
+
+const OVERVIEW_COLUMNS: [&str; 5] = ["selection", "suite", "scenarios", "status", "actions"];
+
+impl TableDelegate for OverviewRows {
+    fn columns_count(&self, _: &App) -> usize {
+        OVERVIEW_COLUMNS.len()
+    }
+    fn rows_count(&self, _: &App) -> usize {
+        self.rows.len()
+    }
+    fn column(&self, index: usize, _: &App) -> Column {
+        Column::new(
+            OVERVIEW_COLUMNS[index],
+            ["", "SUITE", "SCENARIOS", "STATUS", ""][index],
+        )
+        .width([px(36.), self.suite_width, px(90.), px(100.), px(152.)][index])
+        .p_0()
+        .resizable(false)
+        .movable(false)
+    }
+    fn render_th(
+        &mut self,
+        index: usize,
+        _: &mut Window,
+        cx: &mut Context<OverviewTableState>,
+    ) -> impl IntoElement {
+        div()
+            .id(SharedString::from(format!(
+                "overview-{}-header",
+                OVERVIEW_COLUMNS[index]
+            )))
+            .test_support()
+            .w(self.column(index, cx).width)
+            .h_full()
+            .flex_shrink_0()
+            .px_2()
+            .flex()
+            .items_center()
+            .text_xs()
+            .child(["", "SUITE", "SCENARIOS", "STATUS", ""][index])
+    }
+    fn render_tr(
+        &mut self,
+        row: usize,
+        _: &mut Window,
+        _: &mut Context<OverviewTableState>,
+    ) -> Stateful<Div> {
+        div().id(("overview-row", self.rows[row].index))
+    }
+    fn render_empty(
+        &mut self,
+        _: &mut Window,
+        _: &mut Context<OverviewTableState>,
+    ) -> impl IntoElement {
+        div()
+            .id("overview-no-matches")
+            .role(Role::Status)
+            .aria_label("No matching test suites")
+            .test_support()
+            .p_3()
+            .child("No matching test suites")
+    }
+    fn render_td(
+        &mut self,
+        row: usize,
+        column: usize,
+        _: &mut Window,
+        cx: &mut Context<OverviewTableState>,
+    ) -> impl IntoElement {
+        let row = &self.rows[row];
+        let root = self.root.clone();
+        let path = row.path.clone();
+        let owner = self.owner.clone();
+        let content = match column {
+            0 => design::selection_checkbox(
+                ("overview-check", row.index),
+                row.checked,
+                row.partial,
+                self.disabled || self.running || row.error.is_some(),
+                cx,
+            )
+            .accessibility_label(format!("Select suite {}", row.name))
+            .on_change(move |checked, _, window, cx| {
+                cx.stop_propagation();
+                let _ = owner.update(cx, |this, cx| {
+                    this.overview_action(
+                        &root,
+                        &path,
+                        OverviewAction::Check(checked == gpui_kit::base::CheckboxState::Checked),
+                        window,
+                        cx,
+                    )
+                });
+            })
+            .into_any_element(),
+            1 => div()
+                .flex()
+                .flex_col()
+                .min_w_0()
+                .w_full()
+                .child(
+                    div()
+                        .truncate()
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(row.label.clone()),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(display_path(&row.path)),
+                )
+                .child(
+                    div()
+                        .truncate()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(row.summary.clone()),
+                )
+                .into_any_element(),
+            2 => div().child(row.scenarios.to_string()).into_any_element(),
+            3 => {
+                let variant = match row.status {
+                    "Invalid" | "Failed" => gpui_kit::component::tag::TagVariant::Danger,
+                    "Running" => gpui_kit::component::tag::TagVariant::Primary,
+                    "Passed" => gpui_kit::component::tag::TagVariant::Success,
+                    _ => gpui_kit::component::tag::TagVariant::Secondary,
+                };
+                gpui_kit::component::tag::Tag::new()
+                    .with_variant(variant)
+                    .outline()
+                    .child(row.status)
+                    .into_any_element()
+            }
+            _ => {
+                let report_owner = owner.clone();
+                let report_root = root.clone();
+                let report_path = path.clone();
+                let details_owner = owner.clone();
+                let details_root = root.clone();
+                let details_path = path.clone();
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .w_full()
+                    .child(
+                        Button::new(("overview-details", row.index))
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Info)
+                            .tooltip("Suite details")
+                            .accessibility_label(format!("Details: {}", row.name))
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                let _ = details_owner.update(cx, |this, cx| {
+                                    this.overview_action(
+                                        &details_root,
+                                        &details_path,
+                                        OverviewAction::Details,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    )
+                    .when(row.report, |actions| {
+                        actions.child(
+                            Button::new(("overview-report", row.index))
+                                .ghost()
+                                .small()
+                                .icon(gpui_kit::assets::IconName::Images)
+                                .accessibility_label(format!("Open Report: {}", row.name))
+                                .tooltip("Open saved report")
+                                .disabled(self.disabled)
+                                .on_click(move |_, window, cx| {
+                                    cx.stop_propagation();
+                                    let _ = report_owner.update(cx, |this, cx| {
+                                        this.overview_action(
+                                            &report_root,
+                                            &report_path,
+                                            OverviewAction::Report,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                }),
+                        )
+                    })
+                    .child(
+                        Button::new(("overview-edit", row.index))
+                            .ghost()
+                            .small()
+                            .icon(gpui_kit::assets::IconName::Pencil)
+                            .label("Edit")
+                            .disabled(self.disabled)
+                            .on_click(move |_, window, cx| {
+                                cx.stop_propagation();
+                                let _ = owner.update(cx, |this, cx| {
+                                    this.overview_action(
+                                        &root,
+                                        &path,
+                                        OverviewAction::Edit,
+                                        window,
+                                        cx,
+                                    )
+                                });
+                            }),
+                    )
+                    .into_any_element()
+            }
+        };
+        div()
+            .id((
+                SharedString::from(format!("overview-{}", OVERVIEW_COLUMNS[column])),
+                row.index,
+            ))
+            .test_support()
+            .size_full()
+            .px_2()
+            .flex()
+            .items_center()
+            .min_w_0()
+            .when(column == 3, |cell| {
+                cell.role(Role::Status).aria_label(row.status)
+            })
+            .when(column == 0 || column == 4, |cell| {
+                cell.on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            })
+            .child(content)
+    }
+}
 
 static APPLICATION_LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
     Arc::new(Image::from_bytes(
@@ -9,6 +291,204 @@ static APPLICATION_LOGO: LazyLock<Arc<Image>> = LazyLock::new(|| {
 });
 
 impl Workbench {
+    pub(super) fn sync_overview_table(&self, cx: &mut Context<Self>) {
+        if !self.overview || self.main_tab != 0 {
+            return;
+        }
+        let root = self
+            .session
+            .workspace
+            .as_ref()
+            .map(|workspace| workspace.root.clone());
+        let query = self.search.read(cx).value().to_lowercase();
+        let runs = self.runs.read(cx);
+        let disabled = self.busy;
+        let running = runs.running();
+        let rows = self
+            .session
+            .suites
+            .iter()
+            .enumerate()
+            .filter(|(_, suite)| {
+                query.is_empty()
+                    || suite.name.to_lowercase().contains(&query)
+                    || suite.label().to_lowercase().contains(&query)
+                    || suite
+                        .scenarios
+                        .iter()
+                        .any(|scenario| scenario.label.to_lowercase().contains(&query))
+            })
+            .map(|(index, suite)| {
+                let counts = runs.progress().counts(Some(&suite.output_id));
+                let status = if suite.error.is_some() {
+                    "Invalid"
+                } else if counts.running > 0 {
+                    "Running"
+                } else if counts.failed > 0 {
+                    "Failed"
+                } else if counts.passed > 0 {
+                    "Passed"
+                } else {
+                    "Ready"
+                };
+                let checked = runs.all_selected(&suite.name);
+                OverviewRow {
+                    index,
+                    path: suite.entry.path.clone(),
+                    name: suite.name.clone(),
+                    label: suite.label().to_owned(),
+                    summary: runs.artifact_summary(&suite.name),
+                    error: suite.error.clone(),
+                    scenarios: suite.scenarios.len(),
+                    status,
+                    checked,
+                    partial: runs.selected(&suite.name) && !checked,
+                    report: runs.can_open_saved_suite(&suite.name),
+                }
+            })
+            .collect::<Vec<_>>();
+        self.overview_table.update(cx, |table, cx| {
+            let old = table.delegate();
+            if old.root == root
+                && old.rows == rows
+                && old.disabled == disabled
+                && old.running == running
+            {
+                return;
+            }
+            let current = table
+                .selected_row()
+                .filter(|_| old.root == root)
+                .and_then(|index| old.rows.get(index))
+                .map(|row| row.path.clone());
+            let selected = current
+                .as_ref()
+                .and_then(|path| rows.iter().position(|row| &row.path == path));
+            let delegate = table.delegate_mut();
+            delegate.root = root;
+            delegate.rows = rows;
+            delegate.disabled = disabled;
+            delegate.running = running;
+            table.refresh(cx);
+            if let Some(selected) = selected {
+                table.set_selected_row(selected, cx);
+            } else {
+                table.clear_selection(cx);
+            }
+        });
+    }
+
+    fn overview_action(
+        &mut self,
+        root: &Option<PathBuf>,
+        path: &std::path::Path,
+        action: OverviewAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if (!matches!(action, OverviewAction::Details) && self.busy)
+            || self
+                .session
+                .workspace
+                .as_ref()
+                .map(|workspace| &workspace.root)
+                != root.as_ref()
+        {
+            return;
+        }
+        let Some(suite) = self
+            .session
+            .suites
+            .iter()
+            .find(|suite| suite.entry.path == path)
+        else {
+            return;
+        };
+        let name = suite.name.clone();
+        match action {
+            OverviewAction::Check(checked) => {
+                if suite.error.is_none() && !self.runs.read(cx).running() {
+                    self.runs
+                        .update(cx, |panel, cx| panel.toggle_suite(&name, checked, cx));
+                }
+            }
+            OverviewAction::Edit => self.load_document(suite.entry.clone(), window, cx),
+            OverviewAction::Report => {
+                if self.runs.read(cx).can_open_saved_suite(&name) {
+                    self.runs
+                        .update(cx, |panel, cx| panel.open_saved_reports(vec![name], cx));
+                }
+            }
+            OverviewAction::Details => {
+                let Some(row) = self
+                    .overview_table
+                    .read(cx)
+                    .delegate()
+                    .rows
+                    .iter()
+                    .find(|row| row.path == path)
+                    .cloned()
+                else {
+                    return;
+                };
+                let text = format!(
+                    "Suite: {}\nFile: {}\nScenarios: {}\nStatus: {}\n\n{}{}",
+                    row.label,
+                    display_path(&row.path),
+                    row.scenarios,
+                    row.status,
+                    row.summary,
+                    row.error
+                        .as_ref()
+                        .map(|error| format!("\n\nConfiguration error:\n{error}"))
+                        .unwrap_or_default()
+                );
+                let content = cx.new(|cx| {
+                    let mut editor = EditorState::new(window, cx)
+                        .language("text")
+                        .line_number(false);
+                    editor.set_value(text.clone(), window, cx);
+                    editor
+                });
+                window.open_dialog(cx, move |dialog, _, _| {
+                    let text = text.clone();
+                    dialog
+                        .title("Suite details")
+                        .w(px(640.))
+                        .child(
+                            div().id("overview-details-dialog").test_support().child(
+                                div()
+                                    .id("overview-details-text")
+                                    .test_support()
+                                    .h(px(300.))
+                                    .w_full()
+                                    .child(
+                                        CodeEditor::new(&content)
+                                            .aria_label("Suite details text")
+                                            .readonly(true)
+                                            .size_full(),
+                                    ),
+                            ),
+                        )
+                        .footer(
+                            gpui_kit::component::dialog::DialogFooter::new()
+                                .child(design::CopyText::new(
+                                    "overview-details-copy",
+                                    text,
+                                    "Copy suite details",
+                                ))
+                                .child(
+                                    Button::new("overview-details-close")
+                                        .label("Close")
+                                        .accessibility_label("Close suite details")
+                                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                                ),
+                        )
+                });
+            }
+        }
+    }
+
     pub(super) fn show_about(
         &mut self,
         _: &ShowAbout,
@@ -386,16 +866,13 @@ impl Workbench {
             .iter()
             .filter(|suite| suite.error.is_some())
             .count();
-        let selection_width = px(24.);
-        let scenarios_width = px(90.);
-        let status_width = px(100.);
-        let actions_width = px(112.);
         let mut page = div()
             .flex()
             .flex_col()
             .gap_3()
             .p_3()
-            .w_full()
+            .size_full()
+            .min_h_0()
             .child(
                 div()
                     .flex()
@@ -519,236 +996,61 @@ impl Workbench {
                                 })),
                         )
                     }),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .bg(cx.theme().muted)
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(div().w(selection_width).flex_shrink_0())
-                    .child(
-                        div()
-                            .id("overview-suite-header")
-                            .test_support()
-                            .flex_1()
-                            .min_w_0()
-                            .child("SUITE"),
-                    )
-                    .child(
-                        div()
-                            .id("overview-scenarios-header")
-                            .test_support()
-                            .w(scenarios_width)
-                            .flex_shrink_0()
-                            .child("SCENARIOS"),
-                    )
-                    .child(
-                        div()
-                            .id("overview-status-header")
-                            .test_support()
-                            .w(status_width)
-                            .flex_shrink_0()
-                            .child("STATUS"),
-                    )
-                    .child(
-                        div()
-                            .id("overview-actions-header")
-                            .test_support()
-                            .w(actions_width)
-                            .flex_shrink_0(),
-                    ),
             );
-        let query = self.search.read(cx).value().to_lowercase();
-        for (index, suite) in self.session.suites.iter().enumerate() {
-            if !query.is_empty()
-                && !suite.name.to_lowercase().contains(&query)
-                && !suite.label().to_lowercase().contains(&query)
-                && !suite
-                    .scenarios
-                    .iter()
-                    .any(|scenario| scenario.label.to_lowercase().contains(&query))
-            {
-                continue;
-            }
-            let entry = suite.entry.clone();
-            let name = suite.name.clone();
-            let report_name = name.clone();
-            let check_panel = self.runs.clone();
-            let all_selected = self.runs.read(cx).all_selected(&name);
-            let counts = self.runs.read(cx).progress().counts(Some(&suite.output_id));
-            let status = if suite.error.is_some() {
-                "Invalid"
-            } else if counts.running > 0 {
-                "Running"
-            } else if counts.failed > 0 {
-                "Failed"
-            } else if counts.passed > 0 {
-                "Passed"
-            } else {
-                "Ready"
-            };
-            let variant = match status {
-                "Invalid" | "Failed" => gpui_kit::component::tag::TagVariant::Danger,
-                "Running" => gpui_kit::component::tag::TagVariant::Primary,
-                "Passed" => gpui_kit::component::tag::TagVariant::Success,
-                _ => gpui_kit::component::tag::TagVariant::Secondary,
-            };
-            page = page.child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .border_b_1()
-                    .border_color(cx.theme().border)
-                    .pb_3()
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .px_3()
-                            .child(
-                                div().w(selection_width).flex_shrink_0().child(
-                                    design::selection_checkbox(
-                                        ("overview-check", index),
-                                        all_selected,
-                                        self.runs.read(cx).selected(&name) && !all_selected,
-                                        self.busy
-                                            || self.runs.read(cx).running()
-                                            || suite.error.is_some(),
-                                        cx,
-                                    )
-                                    .accessibility_label(format!("Select suite {name}"))
-                                    .on_change(
-                                        move |state, _, _, cx| {
-                                            check_panel.update(cx, |panel, cx| {
-                                                panel.toggle_suite(
-                                                    &name,
-                                                    state == gpui_kit::base::CheckboxState::Checked,
-                                                    cx,
-                                                )
-                                            })
-                                        },
-                                    ),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .id(("overview-suite", index))
-                                    .test_support()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .gap_1()
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::MEDIUM)
-                                            .child(suite.label().to_owned()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .truncate()
-                                            .child(suite.entry.label()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_xs()
-                                            .text_color(cx.theme().muted_foreground)
-                                            .child(
-                                                self.runs.read(cx).artifact_summary(&suite.name),
-                                            ),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id(("overview-scenarios", index))
-                                    .test_support()
-                                    .w(scenarios_width)
-                                    .flex_shrink_0()
-                                    .child(suite.scenarios.len().to_string()),
-                            )
-                            .child(
-                                div()
-                                    .id(("overview-status", index))
-                                    .role(Role::Status)
-                                    .aria_label(status)
-                                    .test_support()
-                                    .w(status_width)
-                                    .flex_shrink_0()
-                                    .child(
-                                        gpui_kit::component::tag::Tag::new()
-                                            .with_variant(variant)
-                                            .outline()
-                                            .child(status),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .id(("overview-actions", index))
-                                    .test_support()
-                                    .w(actions_width)
-                                    .flex_shrink_0()
-                                    .flex()
-                                    .items_center()
-                                    .justify_end()
-                                    .gap_2()
-                                    .when(
-                                        self.runs.read(cx).can_open_saved_suite(&suite.name),
-                                        |actions| {
-                                            actions.child(
-                                                Button::new(("overview-report", index))
-                                                    .ghost()
-                                                    .small()
-                                                    .icon(gpui_kit::assets::IconName::Images)
-                                                    .accessibility_label(format!(
-                                                        "Open Report: {}",
-                                                        suite.name
-                                                    ))
-                                                    .tooltip("Open saved report")
-                                                    .disabled(self.busy)
-                                                    .on_click(cx.listener(
-                                                        move |this, _, _, cx| {
-                                                            this.runs.update(cx, |panel, cx| {
-                                                                panel.open_saved_reports(
-                                                                    vec![report_name.clone()],
-                                                                    cx,
-                                                                )
-                                                            });
-                                                        },
-                                                    )),
-                                            )
-                                        },
-                                    )
-                                    .child(
-                                        Button::new(("overview-edit", index))
-                                            .ghost()
-                                            .small()
-                                            .icon(gpui_kit::assets::IconName::Pencil)
-                                            .label("Edit")
-                                            .disabled(self.busy)
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.load_document(entry.clone(), window, cx)
-                                            })),
-                                    ),
-                            ),
+        let table = self.overview_table.downgrade();
+        page = page.child(
+            div()
+                .id("overview-table")
+                .test_support()
+                .relative()
+                .flex_1()
+                .min_h(px(120.))
+                .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                    if event.keystroke.modifiers == Modifiers::default()
+                        && event.keystroke.key == "enter"
+                        && this
+                            .overview_table
+                            .read(cx)
+                            .focus_handle(cx)
+                            .is_focused(window)
+                    {
+                        let table = this.overview_table.read(cx);
+                        let target = table
+                            .selected_row()
+                            .and_then(|index| table.delegate().rows.get(index))
+                            .map(|row| (table.delegate().root.clone(), row.path.clone()));
+                        if let Some((root, path)) = target {
+                            this.overview_action(&root, &path, OverviewAction::Details, window, cx);
+                            window.prevent_default();
+                            cx.stop_propagation();
+                        }
+                    }
+                }))
+                .child(
+                    canvas(
+                        |bounds, _, _| bounds,
+                        move |_, bounds, window, cx| {
+                            let width = (bounds.size.width - px(390.)).max(px(140.));
+                            let table = table.clone();
+                            window.defer(cx, move |_, cx| {
+                                let _ = table.update(cx, |table, cx| {
+                                    if table.delegate().suite_width != width {
+                                        table.delegate_mut().suite_width = width;
+                                        table.refresh(cx);
+                                    }
+                                });
+                            });
+                        },
                     )
-                    .children(suite.error.as_ref().map(|error| {
-                        div()
-                            .px_3()
-                            .text_xs()
-                            .text_color(cx.theme().danger)
-                            .child(error.clone())
-                    })),
-            );
-        }
+                    .absolute()
+                    .size_full(),
+                )
+                .child(
+                    DataTable::new(&self.overview_table)
+                        .bordered(false)
+                        .with_size(gpui_kit::component::Size::Size(px(64.))),
+                ),
+        );
         if let Some(error) = &self.session.suite_error {
             page = page.child(div().text_color(cx.theme().danger).child(error.clone()));
         }
@@ -763,7 +1065,6 @@ impl Workbench {
         div()
             .id("workspace-overview-scroll")
             .size_full()
-            .overflow_y_scrollbar()
             .child(page)
             .into_any_element()
     }

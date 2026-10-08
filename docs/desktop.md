@@ -1370,6 +1370,13 @@ configuration issues, and per-suite status. Edit opens the selected suite; Overv
 returns to the workspace without discarding an open draft. The header identifies
 the single active workspace and links to live execution while a run is active.
 
+Overview suites use uniform, virtualized table rows. Checking a suite changes
+run selection without opening it; a row click only moves the table cursor.
+Details, or Enter on the focused row, opens complete selectable suite metadata,
+artifact summary and configuration errors. Copy preserves the full text, including
+content too long for the row. Edit and Open Report remain separate actions.
+Refreshing the catalog preserves the cursor by suite file path, not row number.
+
 Fields provides typed controls derived from the Rust schemas. Advanced reveals
 optional root settings. Source exposes complete YAML/JSON with highlighting,
 selection, native text editing, and search, and opens other text files without

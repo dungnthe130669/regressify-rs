@@ -1,6 +1,8 @@
 # 016: Overview Table And Complete Details
 
-Status: Not started. Depends on 001.
+Status: Verified, awaiting the authorized local commit. DataTable and complete
+selectable Details pass focused and native acceptance. The integrated UI gate
+has only the approved task 019 header failure. Depends on 001.
 
 ## Scope
 
@@ -41,3 +43,19 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 [feature checks](../../.github/skills/rust-feature-checks/SKILL.md).
 Commit table/details/tests/maintenance only. Reopen for lost content, keyboard
 access, selection/copy or action boundaries. Keep variable-height diagnostics.
+
+## Verification
+
+- Four new `overview_table_` regressions pass, covering independent actions,
+  complete text/copy, focus, refresh/release and uniform virtual rows.
+- Full locked GUI UI gate: 265 passed, 1 failed, 0 ignored. The sole failure is
+  `git_large_tree_and_status_fit_compact_and_wide_windows`, the approved task 019
+  compact-header exception; its assertion remains unchanged and non-green.
+- Rustfmt, production GUI Clippy with `-D warnings` and desktop build pass.
+- Rebuilt native Default and Schema smoke pass. All eight Overview/Details
+  screenshots were reviewed at 1080x720 and 1600x1000 in Light/Dark; selectable
+  Source diagnostics retain wrapping and exact copy behavior. Clipboard and
+  desktop preferences were restored. Wide-only theme selection remains owned
+  by task 019, not passing compact-header evidence.
+- Production net +316 lines; GUI tests +306; native smoke +35. No dependency,
+  toolkit, Source diagnostic or persistence changes. Linux remains deferred.

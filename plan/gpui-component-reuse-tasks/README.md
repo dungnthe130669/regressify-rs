@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-014 committed. Task 015 Git Tree is verified,
-pending its local commit with the approved header exception.
+Status: Planning and tasks 001-015 committed. Task 016 Overview Table/Details
+is verified and awaiting its authorized local commit.
 The approved Linux baseline and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -90,8 +90,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; committed as `6b0fbf8`.
 - [x] 013 Collapsible groups: Fields/workspace/activity and acceptance pass; committed as `ad26ca0`, with task 019 header exception recorded.
 - [x] 014 Flat collections: committed as `23d805c`; all surfaces and native acceptance verified with the approved task 019 header exception.
-- [x] 015 Git Tree: verified with the approved public base adapter and task 019 header exception; local commit pending.
-- [ ] 016 Overview Table: not started.
+- [x] 015 Git Tree: committed as `55a6142`, with the approved public base adapter and task 019 header exception.
+- [x] 016 Overview Table: verified, awaiting commit; native Default/Schema pass, with the approved task 019 header exception.
 - [ ] 017 Command palette: not started.
 - [ ] 018 Source font size: not started; awaits 003 and 007.
 - [ ] 019 Stock theme and normal sizing: not started; awaits remaining 003-018.
@@ -723,7 +723,55 @@ When a task changes state, record the exact focused command, exact outcome and n
   and application selection remain owned by GitPanel. Reviewed request capture,
   locks, stale completions, pointer behavior and entity release; no unresolved
   task 015 defect outside the approved header exception. No broader CLI/Linux
-  gate is claimed. Task 015 is verified and ready for its authorized local commit.
+  gate is claimed. Task 015 is committed as `55a6142`; the post-commit worktree
+  was clean. No push or release occurred.
+
+### Task 016 Verification
+
+- Fresh pre-edit baselines pass with locked gui-tests/lib/one test thread and
+  ephemeral `CARGO_INCREMENTAL=0`: `overview_` (3), `navigator_` (7),
+  `suite_name_dialog_` (6), `source_line_commands` (12).
+- The pinned uniform TableState API is rendered through `DataTable` in 0.7.1.
+  One retained table snapshots suite rows and resolves callbacks against current
+  workspace/file identity; row cursor and checked suites remain separate. No
+  change was made to variable-height Source diagnostics.
+- Added checkbox/row/Edit isolation before migration; it passed before and after.
+  Existing saved-report routing passes. The header/body alignment test exposed
+  Kit's sort-icon padding in unsortable headers; fixed-width header content
+  restores the unchanged exact bounds assertions in both themes/sizes.
+- Details opens only from its explicit control or Enter with actual Table focus.
+  Its read-only editor preserves full summary/error text, CopyText and focus
+  return. The long-label/150-line-error regression passes exact selection/copy,
+  read-only input and Close/Escape at both sizes/themes. Refresh/filter/busy and
+  owner-release coverage passes; no retained entity cycle was found.
+- `overview_table_` passed 3 tests before the large-row case was added; the new
+  `overview_table_virtual_rows_keep_uniform_geometry` passes (1), covering 80
+  mixed valid/error rows, exact uniform heights, wheel scrolling, offscreen
+  virtualization and compact action reachability in both themes/sizes.
+- Default native smoke now exercises Details full text, selection/copy and close
+  in both themes/sizes with clipboard restoration. Headless harness passes:
+  18 modules, 49 helpers, 45 dispatch/cleanup cases.
+- Final `cargo test --locked --features gui-tests --lib desktop::ui -- --test-threads=1 --quiet`:
+  265 passed, 1 failed, 0 ignored, 903 filtered. The only failure is the approved
+  task 019 `git_large_tree_and_status_fit_compact_and_wide_windows` header
+  assertion; all four new Overview cases and existing neighbors pass.
+- `cargo fmt --all -- --check`, `cargo clippy --locked --features gui --lib -- -D warnings`
+  and `cargo build --locked --features gui --bin regressify-desktop` pass with
+  ephemeral `CARGO_INCREMENTAL=0`.
+- Rebuilt `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild` and
+  the same command with `-SchemaFlows` pass. Reviewed all eight Overview/Details
+  Light/Dark screenshots at 1080x720 and 1600x1000, plus Source diagnostic
+  captures. Native full-text copy, independent controls, existing default flows,
+  selectable variable-height diagnostics and external-conflict workflows pass.
+  Preferences and clipboard were restored. Wide-only theme selection still
+  follows the task 019 exception; compact title-bar fit is not claimed green.
+- Reviewed current-root/path action guards, busy/run locks, weak ownership,
+  cursor refresh identity and full-text/read-only boundaries; no new defect
+  found. Source diagnostics and dependencies are unchanged.
+- Production net +316 lines (Overview +301, Workbench +15); GUI tests +306;
+  native smoke +35. Scoped Markdown and guidance checks pass (10 self-tests,
+  46 skills); existing MD004 configuration warning remains. Linux is deferred
+  under its separate exception. No task 016 commit is claimed yet.
 
 ### Approved Compact Header Exception
 

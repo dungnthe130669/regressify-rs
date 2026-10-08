@@ -1,6 +1,6 @@
 # 015: Git Change Trees
 
-Status: Verified, pending local commit. Full Git UI: 23 passed, only the approved
+Status: Committed as `55a6142`. Full Git UI: 23 passed, only the approved
 task 019 header failure remains. Final native Git, production and guidance checks
 pass with the public base adapter below. Depends on 001 and 014 (`23d805c`).
 
