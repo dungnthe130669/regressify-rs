@@ -2,6 +2,16 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Native Smoke Clipboard Restoration (2026-10-08)
+
+- Task 017 Default smoke passed its palette checks, then failed at
+  [Results cleanup](ci/desktop-smoke/flows/results.ps1#L40): WinForms
+  `Clipboard.SetDataObject` reported that the requested operation did not succeed.
+  Preferences were restored; the clipboard backup from that attempt was not.
+- A complete unchanged retry passed. The transient cleanup failure remains
+  unresolved; do not infer reliable restoration or recover the earlier backup
+  from a successful later run. No clipboard contents were logged.
+
 ## Git Tree Lifetime Compatibility (2026-10-08)
 
 - Mitigated in the task 015 candidate: styled Kit Tree 0.7.1 retains its own

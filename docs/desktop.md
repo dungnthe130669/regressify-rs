@@ -1598,6 +1598,12 @@ Reference capture, approve, and optimize require action-named confirmations
 describing the baseline or image changes. Pending option text is read before
 command changes and execution; invalid option drafts are retained for correction.
 
+Command search matches a case-insensitive contiguous substring of a command title
+or category. For example, `dark th` matches Dark theme, but `theme dark` does not.
+Escape clears a nonempty search first; press Escape again to close the palette.
+Choosing a command closes search and returns to the workbench before executing
+the existing guarded action. Disabled commands remain unavailable.
+
 Opening or selecting a suite automatically discovers its reference images and
 saved test runs in the active output folder, using the suite's output ID. The
 editor, Overview, and Runs show the detected counts. Discovery runs in the

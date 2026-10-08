@@ -1,6 +1,6 @@
 # 016: Overview Table And Complete Details
 
-Status: Verified, awaiting the authorized local commit. DataTable and complete
+Status: Committed as `d8e9965`. DataTable and complete
 selectable Details pass focused and native acceptance. The integrated UI gate
 has only the approved task 019 header failure. Depends on 001.
 

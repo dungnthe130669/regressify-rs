@@ -1240,7 +1240,15 @@ async fn command_palette_keeps_disabled_actions_inert_and_handles_empty_search(
     let (handle, view) = editor(cx, directory.path());
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
-        window.click("open-commands", cx);
+        window.focus(&view.read(cx).focus.clone(), cx);
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-shift-p"
+            } else {
+                "ctrl-shift-p"
+            },
+            cx,
+        );
     })
     .unwrap();
     settle_dialog(cx, handle).await;
@@ -1253,10 +1261,13 @@ async fn command_palette_keeps_disabled_actions_inert_and_handles_empty_search(
     })
     .await;
     cx.update_window(handle.into(), |_, window, cx| {
+        let search_focus = window.focused(cx).unwrap();
+        window.click("command:Save document", cx);
         window.press("enter", cx);
         assert!(window.find("command-list").visible());
         assert!(!view.read(cx).busy);
         assert!(!view.read(cx).session.dirty());
+        window.focus(&search_focus, cx);
         window.press(
             if cfg!(target_os = "macos") {
                 "cmd-a"
@@ -1272,15 +1283,165 @@ async fn command_palette_keeps_disabled_actions_inert_and_handles_empty_search(
         window.try_find("commands-empty").is_some()
     })
     .await;
-    cx.update_window(handle.into(), |_, window, cx| window.press("escape", cx))
-        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("enter", cx);
+        assert!(window.find("commands-empty").visible());
+        window.press("escape", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(window.find("command-list").visible());
+        assert!(window.try_find("commands-empty").is_none());
+        assert!(window.find("command:Landing apps").visible());
+        window.press("escape", cx);
+    })
+    .unwrap();
     settle_dialog(cx, handle).await;
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(window.try_find("command-list").is_none());
         assert!(window.find("field-url").visible());
+        assert!(view.read(cx).focus.is_focused(window));
         assert!(!view.read(cx).session.dirty());
     })
     .unwrap();
+}
+
+#[gpui_kit::test]
+async fn command_palette_uses_stock_substrings_and_keyboard_choice(cx: &mut TestAppContext) {
+    use crate::desktop::workspace::ThemePreference;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("open-commands", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    for (query, matched) in [("ArK Th", true), ("theme dark", false), ("drk thm", false)] {
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.press(
+                if cfg!(target_os = "macos") {
+                    "cmd-a"
+                } else {
+                    "ctrl-a"
+                },
+                cx,
+            );
+            window.input(query, cx);
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            if matched {
+                window.try_find("command:Dark theme").is_some()
+                    && window.try_find("command:Light theme").is_none()
+            } else {
+                window.try_find("commands-empty").is_some()
+            }
+        })
+        .await;
+    }
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press(
+            if cfg!(target_os = "macos") {
+                "cmd-a"
+            } else {
+                "ctrl-a"
+            },
+            cx,
+        );
+        window.input("appearance", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:System theme").is_some()
+            && window.try_find("command:Light theme").is_some()
+            && window.try_find("command:Dark theme").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("down", cx);
+        window.press("down", cx);
+        window.press("enter", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.try_find("command-list").is_none()
+            && view.read(cx).preferences.theme_preference() == ThemePreference::Dark
+            && !view.read(cx).preferences_saving
+    })
+    .await;
+    cx.update(|cx| assert!(!view.read(cx).session.dirty()));
+}
+
+#[gpui_kit::test]
+async fn command_palette_confirmation_restores_context_and_dispatches_once(
+    cx: &mut TestAppContext,
+) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        assert!(!view.read(cx).preferences.navigator_hidden);
+        window.click("open-commands", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("toggle navigator", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:Toggle navigator").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        for _ in 0..2 {
+            window.dispatch_action(
+                Box::new(gpui_kit::base::actions::Confirm { secondary: false }),
+                cx,
+            );
+        }
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.wait_for(handle.into(), Duration::from_secs(3), |_, cx| {
+        !view.read(cx).preferences_saving
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert!(view.read(cx).preferences.navigator_hidden);
+        assert!(window.try_find("command-list").is_none());
+        assert!(view.read(cx).focus.is_focused(window));
+        assert!(!view.read(cx).session.dirty());
+        window.click("open-commands", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.input("toggle navigator", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("command:Toggle navigator").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.click("command:Toggle navigator", cx)
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        !view.read(cx).preferences.navigator_hidden
+            && !view.read(cx).preferences_saving
+            && window.try_find("command-list").is_none()
+    })
+    .await;
+    let owner = view.downgrade();
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.update(|_| assert!(owner.upgrade().is_none()));
 }
 
 #[gpui_kit::test]

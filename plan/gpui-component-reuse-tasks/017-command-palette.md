@@ -1,6 +1,8 @@
 # 017: Command Palette
 
-Status: Not started. Depends on 001.
+Status: Verified, awaiting the authorized local commit. Focused and native gates
+pass; the integrated gate has only the approved task 019 header failure.
+Depends on 001.
 
 ## Scope
 
@@ -36,3 +38,20 @@ Follow [native UI](../../.github/skills/desktop-native-ui/SKILL.md),
 [feature checks](../../.github/skills/rust-feature-checks/SKILL.md).
 Commit palette/tests/maintenance only. Investigate a genuine public API blocker
 and ask before deferring; approved search and Escape behavior are not open.
+
+## Verification
+
+- The locked `command_palette_` baseline passed 3 tests. The final five palette
+  cases pass, covering substring/category matching, disabled/empty results,
+  keyboard/pointer confirmation, duplicate-event suppression, Escape, focus,
+  draft guards and owner release.
+- Full locked desktop UI gate: 267 passed, 1 failed, 0 ignored. The sole failure
+  remains the unchanged task 019 compact Git header assertion.
+- Rustfmt, production GUI Clippy with `-D warnings` and desktop build pass.
+- Rebuilt native Default smoke passes on retry. The first attempt passed every
+  new palette check, then failed in existing Results clipboard restoration.
+  The unchanged complete retry passed with preferences restored. Reviewed empty
+  and cleared palettes in Light/Dark at 1080x720 and 1600x1000, plus filtered
+  native theme confirmation. Wide-only theme switching remains task 019's owner.
+- Production net -78 lines; tests net +161; smoke +9. No toolkit, dependency,
+  action catalog or execution-handler changes. Linux remains deferred.

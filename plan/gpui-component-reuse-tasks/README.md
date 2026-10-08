@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-015 committed. Task 016 Overview Table/Details
-is verified and awaiting its authorized local commit.
+Status: Planning and tasks 001-016 committed. Task 017 Command palette is
+verified and awaiting its authorized local commit.
 The approved Linux baseline and task 019 compact-header exceptions remain in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -91,8 +91,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 013 Collapsible groups: Fields/workspace/activity and acceptance pass; committed as `ad26ca0`, with task 019 header exception recorded.
 - [x] 014 Flat collections: committed as `23d805c`; all surfaces and native acceptance verified with the approved task 019 header exception.
 - [x] 015 Git Tree: committed as `55a6142`, with the approved public base adapter and task 019 header exception.
-- [x] 016 Overview Table: verified, awaiting commit; native Default/Schema pass, with the approved task 019 header exception.
-- [ ] 017 Command palette: not started.
+- [x] 016 Overview Table: committed as `d8e9965`; native Default/Schema pass, with the approved task 019 header exception.
+- [x] 017 Command palette: verified, awaiting commit; native Default passes with the approved task 019 header exception.
 - [ ] 018 Source font size: not started; awaits 003 and 007.
 - [ ] 019 Stock theme and normal sizing: not started; awaits remaining 003-018.
 - [ ] 020 Final acceptance: not started; awaits remaining 003-019.
@@ -771,7 +771,42 @@ When a task changes state, record the exact focused command, exact outcome and n
 - Production net +316 lines (Overview +301, Workbench +15); GUI tests +306;
   native smoke +35. Scoped Markdown and guidance checks pass (10 self-tests,
   46 skills); existing MD004 configuration warning remains. Linux is deferred
-  under its separate exception. No task 016 commit is claimed yet.
+  under its separate exception. Committed as `d8e9965`.
+
+### Task 017 Verification
+
+- Fresh `cargo test --locked --features gui-tests --lib command_palette_ -- --test-threads=1`
+  baseline: 3 passed. Actionless Kit Command replaces the custom ListDelegate;
+  the catalog, enablement and existing guarded actions remain unchanged.
+- The unchanged unsaved-dialog guard pilot passes (1). Expanded palette filter
+  passes (5): approved contiguous case-insensitive title/category substrings,
+  rejection of reversed words/noncontiguous characters, keyboard selection,
+  two-step Escape, theme/draft preservation, focus and duplicate confirmation.
+- Strengthened disabled-pointer/Enter, empty-result Enter and cancellation-focus
+  test passes (1). Continuing query typing after a row click explicitly restores
+  the captured search focus; the disabled action remains inert.
+- Native default now checks a rejected former all-words query, first-Escape clear
+  and second-Escape dismissal at both sizes/themes. Headless smoke harness passes:
+  18 modules, 49 helpers, 45 dispatch/cleanup cases.
+- Final `cargo test --locked --features gui-tests --lib desktop::ui -- --test-threads=1 --quiet`:
+  267 passed, 1 failed, 0 ignored, 903 filtered. All five palette cases pass;
+  the only failure remains task 019's unchanged compact Git header assertion.
+- `cargo fmt --all -- --check`, `cargo clippy --locked --features gui --lib -- -D warnings`
+  and `cargo build --locked --features gui --bin regressify-desktop` pass with
+  ephemeral `CARGO_INCREMENTAL=0`.
+- Rebuilt `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild` passed on
+  a complete unchanged retry. The first attempt passed all palette combinations,
+  then failed in existing `results.ps1` clipboard restoration; preferences were
+  restored but that clipboard restore failed. The retry completed all default
+  workflows and cleanup. This does not retroactively restore the first backup.
+- Reviewed eight empty/cleared palette screenshots across Light/Dark and
+  1080x720/1600x1000, plus filtered native theme confirmation. Native accessible
+  labels and two-step Escape pass; wide-only theme selection remains task 019's
+  exception, not green compact-header evidence.
+- Final review preserves the catalog, existing guarded actions, actionless
+  items, close/focus/dispatch ordering and one-shot confirmation. No new palette
+  defect found. Production net -78 lines; tests net +161; smoke +9. Linux remains
+  deferred; no task 017 commit is claimed yet.
 
 ### Approved Compact Header Exception
 

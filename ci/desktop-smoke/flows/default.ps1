@@ -24,6 +24,15 @@ function Test-DefaultFlows {
                 Wait-WindowState { (Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetText() }) -ceq $details } 'Copy suite details did not preserve its exact full text.'
                 Invoke-Control 'Close suite details' -Pointer
                 Wait-WindowState { $null -eq (Find-Control 'Suite details text') } 'Suite details did not close.'
+                Send-FixtureKeys P -Control -Shift
+                Send-FixtureText 'theme dark'
+                Wait-Control 'No matching commands' | Out-Null
+                Capture-Window "command-palette-empty-$($theme.ToLowerInvariant())-$($dimensions[0])"
+                Send-FixtureKeys Escape
+                Wait-Control 'Landing apps' | Out-Null
+                Capture-Window "command-palette-cleared-$($theme.ToLowerInvariant())-$($dimensions[0])"
+                Send-FixtureKeys Escape
+                Wait-WindowState { $null -eq (Find-Control 'Landing apps') } 'Second Escape did not dismiss command search.'
             }
         }
     } finally {

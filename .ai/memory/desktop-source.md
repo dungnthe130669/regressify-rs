@@ -2,6 +2,8 @@
 
 Verified: 2026-10-08
 
+- [Command search](../../src/desktop/ui/commands.rs): actionless items, one-shot close/focus/dispatch, stock title/category substring matching and two-step Escape.
+  `command_palette_` covers duplicate confirmation, focus/drafts and disabled/empty results; refocus query input after a row click before further typing.
 - [Fields groups](../../src/desktop/ui/mod.rs) use controlled Accordion with
   stable IDs and separate collapse preference. Search/errors/unsupported choices
   force open; closed inputs unmount and return focus to the disclosure.

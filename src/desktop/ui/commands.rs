@@ -1,6 +1,7 @@
 //! Search existing workbench actions without creating another execution path.
 
-use gpui_kit::component::list::{List, ListDelegate, ListItem, ListState};
+use gpui_kit::component::command::{Command as KitCommand, CommandItem, CommandState};
+use std::{cell::Cell, rc::Rc};
 
 use super::*;
 use crate::desktop::workspace::ThemePreference;
@@ -11,139 +12,6 @@ struct Command {
     icon: gpui_kit::assets::IconName,
     action: Box<dyn Action>,
     enabled: bool,
-}
-
-struct CommandList {
-    commands: Vec<Command>,
-    filtered: Vec<usize>,
-    selected: Option<IndexPath>,
-    focus: FocusHandle,
-}
-
-impl ListDelegate for CommandList {
-    type Item = ListItem;
-
-    fn items_count(&self, _: usize, _: &App) -> usize {
-        self.filtered.len()
-    }
-
-    fn perform_search(
-        &mut self,
-        query: &str,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) -> Task<()> {
-        let words = query.to_lowercase();
-        self.filtered = self
-            .commands
-            .iter()
-            .enumerate()
-            .filter(|(_, command)| {
-                let text = format!("{} {}", command.title, command.group).to_lowercase();
-                words.split_whitespace().all(|word| text.contains(word))
-            })
-            .map(|(index, _)| index)
-            .collect();
-        self.selected = (!self.filtered.is_empty()).then_some(IndexPath::new(0));
-        Task::ready(())
-    }
-
-    fn render_item(
-        &mut self,
-        index: IndexPath,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> Option<ListItem> {
-        let command = self.commands.get(*self.filtered.get(index.row)?)?;
-        Some(
-            ListItem::new(SharedString::from(format!("command:{}", command.title)))
-                .role(Role::ListBoxOption)
-                .aria_label(command.title)
-                .h(px(42.))
-                .disabled(!command.enabled)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap_3()
-                        .w_full()
-                        .min_w_0()
-                        .child(
-                            Icon::new(command.icon)
-                                .small()
-                                .text_color(if command.enabled {
-                                    cx.theme().foreground
-                                } else {
-                                    cx.theme().muted_foreground
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .text_sm()
-                                .truncate()
-                                .child(command.title),
-                        )
-                        .child(
-                            div()
-                                .flex_shrink_0()
-                                .text_xs()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(command.group),
-                        ),
-                ),
-        )
-    }
-
-    fn render_empty(
-        &mut self,
-        _: &mut Window,
-        cx: &mut Context<ListState<Self>>,
-    ) -> impl IntoElement {
-        div()
-            .id("commands-empty")
-            .role(Role::Status)
-            .aria_label("No matching commands")
-            .test_support()
-            .child(
-                gpui_kit::component::empty::Empty::new()
-                    .text_sm()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("No matching commands"),
-            )
-    }
-
-    fn set_selected_index(
-        &mut self,
-        index: Option<IndexPath>,
-        _: &mut Window,
-        _: &mut Context<ListState<Self>>,
-    ) {
-        self.selected = index;
-    }
-
-    fn confirm(&mut self, _: bool, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        let Some(command) = self
-            .selected
-            .and_then(|index| self.filtered.get(index.row))
-            .and_then(|index| self.commands.get(*index))
-            .filter(|command| command.enabled)
-        else {
-            return;
-        };
-        let action = command.action.boxed_clone();
-        let focus = self.focus.clone();
-        window.close_dialog(cx);
-        window.defer(cx, move |window, cx| {
-            window.focus(&focus, cx);
-            window.dispatch_action(action, cx);
-        });
-    }
-
-    fn cancel(&mut self, window: &mut Window, cx: &mut Context<ListState<Self>>) {
-        window.close_dialog(cx);
-    }
 }
 
 impl Workbench {
@@ -366,34 +234,88 @@ impl Workbench {
                 enabled: true,
             });
         }
-        let filtered = (0..commands.len()).collect();
+        let commands = Rc::new(commands);
         let focus = self.focus.clone();
-        let list = cx.new(|cx| {
-            ListState::new(
-                CommandList {
-                    commands,
-                    filtered,
-                    selected: Some(IndexPath::new(0)),
-                    focus,
-                },
-                window,
-                cx,
-            )
-            .searchable(true)
-        });
-        let content = list.clone();
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let content = state.clone();
+        let confirmed = Rc::new(Cell::new(false));
         window.open_dialog(cx, move |dialog, _, _| {
+            let items = commands.iter().map(|command| {
+                let title = command.title;
+                let group = command.group;
+                let icon = command.icon;
+                CommandItem::new()
+                    .label(title)
+                    .keywords([group])
+                    .disabled(!command.enabled)
+                    .child(move |_, cx| {
+                        div()
+                            .id(SharedString::from(format!("command:{title}")))
+                            .role(Role::ListBoxOption)
+                            .aria_label(title)
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .gap_3()
+                            .w_full()
+                            .min_w_0()
+                            .child(gpui_kit::component::Icon::new(icon).small())
+                            .child(div().flex_1().min_w_0().truncate().child(title))
+                            .child(
+                                div()
+                                    .flex_shrink_0()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(group),
+                            )
+                    })
+            });
+            let palette = KitCommand::new(&content)
+                .items(items)
+                .placeholder("Search commands")
+                .bordered(false)
+                .max_h(px(300.))
+                .empty(|_, _, cx| {
+                    div()
+                        .id("commands-empty")
+                        .role(Role::Status)
+                        .aria_label("No matching commands")
+                        .test_support()
+                        .child(
+                            gpui_kit::component::empty::Empty::new()
+                                .text_sm()
+                                .text_color(cx.theme().muted_foreground)
+                                .child("No matching commands"),
+                        )
+                });
+            let commands = commands.clone();
+            let focus = focus.clone();
+            let confirmed = confirmed.clone();
             dialog.title("Commands").w(px(560.)).child(
-                div().id("command-list").test_support().h(px(350.)).child(
-                    List::new(&content)
-                        .search_placeholder("Search commands")
-                        .max_h(px(350.)),
-                ),
+                div()
+                    .id("command-list")
+                    .test_support()
+                    .h(px(350.))
+                    .child(palette.on_confirm(move |index, window, cx| {
+                        let Some(command) =
+                            commands.get(index.row).filter(|command| command.enabled)
+                        else {
+                            return;
+                        };
+                        if confirmed.replace(true) {
+                            return;
+                        }
+                        // Actionless items defer dispatch until the dialog releases its focus.
+                        let action = command.action.boxed_clone();
+                        let focus = focus.clone();
+                        window.close_dialog(cx);
+                        window.defer(cx, move |window, cx| {
+                            window.focus(&focus, cx);
+                            window.dispatch_action(action, cx);
+                        });
+                    })),
             )
         });
-        list.update(cx, |state, cx| {
-            state.set_selected_index(Some(IndexPath::new(0)), window, cx);
-            state.focus(window, cx);
-        });
+        state.update(cx, |state, cx| state.focus(window, cx));
     }
 }
