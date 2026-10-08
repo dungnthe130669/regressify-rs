@@ -117,6 +117,9 @@ struct Binding {
 }
 
 pub struct Workbench {
+    app_menu_bar: Entity<gpui_kit::component::menu::AppMenuBar>,
+    app_menu_focus: FocusHandle,
+    app_menu_flags: Vec<bool>,
     session: Session,
     activation_task: Option<Task<()>>,
     _external_file_task: Task<()>,
@@ -371,7 +374,13 @@ impl Workbench {
                     cx.notify();
                 }
             });
+        let app_menu_bar = gpui_kit::component::menu::AppMenuBar::new(cx);
+        let app_menu_release =
+            cx.on_release(|this, cx| design::release_app_menu(&this.app_menu_bar, cx));
         Self {
+            app_menu_bar,
+            app_menu_focus: cx.focus_handle().tab_stop(false),
+            app_menu_flags: Vec::new(),
             session: Session::default(),
             workspace_instance: None,
             activation_task: None,
@@ -387,6 +396,7 @@ impl Workbench {
             list_choice_pickers: BTreeMap::new(),
             choice_binding_scope: None,
             _subscriptions: vec![
+                app_menu_release,
                 source_subscription,
                 search_subscription,
                 run_subscription,
@@ -2848,6 +2858,7 @@ impl Workbench {
 
 impl Render for Workbench {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_app_menus(window, cx);
         self.sync_list_choice_pickers(window, cx);
         self.results
             .update(cx, |panel, cx| panel.set_visible(self.main_tab == 2, cx));
@@ -2917,6 +2928,7 @@ impl Render for Workbench {
                 cx.notify();
             }))
             .on_action(cx.listener(Self::file_command))
+            .on_action(cx.listener(Self::app_file_command))
             .on_action(cx.listener(Self::show_about))
             .on_action(cx.listener(|this, action: &RunSuiteCommand, window, cx| {
                 if let Some(command) = super::runner::RunCommand::ALL.get(action.index) {

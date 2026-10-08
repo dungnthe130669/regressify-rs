@@ -2,6 +2,11 @@
 
 Verified: 2026-10-07
 
+- [Application menus](../../src/desktop/ui/files.rs) route File actions with a
+  distinct AppFileCommand, preserving the open document despite suite-row focus.
+  The shared registry is copied only on changed flags. Public scoped Cancel
+  restores Source focus before reload; an empty reload breaks Kit's menu/bar
+  cycle on release. `app_menu_` covers exact targets, focus and two windows.
 - [Value pickers](../../src/desktop/ui/choices.rs) use retained Select and multiple
   Combobox state, with `SearchableVec` for actual filtering. Plain Vec enabled
   an input but did not filter. `value_selector_` reproduces unchanged-refresh

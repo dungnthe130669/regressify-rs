@@ -820,6 +820,13 @@ settings forms, and activity metrics use compact spacing. The main source text
 size remains independently configurable. Headless layout tests cover 1080x720
 and 1600x1000 windows and check that controls do not overlap window buttons.
 
+On Windows and Linux, File, Publish, and Help share a toolkit application menu
+bar with hover and arrow-key switching. Escape returns focus to the previous
+control. File commands operate on the open document; suite context menus and
+F2/Delete continue to target the focused suite row. Commands retain their current
+busy, validation, and unsaved-change guards. macOS keeps the existing in-window
+menus; this does not add a native macOS menu bar.
+
 The header appearance menu offers System, Light, and Dark. System follows the
 operating system and responds to appearance changes while the app is open;
 explicit Light or Dark overrides those changes. New installations default to

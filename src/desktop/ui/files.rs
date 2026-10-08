@@ -23,6 +23,11 @@ pub(super) struct FileCommand {
     pub(super) operation: Operation,
 }
 
+#[derive(Clone, PartialEq, serde::Deserialize, schemars::JsonSchema, Action)]
+pub(super) struct AppFileCommand {
+    pub(super) operation: Operation,
+}
+
 #[derive(Clone)]
 pub(super) enum Pending {
     Workspace(PathBuf),
@@ -404,6 +409,77 @@ impl Workbench {
                 }
                 menu
             })
+    }
+
+    pub(super) fn sync_app_menus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if cfg!(target_os = "macos") {
+            return;
+        }
+        let entries = menu_entries();
+        let publishing = !self.busy && !self.runs.read(cx).running();
+        let mut flags = entries
+            .iter()
+            .map(|(_, command)| self.file_operation_enabled(command.operation, cx))
+            .collect::<Vec<_>>();
+        flags.push(publishing);
+        if flags == self.app_menu_flags {
+            return;
+        }
+        // Cancel before replacing a focused popup so its captured action context can be restored.
+        if self.app_menu_focus.contains_focused(window, cx)
+            && let Some(focus) = window.focused(cx)
+        {
+            focus.dispatch_action(&gpui_kit::base::actions::Cancel, window, cx);
+        }
+        let menus = vec![
+            gpui_kit::Menu::new("File")
+                .items(
+                    entries
+                        .into_iter()
+                        .zip(&flags)
+                        .map(|((label, command), enabled)| {
+                            gpui_kit::MenuItem::action(
+                                label,
+                                AppFileCommand {
+                                    operation: command.operation,
+                                },
+                            )
+                            .disabled(!enabled)
+                        }),
+                )
+                .owned(),
+            gpui_kit::Menu::new("Publish")
+                .items([
+                    gpui_kit::MenuItem::action("Landing apps", OpenLandingApps)
+                        .disabled(!publishing),
+                    gpui_kit::MenuItem::action("Deployment tokens", OpenDeploymentTokens)
+                        .disabled(!publishing),
+                ])
+                .owned(),
+            gpui_kit::Menu::new("Help")
+                .items([gpui_kit::MenuItem::action("About", ShowAbout)])
+                .owned(),
+        ];
+        gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(menus);
+        self.app_menu_bar.update(cx, |bar, cx| bar.reload(cx));
+        self.app_menu_flags = flags;
+    }
+
+    pub(super) fn app_file_command(
+        &mut self,
+        command: &AppFileCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.file_operation_enabled(command.operation, cx) {
+            self.file_command(
+                &FileCommand {
+                    operation: command.operation,
+                },
+                window,
+                cx,
+            );
+        }
     }
 
     pub(super) fn file_command(

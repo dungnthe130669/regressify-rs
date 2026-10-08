@@ -7796,6 +7796,339 @@ pub(super) fn editor_at_size(
 }
 
 #[gpui_kit::test]
+#[cfg(not(target_os = "macos"))]
+async fn app_menu_windows_keep_flags_and_cleanup_isolated(cx: &mut TestAppContext) {
+    let first_root = tempfile::tempdir().unwrap();
+    let second_root = tempfile::tempdir().unwrap();
+    let (first_handle, first) = editor(cx, first_root.path());
+    let (second_handle, second) = editor(cx, second_root.path());
+    cx.update_window(first_handle.into(), |_, window, cx| {
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx)
+    })
+    .unwrap();
+    cx.update_window(second_handle.into(), |_, window, cx| {
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx)
+    })
+    .unwrap();
+    cx.wait_for(second_handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(first_handle.into(), |_, window, cx| {
+        first.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_none());
+    })
+    .unwrap();
+    let first_bar = cx.update(|cx| first.read(cx).app_menu_bar.downgrade());
+    drop(first);
+    cx.update_window(first_handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(second_handle.into(), |_, window, cx| {
+        assert!(first_bar.upgrade().is_none());
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible());
+        let rename = super::files::menu_entries()
+            .iter()
+            .position(|(_, command)| command.operation == super::files::Operation::Rename)
+            .unwrap();
+        window.within("popup-menu").click(rename, cx);
+    })
+    .unwrap();
+    cx.wait_for(second_handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("file-name").is_some()
+    })
+    .await;
+    settle_dialog(cx, second_handle).await;
+    cx.update_window(second_handle.into(), |_, window, cx| {
+        assert_eq!(window.find("file-name").value(), Some("ui-test.tests.yaml"));
+        assert!(!second.read(cx).busy);
+        window.click("file-cancel", cx);
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+#[cfg(not(target_os = "macos"))]
+async fn app_menu_switches_by_hover_and_arrows_and_restores_source_focus(cx: &mut TestAppContext) {
+    use gpui_kit::InputEvent as _;
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let publish_position = cx
+        .update_window(handle.into(), |_, window, cx| {
+            view.update(cx, |this, cx| {
+                assert!(this.select_editor_tab(1, window, cx));
+            });
+            let focus = view.read(cx).source.read(cx).focus_handle(cx);
+            window.focus(&focus, cx);
+            window.render_frame(cx);
+            let position = window
+                .within("app-menu-bar")
+                .within(1_usize)
+                .find("menu")
+                .bounds()
+                .center();
+            window
+                .within("app-menu-bar")
+                .within(0_usize)
+                .click("menu", cx);
+            position
+        })
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: publish_position,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .within("popup-menu")
+            .try_find(0_usize)
+            .is_some_and(|item| item.label() == Some("Landing apps"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| window.press("right", cx))
+        .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window
+            .within("popup-menu")
+            .try_find(0_usize)
+            .is_some_and(|item| item.label() == Some("About"))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+        window.try_find("popup-menu").is_none()
+            && view
+                .read(cx)
+                .source
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx);
+        window.render_frame(cx);
+        view.update(cx, |_, cx| cx.notify());
+        window.render_frame(cx);
+        assert!(window.find("popup-menu").visible());
+        view.update(cx, |this, cx| {
+            this.session
+                .set_field("label", Some(serde_json::json!("Changed while menu open")))
+                .unwrap();
+            this.sync_editor(window, cx);
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_none());
+        assert!(
+            view.read(cx)
+                .source
+                .read(cx)
+                .focus_handle(cx)
+                .is_focused(window)
+        );
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+#[cfg(not(target_os = "macos"))]
+async fn app_menu_window_release_clears_open_menu_entities(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    let bar = cx.update(|cx| view.read(cx).app_menu_bar.downgrade());
+    let owner = view.downgrade();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    drop(view);
+    cx.update_window(handle.into(), |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.update(|_| {
+        assert!(owner.upgrade().is_none());
+        assert!(bar.upgrade().is_none());
+    });
+}
+
+#[gpui_kit::test]
+#[cfg(not(target_os = "macos"))]
+async fn app_menu_file_targets_open_document_and_reloads_busy_flags(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor(cx, directory.path());
+    cx.update_window(handle.into(), |_, window, cx| {
+        view.update(cx, |this, cx| {
+            this.session
+                .workspace
+                .as_ref()
+                .unwrap()
+                .create_suite("second")
+                .unwrap();
+            this.session.refresh().unwrap();
+            this.sync_suites(cx);
+            this.main_tab = 2;
+        });
+        window.render_frame(cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.suite_name().as_deref() == Some("second"))
+            .unwrap();
+        window.click(("file", index), cx);
+        assert_eq!(
+            view.read(cx)
+                .session
+                .open
+                .as_ref()
+                .unwrap()
+                .entry
+                .suite_name()
+                .as_deref(),
+            Some("ui-test")
+        );
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    let rename = super::files::menu_entries()
+        .iter()
+        .position(|(_, command)| command.operation == super::files::Operation::Rename)
+        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(rename, cx)
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+        window.try_find("file-name").is_some()
+    })
+    .await;
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        assert_eq!(window.find("file-name").value(), Some("ui-test.tests.yaml"));
+        window.click("file-cancel", cx);
+    })
+    .unwrap();
+    settle_dialog(cx, handle).await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx);
+        view.update(cx, |this, cx| {
+            this.busy = true;
+            cx.notify();
+        });
+        window.render_frame(cx);
+        assert!(window.try_find("popup-menu").is_none());
+        window
+            .within("app-menu-bar")
+            .within(0_usize)
+            .click("menu", cx);
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.try_find("popup-menu").is_some()
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.within("popup-menu").click(rename, cx);
+        assert!(window.try_find("file-name").is_none());
+        assert!(view.read(cx).busy);
+        window.press("escape", cx);
+        view.update(cx, |this, cx| {
+            this.busy = false;
+            cx.notify();
+        });
+    })
+    .unwrap();
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/ui-test.tests.yaml")
+            .exists()
+    );
+    assert!(
+        directory
+            .path()
+            .join("visual_tests/second.tests.yaml")
+            .exists()
+    );
+}
+
+#[gpui_kit::test]
+fn app_menu_bar_releases_owned_menu_entities(cx: &mut TestAppContext) {
+    let weak = cx.update(|cx| {
+        gpui_kit::init(cx);
+        gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(vec![
+            gpui_kit::Menu::new("Help")
+                .items([gpui_kit::MenuItem::action("About", super::ShowAbout)])
+                .owned(),
+        ]);
+        let bar = gpui_kit::component::menu::AppMenuBar::new(cx);
+        super::design::release_app_menu(&bar, cx);
+        assert_eq!(
+            gpui_kit::base::GlobalState::global(cx).app_menus()[0]
+                .name
+                .as_ref(),
+            "Help"
+        );
+        bar.downgrade()
+    });
+    cx.run_until_parked();
+    cx.update(|_| {
+        assert!(
+            weak.upgrade().is_none(),
+            "application menus must release with their owner"
+        )
+    });
+}
+
+#[gpui_kit::test]
 async fn workspace_external_menus_and_about_show_version_without_changing_drafts(
     cx: &mut TestAppContext,
 ) {
@@ -7809,7 +8142,14 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
             window.find("application-version").label(),
             Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
         );
-        window.click("file-menu", cx);
+        if cfg!(target_os = "macos") {
+            window.click("file-menu", cx);
+        } else {
+            window
+                .within("app-menu-bar")
+                .within(0_usize)
+                .click("menu", cx);
+        }
     })
     .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
@@ -7848,8 +8188,17 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
         window.try_find("popup-menu").is_none()
     })
     .await;
-    cx.update_window(handle.into(), |_, window, cx| window.click("help-menu", cx))
-        .unwrap();
+    cx.update_window(handle.into(), |_, window, cx| {
+        if cfg!(target_os = "macos") {
+            window.click("help-menu", cx);
+        } else {
+            window
+                .within("app-menu-bar")
+                .within(2_usize)
+                .click("menu", cx);
+        }
+    })
+    .unwrap();
     cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
         window.try_find("popup-menu").is_some()
     })

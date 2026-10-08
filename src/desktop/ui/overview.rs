@@ -143,31 +143,51 @@ impl Workbench {
                             .text_color(cx.theme().muted_foreground)
                             .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                     )
-                    .child(design::titlebar_control(self.file_menu(cx)))
-                    .child(design::titlebar_control({
-                        let focus = self.focus.clone();
-                        Button::new("publishing-menu")
-                            .ghost()
-                            .xsmall()
-                            .label("Publish")
-                            .disabled(self.busy || self.runs.read(cx).running())
-                            .dropdown_menu(move |menu, _, _| {
-                                menu.action_context(focus.clone())
-                                    .menu("Landing apps", Box::new(OpenLandingApps))
-                                    .menu("Deployment tokens", Box::new(OpenDeploymentTokens))
-                            })
-                    }))
-                    .child(design::titlebar_control({
-                        let focus = self.focus.clone();
-                        Button::new("help-menu")
-                            .ghost()
-                            .xsmall()
-                            .label("Help")
-                            .dropdown_menu(move |menu, _, _| {
-                                menu.action_context(focus.clone())
-                                    .menu("About", Box::new(ShowAbout))
-                            })
-                    }))
+                    .child(if cfg!(target_os = "macos") {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .child(design::titlebar_control(self.file_menu(cx)))
+                            .child(design::titlebar_control({
+                                let focus = self.focus.clone();
+                                Button::new("publishing-menu")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Publish")
+                                    .disabled(self.busy || self.runs.read(cx).running())
+                                    .dropdown_menu(move |menu, _, _| {
+                                        menu.action_context(focus.clone())
+                                            .menu("Landing apps", Box::new(OpenLandingApps))
+                                            .menu(
+                                                "Deployment tokens",
+                                                Box::new(OpenDeploymentTokens),
+                                            )
+                                    })
+                            }))
+                            .child(design::titlebar_control({
+                                let focus = self.focus.clone();
+                                Button::new("help-menu")
+                                    .ghost()
+                                    .xsmall()
+                                    .label("Help")
+                                    .dropdown_menu(move |menu, _, _| {
+                                        menu.action_context(focus.clone())
+                                            .menu("About", Box::new(ShowAbout))
+                                    })
+                            }))
+                            .into_any_element()
+                    } else {
+                        div()
+                            .id("workbench-app-menu")
+                            .test_support()
+                            .w(px(184.))
+                            .h_full()
+                            .flex_shrink_0()
+                            .track_focus(&self.app_menu_focus)
+                            .child(self.app_menu_bar.clone())
+                            .into_any_element()
+                    })
                     .child(design::titlebar_control(
                         Button::new("toggle-navigation")
                             .ghost()

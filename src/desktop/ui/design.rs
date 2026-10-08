@@ -3,6 +3,14 @@ use super::*;
 use crate::desktop::workspace::ThemePreference;
 use gpui_kit::component::Size;
 
+pub(super) fn release_app_menu(bar: &Entity<gpui_kit::component::menu::AppMenuBar>, cx: &mut App) {
+    // Kit 0.7.1 menus own their bar; an empty reload breaks that cycle without changing the registry.
+    let menus = gpui_kit::base::GlobalState::global(cx).app_menus().to_vec();
+    gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(Vec::new());
+    bar.update(cx, |bar, cx| bar.reload(cx));
+    gpui_kit::base::GlobalState::global_mut(cx).set_app_menus(menus);
+}
+
 type CopiedCallback = Box<dyn Fn(&mut App)>;
 
 #[derive(IntoElement)]

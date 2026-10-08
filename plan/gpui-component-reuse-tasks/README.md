@@ -1,7 +1,7 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-010 committed. Task 011 log navigation passes
-acceptance and awaits its authorized local commit. The approved Linux
+Status: Planning and tasks 001-011 committed. Task 012 application menus pass
+acceptance and await their authorized local commit. The approved Linux
 baseline exception remains in force.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
@@ -86,8 +86,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
   committed as `fa13c04`.
 - [x] 009 Value selectors: single/multiple controls, guards and native acceptance pass; committed as `b77d5a6`.
 - [x] 010 Clipboard: eligible controls, gated exceptions and acceptance pass; committed as `41fd5cc`.
-- [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; commit pending.
-- [ ] 012 Application menus: not started.
+- [x] 011 Log navigation: bounded pages, Follow and native keyboard acceptance pass; committed as `521e14f`.
+- [x] 012 Application menus: exact targets, focus/lifecycle and native acceptance pass; commit pending.
 - [ ] 013 Collapsible groups: not started; form prerequisite satisfied.
 - [ ] 014 Flat collections: not started.
 - [ ] 015 Git Tree: not started; awaits 014.
@@ -478,8 +478,28 @@ When a task changes state, record the exact focused command, exact outcome and n
   validation follows the maintenance update. Production +145/-96 (net +49),
   tests/helpers +280/-9, native checks +17. Two focus handles are the only added
   retained navigation state; bounded page loading reuses existing query/generations.
-  Task 011 awaits its authorized local commit. No new deferral; Linux exception
+  Task 011 is committed as `521e14f`. No new deferral; Linux exception
   and task 020 remain.
+
+### Task 012 Verification
+
+- Baselines pass: suite dialogs (6), suite targets (5), Source commands (12),
+  named tokens (1). Existing File/Help/About draft test passes after integration.
+- Retained Windows/Linux AppMenuBar uses owned menu snapshots and change-only
+  enabled-flag reloads. Dedicated AppFileCommand bypasses focused suite-row
+  targeting while revalidating open-document guards. macOS keeps its old UI.
+- Public empty reload resolves a reproduced menu/bar ownership cycle on release
+  and restores the shared registry. A scoped synchronous Cancel before flag
+  reload resolves reproduced Source-focus loss; no private context or toolkit edit.
+- Final menu cases pass (5), File/Help/About (1), Source commands (12) and root
+  lifecycle (2). Native default, Artifact and Publishing pass; reviewed open-menu
+  and compact dark header/dialog screenshots remain intact. Preferences/catalogs
+  restored, no remote publication or toolkit changes.
+- GUI Clippy/build and diagnostics pass; final Rustfmt/maintenance checks follow.
+  Production +141/-25 (net +116), tests +352/-3; state is one bar, non-tab-stop
+  focus scope and enabled-flag snapshot, with an eight-line cleanup helper.
+  macOS fallback remains unexecuted on Windows. Task 012 awaits its local commit;
+  no new deferral, and the Linux exception/task 020 remain.
 
 ### Approved Linux Baseline Exception
 
