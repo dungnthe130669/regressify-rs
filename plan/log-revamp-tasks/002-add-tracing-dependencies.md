@@ -85,7 +85,7 @@ Add tracing and tracing-subscriber as unconditional direct dependencies in Cargo
 
 ## Dependencies
 
-_none_
+*none*
 
 ## Risks
 

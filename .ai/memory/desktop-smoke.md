@@ -104,6 +104,8 @@ Verified: 2026-10-09
   1600x1000 without widening for theme changes. Appearance uses actual Tab focus
   and Enter/Escape; its dropdown has no InvokePattern. Default's Add uses Tab too,
   retaining the exact backward-wrap assertion. Header menus are File/Publish/Help.
+  The [header regression](../../src/desktop/ui/tests.rs) checks equal group gaps,
+  aligned text, compact tab underlines, and version/workspace visibility at 1400px.
 - Minimum-size flows bring scrollable targets into view: Actions via settings
   search, the Comparison suite via wheel, and landing removal via editor scroll.
   Artifact's added Rename size matrix uses the scoped context menu; original

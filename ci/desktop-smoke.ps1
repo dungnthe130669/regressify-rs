@@ -80,7 +80,7 @@ try {
         Test-ErrorImageFlows
         return
     }
-    Wait-Control ($workspace.Replace('\', '/')) | Out-Null
+    Wait-Control 'Switch workspace' | Out-Null
     Test-ApplicationMenus
     if ($SchemaFlows) {
         Test-SchemaFlows

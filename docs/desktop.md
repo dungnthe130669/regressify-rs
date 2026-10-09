@@ -821,12 +821,16 @@ own fixture credentials, settings, and processes.
 ## Appearance and Commands
 
 Workspace navigation and global tools share a compact title bar with native
-window controls. Controls use normal toolkit sizing and stock UI typography;
-command groups wrap without hiding actions. The minimum client area is 1000x640;
-native Windows checks cover both themes there, at 1080x720 and at 1600x1000. Long workspace names
-truncate within the space left by the controls; their full paths remain
-accessible. The Git badge keeps its full, current status in a tooltip. Source
-text size remains independently configurable.
+window controls. The brand/version, menus, view tabs, and workspace name use
+matching text sizes on one aligned row, with 16px gaps between groups. The view
+tabs keep their underline close to the labels. Version and workspace name are
+hidden below 1400px client width and visible at 1400px or wider. Visible workspace
+names use normal foreground contrast and truncate within the space left by the
+controls; their full paths remain accessible. Action controls use normal toolkit
+sizing, and toolbar groups wrap without hiding actions. The minimum client area
+is 1000x640; native Windows checks cover both themes there, at 1080x720 and at
+1600x1000. The Git badge keeps its full, current status in a tooltip. Source text
+size remains independently configurable.
 
 On Windows and Linux, File, Publish, and Help share a toolkit application menu
 bar with hover and arrow-key switching. Escape returns focus to the previous

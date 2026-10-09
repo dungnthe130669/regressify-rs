@@ -132,7 +132,6 @@ The first implementation check should follow two interleaved scenario jobs, one
 passing and one failing, from emission through persistence and report loading.
 Both clients must recover each complete timeline after live buffers are evicted.
 
-
 ## Istari Design Review
 
 Review date: 2026-10-01. Compare the implemented `istari::common::logging` module
@@ -269,7 +268,6 @@ Confirmed with the user on 2026-10-01:
   review rather than an implicit extension of this plan — the same pattern
   already used above to keep browser console/network collection out of scope.
 
-
 ## Logging Mechanism: Options Considered
 
 Use `tracing` for application diagnostics and spans, with `tracing-subscriber`
@@ -278,7 +276,7 @@ lifecycle and result transitions; never derive pass/fail or progress counts by
 parsing human-readable log messages.
 
 | Option                        | Assessment                                                                                                               |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
 | `println!` / `eprintln!`      | Presentation only; poor attribution under concurrency and no reusable structured fields.                                 |
 | `log` + a logger              | Useful ecosystem facade, but async span context and multiple structured consumers require more custom plumbing.          |
 | `tracing` + subscriber layers | Recommended: structured events, nested spans, async context propagation, and separate CLI, archive, and desktop outputs. |
@@ -414,7 +412,6 @@ their operation, not whichever scenario happens to be active.
 Define ordering within an execution using sequence numbers, not wall-clock sort.
 Give retries distinct attempt identities and keep their history. No frontend
 heuristics should infer scenario ownership from interleaved text.
-
 
 ### Full-Log Persistence
 
@@ -591,7 +588,6 @@ This split is an assumption pending the storage task's design (see Assumptions);
 Task 2.1 and Task 5.1 confirm it against the real configuration loader in
 `src/config`.
 
-
 ## Capture Diagnostics
 
 Instrument shared reference/test capture paths, including successful executions.
@@ -599,7 +595,7 @@ Every meaningful stage should record start, duration/outcome, and enough safe
 context to distinguish timeout, website failure, and infrastructure failure.
 
 | Stage                 | Required diagnostic context                                                                                                                   |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | Queue and setup       | IDs, viewport, effective non-secret timeout/retry settings, queue wait, browser/page setup, and worker/runtime version.                       |
 | Navigation            | Sanitized destination identity, redirect/navigation milestones, observed response status when available, waits, and timeout cause.            |
 | State and hooks       | Restore/persist and before/ready hook stage, duration, outcome, and safe error category; never state or script contents.                      |
@@ -639,7 +635,7 @@ error chains must reuse and extend that helper for the new
 secret/signed-URL redaction from scratch.
 
 | Stage                      | Required diagnostic context                                                                                                                  |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | Preflight                  | Provider, safe target identity, selected suites/run, validation outcome, and credential presence only.                                       |
 | Snapshot and staging       | Generation/staging duration, selected dependency counts, bytes, version checks, and failing operation/artifact.                              |
 | Packaging and optimization | Applicable provider budget, before/after sizes, file counts, compression decision, and package/hash duration.                                |
@@ -683,7 +679,6 @@ tokens/JWTs, raw response bodies, or whole request/config objects.
   with an incomplete log stays passed, but its log view and run summary must make
   the missing diagnostics visible. Disable unavailable exports rather than
   presenting a shortened download as complete.
-
 
 ## Snapshot Frontend and Publication
 
@@ -741,15 +736,15 @@ Published standard logs must never depend on best-effort regex redaction alone.
 
 ## Delivery Phases
 
-| Phase                                                        | Scope                                                                                                                                                                                                 | Exit Criterion                                                                                                                      |
-| ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Contract and foundations                                   | Audit direct prints and existing event producers; define safe fields, identities, levels, archive states, and subscriber ownership; add tracing adapters.                                           | CLI and worker emit equivalent attributed records without duplicate output or changed result semantics.                             |
-| 2. Durable operation history (captures **and** deployments)   | Operation-generic incremental journal, finalization/recovery, capture-manifest linkage, reference/test provenance, and migration behavior — shared by every operation kind, not capture-exclusive.  | Passed/failed concurrent captures reload complete logs after live-buffer eviction; interrupted/write-failed archives are explicit.  |
-| 3. Capture instrumentation                                     | Stage/action/wait/artifact diagnostics in shared capture paths, built on phase 2's journal.                                                                                                          | Synthetic success and targeted failure cases identify the failing stage and cause without sensitive payloads.                       |
-| 4. Deployment instrumentation                                  | Shared/provider-specific stages, HTTP diagnostics, retries, heartbeat, completion, and cleanup, reusing phase 2's journal (no second storage implementation).                                       | Mocked providers expose actionable failure timelines and never leak injected test secrets.                                          |
-| 5. Desktop and CLI views                                       | Live filtering, archive-backed Results/Activity, history reload, sanitized export, and verbosity controls.                                                                                          | Both entry points work independently; desktop remains responsive and cancellation drains/flushing complete.                         |
-| 6. Frontend and packaging                                      | Report schema, lazy log assets/viewer, versioning, selected-only packaging, and legacy support.                                                                                                      | Generated and deployed-fixture reports expose complete passed/failed capture logs on desktop and mobile.                            |
-| 7. Hardening and docs                                          | Concurrency, crash recovery, limits, compatibility, performance, and user/developer documentation.                                                                                                   | Affected gates pass; documentation explains completeness, privacy, retention, and diagnostic workflow.                              |
+| Phase                                                       | Scope                                                                                                                                                                                              | Exit Criterion                                                                                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Contract and foundations                                 | Audit direct prints and existing event producers; define safe fields, identities, levels, archive states, and subscriber ownership; add tracing adapters.                                          | CLI and worker emit equivalent attributed records without duplicate output or changed result semantics.                            |
+| 2. Durable operation history (captures **and** deployments) | Operation-generic incremental journal, finalization/recovery, capture-manifest linkage, reference/test provenance, and migration behavior — shared by every operation kind, not capture-exclusive. | Passed/failed concurrent captures reload complete logs after live-buffer eviction; interrupted/write-failed archives are explicit. |
+| 3. Capture instrumentation                                  | Stage/action/wait/artifact diagnostics in shared capture paths, built on phase 2's journal.                                                                                                        | Synthetic success and targeted failure cases identify the failing stage and cause without sensitive payloads.                      |
+| 4. Deployment instrumentation                               | Shared/provider-specific stages, HTTP diagnostics, retries, heartbeat, completion, and cleanup, reusing phase 2's journal (no second storage implementation).                                      | Mocked providers expose actionable failure timelines and never leak injected test secrets.                                         |
+| 5. Desktop and CLI views                                    | Live filtering, archive-backed Results/Activity, history reload, sanitized export, and verbosity controls.                                                                                         | Both entry points work independently; desktop remains responsive and cancellation drains/flushing complete.                        |
+| 6. Frontend and packaging                                   | Report schema, lazy log assets/viewer, versioning, selected-only packaging, and legacy support.                                                                                                    | Generated and deployed-fixture reports expose complete passed/failed capture logs on desktop and mobile.                           |
+| 7. Hardening and docs                                       | Concurrency, crash recovery, limits, compatibility, performance, and user/developer documentation.                                                                                                 | Affected gates pass; documentation explains completeness, privacy, retention, and diagnostic workflow.                             |
 
 Dependencies: phase 1 precedes every later phase. Phase 2 precedes
 archive-backed client/report work (phases 5 and 6) **and precedes phase 4**:
@@ -763,7 +758,6 @@ frontend" with "does not depend on phase 2." It does not depend on the frontend
 (phase 6), but it does depend on phase 2. See Task Breakdown for the concrete,
 independently buildable tasks within each phase, including per-task
 dependencies.
-
 
 ## Task Breakdown
 
@@ -873,7 +867,6 @@ explicit.
 
 Phase 3 exit criterion (unchanged): synthetic success and targeted failure cases
 identify the failing stage and cause without sensitive payloads.
-
 
 ### Phase 4 — Deployment Instrumentation
 
@@ -1003,7 +996,6 @@ expose complete passed/failed capture logs on desktop and mobile.
 Phase 7 exit criterion (unchanged): affected gates pass; documentation explains
 completeness, privacy, retention, and diagnostic workflow.
 
-
 ## Verification Strategy
 
 Extend existing test modules and fixtures. Start with focused regressions, then
@@ -1075,18 +1067,17 @@ Build embedded assets from frontend source, never by editing generated files.
 
 ## Risks and Rollback
 
-| # | Risk | Likelihood | Impact | Mitigation | Rollback trigger / path |
-| - | ---- | ---------- | ------ | ---------- | ------------------------ |
-| R1 | Unbounded disk growth: every passed capture now writes a full, unpruned durable journal ("No automatic operational-log pruning" plus full logs for passing captures too). | High | Medium–High: disk exhaustion over time on CI agents and desktop users with large suites. | Bounded per-operation chunk size and disk budget (Task 2.1); cleanup still respects reference provenance (Full-Log Persistence). Monitor disk usage during Phase 7 hardening. | If disk-usage incidents recur after shipping, add an opt-in time- or size-based retention cap per workspace as a follow-up (explicitly out of scope for v1 — see Non-Goals); until then, use the Task 2.6 kill-switch (R3) as an interim mitigation. |
-| R2 | Per-capture instrumentation performance/IO overhead is unbudgeted: every stage in Capture Diagnostics now writes always-archived events, even for passing captures. | Medium | Medium: slower captures, especially at high concurrency or constrained CI. | Task 7.2 benchmarks wall-time/IO overhead with instrumentation on vs. off against an explicit budget (see Definition of Done) before Phase 7 exit. | If the benchmark exceeds the agreed budget, reduce default-archived field verbosity or batch-flush more aggressively; if still exceeded, gate newly added stage-level instrumentation behind the Task 2.6 kill-switch per-environment rather than reverting the whole feature. |
-| R3 | No described fallback/kill-switch if the pipeline misbehaves in production (e.g. a disk-full desktop user), beyond the generic warning-only failure policy. | Low–Medium | High if archive writing itself destabilizes a run (would violate the warning-only decision in practice even if not in intent). | The warning-only policy (Confirmed Product Decisions) is a partial mitigation by design. Task 2.6 adds an explicit environment-variable/config switch to disable durable-archive writing entirely, keeping only the existing bounded live buffer, as a last resort. | Repeated user reports of disk-full/hangs correlated with archive writing flips the kill-switch default to off until root-caused; document the switch in Task 7.3. |
-| R4 | Schema/version drift between the new diagnostic record, `progress.rs`, and report schemas could silently desynchronize older desktop builds or cached frontend assets. | Medium | Medium: a consumer misreads or silently drops newer records. | Explicit `schema_version` field (Interfaces); additive-only evolution under the manifest's unchanged `version: 2` literal, proven by Task 6.1's round-trip fixture test. | A version mismatch detected at load time falls back to an explicit "legacy/unavailable" state by construction, never a best-effort parse; if that is insufficient, revisit the additive-extension assumption (see Assumptions) before a schema bump. |
-| R5 | Sanitization/redaction gaps leak secrets into durable or publicly exported archives — the Istari review explicitly found redaction is "a backstop, not a public-export policy." | Medium | High: credential/secret leakage in a published report. | Allowlisted structured fields only, never arbitrary `Debug` dumps (Logging Mechanism: Options Considered; Privacy and Safety); reuse the existing, already-tested `src/desktop/deployment/diagnostics.rs` sanitizer for deployment-sourced errors instead of a second redaction implementation (Current Evidence); dedicated secret-injection tests in Verification Strategy must pass before Phase 6/7 exit. | Any confirmed leak found in review or testing blocks promotion of the public-export path (Phase 6) until fixed — this is a hard Definition of Done gate, not a warning-only diagnostic failure. |
+| #   | Risk                                                                                                                                                                            | Likelihood | Impact                                                                                                                         | Mitigation                                                                                                                                                                                                                                                                                                                                                                                                    | Rollback trigger / path                                                                                                                                                                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| R1  | Unbounded disk growth: every passed capture now writes a full, unpruned durable journal ("No automatic operational-log pruning" plus full logs for passing captures too).       | High       | Medium–High: disk exhaustion over time on CI agents and desktop users with large suites.                                       | Bounded per-operation chunk size and disk budget (Task 2.1); cleanup still respects reference provenance (Full-Log Persistence). Monitor disk usage during Phase 7 hardening.                                                                                                                                                                                                                                 | If disk-usage incidents recur after shipping, add an opt-in time- or size-based retention cap per workspace as a follow-up (explicitly out of scope for v1 — see Non-Goals); until then, use the Task 2.6 kill-switch (R3) as an interim mitigation.                           |
+| R2  | Per-capture instrumentation performance/IO overhead is unbudgeted: every stage in Capture Diagnostics now writes always-archived events, even for passing captures.             | Medium     | Medium: slower captures, especially at high concurrency or constrained CI.                                                     | Task 7.2 benchmarks wall-time/IO overhead with instrumentation on vs. off against an explicit budget (see Definition of Done) before Phase 7 exit.                                                                                                                                                                                                                                                            | If the benchmark exceeds the agreed budget, reduce default-archived field verbosity or batch-flush more aggressively; if still exceeded, gate newly added stage-level instrumentation behind the Task 2.6 kill-switch per-environment rather than reverting the whole feature. |
+| R3  | No described fallback/kill-switch if the pipeline misbehaves in production (e.g. a disk-full desktop user), beyond the generic warning-only failure policy.                     | Low–Medium | High if archive writing itself destabilizes a run (would violate the warning-only decision in practice even if not in intent). | The warning-only policy (Confirmed Product Decisions) is a partial mitigation by design. Task 2.6 adds an explicit environment-variable/config switch to disable durable-archive writing entirely, keeping only the existing bounded live buffer, as a last resort.                                                                                                                                           | Repeated user reports of disk-full/hangs correlated with archive writing flips the kill-switch default to off until root-caused; document the switch in Task 7.3.                                                                                                              |
+| R4  | Schema/version drift between the new diagnostic record, `progress.rs`, and report schemas could silently desynchronize older desktop builds or cached frontend assets.          | Medium     | Medium: a consumer misreads or silently drops newer records.                                                                   | Explicit `schema_version` field (Interfaces); additive-only evolution under the manifest's unchanged `version: 2` literal, proven by Task 6.1's round-trip fixture test.                                                                                                                                                                                                                                      | A version mismatch detected at load time falls back to an explicit "legacy/unavailable" state by construction, never a best-effort parse; if that is insufficient, revisit the additive-extension assumption (see Assumptions) before a schema bump.                           |
+| R5  | Sanitization/redaction gaps leak secrets into durable or publicly exported archives — the Istari review explicitly found redaction is "a backstop, not a public-export policy." | Medium     | High: credential/secret leakage in a published report.                                                                         | Allowlisted structured fields only, never arbitrary `Debug` dumps (Logging Mechanism: Options Considered; Privacy and Safety); reuse the existing, already-tested `src/desktop/deployment/diagnostics.rs` sanitizer for deployment-sourced errors instead of a second redaction implementation (Current Evidence); dedicated secret-injection tests in Verification Strategy must pass before Phase 6/7 exit. | Any confirmed leak found in review or testing blocks promotion of the public-export path (Phase 6) until fixed — this is a hard Definition of Done gate, not a warning-only diagnostic failure.                                                                                |
 
 Risks are owned by the task(s) noted in Mitigation and re-assessed at the
 corresponding phase's exit criterion (Delivery Phases) and at the overall
 Definition of Done.
-
 
 ## Definition of Done
 
@@ -1096,38 +1087,38 @@ addition to each phase's own Exit Criterion in Delivery Phases:
 1. Every item in **Open Questions and Remaining Decisions** is resolved and
    reflected in the shipped schema/config — no outstanding placeholder field
    names or flag names.
-2. Every phase's Exit Criterion in **Delivery Phases** passes on the affected
+1. Every phase's Exit Criterion in **Delivery Phases** passes on the affected
    feature gates (default CLI slice and, where applicable, `--features
    desktop`/`gui`), per **Verification Strategy**.
-3. The Task 7.2 performance benchmark shows per-capture instrumentation
+1. The Task 7.2 performance benchmark shows per-capture instrumentation
    overhead within an agreed budget. Exact numeric threshold is not yet set —
    this is an open item; see Open Questions and Remaining Decisions.
-4. Every **Risks and Rollback** item has its stated mitigation implemented (not
+1. Every **Risks and Rollback** item has its stated mitigation implemented (not
    merely planned), or an explicit, documented decision to accept the residual
    risk instead.
-5. Legacy reports and previously saved desktop Activity remain readable:
+1. Legacy reports and previously saved desktop Activity remain readable:
    opening a pre-revamp report or run shows an explicit legacy/log-not-available
    state, never an error or a fabricated log.
-6. Passed and failed captures, including reference captures, both expose a
+1. Passed and failed captures, including reference captures, both expose a
    complete standard-timeline log in desktop Results and the snapshot frontend,
    verified by the interleaved passed/failed check described in Goals and
    Current Evidence and exercised throughout Verification Strategy.
-7. No synthetic secret injected by Verification Strategy's redaction tests
+1. No synthetic secret injected by Verification Strategy's redaction tests
    appears in any sink: terminal, desktop UI, durable archive, or published
    report assets.
-8. Documentation (`docs/commands.md`, `docs/desktop.md`, `frontend/README.md`,
+1. Documentation (`docs/commands.md`, `docs/desktop.md`, `frontend/README.md`,
    and affected task skills) is updated to describe the new flags, views, and
    completeness/privacy guarantees (Task 7.3).
-9. Exit status and exit code semantics are unchanged for existing passing and
+1. Exit status and exit code semantics are unchanged for existing passing and
    failing runs: a diagnostic-only failure never flips a passed capture to
    failed or changes the CLI exit code, verified by a dedicated regression
    test (Confirmed Product Decisions).
-10. A passed capture with a partial or unavailable log keeps its pass badge
-    while its Capture Log view and run summary visibly surface a log-health
-    warning, and any export/download control for that log is disabled rather
-    than offering a shortened file as complete — for a normal new run, not
-    only the legacy pre-revamp case in item 5 — verified by Task 5.5's
-    acceptance criterion.
+1. A passed capture with a partial or unavailable log keeps its pass badge
+   while its Capture Log view and run summary visibly surface a log-health
+   warning, and any export/download control for that log is disabled rather
+   than offering a shortened file as complete — for a normal new run, not
+   only the legacy pre-revamp case in item 5 — verified by Task 5.5's
+   acceptance criterion.
 
 ## Open Questions and Remaining Decisions
 
@@ -1140,16 +1131,16 @@ implementation, since each is scoped to the task that resolves it.
    guaranteed within the confirmed Regressify-only execution timeline? Owned by
    Task 1.1 (audit) and Task 1.3 (record type); Capture Diagnostics and
    Deployment Diagnostics already constrain the answer per-stage.
-2. **Durable layout, chunk sizes, resource budgets, and a bounded writer/health
+1. **Durable layout, chunk sizes, resource budgets, and a bounded writer/health
    protocol** implementing warning-only failures without automatic retention
    cleanup. Owned by Task 2.1 and Task 2.6.
-3. **Capture-manifest/progress/report schema migration and provenance** for
+1. **Capture-manifest/progress/report schema migration and provenance** for
    promoted references, interrupted jobs, and failures before an image exists.
    Owned by Task 2.4, Task 2.3, and Task 6.1.
-4. **CLI verbosity/filter option names, environment precedence, and desktop
+1. **CLI verbosity/filter option names, environment precedence, and desktop
    export behavior**, without coupling either to mandatory archive collection.
    Owned by Task 5.1; Interfaces sketches a proposed starting point.
-5. ~~Whether report-log publication needs additional workspace policy beyond the
+1. ~~Whether report-log publication needs additional workspace policy beyond the
    sanitized default.~~ **Resolved:** no additional policy in this initiative —
    see Confirmed Product Decisions.
 

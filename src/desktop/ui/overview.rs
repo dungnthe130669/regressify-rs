@@ -601,37 +601,41 @@ impl Workbench {
                     .h_full()
                     .items_center()
                     .gap_0()
+                    .whitespace_nowrap()
                     .pr_2()
                     .child(
                         div()
-                            .id("application-logo")
-                            .role(Role::Image)
-                            .aria_label("Regressify logo")
+                            .id("titlebar-brand")
                             .test_support()
-                            .size(px(22.))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                img(Arc::clone(&APPLICATION_LOGO))
-                                    .size_full()
-                                    .object_fit(ObjectFit::Contain),
-                            ),
-                    )
-                    .child(
-                        div()
                             .flex()
                             .items_center()
                             .gap_1()
                             .flex_shrink_0()
-                            .mx_1()
+                            .mr_4()
+                            .child(
+                                div()
+                                    .id("application-logo")
+                                    .role(Role::Image)
+                                    .aria_label("Regressify logo")
+                                    .test_support()
+                                    .size(px(22.))
+                                    .flex_shrink_0()
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        img(Arc::clone(&APPLICATION_LOGO))
+                                            .size_full()
+                                            .object_fit(ObjectFit::Contain),
+                                    ),
+                            )
                             .child(
                                 div()
                                     .id("application-name")
                                     .test_support()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_sm()
+                                    .line_height(relative(1.25))
                                     .child("Regressify"),
                             )
                             .when(window.viewport_size().width >= px(1400.), |brand| {
@@ -641,7 +645,8 @@ impl Workbench {
                                         .role(Role::Status)
                                         .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
                                         .test_support()
-                                        .text_xs()
+                                        .text_sm()
+                                        .line_height(relative(1.25))
                                         .text_color(cx.theme().muted_foreground)
                                         .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
                                 )
@@ -649,9 +654,13 @@ impl Workbench {
                     )
                     .child(if cfg!(target_os = "macos") {
                         div()
+                            .id("workbench-app-menu")
+                            .test_support()
                             .flex()
                             .items_center()
                             .gap_2()
+                            .flex_shrink_0()
+                            .mr_4()
                             .child(design::titlebar_control(self.file_menu(cx)))
                             .child(design::titlebar_control({
                                 let focus = self.focus.clone();
@@ -683,57 +692,92 @@ impl Workbench {
                         div()
                             .id("workbench-app-menu")
                             .test_support()
-                            .w(px(184.))
+                            .flex()
+                            .items_center()
                             .h_full()
                             .flex_shrink_0()
+                            .mr_4()
                             .track_focus(&self.app_menu_focus)
                             .child(self.app_menu_bar.clone())
                             .into_any_element()
                     })
-                    .child(design::titlebar_control(
-                        Button::new("toggle-navigation")
-                            .ghost()
-                            .icon(if self.preferences.navigator_hidden {
-                                gpui_kit::assets::IconName::PanelLeftOpen
-                            } else {
-                                gpui_kit::assets::IconName::PanelLeftClose
-                            })
-                            .tooltip("Toggle navigator")
-                            .accessibility_label(if self.preferences.navigator_hidden {
-                                "Show navigator"
-                            } else {
-                                "Hide navigator"
-                            })
-                            .disabled(self.busy)
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.toggle_navigator(&ToggleNavigator, window, cx)
-                            })),
-                    ))
-                    .child(design::titlebar_control(
-                        div().id("titlebar-navigation").test_support().child(
-                            TabBar::new("workbench-tabs")
-                                .underline()
-                                .selected_index(self.main_tab)
-                                .on_click(cx.listener(|this, index, window, cx| {
-                                    this.select_view(*index, window, cx)
-                                }))
-                                .child(Tab::new().label("Editor"))
-                                .child(Tab::new().label("Runs"))
-                                .child(Tab::new().label("Results")),
-                        ),
-                    ))
+                    .child(
+                        div()
+                            .id("titlebar-view-group")
+                            .test_support()
+                            .flex()
+                            .items_center()
+                            .flex_shrink_0()
+                            .mr_4()
+                            .child(design::titlebar_control(
+                                Button::new("toggle-navigation")
+                                    .ghost()
+                                    .icon(if self.preferences.navigator_hidden {
+                                        gpui_kit::assets::IconName::PanelLeftOpen
+                                    } else {
+                                        gpui_kit::assets::IconName::PanelLeftClose
+                                    })
+                                    .tooltip("Toggle navigator")
+                                    .accessibility_label(if self.preferences.navigator_hidden {
+                                        "Show navigator"
+                                    } else {
+                                        "Hide navigator"
+                                    })
+                                    .disabled(self.busy)
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.toggle_navigator(&ToggleNavigator, window, cx)
+                                    })),
+                            ))
+                            .child(design::titlebar_control(
+                                div()
+                                    .id("titlebar-navigation")
+                                    .test_support()
+                                    // Balance the underline tab's bottom border and asymmetric inner margins.
+                                    .mt(px(3.))
+                                    .child(
+                                        TabBar::new("workbench-tabs")
+                                            .underline()
+                                            .small()
+                                            .selected_index(self.main_tab)
+                                            .on_click(cx.listener(|this, index, window, cx| {
+                                                this.select_view(*index, window, cx)
+                                            }))
+                                            .children(
+                                                ["Editor", "Runs", "Results"]
+                                                    .into_iter()
+                                                    .enumerate()
+                                                    .map(|(index, label)| {
+                                                        Tab::new().aria_label(label).child(
+                                                            div()
+                                                                .id(("titlebar-tab-label", index))
+                                                                .test_support()
+                                                                .text_sm()
+                                                                .line_height(relative(1.25))
+                                                                .child(label),
+                                                        )
+                                                    }),
+                                            ),
+                                    ),
+                            )),
+                    )
                     .child(
                         // A long workspace name must not set the title bar's intrinsic minimum width.
-                        div().flex_1().w_0().min_w_0().ml_2().child(
-                            div()
-                                .id("workspace-path")
-                                .role(Role::Status)
-                                .aria_label(root.clone())
-                                .test_support()
-                                .truncate()
-                                .text_sm()
-                                .text_color(cx.theme().muted_foreground)
-                                .child(workspace_label),
+                        div().flex_1().w_0().min_w_0().when(
+                            window.viewport_size().width >= px(1400.),
+                            |workspace| {
+                                workspace.child(
+                                    div()
+                                        .id("workspace-path")
+                                        .role(Role::Status)
+                                        .aria_label(root.clone())
+                                        .test_support()
+                                        .truncate()
+                                        .text_sm()
+                                        .line_height(relative(1.25))
+                                        .text_color(cx.theme().foreground)
+                                        .child(workspace_label),
+                                )
+                            },
                         ),
                     )
                     .when(self.runs.read(cx).running(), |header| {

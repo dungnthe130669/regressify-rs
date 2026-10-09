@@ -52,10 +52,16 @@ function Test-TitlebarControlBounds([string]$Theme, [int[]]$Dimensions, [string]
             throw 'The title-bar version must share the application name and logo row.'
         }
     }
-    $workspaceBounds = (Wait-Control ($workspace.Replace('\', '/'))).Current.BoundingRectangle
-    $resultsBounds = (Wait-Control 'Results').Current.BoundingRectangle
-    if ($workspaceBounds.Left - $resultsBounds.Right -lt 8 * $scale - 1) {
-        throw 'The workspace name must retain an 8px gap after Results, allowing native pixel rounding.'
+    $workspaceControl = Find-Control ($workspace.Replace('\', '/'))
+    if (($null -ne $workspaceControl) -ne ($clientWidth -ge 1400)) {
+        throw 'The workspace name must be visible only at client widths of 1400px or wider.'
+    }
+    if ($null -ne $workspaceControl) {
+        $workspaceBounds = $workspaceControl.Current.BoundingRectangle
+        $resultsBounds = (Wait-Control 'Results').Current.BoundingRectangle
+        if ([Math]::Abs($workspaceBounds.Left - $resultsBounds.Right - 16 * $scale) -gt 1) {
+            throw 'The workspace name must retain a 16px gap after Results, allowing native pixel rounding.'
+        }
     }
     $gitButtons = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
         Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name.StartsWith('Git: ') })
@@ -130,7 +136,9 @@ function Test-TitlebarFlows {
     Invoke-Control 'Close'
     $before = [RegressifySmokeNative+Rect]::new()
     [RegressifySmokeNative]::GetWindowRect($script:window, [ref]$before) | Out-Null
-    $drag = (Wait-Control ($workspace.Replace('\', '/'))).Current.BoundingRectangle
+    $dragControl = Find-Control ($workspace.Replace('\', '/'))
+    if ($null -eq $dragControl) { $dragControl = Wait-Control 'Regressify logo' }
+    $drag = $dragControl.Current.BoundingRectangle
     Focus-Fixture
     $horizontal = [int]($drag.Left + $drag.Width / 2)
     $vertical = [int]($drag.Top + $drag.Height / 2)

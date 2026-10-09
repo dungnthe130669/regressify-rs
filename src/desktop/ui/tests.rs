@@ -10084,6 +10084,7 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
         (1080., 720.),
         (1399., 720.),
         (1400., 720.),
+        (1401., 720.),
         (1600., 1000.),
     ] {
         let directory = tempfile::tempdir().unwrap();
@@ -10115,12 +10116,44 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
                 );
                 assert!(version.bounds().left() >= name.right() + px(4.));
                 assert!((version.bounds().center().y - name.center().y).abs() <= px(1.));
+                assert_eq!(version.bounds().size.height, name.size.height);
             }
             let tabs = window.find("titlebar-navigation").bounds();
             assert!(tabs.origin.y < px(38.));
-            let workspace = window.find("workspace-path").bounds();
-            assert!(workspace.left() >= tabs.right() + px(8.));
-            assert_eq!(workspace.size.height, name.size.height);
+            assert_eq!(tabs.size.height, px(30.));
+            let brand = window.find("titlebar-brand").bounds();
+            let menus = window.find("workbench-app-menu").bounds();
+            let views = window.find("titlebar-view-group").bounds();
+            assert_eq!(menus.left() - brand.right(), px(16.));
+            assert_eq!(views.left() - menus.right(), px(16.));
+            if !cfg!(target_os = "macos") {
+                let last_menu = window
+                    .within("app-menu-bar")
+                    .within(2_usize)
+                    .find("menu")
+                    .bounds();
+                assert_eq!(last_menu.right(), menus.right());
+            }
+            for index in 0_usize..3 {
+                let label = window.find(("titlebar-tab-label", index)).bounds();
+                assert_eq!(label.size.height, name.size.height);
+                assert!(
+                    (label.center().y - name.center().y).abs() <= px(1.),
+                    "Header text must share a single centered row: name={name:?}, tab={label:?}"
+                );
+                assert!(tabs.bottom() - px(2.) - label.bottom() <= px(6.));
+            }
+            if width < 1400. {
+                assert!(
+                    window.try_find("workspace-path").is_none(),
+                    "The workspace name must be hidden below 1400px"
+                );
+            } else {
+                let workspace = window.find("workspace-path").bounds();
+                assert_eq!(workspace.left() - views.right(), px(16.));
+                assert_eq!(workspace.size.height, name.size.height);
+                assert!((workspace.center().y - name.center().y).abs() <= px(1.));
+            }
             let open = window.find("open-workspace").bounds();
             assert!(
                 open.origin.x + open.size.width <= px(width - 95.),
@@ -10145,7 +10178,7 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
                     <= window.find("capture-heading").bounds().top()
             );
             if width == 1600. {
-                for resized_width in [1399., 1400., 1399., 1600.] {
+                for resized_width in [1399., 1400., 1401., 1399., 1600.] {
                     window.resize(size(px(resized_width), px(height)));
                     window.bounds_changed(cx);
                     window.render_frame(cx);
@@ -10153,6 +10186,11 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
                         window.try_find("application-version").is_some(),
                         resized_width >= 1400.,
                         "Version visibility must follow live window resizing"
+                    );
+                    assert_eq!(
+                        window.try_find("workspace-path").is_some(),
+                        resized_width >= 1400.,
+                        "Workspace visibility must follow live window resizing"
                     );
                     assert_eq!(view.read(cx).main_tab, 2);
                 }

@@ -112,6 +112,9 @@ $versionGuards = @($headerStatements | Where-Object {
     $_ -is [System.Management.Automation.Language.IfStatementAst] -and @($_.Clauses[0].Item1.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'clientWidth'
+    }, $true)).Count -gt 0 -and @($_.Clauses[0].Item1.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'versions'
     }, $true)).Count -gt 0
 })
 Assert-SmokeEqual $versionGuards.Count 1 'Native version visibility must check the client-width breakpoint'
@@ -130,6 +133,33 @@ foreach ($versionCase in @(
     $rejected = $false
     try { & $versionProbe } catch { $rejected = $true }
     Assert-SmokeEqual $rejected $versionCase.Reject 'Native title-bar version visibility must use the exact 1400px breakpoint'
+    $stockSizingChecks++
+}
+$workspaceGuards = @($headerStatements | Where-Object {
+    $_ -is [System.Management.Automation.Language.IfStatementAst] -and @($_.Clauses[0].Item1.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'clientWidth'
+    }, $true)).Count -gt 0 -and @($_.Clauses[0].Item1.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'workspaceControl'
+    }, $true)).Count -gt 0
+})
+Assert-SmokeEqual $workspaceGuards.Count 1 'Native workspace visibility must check the client-width breakpoint'
+$workspaceProbe = [scriptblock]::Create($workspaceGuards[0].Extent.Text)
+foreach ($workspaceCase in @(
+    @{ Width = 1000; Visible = $false; Reject = $false },
+    @{ Width = 1399; Visible = $false; Reject = $false },
+    @{ Width = 1399; Visible = $true; Reject = $true },
+    @{ Width = 1400; Visible = $true; Reject = $false },
+    @{ Width = 1400; Visible = $false; Reject = $true },
+    @{ Width = 1600; Visible = $true; Reject = $false },
+    @{ Width = 1600; Visible = $false; Reject = $true }
+)) {
+    $clientWidth = $workspaceCase.Width
+    $workspaceControl = if ($workspaceCase.Visible) { [object]::new() } else { $null }
+    $rejected = $false
+    try { & $workspaceProbe } catch { $rejected = $true }
+    Assert-SmokeEqual $rejected $workspaceCase.Reject 'Native workspace visibility must use the exact 1400px breakpoint'
     $stockSizingChecks++
 }
 $headerMenus = @($definitions['Test-TitlebarControlBounds'].FindAll({

@@ -90,7 +90,7 @@ Persist the inventory as a tracked markdown file (proposed path docs/plan/log-re
 
 ## Dependencies
 
-_none_
+*none*
 
 ## Risks
 
