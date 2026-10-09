@@ -2181,7 +2181,7 @@ impl Workbench {
             .into_any_element()
     }
 
-    fn render_fields(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_fields(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let selected = self
             .value
             .pointer(&self.session.selection.path())
@@ -2281,7 +2281,7 @@ impl Workbench {
                         && !self.overrides_only
                         && let Selection::Scenario(scenario) = self.session.selection
                     {
-                        form = form.child(self.render_sequence(scenario, cx));
+                        form = form.child(self.render_sequence(scenario, window, cx));
                     }
                 }
                 section = Form::new().columns(2);
@@ -2343,7 +2343,6 @@ impl Workbench {
                                 .child(
                                     Button::new(SharedString::from(format!("reset-{key}")))
                                         .ghost()
-                                        .xsmall()
                                         .icon(IconName::Undo)
                                         .tooltip("Use inherited value")
                                         .disabled(reset_disabled)
@@ -2368,14 +2367,12 @@ impl Workbench {
                     .into_any_element(),
                 Control::Input(state) => Input::new(state)
                     .id(field_id)
-                    .small()
                     .disabled(self.busy)
                     .when(field.key.ends_with("Path"), |input| {
                         let key = field.key.clone();
                         input.suffix(
                             Button::new(SharedString::from(format!("browse-{key}")))
                                 .ghost()
-                                .xsmall()
                                 .icon(IconName::FolderOpen)
                                 .tooltip("Choose a workspace file")
                                 .disabled(self.busy)
@@ -2387,7 +2384,7 @@ impl Workbench {
                     .into_any_element(),
                 Control::Textarea(state) => div()
                     .id(field_id)
-                    .child(Textarea::new(state).disabled(self.busy).h(px(72.)))
+                    .child(Textarea::new(state).disabled(self.busy))
                     .into_any_element(),
                 Control::Boolean => {
                     let descriptor = field.clone();
@@ -2457,7 +2454,6 @@ impl Workbench {
                 row = row.child(
                     Button::new(SharedString::from(format!("browse-{key}")))
                         .ghost()
-                        .small()
                         .icon(IconName::FolderOpen)
                         .tooltip("Choose a workspace file")
                         .disabled(self.busy)
@@ -2487,7 +2483,7 @@ impl Workbench {
         if query == "actions"
             && let Selection::Scenario(scenario) = self.session.selection
         {
-            form = form.child(self.render_sequence(scenario, cx));
+            form = form.child(self.render_sequence(scenario, window, cx));
             matching += 1;
         }
         if matching == 0 {
@@ -2549,7 +2545,7 @@ impl Workbench {
         true
     }
 
-    fn render_editor(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_editor(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         if self.overview || self.session.open.is_none() {
             return self.render_overview(cx);
         }
@@ -2582,7 +2578,7 @@ impl Workbench {
                         .readonly(true),
                 )
                 .into_any_element(),
-            _ => self.render_fields(cx),
+            _ => self.render_fields(window, cx),
         };
         div()
             .flex()
@@ -2601,6 +2597,7 @@ impl Workbench {
                     .child(
                         div()
                             .flex()
+                            .flex_wrap()
                             .items_center()
                             .gap_1()
                             .min_w_0()
@@ -2609,7 +2606,6 @@ impl Workbench {
                             .child(
                                 Button::new("breadcrumb-document")
                                     .ghost()
-                                    .xsmall()
                                     .accessibility_label(title.clone())
                                     .tooltip(title.clone())
                                     .min_w_0()
@@ -2628,7 +2624,6 @@ impl Workbench {
                                     row.child(Icon::new(IconName::ChevronRight).xsmall()).child(
                                         Button::new("breadcrumb-scenario")
                                             .ghost()
-                                            .xsmall()
                                             .min_w_0()
                                             .max_w(px(360.))
                                             .accessibility_label("Parent scenario")
@@ -2690,7 +2685,6 @@ impl Workbench {
                                     .when(available, |row| {
                                         row.child(
                                             Button::new("suite-open-report")
-                                                .small()
                                                 .icon(gpui_kit::assets::IconName::Images)
                                                 .label("Open Report")
                                                 .disabled(self.busy)
@@ -2717,7 +2711,6 @@ impl Workbench {
                                 .child(
                                     Button::new("scenario-run-test")
                                         .primary()
-                                        .small()
                                         .icon(gpui_kit::assets::IconName::Play)
                                         .label("Run Scenario Test")
                                         .tooltip("Requires reference images for this suite")
@@ -2733,7 +2726,6 @@ impl Workbench {
                                 )
                                 .child(
                                     Button::new("scenario-run-reference")
-                                        .small()
                                         .icon(gpui_kit::assets::IconName::Camera)
                                         .label("Run Scenario Reference")
                                         .disabled(self.busy || self.runs.read(cx).running())
@@ -2799,7 +2791,6 @@ impl Workbench {
                                 .id("field-search")
                                 .prefix(IconName::Search)
                                 .cleanable(true)
-                                .small()
                                 .w(px(250.)),
                         )
                         .child(
@@ -2815,7 +2806,6 @@ impl Workbench {
                         .child(
                             Button::new("expand-fields")
                                 .ghost()
-                                .xsmall()
                                 .icon(gpui_kit::assets::IconName::ChevronsUpDown)
                                 .tooltip("Expand all settings")
                                 .on_click(cx.listener(|this, _, _, cx| {
@@ -2853,7 +2843,6 @@ impl Workbench {
                             let key = key.clone();
                             Button::new(SharedString::from(format!("problem-{key}")))
                                 .ghost()
-                                .small()
                                 .label(key.clone())
                                 .text_color(cx.theme().danger)
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -3046,7 +3035,7 @@ impl Render for Workbench {
         } else if self.main_tab == 1 {
             self.runs.clone().into_any_element()
         } else {
-            self.render_editor(cx)
+            self.render_editor(window, cx)
         };
         let layout = if self.preferences.navigator_hidden || self.main_tab == 3 {
             editor
@@ -3054,14 +3043,14 @@ impl Render for Workbench {
             h_resizable("workspace-layout")
                 .child(
                     resizable_panel()
-                        .size(px(256.))
+                        .size(px(288.))
                         .size_range(px(200.)..px(440.))
                         .child(
                             div()
                                 .id("workspace-navigation")
                                 .test_support()
                                 .size_full()
-                                .child(self.render_navigation(cx)),
+                                .child(self.render_navigation(window, cx)),
                         ),
                 )
                 .child(resizable_panel().child(editor))
@@ -3160,7 +3149,7 @@ impl Render for Workbench {
                 this.edit(|session| session.add_action(&action.kind), window, cx)
             }))
             .font_family(cx.theme().font_family.clone())
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .children(self.render_update_banner(cx))
             .child(div().flex_1().min_h_0().child(layout))
     }

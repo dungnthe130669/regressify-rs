@@ -18,6 +18,7 @@ description: 'Use when changing desktop Git status/diffs, selected commit/discar
 1. Pull is fast-forward-only and requires a clean appropriate state. Never force push, auto-stash, resolve conflicts, or contact real remotes without authorization.
 1. Preserve dirty-editor guards and confirmation cancellation when context changes. Use no-ext-diff/no-textconv for previews and safe remote URL validation.
 1. Keep keyboard selection scoped to the focused Changes or Comparison Changes tree. Select All and folder toggles exclude conflicts/submodules and must not include the other group implicitly. Focus/navigation never executes Git writes; commit-message inputs retain their text shortcuts.
+1. The bounded titlebar Git badge retains full accessible status. Its Kit tooltip uses a plain Label and weak Git owner so elapsed-time/status text stays current while open. Keep exact tooltip text, update-while-open and native long-conflict bounds checks; a captured old status string can fail even though the tooltip is visibly present.
 1. Both groups use retained Kit TreeState with group/repository-path IDs. `set_items` clears selection: restore by ID, preserve expansion through TreeEvent, and clear missing/hidden cursors. Reset scope on workspace changes; generation-check row callbacks and use weak render owners. The approved public base Tree adapter keeps ListItem/scrollbar styling: styled Tree 0.7.1 captures itself in its stored menu renderer even without a menu. Preserve `git_tree_entities_release_after_window_close`.
 1. During operations allow read-only cursor movement, expansion and diff review while independently guarding every checkbox/Select All/request callback. Keep reviewed Request paths/snapshot immutable. Scope Enter to `RegressifyList > Tree`: Kit Confirm toggles folders; capture only leaf activation. Isolate checkbox mouse-down from row expansion so rows cannot move before click completion.
 1. Remote selection is repository-local `regressify.remote`; include it in the reviewed configuration fingerprint. Fetch, pull, push, and comparison counts must use that destination. Missing or removed active remotes must not fall back silently. Preserve local-upstream pulls and tracking branch names.
@@ -39,8 +40,8 @@ Reuse temporary repositories and local bare remotes. Set fixture-local `core.aut
 
 `git_tree_` covers path refresh, both-group operation locks, emitted request identity,
 obsolete diff successes/failures, and virtualized 256-row groups in both sizes/themes.
-Keep the independent body test while the task 019 header exception is open; do not
-suppress the existing long-status title-bar assertion.
+Keep the independent body test alongside the now-passing long-status header
+assertion; native minimum-size theme switching must not widen the window.
 
 Remote-focused filters are `desktop::git::tests::remote_` and `desktop::ui::git::tests::remote_`. Native `./ci/desktop-smoke.ps1 -GitFlows` exercises remote forms, menus, removal cancellation, and progress/logs in compact and wide light/dark windows; observe the native UI skill's safety prerequisites.
 

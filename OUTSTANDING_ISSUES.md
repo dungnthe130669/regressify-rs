@@ -2,6 +2,33 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Stock Desktop Palette Contrast (2026-10-08)
+
+- Task 019's uncommitted stock-theme pilot removes the custom palette, UI
+  typography and radius overrides in [design.rs](src/desktop/ui/design.rs).
+  Its unchanged `both_palettes_keep_text_readable_and_keyboard_focus_visible`
+  test initially failed at light-theme secondary text: 4.35:1 versus the required 4.5:1.
+  The pre-change palette passes the same test. Other pairs are not verified by
+  this failed run; it stops at the first failure.
+- Mitigated in the uncommitted [task 019](plan/gpui-component-reuse-tasks/019-stock-theme-sizing.md)
+  candidate under the owner's contrast-only exception: failing foregrounds
+  retain hue/saturation and adjust lightness; danger tints retain their stock
+  visible colors. All original contrast pairs plus danger hover/active pass.
+  No threshold, toolkit source or dependency change. Native minimum/large
+  light/dark flows and the consolidated final Windows Rust gates pass.
+
+## Comparison Fit-Width Pixel Rounding (2026-10-08)
+
+- Task 019 normal sizing exposed aspect-ratio layout before pane-edge rounding:
+  a side-by-side 300x1600 canvas painted 1379.5px high in a 259px-wide pane,
+  versus 1381.33px required by the existing one-pixel assertion.
+- The owner approved a bounded public measurement repair. FitWidth comparison
+  panes now have device-pixel-aligned widths; fit-area/manual modes and all zoom
+  policies remain unchanged. The failing regression and full `image_previews_`
+  (3), side-by-side scrolling (1) and image menu (1) filters pass. Native
+  Comparison also passes fit/pixel/gesture checks at minimum, compact and large
+  sizes in both themes; no toolkit/private API change.
+
 ## Native Smoke Clipboard Restoration (2026-10-08)
 
 - Task 018's authorized adjacent repair moves Overview Details to the existing
@@ -17,7 +44,7 @@ Issues identified during adversarial review that remain after the September 2026
   backup with `SetDataObject`. Both reported that the requested Clipboard
   operation did not succeed. Preferences were restored, but the retry's
   clipboard backup was not. Neither attempt reached the font-size checks;
-  native acceptance remains blocked, with no relaxed clipboard assertions.
+  those attempts were blocked, with no relaxed clipboard assertions.
 - Task 017 Default smoke passed its palette checks, then failed at
   [Results cleanup](ci/desktop-smoke/flows/results.ps1#L40): WinForms
   `Clipboard.SetDataObject` reported that the requested operation did not succeed.
@@ -72,6 +99,18 @@ Issues identified during adversarial review that remain after the September 2026
 
 ## Compact Desktop Header (2026-10-08)
 
+- Resolved in the task 019 candidate: the application header is bounded by
+  viewport width minus the pinned toolkit's native caption slots. A long
+  workspace-name regression failed before that bound and now passes, preserving
+  full accessible paths and normal controls. Window minimum remains 1000x640.
+- Native Titlebar and Git pass theme switching without widening at that minimum
+  and at 1600x1000, including long conflict status and all window-control bounds.
+  Git's full tooltip has explicit plain-text accessibility and reads current
+  status through a weak owner, avoiding a stale elapsed-time snapshot. Exact
+  tooltip/update tests and native full-status checks pass.
+- The earlier exception history follows; it no longer licenses wide-only theme
+  workarounds. The approved consolidated final Windows Rust gates pass, including
+  the original header assertion; the Linux baseline remains separately tracked.
 - Task 015 native Git smoke reached the final compact conflict theme switch,
   then could not find Light because the appearance control was clipped. The
   owner extended wide-only theme selection to that Git step; both compact

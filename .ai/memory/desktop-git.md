@@ -1,6 +1,6 @@
 # Desktop Git
 
-Verified: 2026-10-08
+Verified: 2026-10-09
 
 - [Change trees](../../src/desktop/ui/git/view.rs) retain two Kit TreeState
   entities, using group/repository-path IDs. Refresh restores by ID after
@@ -14,9 +14,12 @@ Verified: 2026-10-08
   completions and large-list body bounds. Checkbox mouse-down must not expand
   its row: the unchanged folder-selection test failed until pointer isolation.
   Scoped Kit Confirm handles folder Enter; the parent intercepts only leaves.
-- The Git long-status title-bar test remains a known non-green task 019 exception;
-  see [the issue list](../../OUTSTANDING_ISSUES.md#compact-desktop-header-2026-10-08).
-  Passing tree-body tests does not establish header acceptance.
+- The [header](../../src/desktop/ui/overview.rs) now reserves supported native
+  caption slots and bounds long workspace names. Long-status and native Git
+  checks pass at 1000x640 without widening; the old header exception is closed.
+- Git's full tooltip uses a plain accessible Label and weak owner, reading live
+  status while open. Capturing the summary once froze its elapsed-time suffix;
+  exact native comparison and the update-while-open regression caught this.
 - [The Git model](../../src/desktop/git.rs) stores active remote selection in
   repository-local `regressify.remote`. Its configuration hash covers that key,
   remotes, and URL rewrites; branch tracking is checked separately. Removing the

@@ -1439,6 +1439,7 @@ impl RunPanel {
                     div()
                         .flex()
                         .items_center()
+                        .flex_wrap()
                         .gap_2()
                         .child(
                             design::selection_checkbox(
@@ -1463,7 +1464,6 @@ impl RunPanel {
                         .child(
                             Button::new(SharedString::from(format!("suite-expand-{}", suite.name)))
                                 .ghost()
-                                .small()
                                 .flex_1()
                                 .min_w_0()
                                 .justify_start()
@@ -1500,7 +1500,6 @@ impl RunPanel {
                                     suite.name
                                 )))
                                 .ghost()
-                                .small()
                                 .icon(gpui_kit::assets::IconName::Images)
                                 .label("Open Report")
                                 .disabled(self.disabled)
@@ -1518,7 +1517,6 @@ impl RunPanel {
                                     suite.name
                                 )))
                                 .ghost()
-                                .small()
                                 .icon(gpui_kit::assets::IconName::ExternalLink)
                                 .label("Open Site")
                                 .tooltip(url.clone())
@@ -1576,7 +1574,6 @@ impl RunPanel {
                                     "scenario-log-{log_suite}:{log_id}"
                                 )))
                                 .ghost()
-                                .xsmall()
                                 .icon(gpui_kit::assets::IconName::Terminal)
                                 .tooltip(format!("View run log: {}", scenario.label))
                                 .accessibility_label(format!("View run log: {}", scenario.label))
@@ -1598,7 +1595,6 @@ impl RunPanel {
                                         command.argument()
                                     )))
                                     .ghost()
-                                    .xsmall()
                                     .icon(if command == RunCommand::Test {
                                         gpui_kit::assets::IconName::Play
                                     } else {
@@ -1967,6 +1963,155 @@ mod tests {
     use gpui_kit::{AppContext, Focusable, TestAppContext};
     use serde_json::json;
     use std::{cell::RefCell, rc::Rc};
+
+    #[gpui_kit::test]
+    fn runs_normal_controls_fit_minimum_and_large_windows(cx: &mut TestAppContext) {
+        use gpui_kit::{SharedString, px, size};
+
+        for (width, height) in [(1000., 640.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = super::super::tests::editor_at_size(
+                cx,
+                directory.path(),
+                size(px(width), px(height)),
+            );
+            for dark in [false, true] {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    super::super::design::apply_theme(dark, Some(window), cx);
+                    let runs = view.read(cx).runs.clone();
+                    view.update(cx, |editor, cx| {
+                        editor.main_tab = 1;
+                        cx.notify();
+                    });
+                    runs.update(cx, |panel, cx| {
+                        panel.tab = 0;
+                        panel.select_all(true, cx);
+                    });
+                    window.render_frame(cx);
+                    let normal_height = window.rem_size() * 2.;
+                    let toolbar = window.find("run-toolbar").bounds();
+                    for id in [
+                        "run-test",
+                        "run-reference",
+                        "run-approve",
+                        "run-compare",
+                        "more-run-actions",
+                        "cancel-command",
+                        "refresh-run-artifacts",
+                        "activity-select-suites",
+                    ] {
+                        let control = window.find(id);
+                        let bounds = control.bounds();
+                        assert!(control.visible(), "{id} at {width}x{height} dark={dark}");
+                        assert!(bounds.size.height >= normal_height, "{id}: {bounds:?}");
+                        assert!(
+                            bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+                            "{id}: {bounds:?}, toolbar={toolbar:?}"
+                        );
+                        assert!(
+                            bounds.top() >= px(0.) && bounds.bottom() <= px(height),
+                            "{id}: {bounds:?}"
+                        );
+                    }
+                    window.within("run-tabs").click(1_usize, cx);
+                    let scenario = runs.read(cx).suites[0].scenarios[0].id.clone();
+                    let scenario_check =
+                        SharedString::from(format!("scenario-check-ui-test:{scenario}"));
+                    if window.try_find(scenario_check.clone()).is_none() {
+                        window.click("suite-expand-ui-test", cx);
+                    }
+                    for id in [
+                        "suite-expand-ui-test".to_string(),
+                        format!("scenario-log-ui-test:{scenario}"),
+                        format!("scenario-test-ui-test:{scenario}"),
+                        format!("scenario-ref-ui-test:{scenario}"),
+                    ] {
+                        let control = window.find(SharedString::from(id.clone()));
+                        let bounds = control.bounds();
+                        assert!(control.visible(), "{id} at {width}x{height} dark={dark}");
+                        assert!(bounds.size.height >= normal_height, "{id}: {bounds:?}");
+                        assert!(
+                            bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(),
+                            "{id}: {bounds:?}, toolbar={toolbar:?}"
+                        );
+                    }
+                    window.click(scenario_check.clone(), cx);
+                    assert!(!runs.read(cx).scenario_selected("ui-test", &scenario));
+                    window.click(scenario_check, cx);
+                    assert!(runs.read(cx).scenario_selected("ui-test", &scenario));
+                    window.within("run-tabs").click(2_usize, cx);
+                    let fields = runs
+                        .read(cx)
+                        .bindings
+                        .iter()
+                        .filter_map(|binding| {
+                            let input_id: gpui_kit::ElementId = match &binding.control {
+                                super::Control::Input(_) => {
+                                    SharedString::from(format!("run-field-{}", binding.field.key))
+                                        .into()
+                                }
+                                super::Control::Textarea(input) => {
+                                    ("input", input.entity_id()).into()
+                                }
+                                _ => return None,
+                            };
+                            Some((binding.field.key.clone(), input_id))
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(!fields.is_empty());
+                    for (key, input_id) in fields {
+                        runs.update(cx, |panel, cx| {
+                            panel
+                                .settings_search
+                                .update(cx, |state, cx| state.set_value(key.clone(), window, cx));
+                            cx.notify();
+                        });
+                        window.render_frame(cx);
+                        let field = window
+                            .find(SharedString::from(format!("run-field-{key}")))
+                            .bounds();
+                        let input = window.find(input_id).bounds();
+                        assert!(field.size.height >= normal_height, "{key}: {field:?}");
+                        assert!(
+                            field.left() >= toolbar.left() && field.right() <= toolbar.right(),
+                            "{key}: {field:?}, toolbar={toolbar:?}"
+                        );
+                        assert!(
+                            field.top() >= px(0.) && field.bottom() <= px(height),
+                            "{key}: {field:?}"
+                        );
+                        assert!(
+                            input.left() >= field.left() && input.right() <= field.right(),
+                            "{key}: input={input:?}, field={field:?}"
+                        );
+                    }
+                    assert!(
+                        window.find("run-settings-search").bounds().size.height >= normal_height
+                    );
+                    runs.update(cx, |panel, cx| {
+                        panel.settings_search.update(cx, |state, cx| {
+                            state.set_value("browser download", window, cx)
+                        });
+                        cx.notify();
+                    });
+                    window.render_frame(cx);
+                    for index in 0_usize..3 {
+                        let tab = window.within("run-field-fetchBrowser").find(index).bounds();
+                        assert!(
+                            tab.size.height >= normal_height,
+                            "browser tab {index}: {tab:?}"
+                        );
+                        assert!(
+                            tab.left() >= toolbar.left() && tab.right() <= toolbar.right(),
+                            "browser tab {index}: {tab:?}"
+                        );
+                    }
+                    assert!(!runs.read(cx).running());
+                })
+                .unwrap();
+            }
+        }
+    }
 
     #[gpui_kit::test]
     async fn log_pagination_leaving_follow_and_filtering_reject_stale_reads(

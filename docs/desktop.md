@@ -820,11 +820,13 @@ own fixture credentials, settings, and processes.
 
 ## Appearance and Commands
 
-Workspace navigation and global tools share a compact custom title bar with
-native window controls. Suite actions sit beside the editor tools; the navigator,
-settings forms, and activity metrics use compact spacing. The main source text
-size remains independently configurable. Headless layout tests cover 1080x720
-and 1600x1000 windows and check that controls do not overlap window buttons.
+Workspace navigation and global tools share a compact title bar with native
+window controls. Controls use normal toolkit sizing and stock UI typography;
+command groups wrap without hiding actions. The minimum client area is 1000x640;
+native Windows checks cover both themes there, at 1080x720 and at 1600x1000. Long workspace names
+truncate within the space left by the controls; their full paths remain
+accessible. The Git badge keeps its full, current status in a tooltip. Source
+text size remains independently configurable.
 
 On Windows and Linux, File, Publish, and Help share a toolkit application menu
 bar with hover and arrow-key switching. Escape returns focus to the previous
@@ -840,11 +842,11 @@ System. Existing `darkMode` preferences retain their previous light/dark choice.
 The File-menu toggle remains available and switches from the currently displayed
 theme. Native window decorations may still follow the OS on some platforms.
 
-Both palettes use consistent menus, tabs, lists, input outlines, and status
-colors, with visible keyboard-focus rings. Theme changes preserve open drafts,
-selection, run state, and comparison images. Automated checks cover 4.5:1
-contrast for the principal text/status color pairs, not full accessibility
-certification.
+The stock palettes use minimal contrast-only color corrections and visible
+keyboard-focus rings. Theme changes preserve open drafts, selection, run state,
+and comparison images. Automated checks retain at least 4.5:1 contrast for the
+principal text/status pairs and danger-button states; this is not full
+accessibility certification.
 
 Source wrapping, line numbers, and text size are saved across restarts. Text size
 accepts integers from 10 to 24 pixels, entered directly or adjusted with Up/Down

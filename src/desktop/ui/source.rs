@@ -917,11 +917,6 @@ impl Workbench {
                             .child(
                                 Button::new(("source-diagnostic", index))
                                     .ghost()
-                                    .xsmall()
-                                    .h(px(20.))
-                                    .py_0()
-                                    .text_sm()
-                                    .line_height(px(20.))
                                     .label((position.line + 1).to_string())
                                     .accessibility_label(format!(
                                         "Go to issue on line {}",
@@ -1275,7 +1270,6 @@ impl Workbench {
                         bar.right(
                             Button::new("source-issue")
                                 .ghost()
-                                .xsmall()
                                 .icon(gpui_kit::assets::IconName::CircleAlert)
                                 .label(format!(
                                     "{} {}",

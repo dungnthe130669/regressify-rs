@@ -1,6 +1,6 @@
 # Results Review
 
-Verified: 2026-10-08
+Verified: 2026-10-09
 
 - [Overview](../../src/desktop/ui/overview.rs) uses uniform DataTable rows with
   full summaries/errors retained in explicit selectable Details. `overview_table_`
@@ -24,8 +24,9 @@ Verified: 2026-10-08
   a pane; the held-pan regression verifies cancellation and unchanged offsets.
   Image action/lifecycle tests and native Comparison pass without toolkit edits.
 - Capture information in [Results](../../src/desktop/ui/reports.rs) uses an
-  unbordered one-column DescriptionList while retaining stable custom URL
-  children. The existing metadata GUI regression verifies raw reference/test
+  unbordered DescriptionList with paired URL columns and full-width metadata,
+  retaining normal controls and stable URL children. The GUI regression checks
+  8px outer gaps plus the stock 10px text inset and verifies raw reference/test
   URLs, exact copy values, signed dimensions, unavailable fields, and rejects
   javascript/data schemes before either open or copy.
 - Capture/approval error bands retain their named Role::Alert wrapper around
@@ -89,3 +90,7 @@ Verified: 2026-10-08
   are current; fit percentages use rendered pixel bounds, including layout rounding,
   while manual percentages use the selected preset. The `image_previews_` GUI tests
   cover one-decimal labels, independent modes, pointer zoom, and resized previews.
+- Side-by-side FitWidth pixel-aligns pane widths through public canvas layout;
+  fractional widths previously caused tall-image height drift. GUI one-pixel
+  checks and native minimum/compact/large Comparison pass without changing zoom,
+  scrolling or no-upscaling policy.

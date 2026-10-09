@@ -208,7 +208,6 @@ impl RunPanel {
                         .when(!has_run && !self.selection.is_empty(), |row| {
                             row.child(
                                 Button::new("activity-select-suites")
-                                    .small()
                                     .icon(gpui_kit::assets::IconName::ListChecks)
                                     .label("Select suites")
                                     .on_click(cx.listener(|this, _, _, cx| {
@@ -221,7 +220,6 @@ impl RunPanel {
                             row.child(
                                 Button::new("activity-view-log")
                                     .ghost()
-                                    .small()
                                     .icon(gpui_kit::assets::IconName::Terminal)
                                     .label("View Log")
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -238,7 +236,6 @@ impl RunPanel {
                             |row| {
                                 row.child(
                                     Button::new("activity-compare-run")
-                                        .small()
                                         .icon(gpui_kit::assets::IconName::Images)
                                         .label("Compare This Run")
                                         .disabled(self.disabled)
@@ -852,7 +849,6 @@ impl RunPanel {
                     .p_4()
                     .child(
                         Button::new("activity-view-log")
-                            .small()
                             .icon(gpui_kit::assets::IconName::Terminal)
                             .label("View Log")
                             .on_click(
@@ -870,7 +866,6 @@ impl RunPanel {
                         |row, (deployment, url)| {
                             row.child(
                                 Button::new("deployment-open-site")
-                                    .small()
                                     .primary()
                                     .icon(gpui_kit::assets::IconName::ExternalLink)
                                     .label("Open Site")
@@ -918,7 +913,6 @@ impl RunPanel {
                             .child(
                                 Button::new("copy-deployment-log")
                                     .ghost()
-                                    .small()
                                     .icon(IconName::Copy)
                                     .tooltip("Copy log")
                                     .accessibility_label("Copy deployment log")

@@ -38,11 +38,11 @@ function Test-SchemaFlows {
         }
     }
     function Test-ControlledFieldGroups {
-        foreach ($theme in @('Light', 'Dark')) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
-            Select-Theme $theme
-            foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
-                [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1000, 720))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            $captureSize = if ($dimensions[1] -eq 640) { '1000x640' } else { [string]$dimensions[0] }
+            foreach ($theme in @('Light', 'Dark')) {
+                Select-Theme $theme
                 $invalid = "browser: mystery`nscenarios: []`n"
                 Write-SchemaSource $invalid
                 Send-FixtureKeys Escape
@@ -68,7 +68,7 @@ function Test-SchemaFlows {
                 }
                 Send-FixtureKeys Spacebar
                 Wait-Control 'Unsupported value' | Out-Null
-                Capture-Window ('controlled-fields-forced-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+                Capture-Window ('controlled-fields-forced-' + $theme.ToLowerInvariant() + '-' + $captureSize)
                 Invoke-Control 'Source' -Pointer
                 if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $invalid) {
                     throw 'Disclosure interaction changed the invalid source draft.'
@@ -84,7 +84,7 @@ function Test-SchemaFlows {
                 Wait-WindowState { (Read-ControlText 'Find a setting') -ceq '' } 'The disclosure fixture did not clear its setting filter.'
                 Wait-Control 'Overrides only' | Out-Null
                 Wait-WindowState { $null -eq (Find-Control 'Browser') } 'Clearing search and the error did not restore the collapsed group preference.'
-                Capture-Window ('controlled-fields-restored-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+                Capture-Window ('controlled-fields-restored-' + $theme.ToLowerInvariant() + '-' + $captureSize)
                 Invoke-Control 'Source' -Pointer
                 if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $valid) {
                     throw 'Restoring the collapse preference changed the corrected source.'
@@ -369,13 +369,13 @@ function Test-SchemaFlows {
     } 'Issue navigation did not reach the missing-origin entry.'
     Test-SchemaIssueCopy 4
     if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $invalid) { throw 'Selecting issue text changed the source draft.' }
-    foreach ($theme in @('Light', 'Dark')) {
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1000, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        $captureSize = if ($dimensions[1] -eq 640) { '1000x640' } else { [string]$dimensions[0] }
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Wait-Control '3 issues' | Out-Null
-            Test-SchemaIssueTable ('schema-errors-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Test-SchemaIssueTable ('schema-errors-' + $theme.ToLowerInvariant() + '-' + $captureSize)
         }
     }
     Write-SchemaSource "scenarios: []`nbasicAuth:`n  ori"
@@ -412,14 +412,23 @@ function Test-SchemaFlows {
     $notice = 'File changed outside Regressify. Your unsaved edits were kept.'
     Wait-Control $notice | Out-Null
     if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) { throw 'An external save replaced an unsaved desktop draft.' }
-    foreach ($theme in @('Light', 'Dark')) {
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1600, 1000), @(1000, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1000, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        $captureSize = if ($dimensions[1] -eq 640) { '1000x640' } else { [string]$dimensions[0] }
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Wait-Control $notice | Out-Null
             Wait-Control 'Reload from disk' | Out-Null
-            Capture-Window ('schema-external-conflict-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Capture-Window ('schema-external-conflict-' + $theme.ToLowerInvariant() + '-' + $captureSize)
+            if ($dimensions[1] -eq 640) {
+                Invoke-Control 'Reload from disk' -Pointer
+                Wait-Control 'Discard' | Out-Null
+                Wait-Control 'Cancel' | Out-Null
+                Capture-Window ('schema-external-reload-confirmation-' + $theme.ToLowerInvariant() + '-' + $captureSize)
+                Invoke-Control 'Cancel' -Pointer
+                Wait-WindowState { $null -eq (Find-Control 'Discard') } 'Minimum-size reload cancellation did not dismiss the dialog.'
+                if ((Read-ControlText 'Configuration source').Replace("`r`n", "`n") -cne $draft) { throw 'Minimum-size reload cancellation changed the exact draft.' }
+            }
         }
     }
     Invoke-Control 'Reload from disk' -Pointer

@@ -1,6 +1,6 @@
 # Desktop Smoke Harness
 
-Verified: 2026-10-08
+Verified: 2026-10-09
 
 - Run/download bars use Kit Progress with percentages and accessible names.
   Native default smoke checks `Scenario job progress` as a ProgressBar with
@@ -100,3 +100,11 @@ Verified: 2026-10-08
   exercise both ends in compact/large windows and both themes.
 - Windows interaction prerequisites and native commands remain in the
   [native UI skill](../../.github/skills/desktop-native-ui/SKILL.md).
+- [Titlebar smoke](../../ci/desktop-smoke/flows/titlebar.ps1) checks 1000x640 and
+  1600x1000 without widening for theme changes. Appearance uses actual Tab focus
+  and Enter/Escape; its dropdown has no InvokePattern. Default's Add uses Tab too,
+  retaining the exact backward-wrap assertion. Header menus are File/Publish/Help.
+- Minimum-size flows bring scrollable targets into view: Actions via settings
+  search, the Comparison suite via wheel, and landing removal via editor scroll.
+  Artifact's added Rename size matrix uses the scoped context menu; original
+  F2/escape-focus checks remain. Never bypass native focus/isolation guards.

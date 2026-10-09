@@ -1,6 +1,6 @@
 # 018: Source Font Size NumberInput
 
-Status: Verified, awaiting the authorized local commit. Native Default passes;
+Status: Committed as `ecbc562`. Native Default passes;
 integrated UI has only the approved task 019 header failure.
 Depends on 001, 003 and 007 (all committed).
 
@@ -60,4 +60,4 @@ input or lost last-valid behavior; never coerce source configuration drafts.
   actual Edit values remain asserted. Both-theme Source screenshots at
   1080x720/1600x1000 were inspected; task 019 still owns header fit.
 - Production net +50 lines, one InputState and two subscriptions. No toolkit
-  or dependency edits. Verified; no task commit is claimed yet.
+  or dependency edits. Committed as `ecbc562`; the post-commit worktree was clean.

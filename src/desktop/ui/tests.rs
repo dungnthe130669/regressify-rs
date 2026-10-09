@@ -1937,8 +1937,11 @@ async fn theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore
 
 #[gpui_kit::test]
 fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut TestAppContext) {
-    let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let directory = tempfile::Builder::new()
+        .prefix("workspace-1234567890abcdef1234567890abcdef-")
+        .tempdir()
+        .unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1000.), px(640.)));
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         let root = &view.read(cx).session.workspace.as_ref().unwrap().root;
@@ -1950,6 +1953,24 @@ fn workspace_header_displays_a_readable_path_without_changing_its_root(cx: &mut 
         );
         assert!(!expected.contains('\\'));
         assert!(!expected.starts_with("//?/"));
+        #[cfg(target_os = "windows")]
+        for id in [
+            "theme-picker",
+            "open-workspace",
+            "deploy-report",
+            "deploy-targets",
+        ] {
+            let control = window.find(id);
+            assert!(
+                control.visible(),
+                "{id} must stay visible with a long workspace name"
+            );
+            assert!(
+                control.bounds().right() <= px(895.),
+                "{id} overlaps the window-control reserve: {:?}",
+                control.bounds()
+            );
+        }
     })
     .unwrap();
 }
@@ -2356,7 +2377,7 @@ fn schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows(
                     );
                     assert_eq!(jump.top(), text.top());
                     assert_eq!(severity.bounds().top(), text.top());
-                    assert_eq!(jump.size.height, px(20.));
+                    assert_eq!(jump.size.height, px(32.));
                     assert_eq!(jump.center().x, line_header.center().x);
                     assert_eq!(severity.bounds().left(), type_header.left());
                     assert_eq!(dot.center().x, type_header.center().x);
@@ -6550,6 +6571,44 @@ fn navigator_list_keyboard_scrolls_viewports_and_handles_empty_filters(cx: &mut 
 }
 
 #[gpui_kit::test]
+async fn navigator_suite_rows_remain_clickable_after_minimum_resize(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().unwrap();
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1600.), px(1000.)));
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.resize(size(px(1000.), px(640.)));
+        window.bounds_changed(cx);
+        assert_eq!(window.viewport_size(), size(px(1000.), px(640.)));
+    })
+    .unwrap();
+    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+        window.viewport_size() == size(px(1000.), px(640.))
+    })
+    .await;
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.render_frame(cx);
+        let index = view
+            .read(cx)
+            .session
+            .entries
+            .iter()
+            .position(|entry| entry.kind == crate::desktop::document::DocumentKind::Suite)
+            .unwrap();
+        let row = window.find(("file", index));
+        let pane = window.find("suite-pane").bounds();
+        assert!(row.visible());
+        assert!(
+            row.bounds().top() >= pane.top() && row.bounds().bottom() <= pane.bottom(),
+            "suite row {:?} is clipped by {pane:?}",
+            row.bounds()
+        );
+        window.click(("file", index), cx);
+        assert!(!view.read(cx).session.dirty());
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
 fn navigator_selection_controls_fit_both_window_sizes_and_themes(cx: &mut TestAppContext) {
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
         let directory = tempfile::tempdir().unwrap();
@@ -7752,6 +7811,17 @@ async fn controlled_group_search_and_error_restore_preference_without_losing_inp
                 .find(input.clone())
                 .value(),
             Some("-")
+        );
+        let offset = window.find(("field-group", 0_usize)).bounds().top()
+            - window
+                .within("field-asyncCaptureLimit")
+                .find(input.clone())
+                .bounds()
+                .top();
+        window.scroll(
+            ("field-group", 0_usize),
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), offset)),
+            cx,
         );
         window.within("field-asyncCaptureLimit").click(input, cx);
         window.press("ctrl-a", cx);
@@ -10378,6 +10448,13 @@ async fn editing_real_suite_fields_preserves_plain_css_selectors(cx: &mut TestAp
     cx.update_window(handle.into(), |_, window, cx| {
         assert!(view.read(cx).field_errors.is_empty());
         assert!(view.read(cx).diagnostic.is_none());
+        let offset = window.find(("field-group", 0_usize)).bounds().top()
+            - window.find("field-asyncCompareLimit").bounds().top();
+        window.scroll(
+            ("field-group", 0_usize),
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), offset)),
+            cx,
+        );
         window.click("field-asyncCompareLimit", cx);
         window.input("3", cx);
     })
@@ -11340,6 +11417,13 @@ fn deployment_preserves_inherited_and_explicit_report_options(cx: &mut TestAppCo
         assert!(inherited.request.options.heading.is_none());
         assert!(inherited.request.options.subheading.is_none());
 
+        let offset = window.find("run-field-siteEnv").bounds().top()
+            - window.find("run-field-heading").bounds().top();
+        window.scroll(
+            "run-field-siteEnv",
+            gpui_kit::ScrollDelta::Pixels(gpui_kit::point(px(0.), offset)),
+            cx,
+        );
         window.click("run-field-heading", cx);
         window.input("Custom summary", cx);
         let overridden = view
@@ -11671,7 +11755,10 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                     assert!(pair[0].right() < pair[1].left());
                 }
                 assert!(diff_stats[2].right() <= bounds.right());
-                assert!(bounds.size.height <= px(160.));
+                assert!(
+                    bounds.size.height <= px(160.),
+                    "capture={index}, window={width}x{height}, bounds={bounds:?}"
+                );
                 assert_eq!(
                     window.find("capture-info-selector").label(),
                     Some(match index {
@@ -11713,11 +11800,14 @@ async fn scenario_information_hover_shows_metadata_and_copies_recorded_urls(
                 for image in 0_usize..2 {
                     let label = window.find(("capture-info-url-label", image)).bounds();
                     let url = window.find(("capture-info-url-value", image)).bounds();
+                    let link = window.find(("capture-info-url", image)).bounds();
                     let copy = window.find(("capture-info-copy-url", image)).bounds();
                     assert!((label.center().y - url.center().y).abs() <= px(1.));
                     assert!((copy.center().y - url.center().y).abs() <= px(1.));
-                    assert!(url.left() >= label.right() && url.left() - label.right() <= px(8.));
-                    assert!(copy.left() >= url.right() && copy.left() - url.right() <= px(8.));
+                    assert_eq!(url.left() - link.left(), px(10.));
+                    assert!(url.right() <= link.right() - px(10.));
+                    assert!(link.left() >= label.right() && link.left() - label.right() <= px(8.));
+                    assert!(copy.left() >= link.right() && copy.left() - link.right() <= px(8.));
                     assert!(copy.right() <= bounds.right());
                     if index == 2 {
                         assert_eq!(
@@ -12570,7 +12660,10 @@ async fn image_previews_fit_area_without_upscaling_and_center_horizontally(
                         let viewport = window.find(("image-scroll", *index)).bounds();
                         let scale = (viewport.size.width / px(canvas_width)).min(1.);
                         assert!((content.size.width - px(canvas_width * scale)).abs() <= px(1.));
-                        assert!((content.size.height - px(canvas_height * scale)).abs() <= px(1.));
+                        assert!(
+                            (content.size.height - px(canvas_height * scale)).abs() <= px(1.),
+                            "capture={capture}, mode={mode}, pane={index}, canvas={canvas_width}x{canvas_height}, scale={scale}, viewport={viewport:?}, content={content:?}"
+                        );
                         assert!((content.center().x - viewport.center().x).abs() <= px(1.));
                         if content.size.height > viewport.size.height + px(80.) {
                             window.scroll(

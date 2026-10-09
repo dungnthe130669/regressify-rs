@@ -199,7 +199,6 @@ impl TableDelegate for OverviewRows {
                     .child(
                         Button::new(("overview-details", row.index))
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Info)
                             .tooltip("Suite details")
                             .accessibility_label(format!("Details: {}", row.name))
@@ -220,7 +219,6 @@ impl TableDelegate for OverviewRows {
                         actions.child(
                             Button::new(("overview-report", row.index))
                                 .ghost()
-                                .small()
                                 .icon(gpui_kit::assets::IconName::Images)
                                 .accessibility_label(format!("Open Report: {}", row.name))
                                 .tooltip("Open saved report")
@@ -242,7 +240,6 @@ impl TableDelegate for OverviewRows {
                     .child(
                         Button::new(("overview-edit", row.index))
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Pencil)
                             .label("Edit")
                             .disabled(self.disabled)
@@ -528,7 +525,6 @@ impl Workbench {
                     div().flex().items_center().gap_1().child("Website:").child(
                         Button::new("about-website")
                             .ghost()
-                            .small()
                             .label("https://tuyen.blog/")
                             .accessibility_label("https://tuyen.blog/")
                             .on_click(|_, _, cx| cx.open_url("https://tuyen.blog/")),
@@ -551,7 +547,21 @@ impl Workbench {
         });
     }
 
-    pub(super) fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_header(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let left_padding = px(if cfg!(target_os = "macos") { 80. } else { 12. });
+        let controls = window.window_controls();
+        let controls_width = if cfg!(target_os = "macos")
+            || cfg!(target_family = "wasm")
+            || (cfg!(target_os = "linux")
+                && !matches!(window.window_decorations(), Decorations::Client { .. }))
+        {
+            px(0.)
+        } else {
+            // Kit 0.7.1 caption slots are 34px, also verified by the native smoke harness.
+            px(34.) * (1 + usize::from(controls.minimize) + usize::from(controls.maximize)) as f32
+        };
+        let header_width =
+            (window.viewport_size().width - left_padding - controls_width).max(px(0.));
         let root = self
             .session
             .workspace
@@ -568,6 +578,7 @@ impl Workbench {
             .unwrap_or_else(|| "No workspace".into());
         TitleBar::new()
             .h(px(38.))
+            .pl(left_padding)
             .bg(cx.theme().title_bar)
             .on_close_window(cx.listener(|this, _, window, cx| {
                 if this.git.read(cx).active() {
@@ -584,10 +595,12 @@ impl Workbench {
                     .test_support()
                     .flex()
                     .flex_1()
+                    .w_0()
                     .min_w_0()
+                    .max_w(header_width)
                     .h_full()
                     .items_center()
-                    .gap_2()
+                    .gap_0()
                     .pr_2()
                     .child(
                         div()
@@ -608,20 +621,26 @@ impl Workbench {
                     )
                     .child(
                         div()
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_sm()
-                            .child("Regressify"),
-                    )
-                    .child(
-                        div()
-                            .id("application-version")
-                            .role(Role::Status)
-                            .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
-                            .test_support()
-                            .text_xs()
+                            .flex()
+                            .flex_col()
                             .flex_shrink_0()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                            .mx_1()
+                            .child(
+                                div()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_sm()
+                                    .child("Regressify"),
+                            )
+                            .child(
+                                div()
+                                    .id("application-version")
+                                    .role(Role::Status)
+                                    .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                    .test_support()
+                                    .text_xs()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                            ),
                     )
                     .child(if cfg!(target_os = "macos") {
                         div()
@@ -633,7 +652,6 @@ impl Workbench {
                                 let focus = self.focus.clone();
                                 Button::new("publishing-menu")
                                     .ghost()
-                                    .xsmall()
                                     .label("Publish")
                                     .disabled(self.busy || self.runs.read(cx).running())
                                     .dropdown_menu(move |menu, _, _| {
@@ -649,7 +667,6 @@ impl Workbench {
                                 let focus = self.focus.clone();
                                 Button::new("help-menu")
                                     .ghost()
-                                    .xsmall()
                                     .label("Help")
                                     .dropdown_menu(move |menu, _, _| {
                                         menu.action_context(focus.clone())
@@ -671,7 +688,6 @@ impl Workbench {
                     .child(design::titlebar_control(
                         Button::new("toggle-navigation")
                             .ghost()
-                            .xsmall()
                             .icon(if self.preferences.navigator_hidden {
                                 gpui_kit::assets::IconName::PanelLeftOpen
                             } else {
@@ -692,7 +708,6 @@ impl Workbench {
                         div().id("titlebar-navigation").test_support().child(
                             TabBar::new("workbench-tabs")
                                 .underline()
-                                .small()
                                 .selected_index(self.main_tab)
                                 .on_click(cx.listener(|this, index, window, cx| {
                                     this.select_view(*index, window, cx)
@@ -703,7 +718,8 @@ impl Workbench {
                         ),
                     ))
                     .child(
-                        div().flex_1().min_w_0().child(
+                        // A long workspace name must not set the title bar's intrinsic minimum width.
+                        div().flex_1().w_0().min_w_0().child(
                             div()
                                 .id("workspace-path")
                                 .role(Role::Status)
@@ -719,7 +735,6 @@ impl Workbench {
                         header.child(design::titlebar_control(
                             Button::new("view-running")
                                 .ghost()
-                                .small()
                                 .icon(gpui_kit::assets::IconName::Activity)
                                 .label(format!("{} / {}", counts.running, counts.complete()))
                                 .tooltip("View running command")
@@ -738,7 +753,6 @@ impl Workbench {
                             .child(
                                 Button::new("application-status")
                                     .ghost()
-                                    .xsmall()
                                     .icon(gpui_kit::assets::IconName::Info)
                                     .accessibility_label("Application status")
                                     .tooltip(format!(
@@ -757,7 +771,6 @@ impl Workbench {
                     .child(design::titlebar_control(
                         Button::new("open-commands")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::Command)
                             .accessibility_label("Commands")
                             .tooltip("Commands")
@@ -769,22 +782,47 @@ impl Workbench {
                     .child(design::titlebar_control(self.render_update_button(cx)))
                     .when(self.session.workspace.is_some(), |header| {
                         let git = self.git.read(cx);
+                        let git_owner = self.git.downgrade();
                         header.child(design::titlebar_control(
-                            Button::new("git-status")
-                                .ghost()
-                                .small()
-                                .icon(gpui_kit::assets::IconName::GitBranch)
-                                .max_w(px(180.))
-                                .child(div().min_w_0().truncate().child(git.badge()))
-                                .accessibility_label(format!("Git: {}", git.summary()))
-                                .tooltip(git.summary())
-                                .selected(self.main_tab == 3)
-                                .when(git.attention(), |button| {
-                                    button.text_color(cx.theme().warning)
+                            div()
+                                .id("git-status-hover")
+                                .tooltip(move |window, cx| {
+                                    let git_owner = git_owner.clone();
+                                    gpui_kit::component::tooltip::Tooltip::element(
+                                        move |window, cx| {
+                                            let summary = git_owner
+                                                .upgrade()
+                                                .map(|git| git.read(cx).summary())
+                                                .unwrap_or_default();
+                                            div()
+                                                .id("git-status-tooltip")
+                                                .role(Role::Label)
+                                                .aria_label(summary.clone())
+                                                .aria_value(summary.clone())
+                                                .test_support()
+                                                .w((window.viewport_size().width - px(64.))
+                                                    .min(px(640.)))
+                                                .whitespace_normal()
+                                                .child(summary.clone())
+                                        },
+                                    )
+                                    .build(window, cx)
                                 })
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.select_view(3, window, cx)
-                                })),
+                                .child(
+                                    Button::new("git-status")
+                                        .ghost()
+                                        .icon(gpui_kit::assets::IconName::GitBranch)
+                                        .max_w(px(112.))
+                                        .child(div().min_w_0().truncate().child(git.badge()))
+                                        .accessibility_label(format!("Git: {}", git.summary()))
+                                        .selected(self.main_tab == 3)
+                                        .when(git.attention(), |button| {
+                                            button.text_color(cx.theme().warning)
+                                        })
+                                        .on_click(cx.listener(|this, _, window, cx| {
+                                            this.select_view(3, window, cx)
+                                        })),
+                                ),
                         ))
                     })
                     .child(design::titlebar_control(self.render_deploy_controls(cx)))
@@ -792,7 +830,6 @@ impl Workbench {
                     .child(design::titlebar_control(
                         Button::new("open-workspace")
                             .ghost()
-                            .xsmall()
                             .icon(IconName::FolderOpen)
                             .tooltip(if self.session.workspace.is_some() {
                                 "Switch workspace"
@@ -948,7 +985,6 @@ impl Workbench {
                     .child(div().flex_1())
                     .child(
                         Button::new("overview-run-reference")
-                            .small()
                             .icon(gpui_kit::assets::IconName::Camera)
                             .label("Run Reference")
                             .disabled(
@@ -984,7 +1020,6 @@ impl Workbench {
                     .when(self.runs.read(cx).can_open_saved_selection(), |row| {
                         row.child(
                             Button::new("overview-open-report")
-                                .small()
                                 .icon(gpui_kit::assets::IconName::Images)
                                 .label("Open Report")
                                 .disabled(self.busy)

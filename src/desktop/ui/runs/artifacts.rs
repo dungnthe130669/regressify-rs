@@ -351,7 +351,6 @@ impl RunPanel {
             .child(
                 Button::new("refresh-run-artifacts")
                     .ghost()
-                    .xsmall()
                     .icon(gpui_kit::assets::IconName::RefreshCw)
                     .tooltip("Refresh references and saved test runs")
                     .accessibility_label("Refresh saved captures")

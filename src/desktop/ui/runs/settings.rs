@@ -94,7 +94,6 @@ impl RunPanel {
                         .child(
                             TabBar::new(id)
                                 .segmented()
-                                .small()
                                 .selected_index(selected)
                                 .on_click(cx.listener(move |this, index, _, cx| {
                                     if this.running() || this.disabled {
@@ -117,12 +116,11 @@ impl RunPanel {
                     match &binding.control {
                         Control::Input(input) => Input::new(input)
                             .id(id)
-                            .small()
                             .disabled(disabled)
                             .into_any_element(),
                         Control::Textarea(input) => div()
                             .id(id)
-                            .child(Textarea::new(input).disabled(disabled).h(px(72.)))
+                            .child(Textarea::new(input).disabled(disabled))
                             .into_any_element(),
                         _ => {
                             let descriptor = field.clone();
@@ -212,8 +210,7 @@ impl RunPanel {
                         Input::new(&self.settings_search)
                             .id("run-settings-search")
                             .prefix(IconName::Search)
-                            .cleanable(true)
-                            .small(),
+                            .cleanable(true),
                     ),
             )
             .child(

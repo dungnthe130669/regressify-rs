@@ -52,7 +52,6 @@ impl gpui_kit::component::list::ListDelegate for WorkspaceFiles {
                 "workspace-file-{}",
                 label
             )))
-            .h(rems(2.))
             .disabled(self.disabled || !entry.supports_editing())
             .accessibility_label(label.clone())
             .tooltip(move |window, cx| {
@@ -65,7 +64,6 @@ impl gpui_kit::component::list::ListDelegate for WorkspaceFiles {
                     .aria_label(label.clone())
                     .test_support()
                     .w_full()
-                    .h_full()
                     .flex()
                     .items_center()
                     .gap_2()
@@ -399,7 +397,11 @@ impl Workbench {
         cx.notify();
     }
 
-    pub(super) fn render_navigation(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_navigation(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let mut navigation = div()
             .id("navigator")
             .flex()
@@ -412,7 +414,6 @@ impl Workbench {
                     div().px_2().py_2().child(
                         Button::new("workspace-overview")
                             .ghost()
-                            .small()
                             .w_full()
                             .justify_start()
                             .icon(gpui_kit::assets::IconName::LayoutDashboard)
@@ -466,7 +467,13 @@ impl Workbench {
                         .child(
                             resizable_panel()
                                 .size(px(280.))
-                                .size_range(px(150.)..px(800.))
+                                .size_range(
+                                    px(if self.workspace_files_open {
+                                        150.
+                                    } else {
+                                        256.
+                                    })..px(800.),
+                                )
                                 .child(self.render_suite_list(cx)),
                         )
                         .child(resizable_panel().size_range(px(120.)..px(1200.)).child(
@@ -479,7 +486,7 @@ impl Workbench {
                 ),
             )
             .when(self.main_tab != 2, |navigation| {
-                navigation.child(self.render_workspace_files(cx))
+                navigation.child(self.render_workspace_files(window, cx))
             })
             .into_any_element()
     }
@@ -757,8 +764,6 @@ impl Workbench {
                 .flex()
                 .items_center()
                 .w_full()
-                .h(px(44.))
-                .p_0()
                 .flex_shrink_0()
                 .min_w_0()
                 .selected(selected)
@@ -783,7 +788,6 @@ impl Workbench {
                 .child(
                     Button::new(("file", index))
                         .ghost()
-                        .h_full()
                         .w_full()
                         .flex_1()
                         .min_w_0()
@@ -928,10 +932,11 @@ impl Workbench {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .h(px(36.))
+                    .py_1()
                     .flex_shrink_0()
                     .child(
                         div()
@@ -956,7 +961,6 @@ impl Workbench {
                     .child(
                         Button::new("navigator-refresh")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::RefreshCw)
                             .tooltip("Refresh suites")
                             .accessibility_label("Refresh suites")
@@ -974,7 +978,6 @@ impl Workbench {
                     .child(
                         Button::new("navigator-new-suite")
                             .ghost()
-                            .xsmall()
                             .icon(IconName::Plus)
                             .tooltip("New suite")
                             .accessibility_label("New suite")
@@ -989,13 +992,13 @@ impl Workbench {
                     Input::new(&self.search)
                         .id("navigator-search")
                         .prefix(IconName::Search)
-                        .cleanable(true)
-                        .small(),
+                        .cleanable(true),
                 ),
             )
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .px_3()
@@ -1003,7 +1006,6 @@ impl Workbench {
                     .child(
                         TabBar::new("navigator-filter")
                             .segmented()
-                            .small()
                             .selected_index(usize::from(self.selected_only))
                             .on_click(cx.listener(|this, index, _, cx| {
                                 this.selected_only = *index == 1;
@@ -1012,29 +1014,37 @@ impl Workbench {
                             .child(Tab::new().label("All"))
                             .child(Tab::new().label("Selected")),
                     )
-                    .child(div().flex_1())
                     .child(
-                        Button::new("sidebar-select-none")
-                            .ghost()
-                            .xsmall()
-                            .label("None")
-                            .accessibility_label("Deselect all suites")
-                            .disabled(self.busy || runs.running() || runs.selected_count() == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.runs
-                                    .update(cx, |panel, cx| panel.select_all(false, cx));
-                            })),
-                    )
-                    .child(
-                        Button::new("sidebar-select-all")
-                            .ghost()
-                            .xsmall()
-                            .label("All")
-                            .accessibility_label("Select all suites")
-                            .disabled(self.busy || runs.running() || valid == 0)
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.runs.update(cx, |panel, cx| panel.select_all(true, cx));
-                            })),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_2()
+                            .ml_auto()
+                            .flex_shrink_0()
+                            .child(
+                                Button::new("sidebar-select-none")
+                                    .ghost()
+                                    .label("None")
+                                    .accessibility_label("Deselect all suites")
+                                    .disabled(
+                                        self.busy || runs.running() || runs.selected_count() == 0,
+                                    )
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.runs
+                                            .update(cx, |panel, cx| panel.select_all(false, cx));
+                                    })),
+                            )
+                            .child(
+                                Button::new("sidebar-select-all")
+                                    .ghost()
+                                    .label("All")
+                                    .accessibility_label("Select all suites")
+                                    .disabled(self.busy || runs.running() || valid == 0)
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.runs
+                                            .update(cx, |panel, cx| panel.select_all(true, cx));
+                                    })),
+                            ),
                     ),
             )
             .child(rows.scrollbar(&self.suite_list.scroll, scroll::ScrollbarAxis::Vertical))
@@ -1189,8 +1199,6 @@ impl Workbench {
                 gpui_kit::component::list::ListItem::new(("scenario-row", index))
                     .flex()
                     .items_center()
-                    .h(px(54.))
-                    .p_0()
                     .flex_shrink_0()
                     .w_full()
                     .min_w_0()
@@ -1216,7 +1224,6 @@ impl Workbench {
                             .child(
                                 Button::new(("scenario", index))
                                     .ghost()
-                                    .h_full()
                                     .flex_1()
                                     .min_w_0()
                                     .justify_start()
@@ -1289,7 +1296,6 @@ impl Workbench {
                                 row.child(
                                     Button::new(("sidebar-scenario-log", index))
                                         .ghost()
-                                        .xsmall()
                                         .icon(gpui_kit::assets::IconName::Terminal)
                                         .tooltip(format!("View run log: {label}"))
                                         .accessibility_label(format!("View run log: {label}"))
@@ -1309,7 +1315,6 @@ impl Workbench {
                                 .child(
                                     Button::new(("sidebar-scenario-test", index))
                                         .ghost()
-                                        .xsmall()
                                         .icon(gpui_kit::assets::IconName::Play)
                                         .tooltip(format!("Run Test: {label}"))
                                         .accessibility_label(format!("Run Test: {label}"))
@@ -1353,10 +1358,11 @@ impl Workbench {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .px_3()
-                    .h(px(36.))
+                    .py_1()
                     .flex_shrink_0()
                     .child(
                         div()
@@ -1378,7 +1384,6 @@ impl Workbench {
                     .child(
                         Button::new("navigator-add-scenario")
                             .ghost()
-                            .xsmall()
                             .icon(IconName::Plus)
                             .tooltip(if viewport {
                                 "Add viewport"
@@ -1416,7 +1421,6 @@ impl Workbench {
                         .id("scenario-search")
                         .prefix(IconName::Search)
                         .cleanable(true)
-                        .small()
                         .disabled(!(suite || viewport)),
                 ),
             )
@@ -1432,7 +1436,6 @@ impl Workbench {
                         .child(
                             Button::new("sidebar-scenarios-none")
                                 .ghost()
-                                .xsmall()
                                 .label("None")
                                 .accessibility_label("Deselect all scenarios")
                                 .disabled(!suite || self.busy || runs.running())
@@ -1443,7 +1446,6 @@ impl Workbench {
                         .child(
                             Button::new("sidebar-scenarios-all")
                                 .ghost()
-                                .xsmall()
                                 .label("All")
                                 .accessibility_label("Select all scenarios")
                                 .disabled(!suite || self.busy || runs.running() || items.is_empty())
@@ -1555,7 +1557,7 @@ impl Workbench {
         }
     }
 
-    fn render_workspace_files(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_workspace_files(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let entries = self
             .session
             .entries
@@ -1594,6 +1596,23 @@ impl Workbench {
                     })),
             );
         if self.workspace_files_open {
+            let row_height = self.workspace_list.update(cx, |list, cx| {
+                use gpui_kit::component::list::ListDelegate as _;
+                list.delegate_mut()
+                    .render_item(IndexPath::new(0), window, cx)
+                    .map_or(px(0.), |row| {
+                        row.into_any_element()
+                            .layout_as_root(
+                                gpui_kit::size(
+                                    gpui_kit::AvailableSpace::MinContent,
+                                    gpui_kit::AvailableSpace::MinContent,
+                                ),
+                                window,
+                                cx,
+                            )
+                            .height
+                    })
+            });
             let focus = self.workspace_list.read(cx).focus_handle(cx);
             let files = div()
                 .id("workspace-file-rows")
@@ -1632,7 +1651,7 @@ impl Workbench {
                 }))
                 .flex()
                 .flex_col()
-                .h(rems(2. * entries.len().min(8) as f32))
+                .h(row_height * entries.len().min(8) as f32)
                 .child(gpui_kit::component::list::List::new(&self.workspace_list));
             section = section.content(div().id("workspace-files").test_support().child(files));
         }

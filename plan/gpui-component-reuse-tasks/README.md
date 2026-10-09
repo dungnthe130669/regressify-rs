@@ -1,9 +1,9 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-017 committed. Task 018 Source font size is
-verified and awaiting its authorized local commit. Native Default passes after
-the owner-approved bounded clipboard-harness repair.
-The approved Linux baseline and task 019 compact-header exceptions remain in force.
+Status: Planning and tasks 001-018 committed. Task 019 is verified and awaiting
+its authorized local commit, with approved contrast-only adjustments and an
+unchanged 4.5:1 requirement. Task 020 reconciliation follows that commit.
+The compact-header exception is closed; the approved Linux baseline exception remains.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -94,9 +94,9 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 015 Git Tree: committed as `55a6142`, with the approved public base adapter and task 019 header exception.
 - [x] 016 Overview Table: committed as `d8e9965`; native Default/Schema pass, with the approved task 019 header exception.
 - [x] 017 Command palette: committed as `6dfd54d`; native Default passes with the approved task 019 header exception.
-- [x] 018 Source font size: verified, awaiting commit; native Default passes and integrated UI has only the approved task 019 header failure.
-- [ ] 019 Stock theme and normal sizing: not started; awaits remaining 003-018.
-- [ ] 020 Final acceptance: not started; awaits remaining 003-019.
+- [x] 018 Source font size: committed as `ecbc562`; native Default passes and integrated UI has only the approved task 019 header failure.
+- [x] 019 Stock theme and normal sizing: verified, awaiting commit; Windows gates/native flows pass with the approved contrast-only adjustments and unchanged 1000x640 minimum.
+- [ ] 020 Final acceptance: not started; awaits 019 and the approved Linux disposition.
 
 When a task changes state, record the exact focused command, exact outcome and nonzero test count, required gates, any approved deferral and its owner, and commit ID if one is authorized and created. Do not mark a failed, skipped, zero-test, or unavailable gate green.
 
@@ -885,10 +885,235 @@ When a task changes state, record the exact focused command, exact outcome and n
   GUI tests +313/-11, native Default +105/-4, shared helper +4/-1 and headless
   regression +9. Reviewed strict parsing, no-op/rejected steps, serialized
   saves, weak subscription ownership and unchanged configuration/history.
-  No new dependency or toolkit change. Task 018 is verified, awaiting commit;
-  tasks 019-020 remain unstarted and the Linux exception is unchanged.
+  No new dependency or toolkit change. Task 018 is committed as `ecbc562`;
+  its post-commit worktree was clean. The Linux exception is unchanged.
+
+### Task 019 Verification
+
+- Started from clean task 018 commit `ecbc562`. Baseline commands use temporary
+  `CARGO_INCREMENTAL=0`. `cargo test --locked --features gui-tests --lib
+  theme_choices_persist_without_changing_drafts_and_explicit_modes_ignore_system_changes
+  -- --test-threads=1` passes (1 test), as does the same command with filter
+  `both_palettes_keep_text_readable_and_keyboard_focus_visible` (1 test).
+- A small baseline capture probe in existing Titlebar smoke passes headless
+  checks (18 modules, 49 helpers, 45 dispatch/cleanup cases). Rebuilt task 018
+  binary `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild -TitlebarFlows`
+  passes existing pointer, window controls, drag and unsaved-close checks, with
+  preferences and dirty fixture restored.
+- Inspected all four `stock-sizing-before-{light,dark}-{1000,1600}.png` images.
+  Requested 1000x640 produces 1016x648 outer bounds on Windows; large captures
+  are 1600x1000. The minimum-size header clips right-side controls. These are
+  pre-change captures, not completed header-fit evidence. Minimum remains
+  1000x640; no increase or workaround removal has been made.
+- The first production pilot removes custom palette, UI font and radius
+  overrides while retaining visible focus rings and existing scrollbar policy.
+  An initially misapplied patch caused a compile error before tests; the exact
+  committed helpers were restored, and the final diff changes only apply_theme.
+- Immediate unchanged `cargo test --locked --features gui-tests --lib
+  both_palettes_keep_text_readable_and_keyboard_focus_visible -- --test-threads=1`:
+  compiles, then 0 passed, 1 failed: `secondary contrast 4.35 with dark=false`.
+  The pre-edit palette passed the same test. Remaining color pairs are not
+  claimed verified because the test stops at this first failure.
+- This triggers task 019's explicit insufficient-contrast reopen condition.
+  Palette policy needs an owner decision before continuing. No threshold,
+  assertion, toolkit source or dependency has been changed; no task 019 commit,
+  stock-theme native acceptance or final feature-gate pass is claimed.
+  Header repair, normal-size sweep and task 020 remain pending.
+- Owner decision: allow minimal contrast-only color adjustments to satisfy the
+  existing accessibility gate. Preserve stock typography, sizing and all other
+  styling; no brand palette, lowered threshold or toolkit/dependency change.
+  The same test now aggregates all failing pairs without removing a pair or
+  changing its threshold, so the actual adjustment scope can be measured.
+- Aggregate stock failures were light secondary/success/warning/error/info and
+  danger-button pairs in both themes. The approved correction preserves hue and
+  saturation, minimally moves failing foreground lightness, and resolves stock
+  danger tints over the stock background. The original 4.5:1 gate plus danger
+  hover/active pairs now passes (1); no brand colors or font/radius overrides.
+- The normal header packs name/version, retains full app menus and accessible
+  actions, bounds the visible Git badge and permits content shrinkage. Deploy
+  remains an accessible normal-sized icon button. The unchanged
+  `git_large_tree_and_status_fit_compact_and_wide_windows` passes (1). Native
+  minimum-size theme switching and workaround removal still need verification.
+- Editing/navigation sweep removes 30 compact overrides with measured list
+  heights, wrapping action groups and a 288px default sidebar (minimum window
+  unchanged). With `cargo test --locked --features gui-tests --lib <filter>
+  -- --test-threads=1`, focused checks pass: `navigator_` (7), `workspace_files_`
+  (3), `setting_search_` (1), `numeric_stepper_` (2), `source_font_size_` (3),
+  `source_line_commands` (12), `scenario_sequence_` (1), `flat_collection_sequence_`
+  (3), `sequence_removal_` (1), `external_reload_keeps_` (2), `toolbar_editor_`
+  (2), `suite_name_dialog_` (6), and
+  `problem_links_focus_drafts_and_resets_preserve_other_invalid_fields` (1).
+- Diagnostic jump buttons now use normal 32px controls; only their obsolete
+  exact 20px size expectation changed. The complete
+  `schema_issue_panel_scrolls_and_keeps_text_inside_compact_and_large_windows`
+  passes (1), retaining message, centering, scrolling and jump assertions.
+- Results/Run sweep removes 34 compact overrides and four fixed heights.
+  Focused filters pass with the same command flags: `flat_collection_capture_`
+  (2), `result_capture_list_scrolls_` (1), `results_filter_errors_` (1),
+  `scenario_approval_` (1), `approval_completion_` (1), `report_approval_` (2),
+  `comparison_completion_` (4), `run_log_` (7), `capture_log_` (3),
+  `log_pagination_` (2), `log_health_warning_` (1), `scenario_checklists_` (1),
+  `multiple_suites_can_be_checked` (1), `run_settings_are_available` (1),
+  `direct_commands_flush_pending` (1), `live_dashboard_tracks` (1),
+  `runs_open_site_` (1), `deployment_activity_` (2), and `preview_loading_` (1).
+- Metadata initially failed the old 160px height and 8px text-gap assertions.
+  Paired URLs now share a stock two-column DescriptionList row. The owner
+  approved a bounded label-cell repair and then stock-aware geometry checks:
+  keep the 8px gaps between control bounds and separately assert the stock 10px
+  text inset. Exact metadata, copy, height and vertical alignment remain;
+  `scenario_information_hover` passes (1).
+- Reducing image command-band padding preserved normal controls and passed the
+  unchanged 110px header-space limit. Fit-width then exposed a fractional-pane
+  rounding mismatch: 300x1600 canvas, 259px viewport, 1379.5px painted height
+  versus 1381.33px expected. The owner approved a bounded public measurement
+  repair with the one-pixel tolerance and all zoom policies retained.
+- Pixel-aligned pane widths now apply only to side-by-side FitWidth through
+  the existing public canvas layout API. The previously failing fit regression
+  passes (1); final neighboring `image_previews_` (3), `side_by_side_scrolls_`
+  (1), `image_context_menus_` (1), `results_normal_` (2) and
+  `runs_normal_controls_` (1) all pass. No toolkit edit or dependency change.
+- The remaining Overview/Git/publishing/update control sweep is implemented.
+  Full Git UI passes 24 tests after bounded short-tree space sharing, a 480px
+  default review column within the existing resize range, footer spacing and
+  paired Fetch/Push URL rows. No Git assertions or operation guards changed.
+- Native harness work removes the wide-only theme workarounds and adds chosen
+  minimum-size checks; headless checks pass (18 modules, 50 helpers, 45
+  dispatch/cleanup cases, 41 sizing cases). Current-binary native execution is
+  still pending; removing a workaround is not proof that its closure check passes.
+- The authoritative full `cargo test --locked --features gui-tests --lib desktop::ui -- --test-threads=1 --quiet`
+  run reported 271 passed, 3 failed, 0 ignored, 903 filtered in 2872.10s.
+  A preceding delegate's claimed 24-test full-UI pass was inconsistent and is
+  not accepted as full-gate evidence. The three failures clicked offscreen
+  controls in normal-sized scrollable Fields and Run settings.
+- On 2026-10-09, resumed with only those failures after the owner raised the
+  cost of repeated broad runs. `deployment_preserves_inherited_and_explicit_report_options`
+  reproduced alone (0 passed, 1 failed), then passed (1) after measured native
+  scrolling. The other two fixtures now use the same real scroll-to-target
+  interaction; production code and all behavioral assertions are unchanged.
+- One shared rebuild and the exact focused command below passed 3 tests,
+  0 failed, 0 ignored, 1174 filtered in 16.69s. The rebuild took 2m08s; the
+  earlier single-test rebuild took 2m53s including build-directory lock waiting.
+
+  ```powershell
+  cargo test --locked --features gui-tests --lib -- --test-threads=1 controlled_group_search_and_error_restore_preference_without_losing_input deployment_preserves_inherited_and_explicit_report_options editing_real_suite_fields_preserves_plain_css_selectors
+  ```
+
+- The focused checks retain invalid drafts, collapse preference/focus return,
+  inherited versus explicit report options, exact CSS selectors, comments and
+  saved content. `cargo fmt --all -- --check` and editor diagnostics pass.
+  No broad suite was rerun for these repairs. Further broad runs require owner
+  approval; the 3-test pass does not replace outstanding full/native gates.
+- Remaining: final candidate review/maintenance, required feature/native gates
+  and minimum-size evidence. Task 019 remains uncommitted; task 020 has not
+  started. Plans are retained and no release is authorized by this work.
+
+### Task 019 Native Acceptance
+
+- Native Titlebar initially reproduced long workspace-name clipping at the
+  1000x640 minimum. The existing path-header test now uses a long name and
+  failed before the viewport/native-caption bound, then passed (1). Neighboring
+  compact-header and long-Git-status checks passed (2). Full paths remain
+  accessible; neither control sizes nor the application minimum were reduced.
+- The new harness incorrectly expected an Edit application menu; the approved
+  catalog is File/Publish/Help. A headless regression failed before correcting
+  that list. The owner approved native Tab/Enter/Escape testing for the
+  appearance dropdown, which is enabled/focusable but lacks InvokePattern.
+  Commands, Deploy and Switch workspace retain Invoke checks. Native Titlebar
+  now passes four minimum/large theme combinations and window/close guards.
+- Git tooltip checks exposed frozen elapsed-time text and missing explicit
+  accessible tooltip content. The bounded Kit tooltip now uses a plain Label
+  and reads live status through a weak Git owner. The extended long-status
+  regression passes exact text, updates while open and viewport bounds (1).
+  Full native Git passes the unchanged exact tooltip check and long-conflict
+  theme switching at minimum/large sizes, plus local-repository workflows.
+- Native Schema passes minimum/large/legacy-compact Fields disclosure, exact
+  source, diagnostics, keyboard completion, line commands, saves and external
+  conflicts. Default passes Overview/Details, commands, Source font preference,
+  Results/log/approval and Run checks. Add dropdown focus uses real bounded Tab
+  traversal; its exact Add-to-More Left-wrap assertion is unchanged. The added
+  minimum-size Actions menu uses the existing settings search before clicking.
+- Native Comparison passes pixel/fit/pan/zoom/crosshair checks in both themes
+  at 1000x640, 1080x720 and 1600x1000, plus empty suites, scoped approval and
+  failed-image artwork. Its return to the second suite now scrolls that row
+  into view; exact report identity and all pixel assertions remain.
+- Artifact exposed suite rows hidden after large-to-minimum resize. The new
+  `navigator_suite_rows_remain_clickable_after_minimum_resize` failed before
+  the internal pane minimum repair. The suite pane reserves 256px when workspace
+  files are collapsed and retains its existing 150px allowance when expanded,
+  preserving the eight-row workspace-files budget. Initial neighbors: 10 passed,
+  1 failed; final resize plus workspace-file scrolling check: 2 passed in 266.87s.
+  No window minimum increase. Native Artifact passes create/rename/delete,
+  scope guards, restart and exact artifact preservation after a user-requested
+  retry of a focus-prerequisite failure. The added Rename size matrix uses its
+  real suite context menu; the original F2/Escape tests remain.
+- Publishing also needed a user-requested retry of the focus prerequisite.
+  Its retained landing editor is scrolled to the toolbar before local removal.
+  Final Publishing passes token masking/reuse, landing/draft/target workflows
+  and all sizes/themes with synthetic credential/catalog cleanup and no remote
+  publication. Final Deployment passes saved URLs, subset/provider guards,
+  selectable exact logs, persistence and missing-token outcomes at all sizes.
+- Native commands were `pwsh -NoProfile -STA -File ./ci/desktop-smoke.ps1 -SkipBuild`
+  with no switch (Default), or `-TitlebarFlows`, `-GitFlows`, `-SchemaFlows`,
+  `-ComparisonFlows`, `-ArtifactFlows`, `-PublishingFlows`, `-DeploymentFlows`.
+  All completed passing runs restored preferences; no failed prerequisite or
+  intermediate failure is counted as passing. The last sidebar-only change
+  was verified by focused tests and rebuilt Artifact/Publishing/Deployment;
+  earlier successful flows are not misrepresented as reruns of that binary.
+- Inspected minimum/large Source/titlebar, command and deployment-dialog images;
+  minimum Git text diff and live conflict tooltips in both themes; minimum
+  Artifact rename/delete; and minimum landing-site/token-editor captures under
+  `target/desktop-smoke`. Other recorded captures remain available for final
+  review. Headless harness passes: 18 modules, 50 helpers, 45 dispatch/cleanup
+  and 41 sizing cases. Final Rust/guidance/review gates remain; no task commit.
+- Final read-only review found no concrete defect in the header/tooltip,
+  navigation, normal-control, metadata and fit-width ownership paths. This is
+  review evidence, not a substitute for the pending full test gate.
+- Current `cargo fmt --all -- --check` and
+  `cargo clippy --locked --features gui --lib -- -D warnings` pass (Clippy 25.30s),
+  with temporary `CARGO_INCREMENTAL=0`. Guidance validation passes for 46 skills;
+  all 10 self-tests and scoped Markdown checks pass. Existing MD004 configuration
+  warning is unchanged. Latest desktop build passed in 1m24s.
+- Task 019 accounting against `ecbc562`: production UI net +52 lines; GUI tests
+  net +528 (including 371 lines in inline test modules); native flows net +302;
+  headless harness tests net +187. No new application subscriptions/domain state,
+  toolkit dependency, vendoring or fork. Public layout/contrast helpers and the
+  weak tooltip wrapper account for the retained adapters; test additions are
+  not counted as production reduction.
+- Required broad Rust verification remains approval-gated because the previous
+  full UI run took 47m52s. A fresh consolidated final pass has not yet run; no
+  task 019 commit or task 020 completion is claimed from the focused/native
+  evidence alone.
+- Owner approved one consolidated final Rust pass on this unchanged candidate,
+  reusable for tasks 019 and 020 to avoid duplicate long runs. Keep separate
+  CLI, desktop-model and GUI/worker results, local per-task commits and all plan
+  files. Only documentation/status integration may follow without invalidating
+  that reuse; implementation changes require affected checks again.
+- Consolidated final pass started on runtime-diff SHA-256
+  `7E24A2E7C60C9EEC9956ECBC8C1973BDEF27B062DDC4BFF752971CE9AD399EA0`.
+  `cargo test --locked --all-targets -- --quiet` passes: 524 passed, 23 ignored
+  (7.94s tests; 52.74s build). Windows
+  `cargo test --locked --features desktop --lib -- --quiet` passes: 864 passed,
+  31 ignored (164.46s tests; 1m07s build). Neither ignored tests nor Windows
+  results establish Linux coverage.
+- The single approved `cargo test --locked --features gui-tests --all-targets -- --test-threads=1 --quiet`
+  passes: 1,146 library tests passed, 0 failed, 32 ignored (3153.40s), and 11
+  worker tests passed, 0 failed, 4 ignored (6.56s). Build took 2m43s. This is
+  the authoritative aggregate, including all repaired UI cases and the closed
+  header assertion, not a sum of earlier focused runs.
+- Runtime-diff fingerprint matched exactly after all gates. Final production
+  `cargo build --locked --features gui --bin regressify-desktop` passes (26.03s),
+  restoring the production feature binary after all-target tests. Formatting,
+  production GUI Clippy, guidance/self-tests and scoped Markdown already passed
+  on this unchanged implementation. Task 019 is verified and awaiting its local
+  commit; task 020 may reuse these results under the explicit owner approval.
 
 ### Approved Compact Header Exception
+
+Closure evidence: task 019's focused header tests and native Titlebar/Git now
+pass at the unchanged 1000x640 minimum in both themes, including long workspace
+and conflict names. Wide-only theme workarounds are removed. The historical
+exception below is closed for header fit, not an exemption from pending final
+Rust verification.
 
 - Origin: task 013 native Schema retry passed disclosure/focus/source checks in
   large and compact light layouts, then failed `Native control 'Dark' was not

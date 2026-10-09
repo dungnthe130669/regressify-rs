@@ -24,6 +24,38 @@ function Test-ArtifactFlows {
     Invoke-Control 'Close' -Pointer
     Wait-WindowState { $null -eq (Find-Control 'Create') } 'The suite dialog X button did not close it.'
     if (Test-Path (Join-Path $workspace 'visual_tests/cancelled-suite.tests.yaml')) { throw 'Closing the create dialog saved a suite.' }
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+            $buttonCondition = [System.Windows.Automation.AndCondition]::new(
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::NameProperty, 'New suite'),
+                [System.Windows.Automation.PropertyCondition]::new([System.Windows.Automation.AutomationElement]::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+            )
+            $newSuite = $root.FindFirst([System.Windows.Automation.TreeScope]::Descendants, $buttonCondition)
+            if ($null -eq $newSuite) { throw 'The New suite button is unavailable at the selected size.' }
+            ([System.Windows.Automation.InvokePattern]$newSuite.GetCurrentPattern([System.Windows.Automation.InvokePattern]::Pattern)).Invoke()
+            Wait-Control 'Filename' | Out-Null
+            Wait-Control 'Create' | Out-Null
+            Capture-Window ('suite-create-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Invoke-Control 'Close' -Pointer
+            Wait-WindowState { $null -eq (Find-Control 'Filename') } 'The sized create dialog did not cancel.'
+            Hover-Control 'account.tests.json'
+            Send-FixturePointerClick -Right
+            Wait-Control 'Rename suite' | Out-Null
+            Invoke-Control 'Rename suite' -Pointer
+            Wait-Control 'Filename' | Out-Null
+            if ((Read-ControlText 'Filename') -cne 'account.tests.json') { throw 'The sized Rename dialog targeted a different suite.' }
+            Capture-Window ('suite-rename-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Invoke-Control 'Close' -Pointer
+            Wait-WindowState { $null -eq (Find-Control 'Filename') } 'The sized Rename dialog did not cancel.'
+            if (-not (Test-Path (Join-Path $workspace 'visual_tests/account.tests.json'))) { throw 'Cancelling the sized Rename dialog moved the suite.' }
+        }
+    }
+    Select-Theme 'Light'
+    Invoke-Control 'smoke.tests.json'
+    Invoke-Control 'Checkout'
     foreach ($mode in @('input', 'button')) {
         Write-Host "Checking create-dialog Enter from $mode"
         $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
@@ -60,6 +92,16 @@ function Test-ArtifactFlows {
         throw 'Test was enabled without a baseline.'
     }
     if (-not (Test-ControlInvokable 'Run Suite Reference')) { throw 'Reference capture must remain available.' }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control '0 reference images / 0 saved test runs' | Out-Null
+        if ((Test-ControlInvokable 'Run Suite Test') -or (Test-ControlInvokable 'Run Scenario Test')) { throw 'Minimum-size Test was enabled without a baseline.' }
+        if (-not (Test-ControlInvokable 'Run Suite Reference')) { throw 'Minimum-size Reference capture must remain available.' }
+        Capture-Window ('artifacts-no-baseline-' + $theme.ToLowerInvariant() + '-minimum')
+    }
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     Invoke-Control 'Runs'
     Invoke-Control 'Suites'
     Invoke-Control 'Select all'
@@ -110,6 +152,14 @@ function Test-ArtifactFlows {
         throw 'Opening the saved capture report changed screenshots.'
     }
     if (@(Get-ChildItem (Join-Path $accountOutput 'bitmaps_test') -Directory).Count -ne 1) { throw 'Opening a saved report created a new capture run.' }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control 'Reference 640 x 420' | Out-Null
+        Wait-Control 'Test 640 x 420' | Out-Null
+        Capture-Window ('artifacts-compared-saved-run-' + $theme.ToLowerInvariant() + '-minimum')
+        if ((Get-FileHash $reference).Hash -ne $referenceHash -or (Get-FileHash $capture).Hash -ne $captureHash) { throw 'Minimum-size saved-report review changed screenshot bytes.' }
+    }
     $process.CloseMainWindow() | Out-Null
     if (-not $process.WaitForExit(10000)) { throw 'Artifact fixture did not close cleanly.' }
     Start-Fixture
@@ -174,6 +224,17 @@ function Test-ArtifactFlows {
     Capture-Window 'suite-delete-confirmation'
     Invoke-Control 'Cancel'
     if (-not (Test-Path $renamedOutput)) { throw 'Cancelling suite deletion removed its artifacts.' }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Invoke-Control 'Customer account review' -Pointer
+        Send-FixtureKeys Delete
+        Wait-Control 'Delete suite and its data?' | Out-Null
+        Capture-Window ('suite-delete-confirmation-' + $theme.ToLowerInvariant() + '-minimum')
+        Invoke-Control 'Cancel' -Pointer
+        Wait-WindowState { $null -eq (Find-Control 'Delete suite and its data?') } 'Minimum-size deletion cancellation did not dismiss the dialog.'
+        if (-not (Test-Path $renamedSource) -or -not (Test-Path $renamedOutput)) { throw 'Minimum-size deletion cancellation removed suite data.' }
+    }
     Invoke-Control 'Customer account review' -Pointer
     Send-FixtureKeys Delete
     Invoke-Control 'Delete'

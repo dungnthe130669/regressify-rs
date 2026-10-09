@@ -2,6 +2,12 @@
 
 Status: Not started. Depends on all tasks 001-019.
 
+Owner-approved verification scheduling: one fresh consolidated pass after the
+task 019 implementation may supply both task records, avoiding a duplicate long
+run while only documentation/status changes afterward. Preserve separate feature
+gate results and per-task commits; any implementation change requires affected
+verification again. This approval does not waive a failing or unavailable gate.
+
 ## Scope
 
 Reconcile every requirement in the [refined plan](../gpui-component-reuse.md)

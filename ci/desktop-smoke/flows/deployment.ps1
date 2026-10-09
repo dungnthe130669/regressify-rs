@@ -130,19 +130,35 @@ function Test-DeploymentFlows {
     Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
     if (Test-ControlInvokable 'Deploy selected reports') { throw 'Subset deployment must require confirmation.' }
     Capture-Window 'deploy-partial-selection'
-    foreach ($theme in @('Dark', 'Light')) {
-        Invoke-Control 'Close'
-        Select-Theme $theme
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
-        Capture-Window ('compact-titlebar-' + $theme.ToLowerInvariant())
-        Invoke-Control 'Runs'
-        $siteBounds = (Wait-Control 'Open Site').Current.BoundingRectangle
-        $reportBounds = (Wait-Control 'Open Report').Current.BoundingRectangle
-        if ($siteBounds.Top -ne $reportBounds.Top -or $siteBounds.Left -lt $reportBounds.Right) { throw 'Open Site must be beside Open Report.' }
-        Capture-Window ('deploy-runs-links-' + $theme.ToLowerInvariant() + '-compact')
-        Invoke-Control 'Deploy'
-        Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
-        Capture-Window ('deploy-' + $theme.ToLowerInvariant() + '-compact')
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        $captureSize = if ($dimensions[1] -eq 640) { 'minimum' } elseif ($dimensions[0] -eq 1080) { 'compact' } else { 'large' }
+        foreach ($theme in @('Dark', 'Light')) {
+            Invoke-Control 'Close'
+            Select-Theme $theme
+            Capture-Window ($captureSize + '-titlebar-' + $theme.ToLowerInvariant())
+            Invoke-Control 'Runs'
+            $siteBounds = (Wait-Control 'Open Site').Current.BoundingRectangle
+            $reportBounds = (Wait-Control 'Open Report').Current.BoundingRectangle
+            if ($siteBounds.Top -ne $reportBounds.Top -or $siteBounds.Left -lt $reportBounds.Right) { throw 'Open Site must be beside Open Report.' }
+            Capture-Window ('deploy-runs-links-' + $theme.ToLowerInvariant() + '-' + $captureSize)
+            Invoke-Control 'Deploy'
+            Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+            if (Test-ControlInvokable 'Deploy selected reports') { throw 'Resizing must not bypass subset deployment confirmation.' }
+            $link = Wait-Control 'Open deployed site'
+            if ($link.Current.ControlType -ne [System.Windows.Automation.ControlType]::Hyperlink) { throw 'The resized deployed URL must remain a native link.' }
+            $linkBounds = $link.Current.BoundingRectangle
+            $copyBounds = (Wait-Control 'Copy deployed URL').Current.BoundingRectangle
+            if ($copyBounds.Left -lt $linkBounds.Right -or $copyBounds.Left - $linkBounds.Right -gt 12) { throw 'Resizing separated Copy from the deployed link.' }
+            if ($linkBounds.Width -gt 280) { throw 'Resizing stretched a short deployed URL across the dialog.' }
+            Capture-Window ('deploy-' + $theme.ToLowerInvariant() + '-' + $captureSize)
+            Invoke-Control 'Edit target'
+            Wait-Control 'Azure environment' | Out-Null
+            if ((Read-ControlText 'Azure environment') -cne 'preview') { throw 'Resizing changed the saved Azure environment.' }
+            Capture-Window ('deploy-azure-' + $theme.ToLowerInvariant() + '-' + $captureSize)
+            Invoke-Control 'Cancel edit'
+            Wait-Control 'Yes, deploy only these 1 of 2 suites' | Out-Null
+        }
     }
     Invoke-Control 'Yes, deploy only these 1 of 2 suites'
     if (-not (Test-ControlInvokable 'Deploy selected reports')) { throw 'Confirmed deployment must be invokable.' }
@@ -158,16 +174,27 @@ function Test-DeploymentFlows {
     $deploymentLog = Read-ControlText 'Deployment log text'
     Test-DeploymentCopy 'Copy deployment log' $deploymentLog
     Test-DeploymentCopy 'Deployment log text' $deploymentLog -SelectAll
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
-        Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant())
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
-        Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant() + '-compact')
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        $captureSuffix = if ($dimensions[1] -eq 640) { '-minimum' } elseif ($dimensions[0] -eq 1080) { '-compact' } else { '' }
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Wait-Control 'Deployment failed' | Out-Null
+            Wait-SourceText 'outcome=Failure' 'Deployment log text'
+            Test-DeploymentCopy 'Deployment log text' $deploymentLog -SelectAll
+            Capture-Window ('deploy-outcome-' + $theme.ToLowerInvariant() + $captureSuffix)
+        }
     }
     Invoke-Control 'View Log'
     Wait-SourceText 'outcome=Failure' 'Run log'
     Capture-Window 'deploy-missing-token'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-SourceText 'outcome=Failure' 'Run log'
+        Capture-Window ('deploy-missing-token-' + $theme.ToLowerInvariant() + '-minimum')
+    }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Invoke-Control 'Deployment targets'
     Wait-Control 'QA reports' | Out-Null
     Invoke-Control 'Edit target'
@@ -229,18 +256,19 @@ function Test-DeploymentFlows {
     if (-not [RegressifySmokeCredentials]::ExistsLocally($credentialName)) { throw 'Netlify token did not survive restart.' }
     Capture-Window 'deploy-netlify-restored'
     Invoke-Control 'Close'
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
-        Invoke-Control 'Deployment targets'
-        Invoke-Control 'Edit target'
-        Wait-Control 'Netlify Site ID' | Out-Null
-        if ((Read-ControlText 'Netlify Site ID') -ne $netlifySiteId) { throw 'Saved Netlify Site ID was not restored.' }
-        Capture-Window ('deploy-netlify-' + $theme.ToLowerInvariant())
-        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
-        Capture-Window ('deploy-netlify-' + $theme.ToLowerInvariant() + '-compact')
-        Invoke-Control 'Cancel edit'
-        Invoke-Control 'Close'
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        $captureSuffix = if ($dimensions[1] -eq 640) { '-minimum' } elseif ($dimensions[0] -eq 1080) { '-compact' } else { '' }
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Invoke-Control 'Deployment targets'
+            Invoke-Control 'Edit target'
+            Wait-Control 'Netlify Site ID' | Out-Null
+            if ((Read-ControlText 'Netlify Site ID') -ne $netlifySiteId) { throw 'Saved Netlify Site ID was not restored.' }
+            Capture-Window ('deploy-netlify-' + $theme.ToLowerInvariant() + $captureSuffix)
+            Invoke-Control 'Cancel edit'
+            Invoke-Control 'Close'
+        }
     }
     [RegressifySmokeCredentials]::Remove($credentialName)
     Clear-DeploymentFixtureSelection

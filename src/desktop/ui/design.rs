@@ -289,98 +289,86 @@ pub(super) fn apply_theme(dark: bool, window: Option<&mut Window>, cx: &mut App)
         cx,
     );
     let theme = Theme::global_mut(cx);
-    theme.font_family = if cfg!(target_os = "windows") {
-        "Bahnschrift"
-    } else if cfg!(target_os = "macos") {
-        "Avenir Next"
-    } else {
-        "Noto Sans"
-    }
-    .into();
-    theme.font_size = px(14.);
-    theme.radius = px(4.);
-    theme.radius_lg = px(6.);
     theme.focus_ring = true;
     theme.scrollbar_mode = gpui_kit::component::scroll::ScrollbarMode::Always;
     let colors = &mut theme.colors;
-    colors.background = rgb(if dark { 0x181c20 } else { 0xffffff }).into();
-    colors.foreground = rgb(if dark { 0xecf0f2 } else { 0x223036 }).into();
-    colors.muted = rgb(if dark { 0x252b30 } else { 0xf2f4f5 }).into();
-    colors.muted_foreground = rgb(if dark { 0xa9b6bd } else { 0x4f5f65 }).into();
-    colors.border = rgb(if dark { 0x48535b } else { 0xd2dbdf }).into();
-    colors.input = rgb(if dark { 0x7b878e } else { 0x849197 }).into();
-    colors.primary = rgb(if dark { 0x54c5a6 } else { 0x087f69 }).into();
-    colors.primary_hover = rgb(if dark { 0x60d6bc } else { 0x086c5b }).into();
-    colors.primary_active = rgb(if dark { 0x35ab90 } else { 0x075647 }).into();
-    colors.primary_foreground = rgb(if dark { 0x10251f } else { 0xffffff }).into();
-    colors.accent = rgb(if dark { 0x203d35 } else { 0xe2f3ec }).into();
-    colors.accent_foreground = colors.foreground;
-    colors.secondary = colors.muted;
-    colors.secondary_hover = colors.accent;
-    colors.secondary_active = colors.accent;
-    colors.secondary_foreground = colors.foreground;
-    colors.button = rgb(if dark { 0x30383f } else { 0xf8fafb }).into();
-    colors.button_hover = colors.accent;
-    colors.button_active = colors.muted;
-    colors.button_foreground = colors.foreground;
-    colors.button_secondary = colors.secondary;
-    colors.button_secondary_hover = colors.secondary_hover;
-    colors.button_secondary_active = colors.secondary_active;
-    colors.button_secondary_foreground = colors.secondary_foreground;
-    colors.button_primary = colors.primary;
-    colors.button_primary_hover = colors.primary_hover;
-    colors.button_primary_active = colors.primary_active;
-    colors.button_primary_foreground = colors.primary_foreground;
-    colors.success = rgb(if dark { 0x81d79c } else { 0x206c43 }).into();
-    colors.danger = rgb(if dark { 0xff969a } else { 0xb12f3b }).into();
-    colors.danger_hover = rgb(if dark { 0xffb5b8 } else { 0x962331 }).into();
-    colors.danger_active = rgb(if dark { 0xec7c85 } else { 0x7d1d28 }).into();
-    colors.danger_foreground = rgb(if dark { 0x2d1217 } else { 0xffffff }).into();
-    colors.button_danger = colors.danger;
-    colors.button_danger_hover = colors.danger_hover;
-    colors.button_danger_active = colors.danger_active;
-    colors.button_danger_foreground = colors.danger_foreground;
-    colors.warning = rgb(if dark { 0xe8c174 } else { 0x825606 }).into();
-    colors.info = rgb(if dark { 0x81cce7 } else { 0x236680 }).into();
-    colors.popover = rgb(if dark { 0x22292e } else { 0xffffff }).into();
-    colors.popover_foreground = colors.foreground;
-    colors.list = colors.background;
-    colors.list_head = colors.muted;
-    colors.list_even = colors.muted;
-    colors.list_hover = colors.accent;
-    colors.list_active = colors.accent;
-    colors.list_active_border = colors.primary;
-    colors.tab = colors.background;
-    colors.tab_bar = colors.background;
-    colors.tab_bar_segmented = colors.muted;
-    colors.tab_foreground = colors.muted_foreground;
-    colors.tab_active = colors.popover;
-    colors.tab_active_foreground = colors.foreground;
-    colors.sidebar = colors.muted;
-    colors.sidebar_foreground = colors.foreground;
-    colors.sidebar_border = colors.border;
-    colors.sidebar_accent = colors.accent;
-    colors.sidebar_accent_foreground = colors.foreground;
-    colors.sidebar_primary = colors.primary;
-    colors.sidebar_primary_foreground = colors.primary_foreground;
-    colors.title_bar = colors.muted;
-    colors.title_bar_border = colors.border;
-    colors.status_bar = colors.muted;
-    colors.status_bar_border = colors.border;
-    colors.window_border = colors.border;
-    colors.group_box = colors.muted;
-    colors.group_box_foreground = colors.foreground;
-    colors.selection = colors.primary.opacity(if dark { 0.28 } else { 0.18 });
-    colors.link = colors.info;
-    colors.link_hover = colors.primary;
-    colors.link_active = colors.primary_active;
-    colors.ring = colors.primary;
-    colors.caret = colors.primary;
+    let muted = colors.muted;
+    for color in [
+        &mut colors.muted_foreground,
+        &mut colors.success,
+        &mut colors.warning,
+        &mut colors.danger,
+        &mut colors.info,
+    ] {
+        *color = readable_color(*color, &[muted]);
+    }
+    // Keep the stock visible tint while making contrast independent of the parent surface.
+    colors.button_danger = colors.background.blend(colors.button_danger);
+    colors.button_danger_hover = colors.background.blend(colors.button_danger_hover);
+    colors.button_danger_active = colors.background.blend(colors.button_danger_active);
+    colors.button_danger_foreground = readable_color(
+        colors.button_danger_foreground,
+        &[
+            colors.button_danger,
+            colors.button_danger_hover,
+            colors.button_danger_active,
+        ],
+    );
     theme.tokens = (&theme.colors).into();
     Theme::sync_base(cx);
     if let Some(window) = window {
         window.refresh();
     }
+}
+
+fn readable_color(color: Hsla, backgrounds: &[Hsla]) -> Hsla {
+    let luminance = |color: Hsla| {
+        let color = color.to_rgb();
+        let linear = |channel: f32| {
+            let channel = f64::from(channel);
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    };
+    let contrast = |color: Hsla| {
+        let foreground = luminance(color);
+        backgrounds
+            .iter()
+            .map(|background| {
+                let background = luminance(*background);
+                (foreground.max(background) + 0.05) / (foreground.min(background) + 0.05)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    if contrast(color) >= 4.5 {
+        return color;
+    }
+    let mut corrected = color;
+    corrected.l = 0.;
+    let black_contrast = contrast(corrected);
+    corrected.l = 1.;
+    let target = if black_contrast > contrast(corrected) {
+        0.
+    } else {
+        1.
+    };
+    let (mut low, mut high) = (0., 1.);
+    // Preserve hue/saturation and minimize the correction, with a small rendering margin.
+    for _ in 0..24 {
+        let fraction = (low + high) / 2.;
+        corrected.l = color.l + (target - color.l) * fraction;
+        if contrast(corrected) >= 4.6 {
+            high = fraction;
+        } else {
+            low = fraction;
+        }
+    }
+    corrected.l = color.l + (target - color.l) * high;
+    corrected
 }
 
 pub(super) fn group(key: &str) -> (usize, &'static str) {
@@ -456,7 +444,6 @@ impl Workbench {
         let focus = self.focus.clone();
         Button::new("theme-picker")
             .ghost()
-            .xsmall()
             .icon(icon)
             .accessibility_label(format!("Appearance: {label}"))
             .tooltip(format!("Appearance: {label}"))
@@ -501,6 +488,7 @@ mod tests {
     #[gpui_kit::test]
     fn both_palettes_keep_text_readable_and_keyboard_focus_visible(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
+        let mut failures = Vec::new();
         for dark in [false, true] {
             cx.update(|cx| {
                 super::apply_theme(dark, None, cx);
@@ -520,6 +508,16 @@ mod tests {
                         theme.button_danger_foreground,
                         theme.button_danger,
                     ),
+                    (
+                        "danger button hover",
+                        theme.button_danger_foreground,
+                        theme.button_danger_hover,
+                    ),
+                    (
+                        "danger button active",
+                        theme.button_danger_foreground,
+                        theme.button_danger_active,
+                    ),
                     ("popup", theme.popover_foreground, theme.popover),
                     ("tab", theme.tab_foreground, theme.tab_bar_segmented),
                     ("success", theme.success, theme.muted),
@@ -530,13 +528,16 @@ mod tests {
                     let front = luminance(foreground);
                     let back = luminance(background);
                     let contrast = (front.max(back) + 0.05) / (front.min(back) + 0.05);
-                    assert!(
-                        contrast >= 4.5,
-                        "{name} contrast {contrast:.2} with dark={dark}"
-                    );
+                    let readable = contrast >= 4.5;
+                    if !readable {
+                        failures.push(format!(
+                            "{name} contrast {contrast:.2} with dark={dark}: {foreground:?} on {background:?}"
+                        ));
+                    }
                 }
                 assert!(theme.focus_ring, "Keyboard focus must stay visible");
             });
         }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 }

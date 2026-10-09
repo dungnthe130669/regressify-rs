@@ -141,22 +141,35 @@ function Test-PublishingFlows {
     Wait-SourceText 'Customer visual sites' 'Landing heading'
     Invoke-Control 'Close'
 
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1080, 720), @([Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40)))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1080, 720), @(1600, 1000))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Open-PublishingMenu 'Landing apps'
             Wait-Control 'Landing heading' | Out-Null
             Capture-Window ('publishing-landing-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Write-PublishingField 'Site 1 URL' $landing.sites[0].url
+            if ((Read-ControlText 'Site 1 URL') -cne $landing.sites[0].url) { throw 'Scrolled landing controls changed the exact saved site URL.' }
+            Capture-Window ('publishing-landing-site-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
             Invoke-Control 'Close'
             Open-PublishingMenu 'Deployment tokens'
             Wait-Control 'Add named token' | Out-Null
             Capture-Window ('publishing-tokens-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Invoke-Control 'Edit named token' -Pointer
+            Wait-Control 'Token name' | Out-Null
+            if (-not (Wait-Control 'Token').Current.IsPassword) { throw 'The resized named-token editor must keep tokens masked.' }
+            Wait-Control 'Save token' | Out-Null
+            Capture-Window ('publishing-token-editor-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
             Invoke-Control 'Close'
         }
     }
 
     Open-PublishingMenu 'Landing apps'
+    $landingViewport = (Wait-Control 'Landing editor').Current.BoundingRectangle
+    Focus-Fixture
+    [RegressifySmokePointer]::SetPhysicalCursorPos([int]($landingViewport.Right - 3), [int]($landingViewport.Top + $landingViewport.Height / 2)) | Out-Null
+    [RegressifySmokeNative]::mouse_event(0x0800, 0, 0, 2400, [UIntPtr]::Zero)
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
     Invoke-Control 'Remove landing app'
     Invoke-Control 'Keep editing'
     if (-not (Test-Path -LiteralPath $landingPath)) { throw 'Cancelling removal deleted the landing file.' }

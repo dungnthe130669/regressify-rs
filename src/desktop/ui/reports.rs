@@ -1174,8 +1174,7 @@ impl ResultsPanel {
                 Input::new(&self.search)
                     .id("capture-search")
                     .prefix(IconName::Search)
-                    .cleanable(true)
-                    .small(),
+                    .cleanable(true),
             )
             .child(
                 TabBar::new("result-filter")
@@ -1309,7 +1308,6 @@ impl ResultsPanel {
         Some(
             gpui_kit::component::list::ListItem::new(SharedString::from(identity))
                 .w_full()
-                .h(rems(3.5))
                 .justify_start()
                 .selected(self.capture == Some(index))
                 .accessibility_label(format!("{} {}", outcome.label(), test.pair.display.title))
@@ -1433,7 +1431,7 @@ impl ResultsPanel {
         let guides = self.pointer_guides.clone();
         div()
             .w(px(56.))
-            .h_full()
+            .self_stretch()
             .flex_shrink_0()
             // Fitted bounds are only current after the image panes have been laid out.
             .child(gpui_kit::deferred(
@@ -1890,7 +1888,6 @@ impl ResultsPanel {
             .trigger(
                 Button::new("capture-information")
                     .ghost()
-                    .xsmall()
                     .icon(gpui_kit::assets::IconName::Info)
                     .accessibility_label("Scenario information"),
             )
@@ -1915,7 +1912,7 @@ impl ResultsPanel {
                     .flex()
                     .flex_col()
                     .gap_2()
-                    .w(px(460.))
+                    .w(px(720.))
                     .max_w(window.bounds().size.width - px(48.))
                     .text_sm();
                 let selector = if pair.selector.is_empty() {
@@ -1924,7 +1921,7 @@ impl ResultsPanel {
                     pair.selector.clone()
                 };
                 let mut details = gpui_kit::component::description_list::DescriptionList::new()
-                    .columns(1)
+                    .columns(2)
                     .bordered(false)
                     .label_width(px(112.));
                 for (id, visible_label, aria_label, value) in [
@@ -1953,7 +1950,7 @@ impl ResultsPanel {
                             .truncate()
                             .child(value)
                             .into_any_element(),
-                        1,
+                        2,
                     );
                 }
                 for (index, kind) in [(0, "Reference"), (1, "Test")] {
@@ -1975,6 +1972,10 @@ impl ResultsPanel {
                         .aria_label(format!("{kind} URL:"))
                         .test_support()
                         .flex_shrink_0()
+                        .w_full()
+                        .h_full()
+                        .flex()
+                        .items_center()
                         .child(format!("{kind} URL:"))
                         .into_any_element();
                     let value = div()
@@ -1985,10 +1986,8 @@ impl ResultsPanel {
                         .child(
                             Button::new(("capture-info-url", index))
                                 .ghost()
-                                .xsmall()
                                 .flex_shrink_1()
                                 .min_w_0()
-                                .px_0()
                                 .justify_start()
                                 .text_left()
                                 .cursor(if url.is_some() {
@@ -2027,7 +2026,6 @@ impl ResultsPanel {
                         .child(
                             Button::new(("capture-info-copy-url", index))
                                 .ghost()
-                                .xsmall()
                                 .icon(IconName::Copy)
                                 .tooltip(format!("Copy {kind} URL"))
                                 .accessibility_label(format!("Copy {kind} URL"))
@@ -2080,7 +2078,7 @@ impl ResultsPanel {
                 details = details.item(
                     div().text_sm().child("Difference:").into_any_element(),
                     diff_stats.into_any_element(),
-                    1,
+                    2,
                 );
                 content.child(details)
             })
@@ -2100,15 +2098,51 @@ impl ResultsPanel {
             .map(|test| test.pair.display.title.clone())
             .unwrap_or_else(|| "Comparison".into());
         let previews = if self.image_mode == 3 {
-            div()
-                .flex()
-                .size_full()
-                .gap_2()
-                .children(
-                    (0..self.comparison_preview_count())
-                        .map(|index| self.render_preview(index, cx)),
+            let count = self.comparison_preview_count();
+            let panes = (0..count)
+                .map(|index| self.render_preview(index, cx))
+                .collect::<Vec<_>>();
+            if view.mode == ZoomMode::FitWidth {
+                canvas(
+                    move |bounds, window, cx| {
+                        let gap = window.rem_size() * 0.5;
+                        let scale = window.scale_factor();
+                        let width = (((bounds.size.width - gap * (count - 1) as f32)
+                            / count as f32
+                            * scale)
+                            .floor()
+                            / scale)
+                            .max(px(0.));
+                        // Fractional pane widths amplify rounding errors in tall aspect-ratio images.
+                        let mut row =
+                            div()
+                                .flex()
+                                .size_full()
+                                .gap(gap)
+                                .children(panes.into_iter().map(|pane| {
+                                    div().w(width).h_full().flex_shrink_0().child(pane)
+                                }))
+                                .into_any_element();
+                        row.prepaint_as_root(
+                            bounds.origin,
+                            bounds.size.map(gpui_kit::AvailableSpace::Definite),
+                            window,
+                            cx,
+                        );
+                        row
+                    },
+                    |_, mut row, window, cx| row.paint(window, cx),
                 )
+                .size_full()
                 .into_any_element()
+            } else {
+                div()
+                    .flex()
+                    .size_full()
+                    .gap_2()
+                    .children(panes)
+                    .into_any_element()
+            }
         } else {
             self.render_preview(self.image_mode, cx)
         };
@@ -2138,9 +2172,10 @@ impl ResultsPanel {
             .child(
                 div()
                     .px_3()
-                    .h(px(32.))
+                    .py(px(1.))
                     .flex_shrink_0()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_2()
                     .text_sm()
@@ -2178,7 +2213,7 @@ impl ResultsPanel {
                     )
                     .when_some(test, |header, test| {
                         header
-                            .child(Button::new("results-show-capture-log").ghost().xsmall().icon(gpui_kit::assets::IconName::List)
+                            .child(Button::new("results-show-capture-log").ghost().icon(gpui_kit::assets::IconName::List)
                                 .tooltip("Capture Log").accessibility_label("Capture Log")
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.capture_log.active = true;
@@ -2188,7 +2223,6 @@ impl ResultsPanel {
                                 })))
                             .child(
                                 design::CopyText::new("copy-capture-details", test.copy_summary(), "Copy capture details")
-                                    .xsmall()
                                     .tooltip(format!(
                                         "Copy capture details\n\n{}",
                                         test.copy_summary()
@@ -2204,7 +2238,6 @@ impl ResultsPanel {
                             .child(
                                 Button::new("edit-capture-suite")
                                     .ghost()
-                                    .xsmall()
                                     .icon(gpui_kit::assets::IconName::Pencil)
                                     .accessibility_label("Edit suite")
                                     .tooltip("Open the suite that produced this capture")
@@ -2218,7 +2251,6 @@ impl ResultsPanel {
                     })
                     .child(
                         Button::new("approve-scenario")
-                            .xsmall()
                             .flex_shrink_0()
                             .icon(gpui_kit::assets::IconName::Check)
                             .label("Approve This Scenario")
@@ -2264,12 +2296,12 @@ impl ResultsPanel {
                             .child(div().id("scenario-approval-run").role(Role::Status)
                                 .aria_label(format!("Run: {}", approval.run_id)).test_support()
                                 .text_xs().min_w_0().truncate().child(format!("Run: {}", approval.run_id))))
-                        .child(Button::new("scenario-approval-cancel").small().label("Cancel")
+                        .child(Button::new("scenario-approval-cancel").label("Cancel")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.approval_confirmation = false;
                                 cx.notify();
                             })))
-                        .child(Button::new("scenario-approval-confirm").small().danger()
+                        .child(Button::new("scenario-approval-confirm").danger()
                             .icon(gpui_kit::assets::IconName::Check)
                             .label("Approve This Scenario")
                             .disabled(self.disabled || self.loading || self.image_loading)
@@ -2308,17 +2340,17 @@ impl ResultsPanel {
                     .test_support()
                     .flex()
                     .items_center()
+                    .flex_wrap()
                     .flex_shrink_0()
                     .min_w_0()
-                    .h(px(36.))
                     .gap_1()
                     .px_3()
+                    .py(px(1.))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
                         TabBar::new("image-modes")
                             .underline()
-                            .small()
                             .flex_shrink_0()
                             .selected_index(self.image_mode)
                             .on_click(cx.listener(|this, index, _, cx| {
@@ -2332,7 +2364,6 @@ impl ResultsPanel {
                     .child(div().flex_1())
                     .child(
                         gpui_kit::component::button::ButtonGroup::new("image-fit-modes")
-                            .small()
                             .disabled(self.capture.is_none())
                             .child(
                                 Button::new("fit-image")
@@ -2352,22 +2383,24 @@ impl ResultsPanel {
                             ),
                     )
                     .child(
-                        Button::new("zoom-out")
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap_1()
+                            .flex_shrink_0()
+                            .child(Button::new("zoom-out")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::ZoomOut)
                             .tooltip("Zoom out")
                             .accessibility_label("Zoom out")
                             .disabled(self.capture.is_none())
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.step_zoom(false, cx);
-                            })),
-                    )
+                            })))
                     .child(self.render_zoom_value())
                     .child(
                         Button::new("zoom-in")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::ZoomIn)
                             .tooltip("Zoom in")
                             .accessibility_label("Zoom in")
@@ -2379,7 +2412,6 @@ impl ResultsPanel {
                     .child(
                         Button::new("actual-size")
                             .ghost()
-                            .small()
                             .icon(gpui_kit::assets::IconName::Scan)
                             .tooltip("Actual size (100%)")
                             .accessibility_label("Actual size (100%)")
@@ -2392,6 +2424,7 @@ impl ResultsPanel {
                                 this.pointer_guides.pan.borrow_mut().take();
                                 cx.notify();
                             })),
+                            ),
                     ),
             )
             .children(
@@ -2462,7 +2495,7 @@ impl Render for ResultsPanel {
                     .flex_wrap()
                     .gap_2()
                     .px_3()
-                    .py_1()
+                    .py(px(1.))
                     .border_b_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -2487,7 +2520,6 @@ impl Render for ResultsPanel {
                             .child(
                                 Button::new("results-information")
                                     .ghost()
-                                    .xsmall()
                                     .icon(gpui_kit::assets::IconName::Info)
                                     .accessibility_label("Report status")
                                     .tooltip(self.status.clone()),
@@ -2496,7 +2528,6 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("refresh-results")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::RefreshCw)
                             .tooltip(format!("Refresh reports\n{counts}"))
                             .disabled(self.loading || self.root.is_none())
@@ -2509,7 +2540,6 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("open-report")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::ExternalLink)
                             .tooltip("Open HTML report")
                             .disabled(self.root.is_none())
@@ -2520,7 +2550,6 @@ impl Render for ResultsPanel {
                     .child(
                         Button::new("open-artifacts")
                             .ghost()
-                            .xsmall()
                             .icon(IconName::FolderOpen)
                             .tooltip("Open artifact directory")
                             .disabled(self.root.is_none())
@@ -3276,6 +3305,214 @@ mod pointer_tests {
                 }
             })
             .unwrap();
+        }
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn results_normal_controls_fit_minimum_and_large_windows(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::AppContext;
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use std::time::Duration;
+
+        for (width, height) in [(1000., 640.), (1080., 720.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let (handle, view) = crate::desktop::ui::tests::editor_at_size(
+                cx,
+                directory.path(),
+                size(px(width), px(height)),
+            );
+            let (results, scenario_id) = cx.update(|cx| {
+                let editor = view.read(cx);
+                (
+                    editor.results.clone(),
+                    editor.session.suites[0].scenarios[0].id.clone(),
+                )
+            });
+            let run = directory
+                .path()
+                .join(".regressify/ui-test/bitmaps_test/run-1");
+            std::fs::create_dir_all(&run).unwrap();
+            lodepng::encode32_file(
+                run.join("capture.png"),
+                &[30_u8, 150, 180, 255].repeat(120 * 80),
+                120,
+                80,
+            )
+            .unwrap();
+            std::fs::write(
+                run.join("report.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "ui-test", "tests": [{"status": "pass", "pair": {
+                        "scenarioId": scenario_id,
+                        "fileName": format!("{scenario_id}_desktop__FINAL.png"),
+                        "label": "A long capture title that must not displace comparison commands",
+                        "reference": "../bitmaps_test/run-1/capture.png",
+                        "test": "../bitmaps_test/run-1/capture.png",
+                        "diffImage": "../bitmaps_test/run-1/capture.png"
+                    }}]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.within("workbench-tabs").click(2_usize, cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |_, cx| {
+                let panel = results.read(cx);
+                !panel.loading && !panel.image_loading && panel.capture.is_some()
+            })
+            .await;
+            for dark in [false, true] {
+                cx.update_window(handle.into(), |_, window, cx| {
+                    crate::desktop::ui::design::apply_theme(dark, Some(window), cx);
+                    window.render_frame(cx);
+                    let panel = window.find("results-panel").bounds();
+                    let toolbar = window.find("image-toolbar").bounds();
+                    let image = window.find(("image-scroll", 1_usize)).bounds();
+                    let normal_height = window.rem_size() * 2.;
+                    eprintln!(
+                        "Results {width}x{height} dark={dark}: header space={:?}, toolbar height={:?}, image fraction={:.3}",
+                        image.top() - panel.top(), toolbar.size.height, image.size.height / panel.size.height,
+                    );
+                    for id in [
+                        "results-information", "refresh-results", "open-report", "open-artifacts",
+                        "capture-information", "results-show-capture-log", "copy-capture-details",
+                        "edit-capture-suite", "approve-scenario", "fit-image", "fit-width",
+                        "zoom-out", "zoom-in", "actual-size",
+                    ] {
+                        let control = window.find(id);
+                        let bounds = control.bounds();
+                        assert!(control.visible(), "{id} at {width}x{height} dark={dark}");
+                        assert!(bounds.size.height >= normal_height, "{id}: {bounds:?}");
+                        assert!(bounds.left() >= panel.left() && bounds.right() <= panel.right(), "{id}: {bounds:?}, panel={panel:?}");
+                        assert!(bounds.top() >= panel.top() && bounds.bottom() <= panel.bottom(), "{id}: {bounds:?}, panel={panel:?}");
+                    }
+                    let search = window.find("capture-search").bounds();
+                    assert!(search.size.height >= normal_height, "search={search:?}");
+                    let mut controls = (0_usize..4)
+                        .map(|index| window.within("image-modes").find(index).bounds())
+                        .collect::<Vec<_>>();
+                    controls.extend(["fit-image", "fit-width", "zoom-out", "zoom-value", "zoom-in", "actual-size"]
+                        .map(|id| window.find(id).bounds()));
+                    for (index, bounds) in controls.iter().enumerate() {
+                        assert!(bounds.left() >= toolbar.left() && bounds.right() <= toolbar.right(), "control={bounds:?}, toolbar={toolbar:?}");
+                        assert!(bounds.top() >= toolbar.top() && bounds.bottom() <= toolbar.bottom(), "control={bounds:?}, toolbar={toolbar:?}");
+                        for other in &controls[index + 1..] {
+                            assert!(bounds.right() <= other.left() || other.right() <= bounds.left() || bounds.bottom() <= other.top() || other.bottom() <= bounds.top(), "overlapping controls: {bounds:?}, {other:?}");
+                        }
+                    }
+                    assert!(toolbar.bottom() <= image.top());
+                    assert!(image.size.height > px(0.));
+                    window.click("approve-scenario", cx);
+                    for id in ["scenario-approval-cancel", "scenario-approval-confirm"] {
+                        let bounds = window.find(id).bounds();
+                        assert!(bounds.size.height >= normal_height, "{id}: {bounds:?}");
+                        assert!(bounds.left() >= panel.left() && bounds.right() <= panel.right(), "{id}: {bounds:?}, panel={panel:?}");
+                    }
+                    window.click("scenario-approval-cancel", cx);
+                    assert!(!results.read(cx).approval_confirmation);
+                })
+                .unwrap();
+            }
+        }
+    }
+
+    #[cfg(feature = "gui-tests")]
+    #[gpui_kit::test]
+    async fn results_normal_metadata_controls_preserve_url_gates(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::{TestAppContextExt, TestWindowExt};
+        use gpui_kit::{AppContext, ClipboardItem};
+        use std::time::Duration;
+
+        let urls = [
+            format!(
+                "https://reference.example.test/{}?value=a%20b&other=%26#raw",
+                "long-path/".repeat(24)
+            ),
+            "https://test.example.test/changed?value=%2F&other=unchanged#test".to_string(),
+        ];
+        for (width, height) in [(1000., 640.), (1080., 720.), (1600., 1000.)] {
+            let directory = tempfile::tempdir().unwrap();
+            let run = directory
+                .path()
+                .join(".regressify/ui-test/bitmaps_test/run-1");
+            std::fs::create_dir_all(&run).unwrap();
+            std::fs::write(
+                run.join("report.json"),
+                serde_json::to_vec(&serde_json::json!({"id": "ui-test", "tests": [
+                    {"status": "fail", "pair": {"fileName": "valid.png", "scenarioLabel": "Valid URLs", "referenceUrl": urls[0], "url": urls[1], "diff": {"dimensionDifference": {"width": -20, "height": 40}}}},
+                    {"status": "fail", "pair": {"fileName": "unsafe.png", "scenarioLabel": "Unsafe URLs", "referenceUrl": "javascript:alert(1)", "url": "data:text/html,unavailable"}}
+                ]})).unwrap(),
+            ).unwrap();
+            let (handle, _) = crate::desktop::ui::tests::editor_at_size(
+                cx,
+                directory.path(),
+                size(px(width), px(height)),
+            );
+            cx.update_window(handle.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window.within("workbench-tabs").click(2_usize, cx);
+            })
+            .unwrap();
+            cx.wait_for(handle.into(), Duration::from_secs(5), |window, _| {
+                window.try_find("capture-information").is_some()
+            })
+            .await;
+            for dark in [false, true] {
+                for capture in 0_usize..2 {
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        crate::desktop::ui::design::apply_theme(dark, Some(window), cx);
+                        window.render_frame(cx);
+                        window.click(("capture", capture), cx);
+                        window.hover("capture-information", cx);
+                    })
+                    .unwrap();
+                    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                        window.try_find("capture-info-label").is_some_and(|label| {
+                            label.label()
+                                == Some(if capture == 0 {
+                                    "Label: Valid URLs"
+                                } else {
+                                    "Label: Unsafe URLs"
+                                })
+                        })
+                    })
+                    .await;
+                    cx.update_window(handle.into(), |_, window, cx| {
+                        let bounds = window.find("capture-information-content").bounds();
+                        eprintln!("Results metadata {width}x{height} dark={dark} capture={capture}: height={:?}", bounds.size.height);
+                        assert!(bounds.left() >= px(0.) && bounds.right() <= px(width), "{bounds:?}");
+                        assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(height), "{bounds:?}");
+                        let normal_height = window.rem_size() * 2.;
+                        for (index, expected) in urls.iter().enumerate() {
+                            let url = window.find(("capture-info-url", index)).bounds();
+                            let value = window.find(("capture-info-url-value", index)).bounds();
+                            let copy = window.find(("capture-info-copy-url", index)).bounds();
+                            assert!(url.size.height >= normal_height, "url={url:?}");
+                            assert!(copy.size.height >= normal_height, "copy={copy:?}");
+                            assert!(value.left() >= bounds.left() && value.right() <= copy.left(), "value={value:?}, copy={copy:?}");
+                            assert!(copy.right() <= bounds.right(), "copy={copy:?}, content={bounds:?}");
+                            cx.write_to_clipboard(ClipboardItem::new_string("unchanged".into()));
+                            window.click(("capture-info-copy-url", index), cx);
+                            assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(if capture == 0 { expected.as_str() } else { "unchanged" }));
+                        }
+                        assert_eq!(window.find("capture-info-diff-x").label(), Some(if capture == 0 { "Diff X: -20" } else { "Diff X: Unavailable" }));
+                        assert_eq!(window.find("capture-info-diff-y").label(), Some(if capture == 0 { "Diff Y: 40" } else { "Diff Y: Unavailable" }));
+                        window.hover("capture-search", cx);
+                    }).unwrap();
+                    cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+                        window.try_find("capture-information-content").is_none()
+                    })
+                    .await;
+                }
+            }
         }
     }
 

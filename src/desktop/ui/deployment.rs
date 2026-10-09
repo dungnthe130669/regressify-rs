@@ -242,16 +242,14 @@ impl Workbench {
             .gap_1()
             .child(
                 Button::new("deploy-report")
-                    .small()
                     .icon(gpui_kit::assets::IconName::CloudUpload)
-                    .label("Deploy")
+                    .accessibility_label("Deploy")
                     .tooltip("Deploy selected suite reports")
                     .disabled(disabled || self.runs.read(cx).selected_count() == 0)
                     .on_click(cx.listener(|this, _, window, cx| this.open_deployment(window, cx))),
             )
             .child(
                 Button::new("deploy-targets")
-                    .small()
                     .ghost()
                     .icon(gpui_kit::assets::IconName::Settings2)
                     .tooltip("Deployment targets")
@@ -465,7 +463,7 @@ impl Workbench {
                         .child(div().flex().items_center().gap_2().min_w_0()
                         .child(gpui_kit::component::select::Select::new(&state.routing_picker.state).id("deploy-cloudflare-routing").flex_1().min_w_0()
                             .accessibility_label("Cloudflare public routing").disabled(saving))
-                        .child(Button::new("deploy-cloudflare-options").small().ghost().icon(gpui_kit::assets::IconName::Settings2)
+                        .child(Button::new("deploy-cloudflare-options").ghost().icon(gpui_kit::assets::IconName::Settings2)
                             .tooltip("Cloudflare asset settings").accessibility_label("Cloudflare asset settings").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, _, cx| {
                                 this.deployment.update(cx, |state, cx| { state.cloudflare_options = !state.cloudflare_options; cx.notify(); });
@@ -482,7 +480,7 @@ impl Workbench {
                         }
                         for (label, id, input) in [("Compatibility date", "deploy-cloudflare-date", &state.compatibility_date), ("Excluded paths (JSON array)", "deploy-cloudflare-excludes", &state.excludes)] {
                             target_fields = target_fields.child(FormField::new().label(label)
-                                .child(Input::new(input).id(id).aria_label(label).small().disabled(saving))
+                                .child(Input::new(input).id(id).aria_label(label).disabled(saving))
                                 .when(id == "deploy-cloudflare-excludes", |field| field.col_span(2)));
                         }
                     }
@@ -511,7 +509,7 @@ impl Workbench {
                 }
                 for (label, id, input) in fields {
                     target_fields = target_fields.child(FormField::new().label(label)
-                        .child(Input::new(input).id(id).aria_label(label).small().disabled(saving)
+                        .child(Input::new(input).id(id).aria_label(label).disabled(saving)
                             .when(id == "deploy-token", |input| input.content_type(gpui_kit::component::input::InputContentType::Password))));
                 }
                 body = body.child(target_fields);
@@ -527,18 +525,18 @@ impl Workbench {
                     DeploymentProvider::CloudflareWorkers => target.cloudflare.as_ref().map(|settings| format!("Worker | {}", settings.worker_name)).unwrap_or_default(),
                 }, if target.has_token() { "Token saved securely" } else { "Deployment token required" })).unwrap_or_default()))
                     .when(selected.is_some_and(|target| !target.has_token()), |row| row.child(
-                        Button::new("deploy-add-token").small().icon(gpui_kit::assets::IconName::Pencil).label("Add token")
+                        Button::new("deploy-add-token").icon(gpui_kit::assets::IconName::Pencil).label("Add token")
                             .accessibility_label("Add deployment token").disabled(saving)
                             .on_click(window.listener_for(&view, |this, _, window, cx| this.edit_deploy_target(true, window, cx))))));
                 if let Some(url) = selected.and_then(|target| target.published_url.clone()) {
                     let open_url = url.clone();
                     body = body.child(div().id("deploy-published-url").flex().items_center().gap_2().min_w_0()
-                        .child(Button::new("deploy-open-published").small().link().flex_initial().min_w_0().overflow_hidden()
+                        .child(Button::new("deploy-open-published").link().flex_initial().min_w_0().overflow_hidden()
                             .label(url.clone()).tooltip(url.clone()).accessibility_label("Open deployed site")
                             .on_click(window.listener_for(&view, move |this, _, _, cx| {
                                 if let Err(error) = open::that_detached(&open_url) { this.deployment.update(cx, |state, cx| { state.status = format!("Cannot open deployed site: {error}"); cx.notify(); }); }
                             })))
-                        .child(design::CopyText::new("deploy-copy-published", url, "Copy deployed URL").small()));
+                        .child(design::CopyText::new("deploy-copy-published", url, "Copy deployed URL")));
                 }
                 if let Some(landing) = &state.landing {
                     body = body.child(div().font_weight(FontWeight::SEMIBOLD).child(landing.app.heading.clone()))

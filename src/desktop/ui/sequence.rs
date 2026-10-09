@@ -228,7 +228,6 @@ impl gpui_kit::component::list::ListDelegate for SequenceRows {
             commands = commands.child(
                 Button::new((name, index))
                     .ghost()
-                    .xsmall()
                     .icon(icon)
                     .tooltip(label)
                     .accessibility_label(format!("{label} {}", index + 1))
@@ -246,7 +245,6 @@ impl gpui_kit::component::list::ListDelegate for SequenceRows {
             gpui_kit::component::list::ListItem::new(SharedString::from(format!(
                 "sequence-action-{id}"
             )))
-            .h(px(62.))
             .disabled(self.busy)
             .accessibility_label(format!("Action {}: {title}", index + 1))
             .tooltip(move |window, cx| {
@@ -1032,7 +1030,6 @@ impl Workbench {
         let focus = self.focus.clone();
         Button::new("sequence-add")
             .ghost()
-            .small()
             .icon(IconName::Plus)
             .label("Add action")
             .disabled(self.busy || !self.field_errors.is_empty())
@@ -1058,11 +1055,33 @@ impl Workbench {
             .into_any_element()
     }
 
-    pub(super) fn render_sequence(&self, scenario: usize, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn render_sequence(
+        &self,
+        scenario: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let actions = self.value["scenarios"][scenario]["actions"]
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default();
+        let row_height = self.sequence_list.update(cx, |list, cx| {
+            use gpui_kit::component::list::ListDelegate as _;
+            list.delegate_mut()
+                .render_item(IndexPath::new(0), window, cx)
+                .map_or(px(0.), |row| {
+                    row.into_any_element()
+                        .layout_as_root(
+                            gpui_kit::size(
+                                gpui_kit::AvailableSpace::MinContent,
+                                gpui_kit::AvailableSpace::MinContent,
+                            ),
+                            window,
+                            cx,
+                        )
+                        .height
+                })
+        });
         let focus = self.sequence_list.read(cx).focus_handle(cx);
         let rows = div()
             .id("sequence-steps")
@@ -1107,7 +1126,7 @@ impl Workbench {
             }))
             .flex()
             .flex_col()
-            .h(px((actions.len() as f32 * 62.).min(264.)))
+            .h((row_height * actions.len() as f32).min(px(264.)))
             .child(gpui_kit::component::list::List::new(&self.sequence_list));
         div()
             .id("scenario-sequence")
@@ -1120,6 +1139,7 @@ impl Workbench {
             .child(
                 div()
                     .flex()
+                    .flex_wrap()
                     .items_center()
                     .gap_3()
                     .child(

@@ -132,7 +132,6 @@ impl Workbench {
         };
         Button::new("software-updates")
             .ghost()
-            .xsmall()
             .when(available, |button| button.primary())
             .icon(if available {
                 gpui_kit::assets::IconName::Download
@@ -199,7 +198,6 @@ impl Workbench {
                         )
                         .child(
                             Button::new("update-banner-action")
-                                .small()
                                 .flex_shrink_0()
                                 .icon(gpui_kit::assets::IconName::RotateCw)
                                 .label("Install update")

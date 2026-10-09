@@ -1238,7 +1238,17 @@ fn remote_controls_and_live_activity_fit_compact_and_wide_windows(cx: &mut TestA
                     .git
                     .read(cx)
                     .selection
-                    .contains(".regressify/qa-review/report.json")
+                    .contains(".regressify/qa-review/report.json"),
+                "checkbox={:?}, comparison={:?}, panel={:?}, message={:?}, commit={:?}, discard={:?}, disabled={}, active={}, error={}",
+                window.find(("git-select", 1_usize)).bounds(),
+                window.find("git-comparison-changes").bounds(),
+                window.find("git-changes-panel").bounds(),
+                window.find("git-commit-message").bounds(),
+                window.find("git-commit").bounds(),
+                window.find("git-discard").bounds(),
+                view.read(cx).git.read(cx).disabled,
+                view.read(cx).git.read(cx).active(),
+                view.read(cx).git.read(cx).error.is_some(),
             );
             view.read(cx)
                 .git
@@ -1695,7 +1705,16 @@ fn comparison_changes_require_explicit_selection_and_stay_separate(cx: &mut Test
         assert_eq!(panel.read(cx).selection.len(), 1);
         window.click("git-toggle-comparison", cx);
         window.render_frame(cx);
-        assert!(window.find(("git-file", 1_usize)).visible());
+        assert!(
+            window
+                .try_find(("git-file", 1_usize))
+                .is_some_and(|row| row.visible()),
+            "comparison={:?}, panel={:?}, commit={:?}, discard={:?}",
+            window.find("git-comparison-changes").bounds(),
+            window.find("git-changes-panel").bounds(),
+            window.find("git-commit").bounds(),
+            window.find("git-discard").bounds(),
+        );
         assert!(window.find(("git-file", 2_usize)).visible());
         window.click(("git-select", 1_usize), cx);
         assert!(panel.read(cx).selection.contains(paths[1]));
@@ -2210,7 +2229,7 @@ fn git_text_diff_and_comparison_panels_fit_compact_and_wide_windows(cx: &mut Tes
 }
 
 #[gpui_kit::test]
-fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
+async fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContext) {
     for (width, height) in [(1080., 720.), (1600., 1000.)] {
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) =
@@ -2254,7 +2273,13 @@ fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContex
             let badge = window.find("git-status").bounds();
             assert!(badge.size.width <= px(180.));
             let folder = window.find("open-workspace").bounds();
-            assert!(folder.origin.x + folder.size.width <= px(width - 95.));
+            assert!(
+                folder.origin.x + folder.size.width <= px(width - 95.),
+                "folder={folder:?}, git={badge:?}, titlebar={:?}, menus={:?}, tabs={:?}",
+                window.find("workspace-titlebar").bounds(),
+                window.find("workbench-app-menu").bounds(),
+                window.find("titlebar-navigation").bounds(),
+            );
             assert!(window.find("git-commit-message").visible());
             let commit = window.find("git-commit").bounds();
             let discard = window.find("git-discard").bounds();
@@ -2276,5 +2301,44 @@ fn git_large_tree_and_status_fit_compact_and_wide_windows(cx: &mut TestAppContex
             assert!(tree.entry(10_000).is_none());
         })
         .unwrap();
+        cx.update_window(handle.into(), |_, window, cx| {
+            window.hover("git-status", cx)
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, _| {
+            window
+                .try_find("git-status-tooltip")
+                .is_some_and(|tooltip| tooltip.visible())
+        })
+        .await;
+        cx.update_window(handle.into(), |_, window, cx| {
+            let tooltip = window.find("git-status-tooltip");
+            assert_eq!(
+                tooltip.label(),
+                Some(view.read(cx).git.read(cx).summary().as_str())
+            );
+            let bounds = tooltip.bounds();
+            assert!(bounds.left() >= px(0.) && bounds.right() <= px(width));
+            assert!(bounds.top() >= px(0.) && bounds.bottom() <= px(height));
+        })
+        .unwrap();
+        cx.update_window(handle.into(), |_, _, cx| {
+            view.update(cx, |this, cx| {
+                this.git.update(cx, |panel, cx| {
+                    panel.snapshot.as_mut().unwrap().branch = "tooltip-refresh-branch".into();
+                    cx.notify();
+                });
+                cx.notify();
+            });
+        })
+        .unwrap();
+        cx.wait_for(handle.into(), Duration::from_secs(3), |window, cx| {
+            window
+                .try_find("git-status-tooltip")
+                .is_some_and(|tooltip| {
+                    tooltip.label() == Some(view.read(cx).git.read(cx).summary().as_str())
+                })
+        })
+        .await;
     }
 }

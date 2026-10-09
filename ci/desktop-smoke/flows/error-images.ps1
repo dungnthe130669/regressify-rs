@@ -29,10 +29,10 @@ function Test-ErrorImageFlows {
     Start-Fixture -Name 'failed-reference'
     Invoke-Control 'account.tests.json'
     Invoke-Control 'Results'
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        foreach ($windowSize in @(@(1600, 1000), @(1080, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $windowSize[0], $windowSize[1], 0x0040) | Out-Null
+    foreach ($windowSize in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $windowSize[0], $windowSize[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Invoke-Control 'Side by side'
             Wait-Control "Reference $dimensions" | Out-Null
             Wait-Control "Test $dimensions" | Out-Null

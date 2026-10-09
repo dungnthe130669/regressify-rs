@@ -171,10 +171,10 @@ public static class RegressifySmokeZoomKeys {
     Invoke-Control 'Side by side'
     Wait-Control 'Reference 1600 x 2200' | Out-Null
     Wait-Control 'Diff 1600 x 2400' | Out-Null
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Invoke-Control 'Error Account desktop'
             Wait-Control 'Missing selector #account' | Out-Null
             Test-CaptureInformation ('information-same-url-' + $theme.ToLowerInvariant() + '-' + $dimensions[0]) -SameUrl
@@ -253,6 +253,17 @@ public static class RegressifySmokeZoomKeys {
     Wait-Control 'No captures for this suite' | Out-Null
     if ($null -ne (Find-Control 'Test image preview') -or $null -ne (Find-Control 'Mismatch Checkout')) { throw 'An empty suite displayed another suite''s captures.' }
     Capture-Window 'comparison-empty-suite'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control 'No captures for this suite' | Out-Null
+        if ($null -ne (Find-Control 'Test image preview') -or $null -ne (Find-Control 'Mismatch Checkout')) { throw 'The minimum-size empty suite displayed another suite''s captures.' }
+        Capture-Window ('comparison-empty-suite-' + $theme.ToLowerInvariant() + '-minimum')
+    }
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
+    Hover-Control 'account.tests.json'
+    [RegressifySmokeNative]::mouse_event(0x0800, 0, 0, ([uint32]::MaxValue - 119), [UIntPtr]::Zero)
+    [RegressifySmokeNative]::DwmFlush() | Out-Null
     Invoke-Control 'smoke.tests.json'
     Wait-Control 'Test 1280 x 1800' | Out-Null
     Test-ReportApproval

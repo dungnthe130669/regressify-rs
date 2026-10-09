@@ -274,7 +274,6 @@ impl Workbench {
                         )
                         .child(
                             Button::new("external-file-reload")
-                                .small()
                                 .flex_shrink_0()
                                 .icon(gpui_kit::assets::IconName::RotateCw)
                                 .label("Reload from disk")
@@ -399,7 +398,6 @@ impl Workbench {
             .collect::<Vec<_>>();
         Button::new("file-menu")
             .ghost()
-            .xsmall()
             .label("File")
             .disabled(self.busy)
             .dropdown_menu(move |menu, _, _| {

@@ -242,7 +242,7 @@ impl Workbench {
                         .child(Input::new(&state.heading).id("landing-heading").aria_label("Landing heading").disabled(locked)))
                     .child(FormField::new().label("Subheading (Markdown)").col_span(2)
                         .child(div().id("landing-subheading").test_support()
-                            .child(Textarea::new(&state.subheading).aria_label("Landing subheading Markdown").h(px(72.)).disabled(locked))));
+                            .child(Textarea::new(&state.subheading).aria_label("Landing subheading Markdown").disabled(locked))));
                 body = body.child(fields);
                 for (index, site) in state.sites.iter().enumerate() {
                     let id = site.id.clone();
@@ -254,7 +254,7 @@ impl Workbench {
                             .child(Input::new(&site.heading).id(SharedString::from(format!("landing-site-heading-{id}"))).aria_label(format!("Site {} heading", index + 1)).disabled(locked)))
                         .child(FormField::new().label("Subheading (Markdown)").col_span(2)
                             .child(div().id(SharedString::from(format!("landing-site-subheading-{id}"))).test_support()
-                                .child(Textarea::new(&site.subheading).aria_label(format!("Site {} subheading Markdown", index + 1)).h(px(60.)).disabled(locked))))
+                                .child(Textarea::new(&site.subheading).aria_label(format!("Site {} subheading Markdown", index + 1)).disabled(locked))))
                         .child(FormField::new().label("URL").col_span(2)
                             .child(Input::new(&site.url).id(SharedString::from(format!("landing-site-url-{id}"))).aria_label(format!("Site {} URL", index + 1)).disabled(locked)));
                     let site_title = div()
@@ -264,7 +264,6 @@ impl Workbench {
                         .child(div().flex_1().child(format!("Site {}", index + 1)))
                         .child(
                             Button::new(SharedString::from(format!("landing-site-up-{id}")))
-                                .small()
                                 .ghost()
                                 .icon(IconName::ArrowUp)
                                 .tooltip("Move site up")
@@ -276,7 +275,6 @@ impl Workbench {
                         )
                         .child(
                             Button::new(SharedString::from(format!("landing-site-down-{id}")))
-                                .small()
                                 .ghost()
                                 .icon(IconName::ArrowDown)
                                 .tooltip("Move site down")
@@ -288,7 +286,6 @@ impl Workbench {
                         )
                         .child(
                             Button::new(SharedString::from(format!("landing-site-remove-{id}")))
-                                .small()
                                 .ghost()
                                 .icon(gpui_kit::assets::IconName::Trash)
                                 .tooltip("Remove site")
@@ -315,7 +312,7 @@ impl Workbench {
                             .child(site_group),
                     );
                 }
-                body = body.child(Button::new("landing-add-site").small().flex_shrink_0().icon(IconName::Plus).label("Add site").disabled(locked || state.sites.len() >= 100)
+                body = body.child(Button::new("landing-add-site").flex_shrink_0().icon(IconName::Plus).label("Add site").disabled(locked || state.sites.len() >= 100)
                     .on_click(window.listener_for(&view, |this, _, window, cx| this.landing.update(cx, |state, cx| {
                         if !state.saving && state.sites.len() < 100 { state.add_site(LandingSite { heading: String::new(), subheading: String::new(), url: String::new() }, window, cx); }
                     }))));

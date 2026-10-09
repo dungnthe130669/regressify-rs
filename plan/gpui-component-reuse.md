@@ -607,6 +607,9 @@ because they save fewer lines than the first batch.
   minimum and increase only when layout evidence requires it, up to 1200x720.
   Test the chosen minimum and large windows in both themes; do not raise the
   minimum automatically. Visual review needs no per-surface approval pause.
+  Task 019 reproduced stock light secondary text at 4.35:1 against the existing
+  4.5:1 gate. The owner approved minimal contrast-only color adjustments;
+  preserve that gate and keep all other palette, typography and sizing stock.
 
 ## Collection And Workflow Pilots
 
@@ -765,6 +768,9 @@ single dispatch. This is a pilot gate, not a confirmed API defect.
 - [Image comparison](../src/desktop/ui/reports.rs#L1468) includes pointer-centered
   zoom, panning, independent fit modes, synchronized comparison behavior, and
   approval identity. A carousel or generic image element is not an equivalent.
+  Task 019's owner-approved public measurement adapter pixel-aligns side-by-side
+  FitWidth panes to avoid aspect-ratio height drift from fractional widths;
+  preserve the one-pixel tests, all zoom policies and scrolling behavior.
 - [Split Git diff](../src/desktop/ui/git/view.rs#L1257) already uses virtual lists
   and shared scroll geometry. Syntax highlighting for a raw diff does not replace
   aligned before/after rows, original line numbers, change navigation, and exact

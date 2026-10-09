@@ -1,11 +1,10 @@
 function Test-DefaultFlows {
     $detailsClipboard = Invoke-FixtureClipboard { [System.Windows.Forms.Clipboard]::GetDataObject() }
     try {
-        foreach ($theme in @('Light', 'Dark')) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
-            Select-Theme $theme
-            foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
-                [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($dimensions in @(@(1000, 640), @(1080, 720), @(1600, 1000))) {
+            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+            foreach ($theme in @('Light', 'Dark')) {
+                Select-Theme $theme
                 Capture-Window "overview-table-$($theme.ToLowerInvariant())-$($dimensions[0])"
                 Invoke-Control 'Details: smoke' -Pointer
                 Wait-Control 'Suite details text' | Out-Null
@@ -102,7 +101,10 @@ function Test-DefaultFlows {
     Invoke-Control 'Checkout' -Pointer
     Wait-Control 'Document loaded' | Out-Null
     Capture-Window 'editor'
-    (Wait-Control 'Add' -Within 'Editor commands').SetFocus()
+    $addTrigger = Wait-Control 'Add' -Within 'Editor commands'
+    for ($attempt = 0; $attempt -lt 64 -and -not [System.Windows.Automation.Automation]::Compare([System.Windows.Automation.AutomationElement]::FocusedElement, $addTrigger); $attempt++) {
+        Send-FixtureKeys Tab
+    }
     Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'Add' } 'Editor Add did not receive native keyboard focus.'
     Send-FixtureKeys LeftArrow
     Wait-WindowState { [System.Windows.Automation.AutomationElement]::FocusedElement.Current.Name -eq 'More suite actions' } 'Editor toolbar Left did not wrap from Add to More suite actions.'
@@ -261,10 +263,18 @@ function Test-DefaultFlows {
     Capture-Window 'source-dark'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'source-dark-compact'
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Select-Theme 'Light'
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'source-compact'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Invoke-Control 'Source font size' -Pointer
+        Wait-WindowState { [System.Windows.Automation.Automation]::Compare([System.Windows.Automation.AutomationElement]::FocusedElement, $sourceSizeSpinner) } 'Minimum-size source font control did not receive native keyboard focus.'
+        if ($sourceSizeValue.Current.Value -cne '15') { throw 'Resizing or changing theme changed the source font-size input.' }
+        Wait-Control 'Reset text size' | Out-Null
+        Capture-Window ('source-' + $theme.ToLowerInvariant() + '-minimum')
+    }
+    Select-Theme 'Light'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
     Wait-Control 'Test 640 x 420' | Out-Null
@@ -302,6 +312,16 @@ function Test-DefaultFlows {
         $null -ne $tab -and $tab.TryGetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$pattern) -and ([System.Windows.Automation.SelectionItemPattern]$pattern).Current.IsSelected
     } 'Capture Log Space did not select the Reference source.'
     Capture-Window 'capture-log-toolbar'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control 'Capture log commands' | Out-Null
+        Invoke-Control 'Search log' -Within 'Log controls' -Pointer
+        if ((Read-ControlText 'Search log') -cne '') { throw 'Minimum-size log controls changed the cleared search.' }
+        Capture-Window ('capture-log-toolbar-' + $theme.ToLowerInvariant() + '-minimum')
+    }
+    Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     Invoke-Control 'Back to comparison' -Pointer
     Wait-Control 'Edit suite' | Out-Null
     Capture-Window 'results'
@@ -328,6 +348,23 @@ function Test-DefaultFlows {
     Invoke-Control 'Fields'
     Wait-Control 'Checkout' | Out-Null
     Capture-Window 'editor-compact'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control 'Checkout' | Out-Null
+        Capture-Window ('editor-' + $theme.ToLowerInvariant() + '-minimum')
+        Send-FixtureKeys F -Control -Shift
+        Send-FixtureKeys A -Control
+        Send-FixtureText 'actions'
+        Invoke-Control 'Add action' -Pointer
+        Wait-Control 'goto' | Out-Null
+        Capture-Window ('action-menu-' + $theme.ToLowerInvariant() + '-minimum')
+        Send-FixtureKeys Escape
+        Send-FixtureKeys F -Control -Shift
+        Send-FixtureKeys A -Control
+        Send-FixtureKeys Backspace
+    }
+    Select-Theme 'Light'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     Invoke-Control 'Results'
     Test-ReportApproval
@@ -341,8 +378,14 @@ function Test-DefaultFlows {
     Select-Theme 'Dark'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'run-settings-dark-compact'
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+    foreach ($theme in @('Light', 'Dark')) {
+        Select-Theme $theme
+        Wait-Control 'Run Test' | Out-Null
+        Capture-Window ('run-settings-' + $theme.ToLowerInvariant() + '-minimum')
+    }
     Select-Theme 'Light'
+    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
     if ($Capture) {
         Invoke-Control 'Run Reference'
         Wait-Control 'Run confirmation' | Out-Null
@@ -412,6 +455,12 @@ function Test-DefaultFlows {
         Select-Theme 'Dark'
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
         Capture-Window 'scenario-log-dark-compact'
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1000, 640, 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Wait-SourceText 'Clicking element: #continue' 'Scenario run log'
+            Capture-Window ('scenario-log-' + $theme.ToLowerInvariant() + '-minimum')
+        }
         Select-Theme 'Light'
         [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, [Math]::Min(1600, $screen.Width - 40), [Math]::Min(1000, $screen.Height - 40), 0x0040) | Out-Null
         Invoke-Control 'Back to Activity'

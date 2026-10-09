@@ -45,7 +45,6 @@ impl GitPanel {
                             .min_w_0()
                             .max_w(px(260.))
                             .flex_1()
-                            .h(px(32.))
                             .child(
                                 gpui_kit::component::select::Select::new(&self.remote_select)
                                     .id("git-remote-menu")
@@ -57,7 +56,7 @@ impl GitPanel {
                                     )
                                     .search_placeholder("Search remotes")
                                     .menu_max_h(px(260.))
-                                    .size_full()
+                                    .w_full()
                                     .with_size(gpui_kit::component::Size::Medium)
                                     .when(
                                         self.remote_selected.as_ref().is_some_and(|selected| {
@@ -151,7 +150,6 @@ impl GitPanel {
                             Input::new(&self.remote_name)
                                 .id("git-remote-name")
                                 .aria_label("Remote name")
-                                .small()
                                 .disabled(disabled),
                         )
                     })
@@ -160,7 +158,6 @@ impl GitPanel {
                             Input::new(&self.remote_url)
                                 .id("git-remote-url")
                                 .aria_label("Remote URL")
-                                .small()
                                 .disabled(disabled),
                         )
                     })
@@ -171,7 +168,6 @@ impl GitPanel {
                             .gap_2()
                             .child(
                                 Button::new("git-remote-edit-cancel")
-                                    .small()
                                     .label("Cancel edit")
                                     .disabled(disabled)
                                     .on_click(cx.listener(|this, _, window, cx| {
@@ -184,7 +180,6 @@ impl GitPanel {
                             )
                             .child(
                                 Button::new("git-remote-save")
-                                    .small()
                                     .primary()
                                     .icon(gpui_kit::assets::IconName::Save)
                                     .label(label)
@@ -212,6 +207,7 @@ impl GitPanel {
             );
         } else if let Some(name) = &selected {
             let urls = snapshot.and_then(|snapshot| snapshot.remote_urls.get(name));
+            let mut url_rows = div().flex().w_full().gap_3();
             for push in [false, true] {
                 let values = urls.map(|urls| {
                     if push && !urls.push.is_empty() {
@@ -247,9 +243,10 @@ impl GitPanel {
                 } else {
                     "Edit fetch URL"
                 };
-                section = section.child(
+                url_rows = url_rows.child(
                     div()
                         .flex()
+                        .flex_1()
                         .items_center()
                         .gap_2()
                         .min_w_0()
@@ -276,7 +273,6 @@ impl GitPanel {
                                 "git-edit-fetch-url"
                             })
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::Pencil)
                             .tooltip(label)
                             .accessibility_label(label)
@@ -296,6 +292,7 @@ impl GitPanel {
                         ),
                 );
             }
+            section = section.child(url_rows);
         }
         section.into_any_element()
     }
@@ -527,6 +524,14 @@ impl GitPanel {
         cx.notify();
     }
 
+    fn tree_weight(&self, comparison: bool, cx: &Context<Self>) -> f32 {
+        let tree = self.trees[usize::from(comparison)].read(cx);
+        (0..8)
+            .take_while(|index| tree.entry(*index).is_some())
+            .count()
+            .max(1) as f32
+    }
+
     fn tree_container(&self, comparison: bool, cx: &mut Context<Self>) -> Stateful<Div> {
         let group = usize::from(comparison);
         div()
@@ -537,6 +542,7 @@ impl GitPanel {
             })
             .key_context("RegressifyList")
             .flex_1()
+            .flex_grow(self.tree_weight(comparison, cx))
             .min_h_0()
             .capture_action(cx.listener(
                 move |this, _: &gpui_kit::base::actions::Confirm, window, cx| {
@@ -729,11 +735,9 @@ impl GitPanel {
             .test_support()
             .flex()
             .items_center()
-            .h(px(30.))
             .w_full()
             .min_w_0()
-            .pl(px(8. + entry.depth().min(12) as f32 * 14.))
-            .pr_2()
+            .pl(px(entry.depth().min(12) as f32 * 14.))
             .gap_1();
         if !entry.is_folder() {
             let Some(file) = self.snapshot.as_ref().and_then(|snapshot| {
@@ -793,7 +797,6 @@ impl GitPanel {
                 .child(
                     Button::new(("git-file", file))
                         .ghost()
-                        .xsmall()
                         .flex_1()
                         .min_w_0()
                         .justify_start()
@@ -901,7 +904,6 @@ impl GitPanel {
                     }
                 )))
                 .ghost()
-                .xsmall()
                 .flex_1()
                 .min_w_0()
                 .justify_start()
@@ -916,7 +918,7 @@ impl GitPanel {
                 .child(div().flex_1().min_w_0().text_left().truncate().child(label)),
             );
         }
-        ListItem::new(id).h(px(30.)).w_full().p_0().child(element)
+        ListItem::new(id).w_full().child(element)
     }
 
     fn render_changes(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -1009,8 +1011,8 @@ impl GitPanel {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_2()
-                    .p_3()
+                    .gap_1()
+                    .p_2()
                     .border_t_1()
                     .border_color(cx.theme().border)
                     .child(
@@ -1036,7 +1038,6 @@ impl GitPanel {
                             .child(
                                 Textarea::new(&self.message)
                                     .aria_label("Git commit message")
-                                    .h(px(80.))
                                     .disabled(disabled),
                             ),
                     )
@@ -1120,9 +1121,12 @@ impl GitPanel {
             .flex_col()
             .min_h_0()
             .min_w_0()
-            // Reserve the header before sharing the remaining viewport height between both trees.
+            // Share space by short-tree depth; cap weights so large trees keep bounded viewports.
             .when(self.comparison_open, |panel| {
-                panel.flex_1().flex_basis(px(38.))
+                panel
+                    .flex_1()
+                    .flex_grow(self.tree_weight(true, cx))
+                    .flex_basis(px(38.))
             })
             .when(!self.comparison_open, |panel| panel.flex_shrink_0())
             .child(
@@ -1139,7 +1143,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-toggle-comparison")
                             .ghost()
-                            .xsmall()
                             .flex_1()
                             .min_w_0()
                             .justify_start()
@@ -1239,7 +1242,6 @@ impl GitPanel {
                     .child(
                         Button::new("git-open-file")
                             .ghost()
-                            .xsmall()
                             .icon(gpui_kit::assets::IconName::ExternalLink)
                             .tooltip("Open file in VS Code")
                             .accessibility_label("Open file in VS Code")
@@ -1825,7 +1827,7 @@ impl Render for GitPanel {
                         h_resizable("git-review-layout")
                             .child(
                                 resizable_panel()
-                                    .size(px(310.))
+                                    .size(px(480.))
                                     .size_range(px(230.)..px(540.))
                                     .child(self.render_changes(cx)),
                             )

@@ -49,10 +49,10 @@ function Test-GitFlows {
         (Get-Clipboard -Raw) -ceq $reviewAfter
     } 'Git comparison did not copy the exact saved text.'
     Invoke-Control 'Next change'
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Capture-Window ('git-text-diff-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
         }
     }
@@ -87,6 +87,16 @@ function Test-GitFlows {
     Invoke-Control "Select $reviewResult"
     Wait-Control '1 comparison files selected' | Out-Null
     Capture-Window 'git-comparison-changes-selected'
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Wait-Control "Select $reviewResult" | Out-Null
+            Wait-Control '1 comparison files selected' | Out-Null
+            Wait-Control 'Git changes' | Out-Null
+            Capture-Window ('git-comparison-changes-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+        }
+    }
     Write-FixtureControlText 'Git commit message' 'Explicitly include reviewed comparison result'
     Invoke-Control 'Commit selected files'
     Capture-Window 'git-comparison-commit-confirmation'
@@ -139,10 +149,10 @@ function Test-GitFlows {
     Wait-Control "Remote 'review' renamed to 'backup'" | Out-Null
     if (((Invoke-FixtureGit $workspace @('remote', 'get-url', 'backup')) -join '').Trim() -ne $alternate) { throw 'Fetch URL update was not retained after rename.' }
     if (((Invoke-FixtureGit $workspace @('remote', 'get-url', '--push', 'backup')) -join '').Trim() -ne $remote) { throw 'Push URL update was not retained after rename.' }
-    foreach ($theme in @('Light', 'Dark')) {
-        Select-Theme $theme
-        foreach ($dimensions in @(@(1600, 1000), @(1080, 720))) {
-            [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000), @(1080, 720))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
             Wait-Control 'Copy Git logs' | Out-Null
             Capture-Window ('git-remotes-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
         }
@@ -232,7 +242,8 @@ function Test-GitFlows {
     Invoke-FixtureGit $workspace @('checkout', '-b', 'conflict-peer') | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $workspace 'incoming.txt'), "peer conflict`n")
     Invoke-FixtureGit $workspace @('commit', '-am', 'peer conflict') | Out-Null
-    Invoke-FixtureGit $workspace @('checkout', 'main') | Out-Null
+    $longConflictBranch = 'task019/native-header/stock-normal-controls-with-a-deliberately-long-conflicting-branch-name'
+    Invoke-FixtureGit $workspace @('checkout', '-b', $longConflictBranch, 'main') | Out-Null
     [System.IO.File]::WriteAllText((Join-Path $workspace 'incoming.txt'), "local conflict`n")
     Invoke-FixtureGit $workspace @('commit', '-am', 'local conflict') | Out-Null
     & git -C $workspace merge conflict-peer 2>&1 | Out-Null
@@ -245,10 +256,39 @@ function Test-GitFlows {
     Select-Theme 'Dark'
     [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'git-conflicts-dark-compact'
-    # Task 019 owns compact header fit; keep both conflict body captures compact.
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1600, 1000, 0x0040) | Out-Null
     Select-Theme 'Light'
-    [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, 1080, 720, 0x0040) | Out-Null
     Capture-Window 'git-conflicts-light-compact'
+    foreach ($dimensions in @(@(1000, 640), @(1600, 1000))) {
+        [RegressifySmokeNative]::SetWindowPos($script:window, [IntPtr]::Zero, $screen.Left + 20, $screen.Top + 20, $dimensions[0], $dimensions[1], 0x0040) | Out-Null
+        Select-Theme 'Dark'
+        foreach ($theme in @('Light', 'Dark')) {
+            Select-Theme $theme
+            Test-TitlebarControlBounds $theme -Dimensions $dimensions -ExpectedGitBranch $longConflictBranch
+            Wait-Control 'Review incoming.txt' | Out-Null
+            Wait-Control 'Open in VS Code' | Out-Null
+            Capture-Window ('git-conflicts-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+            $gitButton = $root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name.StartsWith("Git: $longConflictBranch | ") } |
+                Select-Object -First 1
+            if ($null -eq $gitButton) { throw 'The full conflict Git button name was not retained.' }
+            $gitBounds = $gitButton.Current.BoundingRectangle
+            Focus-Fixture
+            if (-not [RegressifySmokePointer]::SetPhysicalCursorPos([int]($gitBounds.Left + $gitBounds.Width / 2), [int]($gitBounds.Top + $gitBounds.Height / 2))) { throw 'Cannot hover the conflict Git button.' }
+            [RegressifySmokeNative]::DwmFlush() | Out-Null
+            Wait-WindowState {
+                @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+                    Where-Object { $_.Current.Name -ceq $gitButton.Current.Name.Substring(5) }).Count -gt 0
+            } 'The conflict Git tooltip did not expose the full accessible status.'
+            Capture-Window ('git-conflicts-tooltip-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Send-FixturePointerClick
+            Wait-Control 'Review incoming.txt' | Out-Null
+            Invoke-Control 'Commands' -Pointer
+            Wait-Control 'Landing apps' | Out-Null
+            Capture-Window ('git-conflicts-commands-' + $theme.ToLowerInvariant() + '-' + $dimensions[0])
+            Send-FixtureKeys Escape
+            Wait-WindowState { $null -eq (Find-Control 'Landing apps') } 'Command search did not close over the conflict view.'
+        }
+    }
     Write-Output 'Git remote add/select/update/rename/remove, cancellation, activity logs, init, selected commits, diff/tree review, incoming detection, push, fast-forward pull, and conflict handoff passed using only local repositories.'
 }
