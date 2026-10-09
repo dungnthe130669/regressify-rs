@@ -5,7 +5,6 @@ pub mod capture;
 mod cdp;
 mod hooks;
 mod keyboard;
-mod node_hook;
 mod page_stability;
 pub mod runtime;
 mod storage_state;

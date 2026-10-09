@@ -52,8 +52,8 @@ Typical preflight messages and corrections:
 - `Selected scenario ... must match exactly one scenario` or
   `No matching test suites found`: check suite names and file discovery.
 - `Capture run directory already exists`: choose a new `--run-id`.
-- `Node hooks require Node.js and a workspace installation of playwright`:
-  install the dependency with permission, or remove the hook.
+- `Invalid browser hook for`: the configured `onBeforeScript` or `onReadyScript`
+  file is missing or outside the workspace. No Node/npm dependency is needed.
 - Missing, escaping, or malformed `cookiePath`, `cssOverridePath`,
   `jsOnReadyPath`, state, or Basic Auth values: repair the referenced local
   file or environment variable without printing secrets.
@@ -204,7 +204,7 @@ viewport identities, viewport size, and `captureRole`. Useful fields:
   navigation and `goto`; with `State=Ready` it is the `readySelector` wait.
 - Stage `StateHooks` with `ActionType=Hook`: `State=Ready` applies CSS and the
   ready script; `Condition=Before` or `Condition=Ready` with `TimeoutMs` is the
-  `onBeforeScript` or `onReadyScript` Node hook. `ActionType=Restore` loads
+  `onBeforeScript` or `onReadyScript` browser hook. `ActionType=Restore` loads
   saved state, or the cookie file when an `Artifact` field is present. Stage
   `ScreenshotSettling` with `Condition=LazyLoading` is the 20-second lazy-load
   scroll. Stage `CaptureArtifacts` with `Capture` is a screenshot target; a
@@ -264,10 +264,11 @@ browser developer tools, with authorization.
   `CSS override or browser ready script`. Read the local detail for the
   browser's error, check the `elementTimeout` bound, and try the script on the
   page in browser developer tools.
-- Node module/export error or hook timeout: read the hooks topic. Check
-  workspace dependencies, `.mjs`/`.cjs`, the six-argument default export,
-  `elementTimeout`, and lifecycle order. `onReadyScript` runs after actions and
-  cannot repair earlier save checkpoints.
+- Browser script syntax/runtime error or hook timeout: read the hooks topic.
+  Use plain browser JavaScript with DOM APIs, not module exports, `require`,
+  `process.env`, or Playwright callbacks. Return a promise for asynchronous
+  work and check `elementTimeout`. `jsOnReadyPath` and `onReadyScript` both run
+  after readiness and before actions, so they can dismiss a blocking banner.
 - Invalid timeout: `elementTimeout`, `actionabilityTimeout`, and
   `scenarioTimeout` must be positive whole milliseconds. `settleTimeout: 0`
   disables settling; omitted/zero `readyTimeout` inherits element timeout;

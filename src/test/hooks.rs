@@ -1,7 +1,13 @@
 use std::{path::Path, time::Duration};
 
-use anyhow::Result;
-use chromiumoxide::Page;
+use anyhow::{Context, Result};
+use chromiumoxide::{
+    Page,
+    cdp::browser_protocol::page::{
+        AddScriptToEvaluateOnNewDocumentParams, RemoveScriptToEvaluateOnNewDocumentParams,
+        ScriptIdentifier,
+    },
+};
 
 use crate::{
     config::{self, ResolvedConfig},
@@ -14,9 +20,17 @@ use crate::{
 
 pub(crate) struct DocumentHooks {
     marker: String,
+    context: serde_json::Value,
     setup: String,
     script: Option<String>,
+    before_script: Option<String>,
+    ready_script: Option<String>,
     timeout: Duration,
+}
+
+pub(crate) fn validate_lifecycle_script(root: &Path, script: &str) -> Result<()> {
+    config::resolve_workspace_file(root, script, "browser hook")?;
+    Ok(())
 }
 
 impl DocumentHooks {
@@ -54,20 +68,24 @@ impl DocumentHooks {
                 css.push_str(&format!("\n{selector} {{ {declaration}; }}"));
             }
         }
-        let payload = serde_json::json!({
+        let context = serde_json::json!({
             "requiredLogin": config.required_login,
             "scenario": { "id": scenario.id, "label": scenario.label,
                 "description": scenario.description, "url": scenario.url,
                 "requiredLogin": config.required_login }
         });
         let setup = format!(
-            "(() => {{ window.__REGRESSIFY__ = {payload}; window.regressify = window.__REGRESSIFY__; \
-             const style = document.createElement('style'); style.textContent = {}; \
+            "(() => {{ const style = document.createElement('style'); style.textContent = {}; \
              (document.head || document.documentElement).appendChild(style); }})()",
             serde_json::to_string(&css)?
         );
+        let read_lifecycle_script = |script: &str| -> Result<String> {
+            let path = config::resolve_workspace_file(root, script, "browser hook")?;
+            std::fs::read_to_string(path).context("Cannot read browser lifecycle hook")
+        };
         Ok(Self {
             marker: format!("__regressify_hooks_{}", uuid::Uuid::new_v4().simple()),
+            context,
             setup,
             script: read(
                 config
@@ -75,8 +93,110 @@ impl DocumentHooks {
                     .as_deref()
                     .unwrap_or("common/_on-ready.js"),
             )?,
+            before_script: scenario
+                .on_before_script
+                .as_deref()
+                .map(read_lifecycle_script)
+                .transpose()?,
+            ready_script: scenario
+                .on_ready_script
+                .as_deref()
+                .map(read_lifecycle_script)
+                .transpose()?,
             timeout: Duration::from_millis(config.element_timeout_ms),
         })
+    }
+
+    pub fn with_context(mut self, context: serde_json::Value) -> Self {
+        self.context = context;
+        self
+    }
+
+    fn context_setup(&self) -> String {
+        format!(
+            "window.__REGRESSIFY__ = {}; window.regressify = window.__REGRESSIFY__;",
+            self.context
+        )
+    }
+
+    pub async fn install_before(&self, page: &Page) -> Result<Option<ScriptIdentifier>> {
+        let Some(script) = &self.before_script else {
+            return Ok(None);
+        };
+        let marker = serde_json::to_string(&format!("{}_before", self.marker))?;
+        // Keep document-start errors observable without unhandled promise rejections.
+        let source = format!(
+            "(() => {{ if (window !== window.top) return; {} \
+             try {{ window[{marker}] = Promise.resolve((0, eval)({})).then(\
+                 () => ({{ ok: true }}), error => ({{ ok: false, error: String(error) }})); \
+             }} catch (error) {{ window[{marker}] = Promise.resolve({{ ok: false, error: String(error) }}); }} \
+             }})()",
+            self.context_setup(),
+            serde_json::to_string(script)?
+        );
+        let command = AddScriptToEvaluateOnNewDocumentParams::builder()
+            .source(source)
+            .build()
+            .map_err(anyhow::Error::msg)?;
+        let response = tokio::time::timeout(self.timeout, page.execute(command))
+            .await
+            .context("Timed out installing onBeforeScript")??;
+        Ok(Some(response.identifier.clone()))
+    }
+
+    pub async fn complete_before(
+        &self,
+        page: &Page,
+        identifier: Option<ScriptIdentifier>,
+    ) -> Result<()> {
+        let Some(identifier) = identifier else {
+            return Ok(());
+        };
+        // Initial-navigation hooks must not leak into later goto actions or sibling frames.
+        tokio::time::timeout(
+            self.timeout,
+            page.execute(RemoveScriptToEvaluateOnNewDocumentParams::new(identifier)),
+        )
+        .await
+        .context("Timed out removing onBeforeScript registration")??;
+        let marker = serde_json::to_string(&format!("{}_before", self.marker))?;
+        self.evaluate_lifecycle_script(
+            page,
+            &format!(
+                "(async () => {{ const pending = window[{marker}]; \
+                 if (!pending) throw new Error('onBeforeScript did not execute in the initial document'); \
+                 const result = await pending; delete window[{marker}]; \
+                 if (!result.ok) throw new Error(result.error); }})()"
+            ),
+            SafeValue::Before,
+        )
+        .await
+    }
+
+    async fn evaluate_lifecycle_script(
+        &self,
+        page: &Page,
+        script: &str,
+        phase: SafeValue,
+    ) -> Result<()> {
+        diagnostics::stage(
+            Stage::StateHooks,
+            [
+                (Field::ActionType, FieldValue::Kind(SafeValue::Hook)),
+                (Field::Condition, FieldValue::Kind(phase)),
+                (
+                    Field::TimeoutMs,
+                    FieldValue::Number(self.timeout.as_millis() as u64),
+                ),
+            ],
+            async {
+                tokio::time::timeout(self.timeout, page.evaluate_expression(script))
+                    .await
+                    .context("Browser lifecycle hook exceeded its timeout")??;
+                Ok(())
+            },
+        )
+        .await
     }
 
     pub async fn apply(&self, page: &Page) -> Result<()> {
@@ -100,9 +220,14 @@ impl DocumentHooks {
                 .await?
                 .into_value()?;
             if !completed {
+                page.evaluate(self.context_setup()).await?;
                 page.evaluate(self.setup.as_str()).await?;
                 if let Some(script) = &self.script {
-                    page.evaluate(script.as_str()).await?;
+                    page.evaluate_expression(script.as_str()).await?;
+                }
+                if let Some(script) = &self.ready_script {
+                    self.evaluate_lifecycle_script(page, script, SafeValue::Ready)
+                        .await?;
                 }
                 page.evaluate(format!("window[{marker}] = true")).await?;
             }
@@ -117,6 +242,131 @@ impl DocumentHooks {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_hooks_validate_without_node_dependencies() -> Result<()> {
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(
+            workspace.path().join("hook.js"),
+            "document.documentElement.dataset.hook = 'ready';",
+        )?;
+        validate_lifecycle_script(workspace.path(), "hook.js")?;
+        let scenario = TestScenario {
+            on_before_script: Some("hook.js".into()),
+            on_ready_script: Some("hook.js".into()),
+            ..Default::default()
+        };
+        let hooks = DocumentHooks::load(workspace.path(), &scenario, &ResolvedConfig::default())?;
+        assert!(hooks.before_script.is_some());
+        assert!(hooks.ready_script.is_some());
+        assert!(validate_lifecycle_script(workspace.path(), "missing.js").is_err());
+        assert!(validate_lifecycle_script(workspace.path(), ".").is_err());
+        assert!(validate_lifecycle_script(workspace.path(), "../hook.js").is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn lifecycle_scripts_execute_in_chromium_with_errors_and_deadlines() -> Result<()> {
+        let site = super::super::browser_tests::Site::new(|request| {
+            let _ = request.respond(
+                tiny_http::Response::from_string(
+                    "<script>window.observedBefore = window.beforeCalls;</script><body><main>original</main><div id='cookie-banner'>Cookies</div></body>",
+                )
+                .with_header(tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap())
+                .with_header(tiny_http::Header::from_bytes("Content-Security-Policy", "script-src 'self' 'unsafe-inline'").unwrap()),
+            );
+        })?;
+        let workspace = tempfile::tempdir()?;
+        let scripts = [
+            (
+                "before.js",
+                "window.beforeCalls = (window.beforeCalls || 0) + 1; (async () => { await new Promise(resolve => setTimeout(resolve, 25)); window.beforeLabel = window.regressify.scenario.label; })()",
+            ),
+            (
+                "shared.js",
+                "function sharedHelper() { throw new Error('helper declaration was invoked'); }\n(async () => { await new Promise(resolve => setTimeout(resolve, 25)); window.hookOrder = ['shared']; window.sharedCalls = (window.sharedCalls || 0) + 1; })()",
+            ),
+            (
+                "ready.js",
+                "function readyHelper() { throw new Error('helper declaration was invoked'); }\n(async () => { await Promise.resolve(); window.hookOrder.push('ready'); document.querySelector('#cookie-banner').remove(); document.querySelector('main').textContent = window.regressify.scenario.label; window.readyCalls = (window.readyCalls || 0) + 1; })()",
+            ),
+        ];
+        for (path, script) in scripts {
+            std::fs::write(workspace.path().join(path), script)?;
+        }
+        let label = "Browser hook \"quotes\" \\ newline\n</script>";
+        let scenario = TestScenario {
+            label: Some(label.into()),
+            on_before_script: Some("before.js".into()),
+            on_ready_script: Some("ready.js".into()),
+            ..Default::default()
+        };
+        let config = ResolvedConfig {
+            js_on_ready_path: Some("shared.js".into()),
+            ..Default::default()
+        };
+        let hooks = DocumentHooks::load(workspace.path(), &scenario, &config)?;
+        let (mut browser, handler, directory) =
+            super::super::browser_tests::launch_browser("browser-hooks", Default::default())
+                .await?;
+        let result: Result<()> = async {
+            let page = browser.new_page("about:blank").await?;
+            let identifier = hooks.install_before(&page).await?;
+            page.goto(site.origin.as_str()).await?;
+            hooks.complete_before(&page, identifier).await?;
+            hooks.apply(&page).await?;
+            hooks.apply(&page).await?;
+            let state: serde_json::Value = page
+                .evaluate("({before: window.observedBefore, beforeLabel: window.beforeLabel, shared: window.sharedCalls, ready: window.readyCalls, order: window.hookOrder, text: document.querySelector('main').textContent, banner: !!document.querySelector('#cookie-banner'), node: typeof process, require: typeof require})")
+                .await?
+                .into_value()?;
+            anyhow::ensure!(state == serde_json::json!({"before": 1, "beforeLabel": label, "shared": 1, "ready": 1, "order": ["shared", "ready"], "text": label, "banner": false, "node": "undefined", "require": "undefined"}), "unexpected hook state: {state}");
+            page.goto(format!("{}/next", site.origin)).await?;
+            hooks.apply(&page).await?;
+            let navigated: bool = page.evaluate("typeof window.beforeCalls === 'undefined' && window.sharedCalls === 1 && window.readyCalls === 1 && !document.querySelector('#cookie-banner')").await?.into_value()?;
+            anyhow::ensure!(navigated, "ready scripts must follow navigation without repeating the before hook");
+            let selected = browser.new_page(site.origin.as_str()).await?;
+            hooks.apply(&selected).await?;
+            hooks.apply(&page).await?;
+            for target in [&selected, &page] {
+                let once: bool = target.evaluate("window.sharedCalls === 1 && window.readyCalls === 1").await?.into_value()?;
+                anyhow::ensure!(once, "ready hooks repeated or missed a selected document");
+            }
+
+            for (failing_script, expected) in [
+                ("throw new Error('browser-hook-error')", "browser-hook-error"),
+                ("Promise.reject(new Error('browser-hook-error'))", "browser-hook-error"),
+                ("const = 'invalid syntax'", "SyntaxError"),
+                ("new Promise(() => {})", "time"),
+            ] {
+                for (failing_path, _) in scripts {
+                    for (path, script) in scripts {
+                        std::fs::write(workspace.path().join(path), if path == failing_path { failing_script } else { script })?;
+                    }
+                    let bounded = ResolvedConfig { element_timeout_ms: 300, ..config.clone() };
+                    let failing = DocumentHooks::load(workspace.path(), &scenario, &bounded)?;
+                    let identifier = failing.install_before(&page).await?;
+                    page.goto(site.origin.as_str()).await?;
+                    let outcome = async {
+                        failing.complete_before(&page, identifier).await?;
+                        failing.apply(&page).await
+                    }.await;
+                    let error = outcome.err().with_context(|| format!("{failing_path} did not fail"))?;
+                    anyhow::ensure!(format!("{error:#}").to_ascii_lowercase().contains(&expected.to_ascii_lowercase()), "{failing_path}: {error:#}");
+                    let marker = serde_json::to_string(&failing.marker)?;
+                    let completed: bool = page.evaluate(format!("window[{marker}] === true")).await?.into_value()?;
+                    anyhow::ensure!(!completed, "failed hook marked its document complete");
+                }
+            }
+            page.evaluate("document.body.textContent = 'browser remains available'").await?;
+            Ok(())
+        }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
 
     #[tokio::test]
     #[ignore = "requires managed Chromium; run regressify install"]

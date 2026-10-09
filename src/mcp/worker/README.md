@@ -20,8 +20,9 @@ Diagnostic lookups never upload workspace contents or private logs.
 
 Use Node.js 22.12 or newer and npm. The lockfile pins dependencies. Commands below
 operate only on this generated project; the tests start and stop a local Worker.
-They also import and invoke the generated Node-hook examples with stub pages,
-checking the six-argument contract without launching a browser.
+They also evaluate the generated classic-script examples with stub browser
+globals, without launching a browser. Node is development tooling for this
+Worker project, not a dependency of Regressify captures or injected scripts.
 
 ```sh
 npm ci

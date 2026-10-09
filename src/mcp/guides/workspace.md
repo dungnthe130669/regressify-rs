@@ -65,7 +65,7 @@ Inheritance exceptions:
 - `pixelMatchThreshold`: 5; per-pixel color tolerance on a separate 0 to 100
   scale. Lower values flag subtler color changes.
 - `delay`: 1000 milliseconds before each save checkpoint and final capture.
-- `postInteractionWait`: 1000 milliseconds after actions and `onReadyScript`,
+- `postInteractionWait`: 1000 milliseconds after actions,
   before final captures only.
 - `elementTimeout`: 30000 milliseconds for finding elements and frames,
   selector and URL waits, `goto`, `select`, `switchTab`, and hooks.
@@ -83,7 +83,7 @@ Inheritance exceptions:
 Thresholds and timing values must be finite; do not use negative delays or zero
 concurrency. `elementTimeout`, `actionabilityTimeout`, and `scenarioTimeout` must
 be positive whole milliseconds; zero is invalid. `elementTimeout` also bounds
-document and Node hooks. `settleTimeout: 0` disables settling, not all waits or
+injected browser hooks. `settleTimeout: 0` disables settling, not all waits or
 animation freezing. A scenario's initial navigation timeout lives under
 `engineOptions.gotoParameters.timeout`; omitted or zero means 60000 milliseconds,
 independent of `elementTimeout`. `waitUntil` is `commit`, `domcontentloaded`,

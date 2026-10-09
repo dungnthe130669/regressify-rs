@@ -103,35 +103,34 @@ test("diagnostic and hook guidance is discoverable without workspace uploads", a
   assert.ok(catalog.guides.files.content.includes("AGENTS.md"));
 });
 
-test("exported script examples match the Node adapter contract without a browser", async () => {
-  new Script(catalog.examples["ready-script"].content);
-  const { default: onBefore } = await import("../content/examples/node-before-hook.js");
-  const { default: onReady } = await import("../content/examples/node-ready-hook.js");
-  assert.equal(onBefore.length, 6);
-  assert.equal(onReady.length, 6);
-  assert.ok(catalog.examples["node-before-hook"].path.endsWith(".mjs"));
-  assert.ok(catalog.examples["node-ready-hook"].path.endsWith(".mjs"));
-  const headers = [];
-  const waits = [];
-  const page = {
-    async setExtraHTTPHeaders(value) { headers.push(value); },
-    async waitForSelector(selector, options) { waits.push({ selector, options }); },
-  };
-  const scenario = { id: "home", url: "https://example.com" };
-  const context = {};
-  const config = { elementTimeoutMs: 1234 };
-  for (const viewport of [null, { label: "phone", width: 375, height: 667 }]) {
-    await onBefore(page, scenario, viewport, true, context, config);
-    await onBefore(page, scenario, viewport, false, context, config);
-    await onReady(page, scenario, viewport, false, context, config);
+test("exported script examples are standard browser JavaScript", async () => {
+  const scripts = {};
+  for (const name of ["ready-script", "before-script", "scenario-ready-script"]) {
+    const example = catalog.examples[name];
+    assert.ok(example.path.endsWith(".js"));
+    const content = await readFile(new URL(`../content/examples/${name}.js`, import.meta.url), "utf8");
+    assert.equal(content, example.content);
+    scripts[name] = new Script(content);
   }
-  assert.deepEqual(headers, [
-    { "X-Visual-Mode": "reference" }, { "X-Visual-Mode": "test" },
-    { "X-Visual-Mode": "reference" }, { "X-Visual-Mode": "test" },
-  ]);
-  assert.deepEqual(waits, Array.from({ length: 2 }, () => ({
-    selector: "main", options: { state: "visible", timeout: 1234 },
-  })));
+  for (const isReference of [true, false]) {
+    let removed = 0;
+    const document = {
+      documentElement: { dataset: {} },
+      querySelector(selector) {
+        assert.equal(selector, "#cookie-banner");
+        return { remove() { removed++; } };
+      },
+    };
+    const window = { regressify: { isReference } };
+    for (const script of Object.values(scripts)) {
+      await script.runInNewContext({ document, window });
+    }
+    assert.equal(document.documentElement.dataset.regressifyReady, "true");
+    assert.equal(window.visualCaptureMode, isReference ? "reference" : "test");
+    assert.equal(removed, 1);
+    document.querySelector = () => null;
+    await scripts["scenario-ready-script"].runInNewContext({ document, window });
+  }
 });
 
 test("unknown topics and incompatible arguments fail without filesystem access", async () => {

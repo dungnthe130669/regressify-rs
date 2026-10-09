@@ -2,6 +2,17 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Browser Script Runtime and Ready Timing (2026-10-09)
+
+- Resolved: `onBeforeScript`/`onReadyScript` previously launched Node and required
+  workspace Playwright; `onReadyScript` ran after actions, too late to dismiss a
+  blocking banner. All scripts now execute directly in Chromium. Both ready
+  settings run after readiness and before actions, once per selected document.
+- [Hook regressions](src/test/hooks.rs) cover standard declarations, promises,
+  errors, timeouts, CSP, navigation, and selected documents. The
+  [reference/test fixture](src/test/browser_tests.rs) passes with an empty worker
+  PATH, verifying banner removal, CSS, peer isolation, and preserved references.
+
 ## Stock Desktop Palette Contrast (2026-10-08)
 
 - Task 019's uncommitted stock-theme pilot removes the custom palette, UI

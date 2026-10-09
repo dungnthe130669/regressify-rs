@@ -25,8 +25,8 @@ server's version; do not assume newer fields work in an older installed CLI.
 - `get_authoring_guide(topic="workspace")`: defaults, setting scopes, and
   configuration precedence.
 - `get_authoring_guide(topic="files")`: shared files, scripts, and artifact ownership.
-- `get_authoring_guide(topic="hooks")`: browser/Node hook contracts, lifecycle,
-  arguments, timeouts, and working examples.
+- `get_authoring_guide(topic="hooks")`: injected browser script contracts,
+  lifecycle, context, timeouts, and working examples.
 - `get_authoring_guide(topic="troubleshooting")`: diagnose failed tests or MCP
   setup using local reports, logs, focused commands, and corrective checks.
 - `get_schema(kind=...)`: complete JSON Schema for workspace, suite, scenario,
@@ -84,7 +84,8 @@ server's version; do not assume newer fields work in an older installed CLI.
 Use a published Regressify CLI installed for the local platform. An installed
 CLI does not require this source repository. Captures require managed Chromium;
 `regressify install` prepares its shared per-user cache and may download it.
-Node and Playwright are needed only for optional Node hooks, not ordinary actions.
+Actions, CSS, and all script hooks run directly in Chromium; Node and Playwright
+installations are not required for captures.
 
 ```sh
 regressify init

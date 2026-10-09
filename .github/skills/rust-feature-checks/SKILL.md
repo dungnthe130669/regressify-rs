@@ -19,7 +19,7 @@ description: 'Use when choosing Rust validation gates, changing Cargo features/d
    native binary, and `gui-tests` enables toolkit test support. `cloud` is separate.
 1. After Rust edits run `cargo fmt --all -- --check`, then the affected gates below.
    Do not run an all-features build as a substitute for supported feature boundaries.
-1. Read ignored-test prerequisites before enabling live Chromium/Node cases. Never
+1. Read ignored-test prerequisites before enabling live Chromium cases. Never
    silently install browsers, contact production websites, or change credentials.
 
 ## Current CI Gates

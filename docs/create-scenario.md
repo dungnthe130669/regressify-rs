@@ -286,28 +286,46 @@ jsOnReadyPath
 Type: `string`.  
 Default value: Test suite's value.
 
-Defaults to `common/_on-ready.js` when no level supplies a path. The script runs in the browser and may return a promise. CSS overrides, hide/remove rules, and this script are applied once per document, including after navigation, before the next action or screenshot. Hook errors fail the scenario. Files are loaded once per scenario capture.
+Defaults to `common/_on-ready.js` when no level supplies a path. All scripts are
+standard browser JavaScript injected directly into Chromium; Node.js and
+Playwright are not required. CSS overrides and hide/remove rules apply first,
+then `jsOnReadyPath`, then the optional scenario `onReadyScript`. Both ready
+scripts run after DOM readiness and `readySelector`, before dependency, scenario,
+or legacy actions. They apply once per document, including navigation and tab
+selection, before the next action or screenshot. Files are loaded once per
+scenario capture. Returned promises are awaited; errors fail that scenario.
 
-Optional `onBeforeScript` and `onReadyScript` run Node/Playwright hooks before navigation and after scenario actions respectively. Paths are relative to the workspace and must stay inside it. These hooks require Node.js and `npm install --save-dev playwright-core` in the workspace; ordinary scenarios do not require Node. Export an async function `(page, scenario, viewport, isReference, browserContext, config)` from a CommonJS `.cjs` or ES module. Hooks attach to the current Chromium page; do not close the browser. `elementTimeout` bounds hook execution.
-
-Use a default export from `.mjs`, or assign the function to `module.exports` in
-`.cjs`; a named-only export is not accepted. `viewport` may be null, `config`
-contains resolved settings such as `elementTimeoutMs`, and `scenario.url` is the
-initial capture URL. Use `page.url()` for the current URL after actions.
-`onReadyScript` cannot prepare earlier actions or alter earlier `save` checkpoints.
+Use `onReadyScript` or `jsOnReadyPath` to dismiss an approved cookie banner before
+interaction. Paths are relative to the workspace and must stay inside it:
 
 ```javascript
-export default async function onReady(page, scenario, viewport, isReference, browserContext, config) {
-  await page.waitForSelector("main", { state: "visible", timeout: config.elementTimeoutMs });
-}
+document.querySelector("#cookie-banner")?.remove();
 ```
 
-Replace the example selector with a verified target. The standalone MCP `hooks`
-topic and `node-before-hook`, `node-ready-hook`, and `hooked-suite` examples cover
-the full lifecycle without requiring this repository.
+Replace the selector with a verified target. For asynchronous work, use an async
+immediately invoked function that returns its promise. Scripts are evaluated as
+written; merely declaring a function does not invoke it. `elementTimeout` bounds
+script execution and the overall `scenarioTimeout` still applies.
 
-After `switchTab`, document hooks apply to the selected page and `onReadyScript`
-receives that page. Returning to an existing document does not repeat its
+Optional `onBeforeScript` is also browser JavaScript. It runs at the start of
+the initial top-level document, before site scripts; the DOM may not exist yet.
+Its returned promise is awaited before readiness/actions, but does not block the
+site's own scripts. It does not repeat on subsequent `goto` actions or frames.
+
+Capture context is available as `window.regressify` and `window.__REGRESSIFY__`:
+scenario identity, initial capture URL, resolved `requiredLogin`, `isReference`,
+`viewport` (or null without a named viewport), and `config` with settings such as
+`elementTimeoutMs`. Action values and authentication credentials are omitted.
+Use `window.location.href` for the current URL.
+
+Existing Node/Playwright hooks must be rewritten as DOM code. Module exports,
+`require`, `process.env`, filesystem APIs, and Playwright `page` objects are not
+available. There is no Node fallback. The standalone MCP `hooks` topic and
+`before-script`, `scenario-ready-script`, and `hooked-suite` examples cover the
+full lifecycle.
+
+After `switchTab`, document hooks apply to the selected page. Returning to an
+existing document does not repeat its
 completed document hooks.
 
 `readySelector` waits for a visible selector before on-ready scripts and actions. A positive `readyTimeout` overrides its timeout; omitted or zero inherits `elementTimeout`. Do not wait here for content created by later scripts or actions. `engineOptions.gotoParameters` accepts `waitUntil: commit | domcontentloaded | load | networkidle`, a `timeout` in milliseconds, and `referer`. Initial navigation defaults to `load` with a `60000` ms timeout, matching the legacy Node/VS Code runner. Omitted or zero timeout uses this bounded default; a positive timeout overrides it. Navigation is independent of `elementTimeout`, which still defaults to `30000` ms for element waits. The overall `scenarioTimeout` still applies. Workspace `elementTimeout`, `actionabilityTimeout`, and `scenarioTimeout` must be positive whole milliseconds.

@@ -112,12 +112,12 @@ including subsequent navigation, before the next action or capture. A script may
 return a promise. Errors fail the capture; do not assume a failed script was
 applied.
 
-These browser scripts do not have Node's filesystem or `require`. The separate
-scenario `onBeforeScript` and `onReadyScript` options invoke Node hooks and need
-Node plus workspace Playwright/playwright-core. Do not close the attached
-browser. Read `get_authoring_guide(topic="hooks")` for their six-argument export
-contract, browser context shape, lifecycle, and timeouts; `onReadyScript` runs
-after actions, not before them. Upload files referenced by `input.file` live under `visual_tests/` and
+All scripts, including `onBeforeScript`, `onReadyScript`, and `jsOnReadyPath`,
+execute inside Chromium with no Node or Playwright dependency. Node filesystem
+APIs, `require`, module exports, and callback arguments are unavailable.
+Read `get_authoring_guide(topic="hooks")` for browser context, lifecycle, and
+timeouts; both ready-script settings run before actions, after readiness.
+Upload files referenced by `input.file` live under `visual_tests/` and
 use paths relative to that folder. Never execute untrusted scripts as validation.
 
 ## Generated and Sensitive Files

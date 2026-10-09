@@ -72,7 +72,7 @@ function createServer() {
     {
       title: "Regressify authoring and troubleshooting guide",
       description:
-        "Read versioned Regressify instructions before authoring files or diagnosing failures. Start with overview; use recipes for complete suites covering common page patterns, troubleshooting for reports, logs, configuration/capture errors, and MCP setup, or hooks for browser/Node lifecycle contracts. Other topics cover suites, scenarios, actions, workspace settings, and shared files. Requires no source checkout and accepts no workspace contents or logs.",
+        "Read versioned Regressify instructions before authoring files or diagnosing failures. Start with overview; use recipes for complete suites covering common page patterns, troubleshooting for reports, logs, configuration/capture errors, and MCP setup, or hooks for injected browser script contracts. Other topics cover suites, scenarios, actions, workspace settings, and shared files. Requires no source checkout and accepts no workspace contents or logs.",
       inputSchema: { topic: z.enum(topics).default("overview") },
       annotations,
     },

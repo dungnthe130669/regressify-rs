@@ -50,11 +50,16 @@ Unknown workspace, suite, scenario, viewport, URL replacement, and action
 properties also fail parsing. Use the documented camelCase property names so a
 typo cannot silently change a capture.
 
-An explicit `cookiePath`, `cssOverridePath`, or `jsOnReadyPath` must name an
+An explicit `cookiePath`, `cssOverridePath`, `jsOnReadyPath`, `onBeforeScript`, or
+`onReadyScript` must name an
 existing regular file inside the workspace; malformed cookie YAML also fails
 before Chromium launches. The default optional `common/_cookies.yaml`,
 `common/_override.css`, and `common/_on-ready.js` files may be absent, but are
 validated when present.
+CSS and all JavaScript hooks are injected directly into Chromium, without Node.js
+or Playwright. After readiness, CSS and `jsOnReadyPath` run before the scenario's
+`onReadyScript`; both scripts finish before actions and run once per selected
+document. See [browser script timing and context](create-scenario.md).
 Configured persisted `state` and scenario `restore` files are likewise required
 to exist in the active Regressify output directory and must have valid state
 data before Chromium launches.

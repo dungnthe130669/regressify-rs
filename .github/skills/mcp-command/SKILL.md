@@ -29,9 +29,10 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    in a guide must be a complete workspace, suite, viewport, or profile file with
    explicit scenario IDs; catalog tests parse and schema-check each one.
 1. Every action needs a typed synthetic example. Update examples and prose for semantic changes; schema generation alone does not validate dependencies, paths, credentials, capture identity, or live browser behavior.
-   The hooks topic must match the six-argument Node adapter, browser-ready context,
-   timeout source, and execution order. Test exported script modules with stub
-   pages and keep their companion suite paths consistent. Distinguish legacy
+   The hooks topic must match injected browser scripts, page-visible context,
+   timeout source, and pre-action ready timing. Test exported classic scripts
+   with DOM stubs and keep companion suite paths consistent; Node-based Worker
+   development tests are not capture prerequisites. Distinguish legacy
    text-appending `keyPress` shortcuts from real `press` keyboard events.
 1. The Worker serves public read-only tools, resources, and prompts at `/mcp`. Use the pinned SDK handler for discovery/transport. Retain Origin validation, request byte limits, no arbitrary path/URL inputs, no user data storage, and generic failure responses. Authentication is a separate deployment concern.
 1. Preserve both current stateless and legacy-client tests. Current HTTP requests need protocol/method metadata headers as well as body metadata. Invalid tool arguments may return `isError: true` rather than throw at the client.

@@ -67,6 +67,178 @@ impl Drop for Site {
 
 #[tokio::test]
 #[ignore = "requires managed Chromium; run regressify install"]
+async fn reference_and_test_inject_ready_scripts_without_node() -> Result<()> {
+    use crate::{test::capture, types::ScreenshotType};
+    use clap::Parser;
+    use serde_json::{Value, json};
+
+    if let Some(root) = std::env::var_os("REGRESSIFY_BROWSER_HOOK_FIXTURE") {
+        let mode = std::env::var("REGRESSIFY_BROWSER_HOOK_MODE")?;
+        let command = if mode == "test" { "test" } else { "ref" };
+        let arguments: Vec<std::ffi::OsString> = vec![
+            "regressify".into(),
+            "--root".into(),
+            root,
+            "--run-id".into(),
+            mode.into(),
+            "--async-capture-limit".into(),
+            "2".into(),
+            "--async-capture-ramp-ms".into(),
+            "0".into(),
+            command.into(),
+            "--fetch-browser".into(),
+            "false".into(),
+        ];
+        return crate::application::execute(crate::cli::Cli::try_parse_from(arguments)?).await;
+    }
+    let site = Site::new(|request| {
+        let _ = request.respond(Response::from_string(r#"<!doctype html>
+<html><head><script>window.beforeObserved = window.beforeCalls === 1;</script>
+<style>body { margin:0; min-height:100vh; background:rgb(200,30,30); }
+#cookie-banner { position:fixed; inset:0; z-index:1000; background:white; }
+button { margin:30px; } .volatile { position:fixed; inset:0; background:red; }</style></head>
+<body><div class="volatile">Changing data</div><div id="cookie-banner">Cookie banner</div>
+<button id="target" onclick="
+const context = window.regressify;
+const id = context.scenario.id;
+const expectedShared = id === 'scenario-ready' ? 0 : 1;
+const expectedReady = id === 'js-path' ? 0 : 1;
+if (window.beforeObserved && (window.sharedCalls || 0) === expectedShared &&
+    (window.readyCalls || 0) === expectedReady && !document.querySelector('#cookie-banner') &&
+    getComputedStyle(document.querySelector('.volatile')).visibility === 'hidden' &&
+    context.viewport.label === 'desktop' && typeof context.isReference === 'boolean' &&
+    !('actions' in context.scenario) && !('basicAuth' in context.scenario) &&
+    !('basicAuth' in context.config) && typeof process === 'undefined' && typeof require === 'undefined') {
+    document.body.style.background = 'rgb(14,160,80)';
+}">Continue</button></body></html>"#)
+            .with_header(Header::from_bytes("Content-Type", "text/html").unwrap()));
+    })?;
+    let workspace = tempfile::tempdir()?;
+    let root = workspace.path();
+    std::fs::create_dir(root.join("visual_tests"))?;
+    std::fs::create_dir(root.join("common"))?;
+    std::fs::write(
+        root.join("common/_viewports.yaml"),
+        "- label: desktop\n  width: 640\n  height: 240\n",
+    )?;
+    std::fs::write(
+        root.join("common/_override.css"),
+        ".volatile { visibility: hidden !important; }",
+    )?;
+    std::fs::write(
+        root.join("common/before.js"),
+        "window.beforeCalls = (window.beforeCalls || 0) + 1;",
+    )?;
+    for (path, counter) in [("shared.js", "sharedCalls"), ("ready.js", "readyCalls")] {
+        std::fs::write(
+            root.join("common").join(path),
+            format!(
+                "(async () => {{ await new Promise(resolve => setTimeout(resolve, 25)); window.{counter} = (window.{counter} || 0) + 1; document.querySelector('#cookie-banner')?.remove(); }})()"
+            ),
+        )?;
+    }
+    std::fs::write(
+        root.join("regressify.yaml"),
+        "elementTimeout: 1500\npostInteractionWait: 0\n",
+    )?;
+    let mut scenarios = Vec::new();
+    for id in ["js-path", "scenario-ready", "both"] {
+        let mut scenario = json!({
+            "id": id, "url": site.origin, "readySelector": "#target",
+            "onBeforeScript": "common/before.js", "delay": 0, "noScrollTop": true,
+            "selectors": ["viewport"], "actions": [{"click": "#target"}]
+        });
+        if id != "scenario-ready" {
+            scenario["jsOnReadyPath"] = json!("common/shared.js");
+        }
+        if id != "js-path" {
+            scenario["onReadyScript"] = json!("common/ready.js");
+        }
+        scenarios.push(scenario);
+    }
+    std::fs::write(
+        root.join("visual_tests/hooks.tests.json"),
+        serde_json::to_vec_pretty(&json!({"id": "hooks", "scenarios": scenarios}))?,
+    )?;
+    let run = |mode: &str| -> Result<()> {
+        let output = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "test::browser_tests::reference_and_test_inject_ready_scripts_without_node",
+                "--nocapture",
+            ])
+            .env("REGRESSIFY_BROWSER_HOOK_FIXTURE", root)
+            .env("REGRESSIFY_BROWSER_HOOK_MODE", mode)
+            .env("PATH", "")
+            .env_remove("NODE_PATH")
+            .env_remove("REPLACEMENT_PROFILE")
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "{mode}: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    };
+    run("reference")?;
+    run("test")?;
+    let suite_dir = root.join(".regressify/hooks");
+    let mut baselines = Vec::new();
+    for id in ["js-path", "scenario-ready", "both"] {
+        let key =
+            capture::final_screenshot_order_key(id, Some("desktop"), &ScreenshotType::Viewport);
+        let baseline = suite_dir
+            .join("bitmaps_reference")
+            .join(format!("{key}.png"));
+        baselines.push((baseline.clone(), std::fs::read(&baseline)?));
+        for mode in ["reference", "test"] {
+            let path = suite_dir
+                .join("bitmaps_test")
+                .join(mode)
+                .join(format!("{key}.png"));
+            anyhow::ensure!(
+                !capture::error_marker_path(&path).exists(),
+                "{mode}/{id} failed"
+            );
+            let image = lodepng::decode32(std::fs::read(path)?)?;
+            let pixel = image.buffer.first().unwrap();
+            anyhow::ensure!(
+                (pixel.r, pixel.g, pixel.b) == (14, 160, 80),
+                "{mode}/{id}: banner dismissal or hook order failed"
+            );
+        }
+    }
+    std::fs::write(
+        root.join("common/ready.js"),
+        "throw new Error('ready-hook-fixture-error')",
+    )?;
+    run("failed-reference")?;
+    let report: Value = serde_json::from_slice(&std::fs::read(
+        suite_dir.join("bitmaps_test/failed-reference/report.json"),
+    )?)?;
+    let tests = report["tests"].as_array().unwrap();
+    assert_eq!(
+        tests.iter().filter(|test| test["status"] == "fail").count(),
+        2
+    );
+    assert_eq!(
+        tests.iter().filter(|test| test["status"] == "pass").count(),
+        1
+    );
+    for (path, bytes) in baselines {
+        assert_eq!(
+            std::fs::read(path)?,
+            bytes,
+            "a failing hook changed a reference"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires managed Chromium; run regressify install"]
 async fn responsive_hamburger_menu_mobile_only_click_and_save() -> Result<()> {
     use crate::{
         diagnostics::{

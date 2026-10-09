@@ -71,8 +71,8 @@ duration, and error category; a deadline reads
 `scenarioTimeout of 600000 ms expired during Action 4 (wait) (Timeout)`. The
 local detail is the error message chain with URLs reduced to scheme and host,
 credential-like values redacted, control characters removed, and length limited
-to 2048 characters. It can still name selectors, files, and Node hook standard
-error, so it appears only on the console and in the live desktop scenario log,
+to 2048 characters. It can still name selectors, files, and browser script
+errors, so it appears only on the console and in the live desktop scenario log,
 never in archives, reports, or published logs.
 
 ### Diagnostic Storage Limits
@@ -272,9 +272,10 @@ content catalog with standalone guides, JSON Schemas, and synthetic examples.
 Guides cover suite discovery/identity, the scenario capture lifecycle and
 screenshot naming, capture targets for opened menus and overlays, every action
 and selector engine, configuration scopes, precedence, and defaults, predefined
-file formats, browser/Node hook contracts, complete recipes for common page
+file formats, injected browser script contracts, complete recipes for common page
 patterns, and troubleshooting. Hook examples
-include complete suite wiring and six-argument ESM scripts. Diagnostic guidance
+include complete suite wiring and plain DOM scripts that run in Chromium before
+actions, without Node or Playwright. Diagnostic guidance
 covers focused reruns, preflight messages, actual report paths and fields,
 capture failure summaries and local detail lines, capture-error/log sidecars,
 journal records, journal health, and common corrective checks. Every YAML block
@@ -285,7 +286,7 @@ filesystem, authentication, or browser validation.
 Use Node.js 22.12 or newer with npm to install and validate the result. `npm test`
 starts and stops a local Worker and exercises tools, resources, prompts, current
 stateless requests, and legacy-compatible clients. It also executes the exported
-hook examples with stub pages; this does not launch Chromium. `npm run build` is a Wrangler
+hook examples with stub browser globals; this does not launch Chromium. `npm run build` is a Wrangler
 dry run, not a deployment; it writes the single minified module that `npm run deploy`
 uploads, without source maps. `npm run dev` starts the local `/mcp` endpoint.
 

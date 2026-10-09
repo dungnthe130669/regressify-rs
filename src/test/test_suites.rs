@@ -1043,8 +1043,8 @@ fn validate_external_capture_files_in(
                 .into_iter()
                 .flatten()
             {
-                super::node_hook::validate(root_dir, script)
-                    .with_context(|| format!("Invalid Node hook for {}", context))?;
+                super::hooks::validate_lifecycle_script(root_dir, script)
+                    .with_context(|| format!("Invalid browser hook for {}", context))?;
             }
 
             for action in scenario.actions.iter().flatten() {

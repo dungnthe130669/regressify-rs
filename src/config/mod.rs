@@ -60,7 +60,7 @@ pub struct WorkspaceConfig {
     pub hide_selectors: Option<Vec<String>>,
     /// Ignore HTTPS certificate errors (default: false).
     pub ignore_ssl_errors: Option<bool>,
-    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions; it may return a promise, and errors fail the capture. Not a Node hook; defaults to common/_on-ready.js.
+    /// Standard browser JavaScript injected once per active page document after readiness and before onReadyScript and actions. Returned promises are awaited; errors fail the capture. No Node.js or Playwright is required. Defaults to common/_on-ready.js.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
     /// Allowed percentage of different pixels, from 0 to 100. Default: 0.1, meaning 0.1%.
@@ -71,7 +71,7 @@ pub struct WorkspaceConfig {
     pub pixel_match_threshold: Option<f64>,
     /// Skip the one-time lazy-load scroll after navigation, before actions (default: false).
     pub no_scroll_top: Option<bool>,
-    /// Milliseconds to wait after actions and onReadyScript, before the final captures only. Non-negative; default: 1000.
+    /// Milliseconds to wait after actions, before the final captures only. Non-negative; default: 1000.
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
     /// Standard CSS selectors set to display: none in every document; selectors matching nothing are ignored. Supply a list, even for one selector.

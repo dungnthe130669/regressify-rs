@@ -1,7 +1,17 @@
 # Browser Runtime
 
-Verified: 2026-10-06
+Verified: 2026-10-09
 
+- [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
+  `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
+  before actions. Ready hooks follow each selected document once. The browser
+  hook and [full capture](../../src/test/browser_tests.rs) fixtures pass with no
+  workspace npm packages and an empty worker PATH, including failed-reference
+  preservation. The Node runner and Playwright attachment were removed.
+- User files need chromiumoxide `evaluate_expression`, not `evaluate`: its
+  function heuristic invoked a leading declaration in a multi-statement script.
+  The live hook regression reproduced that failure, then passed with explicit
+  evaluation while retaining promise/error handling, CSP, and timeout coverage.
 - [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
   across the executor, tab-tracker guard, and save inventory. Strict-subset
   [preflight](../../src/test/test_suites.rs) validates full consumer/prerequisite

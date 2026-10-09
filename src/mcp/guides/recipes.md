@@ -115,8 +115,11 @@ environment variables. Choose the lightest option that fits:
 1. Session cookies exported from a manual sign-in into a local, ignored cookie
    file referenced by `cookiePath`.
 1. A sign-in scenario that saves state with `persist`, run before suites that
-   load it with `state`. Use a dedicated test account approved for this, or
-   perform the sign-in in an `onBeforeScript` hook that reads `process.env`.
+  load it with `state`. Use a dedicated test account approved for this, and keep
+  private sign-in suites and saved state local and ignored by version control.
+
+Browser hooks cannot read `process.env` or local files. Use Basic Auth placeholders
+or an authorized cookie/state file when authentication needs private values.
 
 ```yaml
 # visual_tests/sign-in.tests.yaml

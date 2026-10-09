@@ -1,38 +1,40 @@
 ---
 name: lifecycle-hooks
-description: 'Use when changing CSS overrides, jsOnReady, document navigation hooks, Node onBefore/onReady scripts, Playwright attachment, or hook timeouts.'
+description: 'Use when changing CSS overrides, jsOnReadyPath, injected onBeforeScript/onReadyScript browser JavaScript, document navigation hooks, or script timeouts.'
 ---
 
-# Document and Node Hooks
+# Injected Browser Hooks
 
 ## Start Here
 
-[Document hooks](../../../src/test/hooks.rs), [Node runner](../../../src/test/node_hook.rs), [Node adapter](../../../src/test/node_hook.cjs), and [scenario sequencing](../../../src/test/test_scenario.rs).
+[Document and lifecycle hooks](../../../src/test/hooks.rs), [scenario sequencing](../../../src/test/test_scenario.rs), and [browser fixtures](../../../src/test/browser_tests.rs).
 
 ## Procedure and Invariants
 
 1. Resolve hook files through workspace containment checks. Distinguish absent optional default scripts from invalid explicit paths.
 1. Apply document CSS/on-ready code once per document, including after navigation. Preserve ready-context data and propagate script errors instead of marking an incomplete hook successful. Review selector CSS and JS serialization separately.
-1. Optional Node hooks require Node and workspace Playwright/playwright-core. They attach to the existing Chromium target; they must not close its browser. After `switchTab`, `onReadyScript` receives the selected target. Document hooks remain once-per-document when moving between previously visited tabs.
-   Document the default/CommonJS export `(page, scenario, viewport, isReference,
-   context, config)`, nullable viewport, and `elementTimeout` bound.
-   `onReadyScript` follows dependency and scenario/legacy actions; it cannot
-   initialize earlier actions or change earlier saves. Explicit `actions`, even
-   empty, suppress legacy shortcuts. Browser ready scripts follow `readySelector`.
-1. Pass the structured payload through stdin, never a shell command string. Bound execution and retained stderr while continuing to drain the pipe.
-1. Scripts are executable project code: use trusted fixtures and synthetic data. Review timeout/cancellation for descendants as well as the immediate process; kill-on-drop of one child is not proof of process-tree cleanup.
+1. All CSS and JavaScript hooks execute in Chromium through CDP, with no Node subprocess or Playwright attachment. Evaluate user files as classic scripts with `evaluate_expression`; automatic function detection can invoke declarations. Await returned promises, propagate syntax/runtime errors and rejections, and keep the `elementTimeout`/`scenarioTimeout` bounds.
+1. Register `onBeforeScript` before initial navigation so synchronous code runs before site scripts. The DOM may not exist yet. Capture errors/rejections for later awaiting and remove the registration after initial navigation; never apply it to later `goto` actions or sibling frames. Asynchronous work does not block site scripts.
+1. CSS, `jsOnReadyPath`, then `onReadyScript` run after DOM readiness/`readySelector`, before dependency, scenario, and legacy actions. Both ready scripts follow navigation and `switchTab`, once per document; revisiting a completed document does not rerun them. Explicit `actions`, even empty, suppress legacy shortcuts.
+1. Expose browser metadata through `window.regressify`/`window.__REGRESSIFY__`, including nullable viewport, reference mode, and safe resolved configuration. Do not inject action values or authentication credentials. Serialize metadata as JSON; module exports, callback arguments, Node APIs, and `process.env` are not supported.
+1. Scripts are executable project code: use trusted fixtures and synthetic data. Never run user scripts in a separate runtime as preflight validation or add Node/npm installation probes.
 
 ## Checks
 
 ```sh
-cargo test --lib test::hooks::tests -- --list
-cargo test --lib test::node_hook::tests -- --list
+cargo test --locked --lib test::hooks::tests -- --include-ignored --test-threads=1
+cargo test --locked --lib test::browser_tests::reference_and_test_inject_ready_scripts_without_node -- --ignored --exact
 ```
 
-These fixtures are ignored without managed Chromium; the Node fixture also names its package prerequisite in `#[ignore]`. A listing is not a passing behavior test. Run the selected fixture with `--ignored` only when prerequisites are available.
+Live fixtures require cached managed Chromium and never download it. The full
+capture fixture runs ref/test with an empty worker PATH and no workspace npm
+packages; it checks CSS, both ready settings, click ordering, peer isolation,
+and unchanged references after hook failure. Keep coverage for declarations,
+promises, CSP, errors, deadlines, metadata escaping, navigation, and tab selection.
 
 ## Maintain
 
 Update [scenario docs](../../../docs/create-scenario.md), [suite docs](../../../docs/create-test-suite.md), and this skill. Comment lifecycle ownership and script-order decisions, not routine payload assignments.
 Maintain the standalone [hooks guide](../../../src/mcp/guides/hooks.md), examples,
-and exported Worker script-contract tests when hook contracts change.
+and exported Worker script-contract tests when hook contracts change. The Worker's
+development tests may use Node to check DOM stubs; that is not a capture dependency.

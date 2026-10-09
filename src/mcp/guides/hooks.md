@@ -1,99 +1,93 @@
-# Browser and Node Hooks
+# Injected Browser Scripts and CSS
 
 Hooks are executable project code. Use them only when ordinary actions and
 configuration do not express the requested behavior. Inspect existing scripts
-locally and obtain permission before adding dependencies or running untrusted code.
+locally and obtain permission before running untrusted code.
 This MCP server supplies instructions only; it never executes hooks.
 
-## Two Different Hook Systems
+## Script Settings
 
 | Setting          | Scope and Execution                                                                                                                                       |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `jsOnReadyPath`  | Workspace, suite, or scenario. Browser-side JavaScript, once per active page document after readiness and before actions. Default: `common/_on-ready.js`. |
-| `onBeforeScript` | Scenario only. Node.js, after state/cookie setup and before initial navigation.                                                                           |
-| `onReadyScript`  | Scenario only. Node.js, after dependency, scenario, and legacy actions, before automatic final captures. Receives the selected tab.                       |
+| `onBeforeScript` | Scenario only. Browser JavaScript at the start of the initial top-level document, before site scripts. The DOM may not exist yet.                         |
+| `onReadyScript`  | Scenario only. Browser JavaScript after readiness, CSS, and `jsOnReadyPath`, before actions. Runs once per selected document.                             |
 
 Paths are relative to the workspace root, not to the suite or hook directory.
-Explicit paths must name regular files inside the canonical workspace. Browser
-scripts use DOM APIs, not Node imports, `require`, or filesystem APIs.
+Explicit paths must name regular files inside the canonical workspace. All three
+settings accept standard browser JavaScript with DOM APIs. No Node.js or Playwright
+installation or process is required. CSS overrides and hide/remove rules are also
+injected directly into Chromium.
 
 ## Capture Lifecycle
 
 1. Create the scenario page, apply browser/viewport settings, and install state
    restoration and cookies.
-1. Run `onBeforeScript` on the page before its initial navigation.
-1. Navigate using `engineOptions.gotoParameters`, then wait until
+1. Register `onBeforeScript`, then navigate using `engineOptions.gotoParameters`.
+   Its synchronous statements run at document creation before site scripts.
+   Await its returned promise after navigation; asynchronous work does not block
+   the site's own scripts. Remove the registration before subsequent navigation.
+1. Wait until
    `readySelector` exists and is visible.
 1. Apply the CSS override, `hideSelectors`/`removeSelectors`, and the browser
-   ready script; freeze animations and scroll once for lazy content.
+   `jsOnReadyPath` script, then `onReadyScript`; freeze animations and scroll
+   once for lazy content. Both ready scripts finish before actions.
 1. Run inherited `needs` actions, then scenario `actions`, or legacy shortcuts
    when `actions` is omitted. Each applicable `save` captures at its position.
-1. Run `onReadyScript`. If final captures remain, wait `postInteractionWait`
+1. If final captures remain, wait `postInteractionWait`
    and `delay`, settle, and capture them.
 
 `readySelector` is checked before browser ready scripts and actions. Do not point
-it at content that those later steps create. `onReadyScript` cannot prepare an
-earlier click/input or alter an already completed `save`; use an earlier action
-or browser ready script where appropriate. A last applicable `save` can suppress
+it at content that those later steps create. Use `onReadyScript` or
+`jsOnReadyPath` to dismiss approved overlays before clicks, input, and `save`
+checkpoints. A last applicable `save` can suppress
 the automatic final capture, while explicit scenario `selectors` still run.
 Browser hooks are applied to new documents after navigation and tab selection;
 switching back to an already processed document does not rerun them.
 
-## Node Contract
+## Browser Script Contract
 
-Node hooks need local Node.js and a workspace installation of `playwright` or
-`playwright-core`. With permission, `npm install --save-dev playwright-core`
-provides the attachment library; it does not replace Regressify's Chromium setup.
-Use `.mjs` with a default export, or `.cjs` with `module.exports = async function`.
-A named-only export is not accepted. A `.js` file follows the workspace
-`package.json` module type, so prefer an explicit extension. Hooks are awaited
-and must finish. The hook process starts in the workspace root and inherits the
-CLI's environment variables, so it can read credentials from `process.env`
-instead of storing them in suite files.
+Use plain `.js` files, not module exports or Playwright callbacks. For example,
+an `onReadyScript` file can remove an approved cookie banner before interaction:
 
 ```javascript
-export default async function onReady(page, scenario, viewport, isReference, context, config) {
-  await page.waitForSelector("main", {
-    state: "visible",
-    timeout: config.elementTimeoutMs,
-  });
-}
+document.querySelector("#cookie-banner")?.remove();
 ```
 
-| Argument      | Meaning                                                                                                                                                                                      |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `page`        | The existing Playwright Page for this scenario's currently selected tab.                                                                                                                     |
-| `scenario`    | Scenario configuration plus resolved `requiredLogin`, initial capture `url`, and suite output ID in `testSuite`. Use `page.url()` for the current URL after navigation actions.              |
-| `viewport`    | `{label, width, height}` or `null` when no named viewport is configured.                                                                                                                     |
-| `isReference` | `true` for reference capture, `false` for test capture.                                                                                                                                      |
-| `context`     | The existing Playwright BrowserContext containing `page`.                                                                                                                                    |
-| `config`      | Resolved camelCase capture configuration. Runtime timeouts use `elementTimeoutMs`, `actionabilityTimeoutMs`, `settleTimeoutMs`, and `scenarioTimeoutMs`. Basic Auth credentials are omitted. |
+Return a promise for asynchronous work, for example with an async immediately
+invoked function. The runner awaits that promise, but does not automatically
+call a function that the script only declares. Scripts run in the selected
+page's main document, not as modules; `import`, `export`, `module.exports`,
+`require`, `process.env`, and Node filesystem APIs are unavailable. Rewrite old
+Node/Playwright hooks as DOM statements and use browser context below instead
+of callback arguments. A file extension does not enable Node or module loading.
 
-Reuse the supplied page/context; do not launch another browser or close the
-attached browser, context, or page. Use Regressify's `switchTab` action when
-subsequent actions/captures need a different tab. Other scenarios have independent
-pages; never depend on their execution order or mutate a sibling's session.
+Use Regressify's `switchTab` action when subsequent actions/captures need a
+different tab. Ready hooks apply to that selected document. Other scenarios have
+independent pages; never depend on their execution order or mutate a sibling's
+session. `onBeforeScript` is limited to initial top-level navigation, not later
+`goto` actions or frames.
 
-Node execution, including attachment/import, is bounded by workspace
-`elementTimeout` (default 30000 ms); the overall `scenarioTimeout` also applies.
-Throw an error when the intended operation fails. Standard output is discarded;
-retained standard error is bounded and becomes part of the failure message.
+Awaiting scripts is bounded by workspace `elementTimeout` (default 30000 ms);
+the overall `scenarioTimeout` also applies. Throw an error when the intended
+operation fails. Syntax errors and rejected promises fail the scenario; peers
+continue and failed captures never replace good references.
 Reports and capture logs name the failed hook, as in
 `onReadyScript failed after 812 ms (Unknown)`, but not its message. The local
 console's `Local detail` line shows the sanitized message, including the start
-of standard error, truncated to 2048 characters. For more context while
-diagnosing, temporarily write sanitized notes to standard error or to a local,
-version-control-ignored file, and remove that code afterwards.
+of the browser error, truncated to 2048 characters. For more context while
+diagnosing, use `--debug` and browser developer tools on an authorized test page.
 Never log credentials, cookies, input values, or private response bodies.
 
-Retrieve `get_example(task="node-before-hook")`, `node-ready-hook`, and
+Retrieve `get_example(task="before-script")`, `scenario-ready-script`, and
 `hooked-suite` together for a complete setup. The first hook sets a synthetic
-reference/test header; the second waits for a visible `main` before final capture.
+reference/test value; the second removes a verified banner before actions.
 Adapt them to verified application behavior, not merely to make a test pass.
 
-## Browser Ready Context
+## Browser Context
 
-Both `window.__REGRESSIFY__` and `window.regressify` refer to this shape:
+All injected scripts can use `window.__REGRESSIFY__` or `window.regressify`.
+The context contains these fields, plus other resolved capture settings in `config`:
 
 ```json
 {
@@ -103,17 +97,24 @@ Both `window.__REGRESSIFY__` and `window.regressify` refer to this shape:
     "label": "Home",
     "description": null,
     "url": "https://example.com",
-    "requiredLogin": false
-  }
+      "requiredLogin": false,
+      "testSuite": "home"
+   },
+   "viewport": { "label": "desktop", "width": 1366, "height": 768 },
+   "isReference": true,
+   "config": { "elementTimeoutMs": 30000 }
 }
 ```
 
 Identity/description fields may be absent or null according to the scenario.
+`viewport` is null without a named viewport. `isReference` distinguishes reference
+from test captures. Scenario actions and authentication credentials are not
+included. `config` uses camelCase resolved names such as `elementTimeoutMs`,
+`actionabilityTimeoutMs`, `settleTimeoutMs`, and `scenarioTimeoutMs`.
 Use `window.location.href` for the currently navigated URL, especially after URL
 replacements, `goto`, or popup selection. `requiredLogin` is a flag, not a login
 implementation. An asynchronous browser script should return its promise, for
-example with an async immediately invoked function. Do not export a Node module
-from `common/_on-ready.js`.
+example with an async immediately invoked function.
 
-For missing modules, wrong exports, hook timeouts, and hook-versus-action ordering
+For browser script errors, hook timeouts, and hook-versus-action ordering
 failures, retrieve `get_authoring_guide(topic="troubleshooting")`.

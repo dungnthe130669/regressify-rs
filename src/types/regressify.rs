@@ -71,7 +71,7 @@ pub struct TestSuite {
     /// Ignore HTTPS certificate errors for this suite. Inherits the workspace setting (default: false).
     pub ignore_ssl_errors: Option<bool>,
 
-    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; inherits the workspace setting.
+    /// Standard browser JavaScript injected once per active page document after readiness and before onReadyScript and actions. Returned promises are awaited. No Node.js or Playwright is required; inherits the workspace setting.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
 
@@ -83,7 +83,7 @@ pub struct TestSuite {
     #[schemars(range(min = 0.0, max = 100.0), example = 5.0)]
     pub pixel_match_threshold: Option<f64>,
 
-    /// Milliseconds to wait after all actions and onReadyScript, before the final captures (not before save checkpoints). Non-negative; inherits the workspace setting (default: 1000).
+    /// Milliseconds to wait after all actions, before the final captures (not before save checkpoints). Non-negative; inherits the workspace setting (default: 1000).
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
 
@@ -163,11 +163,11 @@ pub struct TestScenario {
     pub ready_timeout: Option<u64>,
     /// Navigation settings, nested under gotoParameters (waitUntil, timeout, and referer).
     pub engine_options: Option<EngineOptions>,
-    /// Workspace-relative Node.js hook executed before initial navigation, after state/cookie setup. Export a default or CommonJS function(page, scenario, viewport, isReference, context, config). Requires local Node and workspace Playwright/playwright-core; bounded by elementTimeout. Do not close the attached browser.
-    #[schemars(example = "common/hooks/on-before.mjs")]
+    /// Workspace-relative standard browser JavaScript injected at the start of the initial top-level document, before site scripts. The DOM may not exist yet. Use window.regressify for capture context; no module exports, Node.js, or Playwright. Returned promises are awaited before readiness and actions, bounded by elementTimeout.
+    #[schemars(example = "common/hooks/on-before.js")]
     pub on_before_script: Option<String>,
-    /// Workspace-relative Node.js hook executed after dependency, scenario, and legacy actions, before automatic final captures. It cannot prepare earlier actions or change earlier save checkpoints. Uses the same six-argument export contract and elementTimeout as onBeforeScript; receives the currently selected tab.
-    #[schemars(example = "common/hooks/on-ready.mjs")]
+    /// Workspace-relative standard browser JavaScript injected after DOM readiness and readySelector, after CSS and jsOnReadyPath, before dependency, scenario, or legacy actions. Runs once per selected page document, including navigation and switchTab. Use DOM APIs and window.regressify, not module exports, Node.js, or Playwright. Returned promises are awaited; elementTimeout bounds execution.
+    #[schemars(example = "common/hooks/on-ready.js")]
     pub on_ready_script: Option<String>,
 
     /// HTTP Basic Auth for this scenario. Each object needs origin, username, and password; matching origins override inherited credentials.
@@ -202,7 +202,7 @@ pub struct TestScenario {
     #[schemars(example = "sign-in")]
     pub id: Option<String>,
 
-    /// Browser-side JavaScript executed once per active page document after DOM readiness and before actions. Not a Node hook; inherits the suite or workspace setting.
+    /// Standard browser JavaScript injected once per active page document after readiness and before onReadyScript and actions. Returned promises are awaited. No Node.js or Playwright is required; inherits the suite or workspace setting.
     #[schemars(example = "common/_on-ready.js")]
     pub js_on_ready_path: Option<String>,
 
@@ -225,7 +225,7 @@ pub struct TestScenario {
     /// Skip the one-time lazy-load scroll that runs after navigation and before actions. Inherits the workspace setting (default: false).
     pub no_scroll_top: Option<bool>,
 
-    /// Milliseconds to wait after all actions and onReadyScript, before the final captures (not before save checkpoints). Non-negative; inherits the suite or workspace setting (default: 1000).
+    /// Milliseconds to wait after all actions, before the final captures (not before save checkpoints). Non-negative; inherits the suite or workspace setting (default: 1000).
     #[schemars(range(min = 0.0), example = 1000)]
     pub post_interaction_wait: Option<f64>,
 

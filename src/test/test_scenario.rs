@@ -607,7 +607,20 @@ async fn run_scenario_capture_inner(
     let viewport_label = viewport.map(|v| v.label.as_str());
 
     let hooks =
-        super::hooks::DocumentHooks::load(common::ROOT_DIR.get_required()?, scenario, resolved)?;
+        super::hooks::DocumentHooks::load(common::ROOT_DIR.get_required()?, scenario, resolved)?
+            .with_context(serde_json::json!({
+                "requiredLogin": resolved.required_login,
+                "scenario": {
+                    "id": scenario.id, "label": scenario.label,
+                    "description": scenario.description, "url": url,
+                    "requiredLogin": resolved.required_login, "testSuite": test_suite.id,
+                },
+                "viewport": viewport.map(|value| serde_json::json!({
+                    "label": value.label, "width": value.width, "height": value.height
+                })),
+                "isReference": is_reference,
+                "config": resolved,
+            }));
 
     // Create page with about:blank first, apply the viewport + CSP bypass, then
     // navigate so layout is computed at the intended size from the first paint.
@@ -660,40 +673,7 @@ async fn run_scenario_capture_inner(
         tabs,
     };
 
-    let run_hook = |script: Option<&str>,
-                    page: &chromiumoxide::Page,
-                    phase: crate::diagnostics::record::SafeValue| {
-        let script = script.map(str::to_string);
-        let endpoint = browser.websocket_address().to_string();
-        let target = page.target_id().as_ref().to_string();
-        async move {
-            if let Some(script) = script {
-                let root = common::ROOT_DIR.get_required()?;
-                let script = config::resolve_workspace_file(root, &script, "Node hook")?;
-                let mut hook_scenario = serde_json::to_value(scenario)?;
-                hook_scenario["requiredLogin"] = serde_json::json!(resolved.required_login);
-                hook_scenario["url"] = serde_json::json!(url);
-                hook_scenario["testSuite"] = serde_json::json!(test_suite.id);
-                let payload = serde_json::json!({"script": script, "endpoint": endpoint, "target": target,
-                    "scenario": hook_scenario, "viewport": viewport.map(|value| serde_json::json!({"label": value.label, "width": value.width, "height": value.height})),
-                    "isReference": is_reference, "config": resolved});
-                super::node_hook::run(
-                    root,
-                    payload,
-                    std::time::Duration::from_millis(resolved.element_timeout_ms),
-                    phase,
-                )
-                .await?;
-            }
-            Ok::<_, anyhow::Error>(())
-        }
-    };
-    run_hook(
-        scenario.on_before_script.as_deref(),
-        &active.page,
-        crate::diagnostics::record::SafeValue::Before,
-    )
-    .await?;
+    let before_hook = hooks.install_before(&active.page).await?;
 
     let target = active
         .runtime
@@ -709,6 +689,7 @@ async fn run_scenario_capture_inner(
         .cloned()
         .unwrap_or_default();
     target.navigate(url, &options).await?;
+    hooks.complete_before(&active.page, before_hook).await?;
     if let Some(selector) = &scenario.ready_selector {
         use crate::diagnostics::{record::*, runtime as diagnostics};
         let timeout = scenario
@@ -780,12 +761,6 @@ async fn run_scenario_capture_inner(
         active.exec(browser, ctx, &hooks, action).await?;
     }
 
-    run_hook(
-        scenario.on_ready_script.as_deref(),
-        &active.page,
-        crate::diagnostics::record::SafeValue::Ready,
-    )
-    .await?;
     hooks.apply(&active.page).await?;
 
     if screenshot_types.is_empty() {

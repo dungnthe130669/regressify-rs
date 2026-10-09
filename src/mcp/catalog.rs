@@ -59,7 +59,7 @@ pub(super) fn build() -> Result<Value> {
         ),
         (
             "hooks",
-            "Browser and Node hook contracts, examples, and lifecycle",
+            "Injected browser JavaScript and CSS contracts, examples, and lifecycle",
             include_str!("guides/hooks.md"),
         ),
         (
@@ -152,8 +152,8 @@ pub(super) fn build() -> Result<Value> {
             "hooked-suite",
             "suite",
             "visual_tests/hooked-home.tests.yaml",
-            "A complete suite requiring the node-before-hook and node-ready-hook examples at their target paths, plus local Node and workspace playwright-core. Read the hooks guide and adapt the URL/selectors before an authorized capture.",
-            json!({"scenarios": [{"id": "home", "url": "https://example.com", "readySelector": "main", "onBeforeScript": "common/hooks/on-before.mjs", "onReadyScript": "common/hooks/on-ready.mjs", "selector": "main"}]}),
+            "A complete suite using the before-script and scenario-ready-script examples at their target paths. All scripts run directly in Chromium without Node or Playwright. Read the hooks guide and adapt the URL/selectors before an authorized capture.",
+            json!({"scenarios": [{"id": "home", "url": "https://example.com", "readySelector": "main", "onBeforeScript": "common/hooks/on-before.js", "onReadyScript": "common/hooks/on-ready.js", "selector": "main"}]}),
         ),
     ] {
         examples.insert(name.into(), json!({"kind": kind, "path": path, "description": description, "format": "yaml", "content": serde_yaml::to_string(&value)?}));
@@ -203,22 +203,22 @@ pub(super) fn build() -> Result<Value> {
             "ready-script",
             "javascript",
             "common/_on-ready.js",
-            "Browser-side JavaScript executed once per document before capture, not a Node hook.",
+            "Standard browser JavaScript injected through jsOnReadyPath once per document after readiness and before actions.",
             "document.documentElement.dataset.regressifyReady = \"true\";\n",
         ),
         (
-            "node-before-hook",
+            "before-script",
             "javascript",
-            "common/hooks/on-before.mjs",
-            "ESM Node hook with the six-argument runtime contract. Sets a synthetic header before initial navigation; requires workspace Playwright/playwright-core. Do not use this as the browser-side ready script.",
-            "export default async function onBefore(page, scenario, viewport, isReference, context, config) {\n  await page.setExtraHTTPHeaders({\n    \"X-Visual-Mode\": isReference ? \"reference\" : \"test\",\n  });\n}\n",
+            "common/hooks/on-before.js",
+            "Standard browser JavaScript injected through onBeforeScript at initial document creation, before site scripts. Sets a synthetic browser value using window.regressify; the DOM may not exist yet.",
+            "window.visualCaptureMode = window.regressify.isReference ? \"reference\" : \"test\";\n",
         ),
         (
-            "node-ready-hook",
+            "scenario-ready-script",
             "javascript",
-            "common/hooks/on-ready.mjs",
-            "ESM Node hook run after actions and before final capture. Waits for a verified visible target; cannot prepare earlier actions or modify earlier save screenshots. Read the hooks guide for timing and timeout details.",
-            "export default async function onReady(page, scenario, viewport, isReference, context, config) {\n  await page.waitForSelector(\"main\", {\n    state: \"visible\",\n    timeout: config.elementTimeoutMs,\n  });\n}\n",
+            "common/hooks/on-ready.js",
+            "Standard browser JavaScript injected through onReadyScript after readiness and before actions. Removes an approved cookie banner; replace the selector with a verified target. No module exports or external runtime is needed.",
+            "document.querySelector(\"#cookie-banner\")?.remove();\n",
         ),
     ] {
         examples.insert(name.into(), json!({"kind": kind, "path": path, "description": description, "format": kind, "content": content}));
@@ -228,7 +228,7 @@ pub(super) fn build() -> Result<Value> {
     Ok(json!({
         "formatVersion": 1,
         "regressifyVersion": env!("CARGO_PKG_VERSION"),
-        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files, and topic recipes for complete common-page patterns. Use topic troubleshooting for failed tests, reports, logs, or setup issues, and topic hooks before writing browser/Node hooks. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
+        "instructions": "Read get_authoring_guide with topic overview before authoring Regressify files, and topic recipes for complete common-page patterns. Use topic troubleshooting for failed tests, reports, logs, or setup issues, and topic hooks before writing injected browser scripts. Use get_schema for exact fields and get_example for synthetic templates. This server supplies versioned public guidance only; it cannot read or edit your workspace, analyze uploaded logs, run browsers, or approve baselines. Never send cookies, credentials, saved state, raw logs, or private source. Inspect the user's local files with the client's own authorized tools and preserve unrelated edits.",
         "schemaKinds": schemas.keys().collect::<Vec<_>>(),
         "schemas": schemas,
         "guides": guides,
@@ -465,8 +465,8 @@ mod tests {
         for contract in [
             "isReference",
             "elementTimeoutMs",
-            "module.exports",
-            "after dependency, scenario, and legacy actions",
+            "before actions",
+            "No Node.js or Playwright",
             "window.__REGRESSIFY__",
         ] {
             assert!(

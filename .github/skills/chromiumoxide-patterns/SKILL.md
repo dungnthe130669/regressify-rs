@@ -27,7 +27,7 @@ description: 'Use when changing Chromium launch, CDP commands, browser handler p
 1. Track popup targets before triggering actions. Use CDP opener identity even when `window.opener` is null. Queue paused-target setup before `Runtime.runIfWaitingForDebugger`, then await replies; awaiting `Page.enable` first can deadlock. Install storage/auth listeners before releasing the target.
 1. Keep launch-time emulation aligned with the capture viewport: chromiumoxide applies it to every new page and can overwrite a separately configured popup.
 
-The runtime uses a vendored selector engine for CSS/text/XPath/shadow DOM and CDP contexts for cross-origin frames. Preserve that contract rather than substituting raw querySelector. The optional Node hook layer attaches Playwright to an existing Chromium session; it does not replace the Rust CDP action engine.
+The runtime uses a vendored selector engine for CSS/text/XPath/shadow DOM and CDP contexts for cross-origin frames. Preserve that contract rather than substituting raw querySelector. All user scripts execute inside Chromium; do not launch Node or attach Playwright. Use explicit expression evaluation for classic scripts rather than implicit function-call detection.
 
 ## Checks
 

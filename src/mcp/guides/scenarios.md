@@ -30,15 +30,16 @@ Each selected viewport runs this sequence in its own fresh browser profile:
 
 1. Open a blank tab at the viewport size; install Basic Auth, CSP bypass,
    saved state, and cookies.
-1. Run `onBeforeScript`, navigate to `url` with `engineOptions.gotoParameters`,
-   then wait until `readySelector` exists and is visible.
+1. Register `onBeforeScript` for initial document creation, navigate to `url`
+  with `engineOptions.gotoParameters`, await that browser script, then wait
+  until `readySelector` exists and is visible.
 1. Apply the CSS override, `hideSelectors`, `removeSelectors`, and the browser
-   ready script; freeze animations; scroll down and back to the top once to
+  `jsOnReadyPath` script, then `onReadyScript`; freeze animations; scroll down and back to the top once to
    trigger lazy loading unless `noScrollTop` is true.
 1. Run inherited `needs` actions, then `actions`, or legacy shortcuts when
    `actions` is omitted. Each `save` waits `delay`, settles, and captures at
    its position.
-1. Run `onReadyScript`. If final captures remain, wait `postInteractionWait`,
+1. If final captures remain, wait `postInteractionWait`,
    then `delay`, freeze animations, settle within `settleTimeout`, hide text
    carets, and capture each final target.
 
@@ -152,8 +153,8 @@ timeout when omitted or zero. It runs before browser ready scripts and
 dependency/scenario actions, so do not use it to wait for content created by
 those later steps. Use observable page-state waits in `actions` for subsequent
 changes. `delay` (default 1000 ms) runs before every checkpoint and final
-capture; `postInteractionWait` (default 1000 ms) runs once after actions and
-`onReadyScript`, before final captures only. Set either to 0 when explicit waits
+capture; `postInteractionWait` (default 1000 ms) runs once after actions,
+before final captures only. Set either to 0 when explicit waits
 already prove readiness.
 
 Legacy click, hover, scroll, and text-append shortcuts run only when `actions`
@@ -171,13 +172,15 @@ try to establish it through concurrently scheduled scenarios. Never commit or
 upload real saved state. `requiredLogin` is only a flag exposed to ready scripts;
 it does not perform authentication.
 
-`onBeforeScript` and `onReadyScript` are optional Node hooks, distinct from the
-browser-side `common/_on-ready.js`. They require local Node plus Playwright or
-playwright-core installed in the workspace. They attach to the existing browser
-and must not close it. `onBeforeScript` runs before initial navigation;
-`onReadyScript` runs after all dependency, scenario, and legacy actions, before
-remaining final captures. It does not affect earlier `save` screenshots.
-Read `get_authoring_guide(topic="hooks")` for export signatures, arguments,
-timeouts, and the `hooked-suite`, `node-before-hook`, and `node-ready-hook` examples.
+`onBeforeScript`, `onReadyScript`, and `jsOnReadyPath` are standard browser
+JavaScript injected directly into Chromium, without Node or Playwright.
+`onBeforeScript` runs at the start of initial top-level navigation, before site
+scripts. `onReadyScript` follows readiness, CSS, and `jsOnReadyPath`, before
+dependency, scenario, and legacy actions. Both ready scripts run once per
+selected document, including navigation, so they can dismiss banners before
+interaction and `save` screenshots. Use DOM APIs and `window.regressify`, not
+module exports or callback arguments.
+Read `get_authoring_guide(topic="hooks")` for browser context, timeouts, and the
+`hooked-suite`, `before-script`, and `scenario-ready-script` examples.
 Do not execute or introduce untrusted scripts. For failed captures, use the
 troubleshooting topic before changing the scenario or its baselines.
