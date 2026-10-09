@@ -1,9 +1,9 @@
 # GPUI Kit Component Reuse Tasks
 
-Status: Planning and tasks 001-018 committed. Task 019 is verified and awaiting
-its authorized local commit, with approved contrast-only adjustments and an
-unchanged 4.5:1 requirement. Task 020 reconciliation follows that commit.
-The compact-header exception is closed; the approved Linux baseline exception remains.
+Status: Planning and implementation tasks 001-019 are committed. Task 020 Windows
+acceptance and reconciliation are complete in this final record. All Windows
+gates pass; the approved Linux baseline/CI exception remains explicitly non-green.
+The compact-header exception is closed and all plan files are retained.
 
 This bundle translates the approved decisions in the [refined plan](../gpui-component-reuse.md) into separately reviewable implementation units. The refined plan remains the behavior authority; this directory does not copy or replace it. Task IDs and dependency order are stable.
 
@@ -95,8 +95,8 @@ Tasks without a direct dependency may be delegated independently, but do not edi
 - [x] 016 Overview Table: committed as `d8e9965`; native Default/Schema pass, with the approved task 019 header exception.
 - [x] 017 Command palette: committed as `6dfd54d`; native Default passes with the approved task 019 header exception.
 - [x] 018 Source font size: committed as `ecbc562`; native Default passes and integrated UI has only the approved task 019 header failure.
-- [x] 019 Stock theme and normal sizing: verified, awaiting commit; Windows gates/native flows pass with the approved contrast-only adjustments and unchanged 1000x640 minimum.
-- [ ] 020 Final acceptance: not started; awaits 019 and the approved Linux disposition.
+- [x] 019 Stock theme and normal sizing: committed as `005dc33`; Windows gates/native flows pass with the approved contrast-only adjustments and unchanged 1000x640 minimum.
+- [x] 020 Final acceptance: Windows gates and requirement reconciliation complete in the final acceptance record; Linux baseline/CI disposition remains non-green as approved.
 
 When a task changes state, record the exact focused command, exact outcome and nonzero test count, required gates, any approved deferral and its owner, and commit ID if one is authorized and created. Do not mark a failed, skipped, zero-test, or unavailable gate green.
 
@@ -1104,8 +1104,44 @@ When a task changes state, record the exact focused command, exact outcome and n
   `cargo build --locked --features gui --bin regressify-desktop` passes (26.03s),
   restoring the production feature binary after all-target tests. Formatting,
   production GUI Clippy, guidance/self-tests and scoped Markdown already passed
-  on this unchanged implementation. Task 019 is verified and awaiting its local
-  commit; task 020 may reuse these results under the explicit owner approval.
+  on this unchanged implementation. Task 019 is committed as `005dc33`, with a
+  clean post-commit worktree. Task 020 reuses these results under owner approval.
+
+### Task 020 Acceptance
+
+- Reconciled the component matrix, dependency ledger, committed implementations
+  and maintained guidance for all R1-R12, controlled disclosures, flat collections,
+  Git Tree, Overview/Details, Command, Source font preference and stock sizing.
+  The final requirement matrix is in [task 020](020-acceptance.md#requirement-reconciliation).
+- Shared final evidence is from the same implementation committed in `005dc33`,
+  with the runtime fingerprint checked unchanged before/after verification.
+  No runtime edits follow in task 020. Fresh final results: CLI 524 passed/23
+  ignored; Windows models 864 passed/31 ignored; GUI library 1,146 passed/32
+  ignored; worker integration 11 passed/4 ignored. Every gate has zero failures.
+  Formatting, production GUI Clippy/build and guidance checks pass. Full commands
+  and timings remain above; no second long GUI run was performed.
+- Native Default, Titlebar, Schema, Comparison/error-image, Git, Artifact,
+  Publishing and Deployment evidence covers the migrated controls, minimum/large
+  light/dark layouts and required behavioral guards. Candidate timing and
+  focused post-sidebar validation are explicitly recorded above, not flattened
+  into a false claim that every flow reran after every unrelated edit.
+- Retentions remain: mixed selection, keyboard breadcrumbs/guarded links,
+  literal diagnostic escaping, variable-height diagnostics, line-operation and
+  lossless draft/history policy, image zoom/pan/fit, split Git diff, bounded logs,
+  explicit command targets, and independent domain/GUI feature boundaries.
+- Approved compatibility adapters and contrast-only correction remain documented
+  in owning skills and shared memory. Code accounting is per-task above; source
+  growth is allowed, tests are excluded from reduction claims, and no binary-size
+  claim is made. No missing Windows requirement or unexplained test failure was
+  found during final reconciliation.
+- The compact-header deferral is closed. The separately approved pre-existing
+  Linux baseline failures remain non-green and require current Linux CI before
+  release; no Linux toolchain changes or false Windows-as-Linux claim. Historical
+  clipboard restore failures remain an explicit residual issue, even though
+  final native cleanup passes. Ignored tests are not executed coverage.
+- Plans remain in place. No branch, push, remote publication, release installation
+  or plan cleanup was performed. Task 020 is the final documentation-only unit,
+  identified by its local Git commit; its own hash is not embedded here.
 
 ### Approved Compact Header Exception
 

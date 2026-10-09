@@ -1,6 +1,6 @@
 # 019: Stock Theme And Normal Sizing
 
-Status: Verified, awaiting the authorized local commit. Windows final gates and
+Status: Committed as `005dc33`. Windows final gates and
 native acceptance pass with owner-approved contrast-only color adjustments.
 Depends on 001-018, all committed; task 018 is `ecbc562`.
 
@@ -162,4 +162,4 @@ plans remain required.
 - Native flows and screenshots establish the unchanged 1000x640 minimum and
   close the header exception. Linux remains non-green under its separately
   approved baseline/CI disposition; Windows is not Linux evidence.
-- Task 019 is verified and awaits its authorized local commit. Plans are retained.
+- Task 019 is committed as `005dc33`; the post-commit worktree was clean. Plans are retained.
