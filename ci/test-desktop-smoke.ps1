@@ -108,6 +108,30 @@ foreach ($sizingCase in @(
 }
 
 $headerStatements = $definitions['Test-TitlebarControlBounds'].Body.EndBlock.Statements
+$versionGuards = @($headerStatements | Where-Object {
+    $_ -is [System.Management.Automation.Language.IfStatementAst] -and @($_.Clauses[0].Item1.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.VariableExpressionAst] -and $node.VariablePath.UserPath -eq 'clientWidth'
+    }, $true)).Count -gt 0
+})
+Assert-SmokeEqual $versionGuards.Count 1 'Native version visibility must check the client-width breakpoint'
+$versionProbe = [scriptblock]::Create($versionGuards[0].Extent.Text)
+foreach ($versionCase in @(
+    @{ Width = 1000; Count = 0; Reject = $false },
+    @{ Width = 1399; Count = 0; Reject = $false },
+    @{ Width = 1399; Count = 1; Reject = $true },
+    @{ Width = 1400; Count = 1; Reject = $false },
+    @{ Width = 1400; Count = 0; Reject = $true },
+    @{ Width = 1600; Count = 1; Reject = $false },
+    @{ Width = 1600; Count = 2; Reject = $true }
+)) {
+    $clientWidth = $versionCase.Width
+    $versions = [object[]]::new($versionCase.Count)
+    $rejected = $false
+    try { & $versionProbe } catch { $rejected = $true }
+    Assert-SmokeEqual $rejected $versionCase.Reject 'Native title-bar version visibility must use the exact 1400px breakpoint'
+    $stockSizingChecks++
+}
 $headerMenus = @($definitions['Test-TitlebarControlBounds'].FindAll({
     param($node)
     $node -is [System.Management.Automation.Language.StringConstantExpressionAst] -and

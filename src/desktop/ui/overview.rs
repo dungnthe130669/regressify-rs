@@ -622,25 +622,30 @@ impl Workbench {
                     .child(
                         div()
                             .flex()
-                            .flex_col()
+                            .items_center()
+                            .gap_1()
                             .flex_shrink_0()
                             .mx_1()
                             .child(
                                 div()
+                                    .id("application-name")
+                                    .test_support()
                                     .font_weight(FontWeight::SEMIBOLD)
                                     .text_sm()
                                     .child("Regressify"),
                             )
-                            .child(
-                                div()
-                                    .id("application-version")
-                                    .role(Role::Status)
-                                    .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
-                                    .test_support()
-                                    .text_xs()
-                                    .text_color(cx.theme().muted_foreground)
-                                    .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
-                            ),
+                            .when(window.viewport_size().width >= px(1400.), |brand| {
+                                brand.child(
+                                    div()
+                                        .id("application-version")
+                                        .role(Role::Status)
+                                        .aria_label(format!("v{}", env!("CARGO_PKG_VERSION")))
+                                        .test_support()
+                                        .text_xs()
+                                        .text_color(cx.theme().muted_foreground)
+                                        .child(format!("v{}", env!("CARGO_PKG_VERSION"))),
+                                )
+                            }),
                     )
                     .child(if cfg!(target_os = "macos") {
                         div()
@@ -719,14 +724,14 @@ impl Workbench {
                     ))
                     .child(
                         // A long workspace name must not set the title bar's intrinsic minimum width.
-                        div().flex_1().w_0().min_w_0().child(
+                        div().flex_1().w_0().min_w_0().ml_2().child(
                             div()
                                 .id("workspace-path")
                                 .role(Role::Status)
                                 .aria_label(root.clone())
                                 .test_support()
                                 .truncate()
-                                .text_xs()
+                                .text_sm()
                                 .text_color(cx.theme().muted_foreground)
                                 .child(workspace_label),
                         ),

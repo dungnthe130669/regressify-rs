@@ -1201,9 +1201,12 @@ the operation. Updates are staged with rollback on ordinary I/O failures; avoid
 running CLI writers concurrently. They are not crash-atomic. Remote deployments
 are never modified automatically; redeploy to publish the updated site.
 
-The title bar displays the package version beside Regressify. Help > About shows
-Regressify Desktop, its version, author Tuyen Pham, and the clickable website
-`https://tuyen.blog/`, which opens in the external default browser.
+The title bar displays the package version on the same line as Regressify at
+window widths of 1400px or wider; narrower windows hide the title-bar version.
+The workspace name uses the same text size as the menus, with a small gap after
+Results. Help > About always shows Regressify Desktop, its version, author Tuyen
+Pham, and the clickable website `https://tuyen.blog/`, which opens in the external
+default browser.
 There is no bottom application or Results status bar. Application status and
 Report status icons in their respective headers retain messages in tooltips and
 accessibility labels, leaving the bottom edge available for content.

@@ -38,6 +38,25 @@ function Test-TitlebarControlBounds([string]$Theme, [int[]]$Dimensions, [string]
         }
     }
     $root = [System.Windows.Automation.AutomationElement]::FromHandle($script:window)
+    $clientWidth = ($bounds.Right - $bounds.Left - 2 * $border) / $scale
+    $versions = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
+        Where-Object { $_.Current.Name -match '^v\d+\.\d+\.\d+(?:[-+].+)?$' })
+    if ($versions.Count -ne [int]($clientWidth -ge 1400)) {
+        throw 'The title-bar version must be visible only at client widths of 1400px or wider.'
+    }
+    if ($versions.Count -eq 1) {
+        $versionBounds = $versions[0].Current.BoundingRectangle
+        $logoBounds = (Wait-Control 'Regressify logo').Current.BoundingRectangle
+        if ($versionBounds.Width -le 0 -or $versionBounds.Height -le 0 -or
+            [Math]::Abs(($versionBounds.Top + $versionBounds.Height / 2) - ($logoBounds.Top + $logoBounds.Height / 2)) -gt $scale) {
+            throw 'The title-bar version must share the application name and logo row.'
+        }
+    }
+    $workspaceBounds = (Wait-Control ($workspace.Replace('\', '/'))).Current.BoundingRectangle
+    $resultsBounds = (Wait-Control 'Results').Current.BoundingRectangle
+    if ($workspaceBounds.Left - $resultsBounds.Right -lt 8 * $scale - 1) {
+        throw 'The workspace name must retain an 8px gap after Results, allowing native pixel rounding.'
+    }
     $gitButtons = @($root.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition) |
         Where-Object { $_.Current.ControlType -eq [System.Windows.Automation.ControlType]::Button -and $_.Current.Name.StartsWith('Git: ') })
     if ($gitButtons.Count -ne 1) { throw 'The titlebar must expose exactly one named Git button.' }

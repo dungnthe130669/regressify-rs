@@ -9465,15 +9465,12 @@ async fn workspace_external_menus_and_about_show_version_without_changing_drafts
     cx: &mut TestAppContext,
 ) {
     let directory = tempfile::tempdir().unwrap();
-    let (handle, view) = editor(cx, directory.path());
+    let (handle, view) = editor_at_size(cx, directory.path(), size(px(1399.), px(720.)));
     cx.update_window(handle.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click("duplicate-item", cx);
         assert!(view.read(cx).unsaved());
-        assert_eq!(
-            window.find("application-version").label(),
-            Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
-        );
+        assert!(window.try_find("application-version").is_none());
         if cfg!(target_os = "macos") {
             window.click("file-menu", cx);
         } else {
@@ -10079,8 +10076,16 @@ async fn toolbar_dropdown_preserves_popup_and_modified_arrow_keys(cx: &mut TestA
 }
 
 #[gpui_kit::test]
-fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut TestAppContext) {
-    for (width, height) in [(1080., 720.), (1600., 1000.)] {
+fn compact_titlebar_preserves_editor_space_and_navigation_at_responsive_widths(
+    cx: &mut TestAppContext,
+) {
+    for (width, height) in [
+        (1000., 640.),
+        (1080., 720.),
+        (1399., 720.),
+        (1400., 720.),
+        (1600., 1000.),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let (handle, view) = editor_at_size(cx, directory.path(), size(px(width), px(height)));
         cx.update_window(handle.into(), |_, window, cx| {
@@ -10096,12 +10101,26 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
             );
             let status = window.find("status").bounds();
             assert!(status.top() >= titlebar.top() && status.bottom() <= titlebar.bottom());
-            assert_eq!(
-                window.find("application-version").label(),
-                Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
-            );
+            let name = window.find("application-name").bounds();
+            if width < 1400. {
+                assert!(
+                    window.try_find("application-version").is_none(),
+                    "The title-bar version must be hidden below 1400px"
+                );
+            } else {
+                let version = window.find("application-version");
+                assert_eq!(
+                    version.label(),
+                    Some(format!("v{}", env!("CARGO_PKG_VERSION")).as_str())
+                );
+                assert!(version.bounds().left() >= name.right() + px(4.));
+                assert!((version.bounds().center().y - name.center().y).abs() <= px(1.));
+            }
             let tabs = window.find("titlebar-navigation").bounds();
             assert!(tabs.origin.y < px(38.));
+            let workspace = window.find("workspace-path").bounds();
+            assert!(workspace.left() >= tabs.right() + px(8.));
+            assert_eq!(workspace.size.height, name.size.height);
             let open = window.find("open-workspace").bounds();
             assert!(
                 open.origin.x + open.size.width <= px(width - 95.),
@@ -10125,6 +10144,19 @@ fn compact_titlebar_preserves_editor_space_and_navigation_at_both_sizes(cx: &mut
                 window.find("results-status").bounds().bottom()
                     <= window.find("capture-heading").bounds().top()
             );
+            if width == 1600. {
+                for resized_width in [1399., 1400., 1399., 1600.] {
+                    window.resize(size(px(resized_width), px(height)));
+                    window.bounds_changed(cx);
+                    window.render_frame(cx);
+                    assert_eq!(
+                        window.try_find("application-version").is_some(),
+                        resized_width >= 1400.,
+                        "Version visibility must follow live window resizing"
+                    );
+                    assert_eq!(view.read(cx).main_tab, 2);
+                }
+            }
         })
         .unwrap();
     }
