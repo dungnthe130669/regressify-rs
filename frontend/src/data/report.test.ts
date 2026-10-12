@@ -227,10 +227,57 @@ describe("snapshot contract", () => {
     }
     expect(safePageUrl("https://example.com/a?q=b")).toBe("https://example.com/a?q=b");
   });
+  test("comparison diagnostics stay failed without becoming engine errors", () => {
+    expect(capture.comparisonError).toBeUndefined();
+    const message = "Dimensions differ: reference 100x100 vs test 80x140";
+    const compared = captureSchema.parse({ ...capture, comparisonError: message });
+    expect(compared.error).toBeNull();
+    expect(compared.comparisonError).toBe(message);
+    expect(compared.mismatch).toBe(1.25);
+    expect(filterCaptures([compared], "", "error")).toEqual([]);
+    expect(filterCaptures([compared], "", "fail")).toEqual([compared]);
+    expect(captureSchema.safeParse({ ...capture, comparisonError: 42 }).success).toBe(false);
+  });
+  test("normalizes legacy comparison errors without hiding capture failures", () => {
+    const dimensions = "Dimensions differ: reference 100x100 vs test 80x140";
+    for (const [mismatch, error] of [
+      [1.25, dimensions],
+      [0, dimensions],
+      [null, "Reference image not found"],
+      [null, "Comparison error: unable to compare images"],
+    ] as const) {
+      const parsed = captureSchema.parse({ ...capture, mismatch, error });
+      expect(parsed.status).toBe("fail");
+      expect(parsed.error).toBeNull();
+      expect(parsed.comparisonError).toBe(error);
+      expect(filterCaptures([parsed], "", "error")).toEqual([]);
+      expect(filterCaptures([parsed], "", "fail")).toEqual([parsed]);
+    }
+    for (const error of [
+      "Test scenario failed to capture: click timed out",
+      "Reference scenario failed to capture: navigation failed",
+      "Both reference and test scenarios failed to capture (reference: Timeout; test: Timeout)",
+      "Navigation timed out after 30 seconds",
+      "Test scenario failed to capture: Reference image not found",
+      "Test scenario failed to capture: Comparison error: action failed",
+    ]) {
+      const parsed = captureSchema.parse({
+        ...capture,
+        mismatch: null,
+        diff: null,
+        dimensions: null,
+        error,
+      });
+      expect(parsed.error).toBe(error);
+      expect(parsed.comparisonError).toBeUndefined();
+      expect(filterCaptures([parsed], "", "error")).toEqual([parsed]);
+      expect(filterCaptures([parsed], "", "fail")).toEqual([parsed]);
+    }
+  });
   test("combines search and status including engine errors and zero totals", () => {
     const tests = [
       capture,
-      { ...capture, id: "error", error: "Timeout" },
+      captureSchema.parse({ ...capture, id: "error", mismatch: null, error: "Timeout" }),
       { ...capture, id: "pass", status: "pass" as const, label: "Account" },
     ];
     expect(filterCaptures(tests, "home", "fail")).toHaveLength(2);

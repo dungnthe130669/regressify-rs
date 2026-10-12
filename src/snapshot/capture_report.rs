@@ -414,6 +414,17 @@ pub(super) fn load_suite(
         } else {
             pair.label
         };
+        // Legacy reports also put comparison diagnostics in engineErrorMsg.
+        let (error, comparison_error) = match pair.engine_error_msg {
+            Some(message)
+                if mismatch.is_some()
+                    || message == "Reference image not found"
+                    || message.starts_with("Comparison error: ") =>
+            {
+                (None, Some(message))
+            }
+            error => (error, None),
+        };
         tests.push(Capture {
             logs: if pair.reference_log.is_some() || pair.test_log.is_some() {
                 Some(super::site::CaptureLogs {
@@ -430,7 +441,8 @@ pub(super) fn load_suite(
             status: test.status,
             threshold: pair.mis_match_threshold,
             mismatch,
-            error: pair.engine_error_msg,
+            error,
+            comparison_error,
             reference: reference.as_ref().map(|asset| asset.full.clone()),
             test: current.as_ref().map(|asset| asset.full.clone()),
             diff: diff.as_ref().map(|asset| asset.full.clone()),
@@ -517,6 +529,136 @@ mod tests {
             &mut BTreeMap::new(),
             &mut super::super::logs::LogCache::new(),
         )
+    }
+
+    #[test]
+    fn visual_mismatch_is_not_an_engine_error() {
+        for mismatch in [0.0, 1.25] {
+            let (temp, mut report) = fixture();
+            let message = "Dimensions differ: reference 100x100 vs test 80x140";
+            report["tests"][0]["pair"]["engineErrorMsg"] = json!(message);
+            report["tests"][0]["pair"]["diff"]["rawMisMatchPercentage"] = json!(mismatch);
+            write_fixture(temp.path(), &report);
+
+            let suite = load(temp.path()).unwrap().unwrap();
+            let capture = &suite.tests[0];
+            assert_eq!(capture.status, "fail");
+            assert_eq!(capture.mismatch, Some(mismatch));
+            assert!(capture.reference.is_some());
+            assert!(capture.test.is_some());
+            assert!(!capture.dimensions.as_ref().unwrap().same);
+            assert!(capture.error.is_none());
+            assert_eq!(capture.comparison_error.as_deref(), Some(message));
+        }
+    }
+
+    #[test]
+    fn comparison_failures_without_a_diff_are_not_engine_errors() {
+        for message in [
+            "Reference image not found",
+            "Comparison error: unable to compare images",
+        ] {
+            let (temp, mut report) = fixture();
+            report["tests"][0]["pair"]["diff"] = serde_json::Value::Null;
+            report["tests"][0]["pair"]["engineErrorMsg"] = json!(message);
+            if message == "Reference image not found" {
+                fs::remove_file(temp.path().join("suite/bitmaps_reference/home.png")).unwrap();
+            }
+            write_fixture(temp.path(), &report);
+
+            let suite = load(temp.path()).unwrap().unwrap();
+            let capture = &suite.tests[0];
+            assert_eq!(capture.status, "fail");
+            assert!(capture.mismatch.is_none());
+            assert!(capture.test.is_some());
+            assert!(capture.error.is_none());
+            assert_eq!(capture.comparison_error.as_deref(), Some(message));
+        }
+    }
+
+    #[test]
+    fn failed_captures_remain_engine_errors_even_with_placeholder_images() {
+        for message in [
+            "Test scenario failed to capture: click timed out",
+            "Reference scenario failed to capture: navigation failed",
+            "Both reference and test scenarios failed to capture (reference: Timeout; test: Timeout)",
+            "Navigation timed out after 30 seconds",
+            "Test scenario failed to capture: Reference image not found",
+            "Test scenario failed to capture: Comparison error: action failed",
+        ] {
+            let (temp, mut report) = fixture();
+            report["tests"][0]["pair"]["diff"] = serde_json::Value::Null;
+            report["tests"][0]["pair"]["engineErrorMsg"] = json!(message);
+            write_fixture(temp.path(), &report);
+
+            let suite = load(temp.path()).unwrap().unwrap();
+            let capture = &suite.tests[0];
+            assert_eq!(capture.status, "fail");
+            assert!(capture.mismatch.is_none());
+            assert!(capture.test.is_some());
+            assert_eq!(capture.error.as_deref(), Some(message));
+            assert!(capture.comparison_error.is_none());
+        }
+    }
+
+    #[test]
+    fn snapshot_counts_only_capture_failures_as_errors() {
+        let (temp, mut report) = fixture();
+        let template = report["tests"][0].clone();
+        report["tests"] = json!([template.clone(), template.clone(), template]);
+        for (index, test) in report["tests"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .enumerate()
+        {
+            let filename = format!("capture-{index}.png");
+            test["pair"]["fileName"] = json!(filename);
+            test["pair"]["test"] = json!(format!("../bitmaps_test/current/{filename}"));
+            fs::write(
+                temp.path()
+                    .join("suite/bitmaps_test/current")
+                    .join(filename),
+                png(80),
+            )
+            .unwrap();
+        }
+        report["tests"][0]["pair"]["engineErrorMsg"] =
+            json!("Dimensions differ: reference 100x100 vs test 80x140");
+        report["tests"][1]["pair"]["diff"] = serde_json::Value::Null;
+        report["tests"][1]["pair"]["reference"] = json!("../bitmaps_reference/missing.png");
+        report["tests"][1]["pair"]["engineErrorMsg"] = json!("Reference image not found");
+        report["tests"][2]["pair"]["diff"] = serde_json::Value::Null;
+        report["tests"][2]["pair"]["engineErrorMsg"] =
+            json!("Test scenario failed to capture: navigation timed out");
+        write_fixture(temp.path(), &report);
+
+        super::super::site::generate_site(
+            temp.path(),
+            &["suite".into()],
+            &crate::cli::args::SnapshotArgs {
+                test_suite: Vec::new(),
+                title: None,
+                heading: None,
+                subheading: None,
+            },
+            &crate::config::WorkspaceConfig::default(),
+        )
+        .unwrap();
+        for filename in ["manifest.json", "../status.json"] {
+            let published: serde_json::Value = serde_json::from_slice(
+                &fs::read(temp.path().join("_snapshot/data").join(filename)).unwrap(),
+            )
+            .unwrap();
+            let summary = if filename == "manifest.json" {
+                &published["suites"][0]
+            } else {
+                &published
+            };
+            assert_eq!(summary["total"], 3);
+            assert_eq!(summary["failed"], 3);
+            assert_eq!(summary["errors"], 1);
+        }
     }
 
     #[test]

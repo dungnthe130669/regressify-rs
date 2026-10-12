@@ -147,6 +147,16 @@ unavailable/malformed status, retry, themes, responsive layout, and accessibilit
 
 ## Data And Hosting
 
+Capture `error` and suite `errors` count only failures that prevented a requested
+reference or test screenshot, such as failed actions, navigation, or timeouts.
+Pixel and dimension mismatches remain failed comparisons, not engine errors.
+Optional `comparisonError` preserves comparison diagnostics, including missing
+references and comparison-processing failures, without adding to engine-error
+counts. Result cards and Capture information retain these messages.
+Older capture payloads are normalized on load; regenerate existing snapshots and
+redeploy hosted copies to refresh their bundled UI and overview totals. Existing
+capture runs are reused; no recapture is needed. The manifest version remains 2.
+
 Version-2 captures may include optional `logs.reference` and `logs.test` metadata.
 Each reference records `complete`, `partial`, `missing`, `legacyUnavailable`, or
 `loadingError`, original operation/execution IDs, record counts, build identity,

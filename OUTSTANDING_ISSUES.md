@@ -2,6 +2,17 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Snapshot Failure Classification (2026-10-12)
+
+- Resolved: snapshot conversion treated the legacy comparison report's
+  `engineErrorMsg` as capture-only, labeling dimension mismatches, missing
+  references, and comparison failures as engine errors. Comparison diagnostics
+  now remain separate, while action/navigation failures and timeouts retain
+  engine-error status even when an error placeholder image exists.
+- [Converter regressions](src/snapshot/capture_report.rs) verify classification
+  and published counts; [frontend regressions](frontend/tests/report.spec.ts)
+  cover legacy payloads, filters, badges, and Info labels on desktop and mobile.
+
 ## Browser Script Runtime and Ready Timing (2026-10-09)
 
 - Resolved: `onBeforeScript`/`onReadyScript` previously launched Node and required

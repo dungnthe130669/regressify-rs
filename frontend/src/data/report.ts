@@ -109,35 +109,52 @@ export const executionLogSchema = z.object({
 export type ExecutionLog = z.infer<typeof executionLogSchema>;
 export type ArchiveState = z.infer<typeof archiveStateSchema>;
 
-export const captureSchema = z.object({
-  id: segment,
-  label: z.string(),
-  scenario: z.string(),
-  selector: z.string(),
-  status: z.enum(["pass", "fail"]),
-  threshold: percentage,
-  mismatch: percentage.nullable(),
-  error: z.string().nullable(),
-  reference: artifact("images").nullable(),
-  test: artifact("images").nullable(),
-  diff: artifact("images").nullable(),
-  previews: z
-    .object({
-      reference: artifact("images").nullable(),
-      test: artifact("images").nullable(),
-      diff: artifact("images").nullable(),
-      grid: artifact("images").nullable(),
-    })
-    .optional(),
-  referenceUrl: z.string().nullable(),
-  testUrl: z.string().nullable(),
-  dimensions: z
-    .object({ same: z.boolean(), width: z.number().int(), height: z.number().int() })
-    .nullable(),
-  logs: z
-    .object({ reference: executionLogSchema.nullable(), test: executionLogSchema.nullable() })
-    .optional(),
-});
+export const captureSchema = z
+  .object({
+    id: segment,
+    label: z.string(),
+    scenario: z.string(),
+    selector: z.string(),
+    status: z.enum(["pass", "fail"]),
+    threshold: percentage,
+    mismatch: percentage.nullable(),
+    error: z.string().nullable(),
+    comparisonError: z.string().nullable().optional(),
+    reference: artifact("images").nullable(),
+    test: artifact("images").nullable(),
+    diff: artifact("images").nullable(),
+    previews: z
+      .object({
+        reference: artifact("images").nullable(),
+        test: artifact("images").nullable(),
+        diff: artifact("images").nullable(),
+        grid: artifact("images").nullable(),
+      })
+      .optional(),
+    referenceUrl: z.string().nullable(),
+    testUrl: z.string().nullable(),
+    dimensions: z
+      .object({ same: z.boolean(), width: z.number().int(), height: z.number().int() })
+      .nullable(),
+    logs: z
+      .object({ reference: executionLogSchema.nullable(), test: executionLogSchema.nullable() })
+      .optional(),
+  })
+  .transform((capture) => {
+    if (
+      capture.error !== null &&
+      (capture.mismatch !== null ||
+        capture.error === "Reference image not found" ||
+        capture.error.startsWith("Comparison error: "))
+    ) {
+      return {
+        ...capture,
+        comparisonError: capture.comparisonError ?? capture.error,
+        error: null,
+      };
+    }
+    return capture;
+  });
 
 export const suiteReportSchema = z
   .object({

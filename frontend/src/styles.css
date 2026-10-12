@@ -1602,7 +1602,7 @@ figcaption {
   padding: 0 0 8px;
   margin-bottom: 8px;
 }
-.engine-error {
+.capture-failure {
   background: var(--error-soft);
   color: var(--error);
   border-left: 3px solid var(--error);
@@ -1610,12 +1610,12 @@ figcaption {
   margin-bottom: 20px;
   font-size: 12px;
 }
-.engine-error pre {
+.capture-failure pre {
   font: 11px var(--font-mono);
   white-space: pre-wrap;
   margin: 8px 0 0;
 }
-.info-popover .engine-error {
+.info-popover .capture-failure {
   margin: 16px 0 0;
 }
 .state-panel {

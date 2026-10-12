@@ -354,10 +354,19 @@ and Diff, with high-contrast guides that stay thin at every zoom level. Missing
 images and coordinates outside a smaller image are excluded. Wipe follows mouse
 movement; keyboard and touch users can also use its slider. Hover, focus, or pin
 the Info icon for selectable/copyable diff statistics, capture details, URLs, and
-engine errors. Previous/next failure arrows on suite pages scroll to visible failed
+comparison or engine errors. Previous/next failure arrows on suite pages scroll to visible failed
 cards while keeping the current filters. The header's Settings icon opens a compact
 popup with an Appearance section. Its theme control supports light, dark, or system
 appearance and is remembered in the browser.
+
+The Errors filter and engine-error counts include only failures that prevented a
+requested reference or test screenshot, such as failed actions, navigation, or
+timeouts. Pixel and dimension mismatches remain Failed comparisons, including
+dimension changes with zero pixel mismatch. Missing references and comparison
+processing failures also remain Failed, with their diagnostics labeled
+Comparison failed. A capture-error placeholder is not a successful screenshot.
+Regenerate existing snapshots with `regressify snapshot` and redeploy hosted copies
+to update the UI and overview totals; no new capture run is required.
 
 Snapshot generation preserves capture runs, baseline images, `config.js`, and
 `report.json`. It publishes copies of referenced images and JSON under `_snapshot`,

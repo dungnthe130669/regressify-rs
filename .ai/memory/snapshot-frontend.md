@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-10-01
+Verified: 2026-10-12
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -23,9 +23,9 @@ Verified: 2026-10-01
   LF and CRLF inputs with autocrlf enabled; the Rust test passes in release mode.
 - That Git regression uses `GIT_CONFIG_GLOBAL=NUL` on Windows. Node's `os.devNull`
   device path is rejected by Git for configuration reads.
-- [Schema](../../frontend/src/data/report.ts) and [Rust types](../../src/snapshot/site.rs)
-  use schema version 2. Markdown is rendered through React with raw HTML/images
-  omitted and HTTP(S)-only page links. Report JS is parsed as a JSON wrapper, never run.
+- [Schema](../../frontend/src/data/report.ts) and [Rust types](../../src/snapshot/site.rs) use version 2; raw HTML/images are omitted, page links are HTTP(S)-only, and report JS is parsed as JSON, never run.
+- [Conversion](../../src/snapshot/capture_report.rs) reserves `error` for capture failures; optional `comparisonError` preserves legacy dimension/missing-reference/comparison diagnostics.
+  Converter tests and `visual mismatches remain failed` browser checks cover placeholders, counts, filters, and Info labels.
 - Scenario and generated capture display names come from the shared Rust resolver,
   not frontend string manipulation; see [results naming](desktop-results.md).
   The search/navigation fixture includes colliding URL paths and repeated viewports.

@@ -1462,6 +1462,90 @@ test("suite failure arrows scroll to failed captures without leaving the suite",
   await expect(next).toBeDisabled();
 });
 
+test("visual mismatches remain failed while capture failures are engine errors", async ({
+  page,
+}, info) => {
+  const dimensionMessage = "Dimensions differ: reference 100x100 vs test 80x140";
+  const comparisonMessage = "Reference image not found";
+  const captureMessage = "Test scenario failed to capture: click timed out";
+  await page.route("**/_snapshot/data/manifest.json?*", async (route) => {
+    const response = await route.fetch();
+    const manifest = await response.json();
+    const summary = manifest.suites.find(
+      (suite: { id: string }) => suite.id === "workspace-overview",
+    );
+    summary.errors = 3;
+    await route.fulfill({ response, json: manifest });
+  });
+  await page.route("**/_snapshot/data/suites/workspace-overview.json?*", async (route) => {
+    const response = await route.fetch();
+    const suite = await response.json();
+    Object.assign(suite.tests[1], {
+      mismatch: 0,
+      error: dimensionMessage,
+      dimensions: { same: false, width: -20, height: 40 },
+    });
+    Object.assign(suite.tests[2], {
+      mismatch: null,
+      error: null,
+      comparisonError: comparisonMessage,
+      reference: null,
+      diff: null,
+      dimensions: null,
+    });
+    Object.assign(suite.tests[3], {
+      mismatch: null,
+      error: captureMessage,
+      diff: null,
+      dimensions: null,
+    });
+    await route.fulfill({ response, json: suite });
+  });
+
+  await page.goto("/suites/workspace-overview?view=list");
+  const cards = page.locator(".capture-card");
+  await expect(cards).toHaveCount(4);
+  await expect(cards.locator(".status-badge")).toHaveText(["Failed", "Failed", "Failed", "Error"]);
+  await expect(cards.nth(1)).toContainText(dimensionMessage);
+  await expect(cards.nth(2)).toContainText(comparisonMessage);
+  const filters = page.getByRole("group", { name: "Filter results" });
+  const errors = filters.getByRole("button", { name: /^Errors/ });
+  await expect(errors).toHaveText(/Errors\s*1/);
+  await errors.click();
+  await expect(cards).toHaveCount(1);
+  await expect(cards.first()).toContainText(captureMessage);
+  await filters.getByRole("button", { name: /^Failed/ }).click();
+  await expect(cards).toHaveCount(4);
+
+  for (const [filename, label, message] of [
+    ["overview__desktop.png", null, null],
+    ["recent-orders__mobile.png", "Comparison failed", dimensionMessage],
+    ["channel-summary__desktop.png", "Comparison failed", comparisonMessage],
+    ["full-page__mobile.png", "Engine error", captureMessage],
+  ] as const) {
+    await page.goto(`/suites/workspace-overview/images/${filename}`);
+    await expect(page.locator(".status-badge")).toHaveText(
+      label === "Engine error" ? "Error" : "Failed",
+    );
+    await page.getByRole("button", { name: "Capture information", exact: true }).click();
+    const bubble = page.getByRole("dialog", { name: "Capture information", exact: true });
+    await expect(bubble).toBeVisible();
+    await expect(bubble).toBeInViewport({ ratio: 1 });
+    if (label && message) {
+      const diagnostic = bubble.getByText(label, { exact: true });
+      await diagnostic.scrollIntoViewIfNeeded();
+      await expect(diagnostic).toBeInViewport({ ratio: 1 });
+      await expect(bubble).toContainText(message);
+      await screenshot(page, info.project.name, `capture-failure-${filename}`);
+    } else {
+      await expect(bubble.getByRole("alert")).toHaveCount(0);
+    }
+    if (label !== "Engine error") {
+      await expect(bubble.getByText("Engine error", { exact: true })).toHaveCount(0);
+    }
+  }
+});
+
 test("capture information opens on hover or tap and remains selectable", async ({
   page,
   isMobile,

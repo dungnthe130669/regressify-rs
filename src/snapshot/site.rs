@@ -109,6 +109,8 @@ pub(super) struct Capture {
     pub threshold: f64,
     pub mismatch: Option<f64>,
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_error: Option<String>,
     pub reference: Option<String>,
     pub test: Option<String>,
     pub diff: Option<String>,

@@ -81,7 +81,7 @@ export function SuitePage() {
             all: summary.total,
             pass: summary.passed,
             fail: summary.failed,
-            error: summary.errors,
+            error: data.tests.filter((capture) => capture.error !== null).length,
           }}
         />
         <div className="segmented layout-control">
@@ -162,7 +162,9 @@ export function SuitePage() {
                   </span>
                   <span className="mono muted">{capture.threshold}% threshold</span>
                 </div>
-                {capture.error && <p className="capture-error">{capture.error}</p>}
+                {(capture.error || capture.comparisonError) && (
+                  <p className="capture-error">{capture.error || capture.comparisonError}</p>
+                )}
               </div>
               {list && (
                 <div className="capture-comparison">

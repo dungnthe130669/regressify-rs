@@ -158,10 +158,10 @@ export function CaptureInfo({
                   ),
               )}
             </dl>
-            {capture.error && (
-              <div className="engine-error" role="alert">
-                <strong>Engine error</strong>
-                <pre>{capture.error}</pre>
+            {(capture.error || capture.comparisonError) && (
+              <div className="capture-failure" role="alert">
+                <strong>{capture.error ? "Engine error" : "Comparison failed"}</strong>
+                <pre>{capture.error || capture.comparisonError}</pre>
               </div>
             )}
           </dialog>
