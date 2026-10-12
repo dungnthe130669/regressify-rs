@@ -1,6 +1,6 @@
 # Browser Runtime
 
-Verified: 2026-10-09
+Verified: 2026-10-12
 
 - [Script hooks](../../src/test/hooks.rs) run entirely in Chromium: document-start
   `onBeforeScript`, then CSS/`jsOnReadyPath`/`onReadyScript` after readiness and
@@ -8,10 +8,14 @@ Verified: 2026-10-09
   hook and [full capture](../../src/test/browser_tests.rs) fixtures pass with no
   workspace npm packages and an empty worker PATH, including failed-reference
   preservation. The Node runner and Playwright attachment were removed.
-- User files need chromiumoxide `evaluate_expression`, not `evaluate`: its
-  function heuristic invoked a leading declaration in a multi-statement script.
-  The live hook regression reproduced that failure, then passed with explicit
-  evaluation while retaining promise/error handling, CSP, and timeout coverage.
+- User files need classic expression evaluation, not `Page::evaluate`'s function
+  heuristic, which invoked a leading declaration in a multi-statement script.
+  DOM readiness and hooks now use [current-document evaluation](../../src/test/runtime.rs)
+  without a cached context ID: even `Page::evaluate_expression` can reuse a
+  context destroyed by navigation. `hooks_do_not_reuse_destroyed_execution_contexts`
+  in [hook tests](../../src/test/hooks.rs) disables Runtime events during local
+  navigation; it failed before the fix and passes with CSS and both scripts once
+  per document. Existing promises, errors, CSP, and deadline regressions pass.
 - [Action viewport filters](../../src/test/test_scenario.rs) share one predicate
   across the executor, tab-tracker guard, and save inventory. Strict-subset
   [preflight](../../src/test/test_suites.rs) validates full consumer/prerequisite

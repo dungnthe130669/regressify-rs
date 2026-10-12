@@ -5,7 +5,12 @@ use std::{
 };
 
 use anyhow::{Result, anyhow, bail};
-use chromiumoxide::{Browser, Command, Page, cdp::browser_protocol::dom::NodeId, js::Evaluation};
+use chromiumoxide::{
+    Browser, Command, Page,
+    cdp::{browser_protocol::dom::NodeId, js_protocol::runtime::EvaluateParams},
+    error::CdpError,
+    js::{Evaluation, EvaluationResult},
+};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -13,6 +18,24 @@ use tokio::sync::Mutex;
 use crate::types::Frame;
 
 use super::cdp::Client;
+
+pub(super) async fn evaluate_main_document(
+    page: &Page,
+    expression: impl Into<String>,
+) -> Result<EvaluationResult> {
+    // Let Chromium select the live main context; the client's cached ID can outlive navigation.
+    let params = EvaluateParams::builder()
+        .expression(expression)
+        .await_promise(true)
+        .return_by_value(true)
+        .build()
+        .map_err(anyhow::Error::msg)?;
+    let response = page.execute(params).await?.result;
+    if let Some(exception) = response.exception_details {
+        return Err(CdpError::JavascriptException(Box::new(exception)).into());
+    }
+    Ok(EvaluationResult::new(response.result))
+}
 
 #[derive(Clone)]
 struct Realm {

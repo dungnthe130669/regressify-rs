@@ -165,9 +165,12 @@ pub async fn wait_for_dom_ready(page: &Page, timeout: Duration) -> Result<()> {
             ));
         }
         let evaluation_timeout = remaining.min(EVALUATION_TIMEOUT);
-        let result = tokio::time::timeout(evaluation_timeout, page.evaluate("document.readyState"))
-            .await
-            .map_err(|_| anyhow!("Timed out reading document readiness"))??;
+        let result = tokio::time::timeout(
+            evaluation_timeout,
+            super::runtime::evaluate_main_document(page, "document.readyState"),
+        )
+        .await
+        .map_err(|_| anyhow!("Timed out reading document readiness"))??;
         let state: String = result.into_value().unwrap_or_default();
         if is_dom_ready(&state) {
             return Ok(());

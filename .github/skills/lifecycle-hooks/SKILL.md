@@ -13,7 +13,7 @@ description: 'Use when changing CSS overrides, jsOnReadyPath, injected onBeforeS
 
 1. Resolve hook files through workspace containment checks. Distinguish absent optional default scripts from invalid explicit paths.
 1. Apply document CSS/on-ready code once per document, including after navigation. Preserve ready-context data and propagate script errors instead of marking an incomplete hook successful. Review selector CSS and JS serialization separately.
-1. All CSS and JavaScript hooks execute in Chromium through CDP, with no Node subprocess or Playwright attachment. Evaluate user files as classic scripts with `evaluate_expression`; automatic function detection can invoke declarations. Await returned promises, propagate syntax/runtime errors and rejections, and keep the `elementTimeout`/`scenarioTimeout` bounds.
+1. All CSS and JavaScript hooks execute in Chromium through CDP, with no Node subprocess or Playwright attachment. Evaluate user files as classic expressions with `runtime::evaluate_main_document`; automatic function detection can invoke declarations, and `Page::evaluate_expression` can reuse a context ID destroyed by navigation. The helper sends typed `Runtime.evaluate` without a cached context ID. Await returned promises, propagate syntax/runtime errors and rejections, and keep the `elementTimeout`/`scenarioTimeout` bounds.
 1. Register `onBeforeScript` before initial navigation so synchronous code runs before site scripts. The DOM may not exist yet. Capture errors/rejections for later awaiting and remove the registration after initial navigation; never apply it to later `goto` actions or sibling frames. Asynchronous work does not block site scripts.
 1. CSS, `jsOnReadyPath`, then `onReadyScript` run after DOM readiness/`readySelector`, before dependency, scenario, and legacy actions. Both ready scripts follow navigation and `switchTab`, once per document; revisiting a completed document does not rerun them. Explicit `actions`, even empty, suppress legacy shortcuts.
 1. Expose browser metadata through `window.regressify`/`window.__REGRESSIFY__`, including nullable viewport, reference mode, and safe resolved configuration. Do not inject action values or authentication credentials. Serialize metadata as JSON; module exports, callback arguments, Node APIs, and `process.env` are not supported.
@@ -31,6 +31,8 @@ capture fixture runs ref/test with an empty worker PATH and no workspace npm
 packages; it checks CSS, both ready settings, click ordering, peer isolation,
 and unchanged references after hook failure. Keep coverage for declarations,
 promises, CSP, errors, deadlines, metadata escaping, navigation, and tab selection.
+The stale-context regression disables Runtime events before local navigation;
+CSS, metadata, and both ready scripts must still reach each new document once.
 
 ## Maintain
 

@@ -2,6 +2,18 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Browser Ready Hooks After Navigation (2026-10-12)
+
+- Resolved in source: 0.88 could report `CSS override or browser ready script
+  failed ... (Unknown)` after navigation, with local detail `Cannot find context
+  with specified id`. DOM readiness and hook evaluation reused Chromiumoxide's
+  cached execution-context ID after Chromium had destroyed that context.
+- [Current-document evaluation](src/test/runtime.rs) now lets Chromium select
+  the live main context without changing hook order, promises, errors, or bounds.
+  The deterministic [hook regression](src/test/hooks.rs) failed before the fix
+  and passes afterward, including once-only CSS and both ready scripts. The same
+  18-capture live navigation probe went from 10 context failures to zero.
+
 ## Snapshot Failure Classification (2026-10-12)
 
 - Resolved: snapshot conversion treated the legacy comparison report's

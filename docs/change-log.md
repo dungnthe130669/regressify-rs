@@ -3,7 +3,7 @@ title: Change Log
 description: Track changes to the Optimizely CMS testing guides, actions, scenarios, and suite options so you can spot new capabilities quickly.
 guid: 1679e8d7-c710-4a1f-9640-224277efcd7e
 date: 2023-09-06T17:00:00+00:00
-updated: 2026-10-05T00:00:00+00:00
+updated: 2026-10-12T00:00:00+00:00
 draft: false
 hidden: false
 weight: 41000
@@ -16,6 +16,13 @@ extra:
 ---
 
 This page records notable updates to the testing docs, which is much faster than reading Git history with unnecessary archaeology.
+
+## 2026-10-12 (Unreleased)
+
+- Fixed: intermittent `CSS override or browser ready script failed ... (Unknown)`
+  after page navigation in 0.88. DOM readiness and ready hooks now use the current
+  browser document instead of a destroyed execution context. Existing suites do
+  not need extra waits or changes to their ready scripts for this engine error.
 
 ## 2026-10-05 (0.75.0, Unreleased)
 

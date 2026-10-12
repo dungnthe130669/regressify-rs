@@ -18,6 +18,8 @@ use crate::{
     types::TestScenario,
 };
 
+use super::runtime::evaluate_main_document;
+
 pub(crate) struct DocumentHooks {
     marker: String,
     context: serde_json::Value,
@@ -190,7 +192,7 @@ impl DocumentHooks {
                 ),
             ],
             async {
-                tokio::time::timeout(self.timeout, page.evaluate_expression(script))
+                tokio::time::timeout(self.timeout, evaluate_main_document(page, script))
                     .await
                     .context("Browser lifecycle hook exceeded its timeout")??;
                 Ok(())
@@ -215,21 +217,21 @@ impl DocumentHooks {
         tokio::time::timeout(self.timeout, async {
             super::page_stability::wait_for_dom_ready(page, self.timeout).await?;
             let marker = serde_json::to_string(&self.marker)?;
-            let completed: bool = page
-                .evaluate(format!("window[{marker}] === true"))
-                .await?
-                .into_value()?;
+            let completed: bool =
+                evaluate_main_document(page, format!("window[{marker}] === true"))
+                    .await?
+                    .into_value()?;
             if !completed {
-                page.evaluate(self.context_setup()).await?;
-                page.evaluate(self.setup.as_str()).await?;
+                evaluate_main_document(page, self.context_setup()).await?;
+                evaluate_main_document(page, self.setup.as_str()).await?;
                 if let Some(script) = &self.script {
-                    page.evaluate_expression(script.as_str()).await?;
+                    evaluate_main_document(page, script.as_str()).await?;
                 }
                 if let Some(script) = &self.ready_script {
                     self.evaluate_lifecycle_script(page, script, SafeValue::Ready)
                         .await?;
                 }
-                page.evaluate(format!("window[{marker}] = true")).await?;
+                evaluate_main_document(page, format!("window[{marker}] = true")).await?;
             }
             Ok::<_, anyhow::Error>(())
         })
@@ -362,6 +364,71 @@ mod tests {
             page.evaluate("document.body.textContent = 'browser remains available'").await?;
             Ok(())
         }.await;
+        browser.close().await?;
+        handler.await?;
+        let _ = std::fs::remove_dir_all(directory);
+        result
+    }
+
+    #[tokio::test]
+    #[ignore = "requires managed Chromium; run regressify install"]
+    async fn hooks_do_not_reuse_destroyed_execution_contexts() -> Result<()> {
+        use chromiumoxide::cdp::js_protocol::runtime::{DisableParams, EvaluateParams};
+
+        let site = super::super::browser_tests::Site::new(|request| {
+            let _ = request.respond(
+                tiny_http::Response::from_string("<body><div class='dynamic'>data</div></body>")
+                    .with_header(
+                        tiny_http::Header::from_bytes("Content-Type", "text/html").unwrap(),
+                    ),
+            );
+        })?;
+        let workspace = tempfile::tempdir()?;
+        std::fs::write(
+            workspace.path().join("shared.js"),
+            "window.sharedCalls = (window.sharedCalls || 0) + 1;",
+        )?;
+        std::fs::write(
+            workspace.path().join("ready.js"),
+            "window.readyCalls = (window.readyCalls || 0) + 1;",
+        )?;
+        let scenario = TestScenario {
+            on_ready_script: Some("ready.js".into()),
+            ..Default::default()
+        };
+        let config = ResolvedConfig {
+            js_on_ready_path: Some("shared.js".into()),
+            hide_selectors: vec![".dynamic".into()],
+            ..Default::default()
+        };
+        let hooks = DocumentHooks::load(workspace.path(), &scenario, &config)?;
+        let (mut browser, handler, directory) =
+            super::super::browser_tests::launch_browser("hook-context", Default::default()).await?;
+        let result: Result<()> = async {
+            let page = browser.new_page(site.origin.as_str()).await?;
+            page.evaluate("true").await?;
+            // Keep the client's cached context stale while Chromium replaces the document.
+            page.execute(DisableParams::default()).await?;
+            for path in ["/next", "/last"] {
+                page.goto(format!("{}{path}", site.origin)).await?;
+                hooks.apply(&page).await?;
+                hooks.apply(&page).await?;
+                let state = page
+                    .execute(EvaluateParams::new(
+                        "window.sharedCalls === 1 && window.readyCalls === 1 && \
+                         window.regressify === window.__REGRESSIFY__ && \
+                         document.querySelectorAll('style').length === 1 && \
+                         getComputedStyle(document.querySelector('.dynamic')).visibility === 'hidden'",
+                    ))
+                    .await?;
+                anyhow::ensure!(
+                    state.result.result.value == Some(serde_json::json!(true)),
+                    "hooks must reach the current document exactly once"
+                );
+            }
+            Ok(())
+        }
+        .await;
         browser.close().await?;
         handler.await?;
         let _ = std::fs::remove_dir_all(directory);
