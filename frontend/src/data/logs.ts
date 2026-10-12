@@ -18,7 +18,16 @@ export const logStages = [
   "completionCleanup",
 ] as const;
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const identity = z.string().regex(/^sha256:[0-9a-f]{64}$/);
+const identity = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      value === value.trim() &&
+      new TextEncoder().encode(value).length <= 2048 &&
+      !/[\p{Cc}\u202a-\u202e\u2066-\u2069]/u.test(value),
+    "Invalid diagnostic source metadata",
+  );
 const fieldValue = z.discriminatedUnion("type", [
   z.object({ type: z.literal("number"), value: integer }),
   z.object({
@@ -225,13 +234,16 @@ const chunkCache = new Map<
 >();
 
 export function formatLogRecord(record: LogRecord): string {
+  const source = record.execution
+    ? ` suite=${record.execution.suiteId} scenario=${record.execution.scenarioId} viewport=${record.execution.viewport.name}`
+    : "";
   const fields = Object.entries(record.fields)
     .map(([key, field]) => `${key}=${field.value}`)
     .join(" ");
   const outcome = record.outcome ? ` outcome=${record.outcome}` : "";
   const duration = record.durationMs === null ? "" : ` duration=${record.durationMs}ms`;
   const causes = record.errorCause ? ` causes=${record.errorCause.causes.join(", ")}` : "";
-  return `[${record.elapsedMs}ms #${record.sequence}] ${record.severity} ${record.stage}: ${record.message}${fields ? ` ${fields}` : ""}${outcome}${duration}${causes}`;
+  return `[${record.elapsedMs}ms #${record.sequence}] ${record.severity} ${record.stage}: ${record.message}${source}${fields ? ` ${fields}` : ""}${outcome}${duration}${causes}`;
 }
 
 export async function fetchLogChunk(

@@ -1,6 +1,6 @@
 # MCP Authoring Export
 
-Verified: 2026-10-09
+Verified: 2026-10-12
 
 - [The CLI exporter](../../src/mcp/mod.rs) embeds its guides and Worker template;
   it does not scan the current workspace or need a source checkout. Output is a
@@ -40,6 +40,13 @@ Verified: 2026-10-09
   the exported scripts with DOM stubs; this is not browser coverage or a capture
   dependency. Browser-only lifecycle order and timeout sources are explained in
   [the hooks guide](../../src/mcp/guides/hooks.md).
+- The overview and hooks guide explicitly prohibit CommonJS `module.exports`
+  and Playwright `page` callbacks; `.cjs` does not select a module loader, and
+  renaming the file does not convert its contents. Navigation belongs in suite
+  actions; metadata comes from `window.regressify`. The existing
+  [Chromium hook fixture](../../src/test/hooks.rs) verifies missing `module` and
+  `page` globals in before, shared-ready, and scenario-ready scripts. Catalog
+  regressions require the warnings and migration guidance in the exported text.
 - Standalone checks permit consumer `AGENTS.md` references but reject source-only
   dependencies. Managed MCP/agent initialization and legacy text-append shortcuts
   are documented; explicit action lists suppress legacy shortcuts.

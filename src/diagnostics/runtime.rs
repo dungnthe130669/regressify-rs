@@ -568,7 +568,7 @@ pub async fn navigation<Output>(
         [
             (
                 Field::Destination,
-                FieldValue::Identity(SafeIdentity::fingerprint(destination)),
+                FieldValue::Identity(SafeIdentity::source(destination)),
             ),
             (Field::TimeoutMs, FieldValue::Number(timeout_ms)),
         ],
@@ -814,7 +814,7 @@ mod tests {
                             (Field::Condition, FieldValue::Kind(SafeValue::Visible)),
                             (
                                 Field::Target,
-                                FieldValue::Identity(SafeIdentity::fingerprint("#private")),
+                                FieldValue::Identity(SafeIdentity::source("#private")),
                             ),
                         ],
                         async {
@@ -875,7 +875,11 @@ mod tests {
         JournalReader::open(root.path(), &reference.operation_id)
             .unwrap()
             .visit(|record| {
-                assert!(!serde_json::to_string(&record).unwrap().contains("private"));
+                assert!(
+                    !serde_json::to_string(&record.error_cause)
+                        .unwrap()
+                        .contains("private")
+                );
                 if record.fields.get(&Field::ScenarioTimeoutMs) == Some(&FieldValue::Number(5)) {
                     deadline = true;
                     assert_eq!(record.stage, Stage::Navigation);
@@ -884,7 +888,12 @@ mod tests {
                         record.fields.get(&Field::ActionIndex),
                         Some(&FieldValue::Number(1))
                     );
-                    assert!(record.fields.contains_key(&Field::Destination));
+                    assert_eq!(
+                        record.fields.get(&Field::Destination),
+                        Some(&FieldValue::Identity(SafeIdentity::source(
+                            "https://example.test/private"
+                        )))
+                    );
                 }
             })
             .unwrap();

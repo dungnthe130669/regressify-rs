@@ -989,8 +989,7 @@ pub(crate) async fn diagnostic_condition<Output>(
     .await
 }
 
-/// Record one wait condition as its own stage so a failure names the unmet
-/// condition and the selector fingerprint, never the selector text.
+/// Keep the source selector beside the unmet condition, without action input values.
 pub(crate) async fn diagnostic_condition_in<Output>(
     stage: crate::diagnostics::record::Stage,
     condition: crate::diagnostics::record::SafeValue,
@@ -1004,7 +1003,7 @@ pub(crate) async fn diagnostic_condition_in<Output>(
             (Field::Condition, FieldValue::Kind(condition)),
             (
                 Field::Target,
-                FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+                FieldValue::Identity(SafeIdentity::source(selector)),
             ),
         ],
         work,

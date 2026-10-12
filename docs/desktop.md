@@ -1810,6 +1810,14 @@ the heading shows viewport dimensions and attempt when available. Multiple image
 from one execution share its history. Use Back to comparison to return to the
 same image and pass/fail result. Legacy and unavailable logs remain explicit.
 
+New capture records display suite/scenario IDs, viewport names, selectors, source
+URLs, artifact paths, and capture names instead of opaque hashes. Search those
+names or an action index to find the corresponding suite action. Simulated
+free-text payloads such as `input.value` are omitted; literal selector text is
+source metadata and remains visible. URL credentials and credential-bearing
+parameters stay redacted. Older hashed records remain viewable, but require a
+new capture to produce readable source metadata.
+
 Activity and Results share severity and stage menus, text search, page copy, and
 Download. Filters affect the view only. Download streams all matching records,
 not just the visible page, and replaces the chosen file only after verifying a

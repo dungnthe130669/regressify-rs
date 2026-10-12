@@ -57,6 +57,50 @@ describe("snapshot contract", () => {
     expect(formatLogRecord(parsed)).toContain("statusCode=200");
     expect(matchesLog(parsed, "error", "all", "")).toBe(false);
     expect(matchesLog(parsed, "debug", "navigation", "STATUSCODE")).toBe(true);
+    const readable = logRecordSchema.parse({
+      ...record,
+      execution: {
+        executionId: "33333333-3333-4333-8333-333333333333",
+        suiteId: "search-functions",
+        scenarioId: "keyword-search-button",
+        viewport: { name: "desktop", width: 1920, height: 1080 },
+        captureRole: "test",
+        attempt: 1,
+      },
+      fields: {
+        target: { type: "identity", value: "#hero-search" },
+        destination: { type: "identity", value: "https://example.test/search-results/?q=heart" },
+        artifact: { type: "identity", value: "common/_search-ready.js" },
+      },
+    });
+    for (const query of [
+      "search-functions",
+      "keyword-search-button",
+      "desktop",
+      "#hero-search",
+      "common/_search-ready.js",
+      "q=heart",
+    ]) {
+      expect(matchesLog(readable, "debug", "navigation", query)).toBe(true);
+    }
+    for (const value of [`sha256:${"a".repeat(64)}`, "[data-secret='literal selector']"]) {
+      expect(
+        logRecordSchema.safeParse({ ...record, fields: { target: { type: "identity", value } } })
+          .success,
+      ).toBe(true);
+    }
+    for (const value of [
+      "",
+      "new\nline",
+      "\u202ehidden",
+      "x".repeat(2049),
+      "\u{1f600}".repeat(513),
+    ]) {
+      expect(
+        logRecordSchema.safeParse({ ...record, fields: { target: { type: "identity", value } } })
+          .success,
+      ).toBe(false);
+    }
     for (const timestampUtcMs of [-8640000000000001, 8640000000000001, Number.MAX_SAFE_INTEGER]) {
       expect(logRecordSchema.safeParse({ ...record, timestampUtcMs }).success).toBe(false);
     }
@@ -64,12 +108,14 @@ describe("snapshot contract", () => {
       const valid = logRecordSchema.parse({ ...record, timestampUtcMs });
       expect(() => new Date(valid.timestampUtcMs).toISOString()).not.toThrow();
     }
-    expect(
-      logRecordSchema.safeParse({
-        ...record,
-        fields: { password: { type: "kind", value: "secret" } },
-      }).success,
-    ).toBe(false);
+    for (const field of ["password", "value", "inputValue"]) {
+      expect(
+        logRecordSchema.safeParse({
+          ...record,
+          fields: { [field]: { type: "identity", value: "simulated input" } },
+        }).success,
+      ).toBe(false);
+    }
     expect(logRecordSchema.safeParse({ ...record, operationKind: "deployment" }).success).toBe(
       false,
     );

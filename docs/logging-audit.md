@@ -1,5 +1,15 @@
 # Logging Migration Inventory
 
+## Source Metadata Update: 2026-10-12
+
+Capture source identities are now readable rather than fingerprinted: suite and
+scenario IDs, viewport names, selectors, source URLs, artifact paths, and capture
+names. Simulated free-text payloads such as `input.value` remain excluded, as do
+file/cookie/state contents, scripts, and raw errors. URL credentials and token
+parameters remain redacted. Older hashes and integrity checks remain supported.
+Opaque capture identities in the historical inventory below describe the old
+policy; see [current diagnostic privacy](commands.md#diagnostic-storage-limits).
+
 ## Follow-up Review: 2026-10-02
 
 The baseline inventory below is historical. This follow-up verified the subscriber,
@@ -53,7 +63,7 @@ remain visible rather than being mislabeled as complete.
 ## Historical Baseline
 
 Verified: 2026-10-01, before logging implementation. This is the baseline for
-[the logging tasks](plan/log-revamp-tasks/README.md), not a claim that the listed
+[the logging tasks](../plan/log-revamp-tasks/README.md), not a claim that the listed
 messages are safe to publish. Locations refer to the pre-migration source;
 subsequent migrations may move or remove them.
 

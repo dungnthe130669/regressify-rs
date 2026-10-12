@@ -177,6 +177,16 @@ Out-of-range timestamps are rejected before rendering and produce a retryable
 loading error rather than crashing the report. Command and application operation
 kinds remain excluded from the frontend capture-log schema.
 
+Source identities accept bounded readable text as well as legacy `sha256:`
+values. New capture logs expose suite/scenario IDs, viewport names, selectors,
+source URLs, artifact paths, and capture names for searching and source lookup.
+Simulated free-text payloads such as `input.value` remain absent; quoted selector
+text and ordinary source URL parameters are not user-input payloads. Credentials
+in URLs and credential-bearing parameters are redacted by the producer. Readers
+enforce the 2048-byte/control-character boundary and render metadata as text.
+Review this source metadata before publishing. Rebuilding the UI does not recover
+the source of historical hashes; recapture to produce readable metadata.
+
 Snapshot generation publishes at most 250 records and 256 KiB per JSON chunk under
 `_snapshot/data/logs/<operation-id>`. Selected captures share versioned chunks for
 their original execution. The deployment inventory verifies every chunk's version,

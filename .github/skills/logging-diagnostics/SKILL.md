@@ -12,7 +12,7 @@ description: 'Use when changing structured diagnostics, tracing spans, capture/d
 ## Procedure And Invariants
 
 1. Keep diagnostic version 1 separate from progress version 1 and snapshot version 2. Lifecycle events remain authoritative for counts/outcomes; do not infer them from formatted log text or emit duplicate lifecycle transitions.
-1. Construct records from reviewed field/value enums, static messages, generated operation/execution IDs, and opaque target identities. Capture errors are categorical; provider detail uses the shared sanitizer and is deployment-only. Never export raw journals, browser state, typed input, selectors, scripts, child output, headers, response bodies, or arbitrary Debug fields.
+1. Construct records from reviewed field/value enums, static messages, generated operation/execution IDs, and readable source identities via `SafeIdentity::source`. Suite/scenario IDs, viewport names, selectors, source URLs, artifact paths, and capture names are metadata, not simulated end-user input. Preserve quoted selector text and ordinary URL parameters; redact URL credentials and credential-bearing parameters, neutralize controls, and bound each identity to 2048 UTF-8 bytes. Never export simulated free text such as `input.value`, file/cookie/state contents, scripts, child output, headers, response bodies, or arbitrary Debug fields. Capture errors stay categorical; provider detail is deployment-only. Keep legacy hashed identities readable and retain content-integrity hashes.
 1. Capture failure summaries for markers, reports, and progress come from `runtime::failure_summary`, which uses only typed fields of the failed records plus the category. Record new failure locations as typed fields rather than adding text. The sanitized error chain is local console/live-log output only, through `log_capture_failure`, and respects `--no-print`.
 1. Install subscribers only at process entry points. Propagate operation context into spawned/blocking work explicitly. Box nested stage futures to preserve default Windows worker-stack limits; do not hold entered spans across awaits.
 1. One operation owns its journal and bounded nonblocking writer queue. Finalize capture work after teardown and before comparison. Explicitly flush entry-point output before process exit; abort recovery cannot rely on destructors.
@@ -45,6 +45,9 @@ cargo test --features gui-tests --lib log_pagination_ -- --test-threads=1
 ```
 
 Run frontend `bun run test:e2e --grep 'capture log'` and the explicit cached-browser CLI regression from the [verification document](../../../docs/logging-verification.md). The [benchmark](../../../docs/logging-benchmark.md) documents the confirmed 10% mean wall-time budget, five-pair workload, and archive-off baseline limitations.
+The CLI regression must find readable source selectors in archives and published
+chunks while excluding simulated input and URL credentials. Journal-level finish
+records may omit execution identity; check names on execution-owned records.
 
 ## Maintain
 

@@ -187,7 +187,7 @@ For timing and identities, read the console records or the capture journal. A
 console record looks like:
 
 ```text
-[5345ms 64e6b72f-...] [Error] ActionsFrames: Stage finished ActionIndex=1 ActionType=Click Target=sha256:bb62... Condition=Exists FrameDepth=0 outcome=Failure duration=2080ms cause=Timeout failure (causes: [Timeout])
+[5345ms 64e6b72f-...] [Error] ActionsFrames: Stage finished Suite=shop Scenario=checkout Viewport=desktop ActionIndex=1 ActionType=Click Target=#submit Condition=Exists FrameDepth=0 outcome=Failure duration=2080ms cause=Timeout failure (causes: [Timeout])
 ```
 
 Journal JSON lines carry the same `stage`, `eventName`, `fields`, `outcome`, and
@@ -213,12 +213,24 @@ viewport identities, viewport size, and `captureRole`. Useful fields:
 - A `scenarioTimeout` expiry records `Execution decision` with
   `ScenarioTimeoutMs` and `Reason=Timeout` in the stage that was still running.
 
-`Target`, `Destination`, `Capture`, and execution identities are `sha256:` plus
-the hex SHA-256 of the exact UTF-8 text: the selector as written, the navigated
-URL after replacements, the capture file name without `.png`, the suite or
-scenario ID, or the viewport label (`Default` without one). To confirm a
-suspect, hash the local candidate and compare; never try to recover unknown
-values.
+New logs use readable source metadata: `Target` contains the selector or action
+target, `Destination` the source URL after replacements, `Artifact` a file path,
+and `Capture` the capture name without `.png`. Execution records name the suite,
+scenario, and viewport (`Default` without one); these names also appear in the
+searchable formatted log. Use them with `ActionIndex` to find the suite action.
+
+Simulated free-text payloads, such as an `input.value`, are not recorded. A
+selector, including its quoted text, is test-source metadata, not end-user input.
+Ordinary source URL parameters remain readable. URL credentials and credential-
+bearing parameters are redacted; file/cookie/state contents and script bodies
+remain excluded. Source identities are bounded to 2048 UTF-8 bytes and control
+characters are neutralized. Review source metadata before publishing reports.
+
+Older capture logs can retain `sha256:` source identities. New readers accept
+them, but hashes cannot be reversed by refreshing or regenerating a report.
+Capture again with an updated runner to obtain readable source metadata. For a
+known old source candidate, its SHA-256 can still be compared locally; never try
+to recover unknown values. Image, archive, and asset integrity hashes remain.
 
 Default console output shows `info` and above; `--log-level debug` adds skipped
 actions and settling details. `--log-level trace|debug|info|warn|error`,

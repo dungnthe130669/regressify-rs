@@ -360,7 +360,7 @@ pub(crate) fn action_diagnostic_fields(
     if let Some(target) = target {
         fields.push((
             Field::Target,
-            FieldValue::Identity(SafeIdentity::fingerprint(target)),
+            FieldValue::Identity(SafeIdentity::source(target)),
         ));
     }
     fields
@@ -927,6 +927,32 @@ impl UrlMatcher {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn action_diagnostics_keep_selectors_and_omit_simulated_input() {
+        use crate::diagnostics::record::{Field, FieldValue, SafeIdentity};
+
+        for payload in [
+            "simulated free text from an end user",
+            "synthetic-password",
+            "https://example.test/user-supplied-content",
+        ] {
+            let action: crate::types::TestAction = serde_json::from_value(
+                serde_json::json!({"input": "input[data-secret='literal-selector']", "value": payload}),
+            )
+            .unwrap();
+            let fields = super::action_diagnostic_fields(&action, 1);
+            assert!(fields.contains(&(
+                Field::Target,
+                FieldValue::Identity(SafeIdentity::source(
+                    "input[data-secret='literal-selector']"
+                ))
+            )));
+            let encoded = serde_json::to_string(&fields).unwrap();
+            assert!(encoded.contains("literal-selector"));
+            assert!(!encoded.contains(payload));
+        }
+    }
+
     #[tokio::test]
     async fn failing_action_records_index_type_and_last_unmet_condition_without_script_contents() {
         use crate::diagnostics::{journal::JournalReader, record::*, runtime as diagnostics};
@@ -979,7 +1005,6 @@ mod tests {
                 for secret in [
                     "synthetic-hook-secret",
                     "private-hook",
-                    "synthetic-selector-secret",
                     "document.querySelector",
                 ] {
                     assert!(!encoded.contains(secret));
@@ -996,6 +1021,12 @@ mod tests {
                     assert_eq!(
                         record.fields.get(&Field::ActionType),
                         Some(&FieldValue::Kind(SafeValue::Click))
+                    );
+                    assert_eq!(
+                        record.fields.get(&Field::Target),
+                        Some(&FieldValue::Identity(SafeIdentity::source(
+                            "[data-private='synthetic-selector-secret']"
+                        )))
                     );
                 }
             })
@@ -1030,19 +1061,18 @@ mod tests {
         reader
             .visit(|record| {
                 let encoded = serde_json::to_string(&record).unwrap();
-                for secret in [
-                    "synthetic-user",
-                    "synthetic-password",
-                    "synthetic-query",
-                    "private-path",
-                    "private-fragment",
-                ] {
+                for secret in ["synthetic-user", "synthetic-password", "synthetic-query"] {
                     assert!(!encoded.contains(secret));
                 }
                 if record.stage == Stage::Navigation && record.outcome == Some(Outcome::Failure) {
                     failure = true;
                     assert_eq!(record.error_cause.unwrap().category, ErrorCategory::Timeout);
-                    assert!(record.fields.contains_key(&Field::Destination));
+                    assert_eq!(
+                        record.fields.get(&Field::Destination),
+                        Some(&FieldValue::Identity(SafeIdentity::source(
+                            "https://example.test/private-path?token=[redacted]#private-fragment"
+                        )))
+                    );
                 }
             })
             .unwrap();

@@ -339,6 +339,8 @@ mod tests {
             for (failing_script, expected) in [
                 ("throw new Error('browser-hook-error')", "browser-hook-error"),
                 ("Promise.reject(new Error('browser-hook-error'))", "browser-hook-error"),
+                ("module.exports = async function ready(page) { await page.locator('#target').click(); };", "module is not defined"),
+                ("page.locator('#target')", "page is not defined"),
                 ("const = 'invalid syntax'", "SyntaxError"),
                 ("new Promise(() => {})", "time"),
             ] {

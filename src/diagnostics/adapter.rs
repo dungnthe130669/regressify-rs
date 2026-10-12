@@ -84,6 +84,14 @@ pub fn format_record(record: &DiagnosticRecordV1) -> String {
         "[{:?}] {:?}: {}",
         record.severity, record.stage, record.message
     );
+    if let Some(execution) = &record.execution {
+        message.push_str(&format!(
+            " Suite={} Scenario={} Viewport={}",
+            execution.suite_id.as_str(),
+            execution.scenario_id.as_str(),
+            execution.viewport.name.as_str(),
+        ));
+    }
     for (field, value) in &record.fields {
         use super::record::FieldValue;
         let value = match value {
@@ -273,6 +281,41 @@ mod tests {
             capture_role: CaptureRole::Test,
             attempt: 1,
         }
+    }
+
+    #[test]
+    fn formatted_capture_records_include_searchable_source_locations() {
+        let mut identity = execution();
+        identity.suite_id = SafeIdentity::source("search-functions");
+        identity.scenario_id = SafeIdentity::source("keyword-search-button");
+        identity.viewport.name = SafeIdentity::source("desktop");
+        let mut record = DiagnosticRecordV1::new(
+            OperationId::new(),
+            OperationKind::Capture,
+            Stage::ActionsFrames,
+            DiagnosticEvent::StageStarted,
+        );
+        record.execution = Some(identity);
+        record
+            .fields
+            .insert(Field::ActionIndex, FieldValue::Number(7));
+        record.fields.insert(
+            Field::Target,
+            FieldValue::Identity(SafeIdentity::source("#hero-search")),
+        );
+        let message = format_record(&record);
+        for source in [
+            "Suite=search-functions",
+            "Scenario=keyword-search-button",
+            "Viewport=desktop",
+            "ActionIndex=7",
+            "Target=#hero-search",
+        ] {
+            assert!(message.contains(source), "{message}");
+        }
+        assert!(!message.contains("sha256:"));
+        record.execution = Some(execution());
+        assert!(format_record(&record).contains("sha256:"));
     }
 
     #[test]

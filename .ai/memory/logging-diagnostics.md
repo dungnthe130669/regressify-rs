@@ -1,10 +1,21 @@
 # Logging Diagnostics
 
-Verified: 2026-10-08
+Verified: 2026-10-12
 
 - [Diagnostic records](../../src/diagnostics/record.rs) are versioned separately
-  from live progress. Public capture records use templates, typed fields, opaque
-  identities, and categorical errors; provider detail is deployment-only.
+  from live progress. Public capture records use templates, typed fields, readable
+  source identities, and categorical errors; provider detail is deployment-only.
+- `SafeIdentity::source` keeps suite/scenario IDs, viewport names, selectors,
+  source URLs, artifact paths, and capture names readable. Simulated free-text
+  payloads such as `input.value` remain omitted; selectors and ordinary source
+  query values are not classified as user input. URL credentials/token parameters
+  are redacted, controls neutralized, and identities bounded to 2048 UTF-8 bytes.
+  Legacy SHA-256 identities remain accepted; integrity hashes are unchanged.
+- The [CLI logging fixture](../../tests/desktop_worker.rs) verifies readable
+  archived/published selectors and source names while scanning for simulated
+  input and URL credentials. The [responsive fixture](../../src/test/browser_tests.rs)
+  verifies every execution-owned record; journal-level finish records can omit
+  execution identity. Native and web formatters include searchable source names.
 - [Native log paging](../../src/desktop/logs.rs) keeps one aligned 500-record
   page and clamps large/filter-shrunk offsets in one streaming pass. `log_pagination_`
   covers 0/1/500/501 matches, partial archives and checked page conversion.

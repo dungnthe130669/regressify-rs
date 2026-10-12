@@ -162,7 +162,7 @@ fn logging_workspace(root: &Path, site: &LoggingSite, suites: usize, fail_first:
     std::fs::write(root.join("common/_viewports.yaml"), "- label: desktop\n  width: 800\n  height: 600\n- label: mobile\n  width: 375\n  height: 667\n").unwrap();
     for index in 0..suites {
         let target = if fail_first && index == 0 {
-            "#absent-synthetic-selector-secret"
+            "#absent-synthetic-selector"
         } else {
             "#ready"
         };
@@ -215,7 +215,7 @@ fn logging_cli(
 fn standalone_cli_persists_passed_and_failed_logs_without_desktop_initialization() {
     use regressify::diagnostics::{
         journal::{ArchiveState, JournalReader},
-        record::Outcome,
+        record::{Field, FieldValue, Outcome, SafeIdentity},
     };
     let site = LoggingSite::new();
     let root = tempfile::tempdir().unwrap();
@@ -248,16 +248,16 @@ fn standalone_cli_persists_passed_and_failed_logs_without_desktop_initialization
     );
     for stream in [&captured.stdout, &captured.stderr] {
         let text = String::from_utf8_lossy(stream);
-        for secret in [
-            "synthetic-input-secret",
-            "synthetic-selector-secret",
-            "synthetic-navigation-secret",
-        ] {
+        for secret in ["synthetic-input-secret", "synthetic-navigation-secret"] {
             assert!(
                 !text.contains(secret),
                 "Sensitive payload reached command output"
             );
         }
+        assert!(
+            !text.contains("#absent-synthetic-selector"),
+            "Quiet mode printed source metadata"
+        );
     }
     let output = root.path().join(".regressify");
     for suite in 0..2 {
@@ -276,18 +276,31 @@ fn standalone_cli_persists_passed_and_failed_logs_without_desktop_initialization
                     Outcome::Success
                 }
             );
+            let target = if suite == 0 {
+                "#absent-synthetic-selector"
+            } else {
+                "#ready"
+            };
+            let mut source_seen = false;
             reader
                 .visit(|record| {
                     let text = serde_json::to_string(&record).unwrap();
-                    for secret in [
-                        "synthetic-input-secret",
-                        "synthetic-selector-secret",
-                        "synthetic-navigation-secret",
-                    ] {
+                    for secret in ["synthetic-input-secret", "synthetic-navigation-secret"] {
                         assert!(!text.contains(secret));
                     }
+                    if let Some(execution) = &record.execution {
+                        assert_eq!(execution.suite_id.as_str(), format!("suite-{suite}"));
+                        assert_eq!(execution.scenario_id.as_str(), "page");
+                        assert_eq!(execution.viewport.name.as_str(), viewport);
+                    }
+                    source_seen |= record.fields.get(&Field::Target)
+                        == Some(&FieldValue::Identity(SafeIdentity::source(target)));
                 })
                 .unwrap();
+            assert!(
+                source_seen,
+                "Capture archive lost its readable source selector"
+            );
             let report: serde_json::Value = serde_json::from_slice(
                 &std::fs::read(output.join(format!("_snapshot/data/suites/suite-{suite}.json")))
                     .unwrap(),
@@ -296,6 +309,32 @@ fn standalone_cli_persists_passed_and_failed_logs_without_desktop_initialization
             for capture in report["tests"].as_array().unwrap() {
                 assert_eq!(capture["logs"]["test"]["state"], "complete");
                 assert_eq!(capture["logs"]["reference"]["state"], "complete");
+                for role in ["test", "reference"] {
+                    let mut published_source_seen = false;
+                    for chunk in capture["logs"][role]["chunks"].as_array().unwrap() {
+                        let url = reqwest::Url::parse("https://fixture.invalid/")
+                            .unwrap()
+                            .join(chunk.as_str().unwrap())
+                            .unwrap();
+                        let bytes =
+                            std::fs::read(output.join(url.path().trim_start_matches('/'))).unwrap();
+                        let text = String::from_utf8(bytes).unwrap();
+                        for secret in ["synthetic-input-secret", "synthetic-navigation-secret"] {
+                            assert!(
+                                !text.contains(secret),
+                                "Sensitive input reached a published log"
+                            );
+                        }
+                        let chunk: serde_json::Value = serde_json::from_str(&text).unwrap();
+                        published_source_seen |=
+                            chunk["records"].as_array().unwrap().iter().any(|record| {
+                                record["fields"]["target"]["value"] == "#entry"
+                                    && record["execution"]["suiteId"] == format!("suite-{suite}")
+                                    && record["execution"]["scenarioId"] == "page"
+                            });
+                    }
+                    assert!(published_source_seen, "Published log lost source metadata");
+                }
             }
         }
     }

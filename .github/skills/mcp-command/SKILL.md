@@ -30,7 +30,10 @@ description: 'Use when changing regressify mcp, standalone authoring or troubles
    explicit scenario IDs; catalog tests parse and schema-check each one.
 1. Every action needs a typed synthetic example. Update examples and prose for semantic changes; schema generation alone does not validate dependencies, paths, credentials, capture identity, or live browser behavior.
    The hooks topic must match injected browser scripts, page-visible context,
-   timeout source, and pre-action ready timing. Test exported classic scripts
+   timeout source, and pre-action ready timing. The overview and hooks topic must
+   warn against CommonJS `module.exports` and Playwright callbacks; `.cjs` does
+   not enable a module loader. Migrate navigation and interaction callbacks to
+   suite actions, not fake browser globals or Node dependencies. Test exported classic scripts
    with DOM stubs and keep companion suite paths consistent; Node-based Worker
    development tests are not capture prerequisites. Distinguish legacy
    text-appending `keyPress` shortcuts from real `press` keyboard events.

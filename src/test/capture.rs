@@ -933,7 +933,7 @@ pub async fn save_screenshot(
         Stage::CaptureArtifacts,
         [(
             Field::Capture,
-            FieldValue::Identity(SafeIdentity::fingerprint(key)),
+            FieldValue::Identity(SafeIdentity::source(key)),
         )],
         save_screenshot_inner(
             test_suite,
@@ -1130,7 +1130,7 @@ async fn prepare_selector_capture(page: &Page, selector: &str) -> Result<Selecto
         use crate::diagnostics::{record::*, runtime as diagnostics};
         let mut fields = vec![(
             Field::Target,
-            FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+            FieldValue::Identity(SafeIdentity::source(selector)),
         )];
         fields.extend(condition.map(|condition| (Field::Condition, FieldValue::Kind(condition))));
         diagnostics::event(

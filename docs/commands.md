@@ -152,8 +152,19 @@ after reaping its worker, without attributing it to another concurrent run.
 
 The supported archive is Regressify's own execution timeline, not browser console
 or network-body collection. Capture messages use safe templates and typed values;
-URLs, selectors, and artifact names use opaque identities where needed. Provider
-detail stays in local deployment history. See [desktop Capture Log](desktop.md#reviewing-results),
+suite/scenario IDs, viewport names, selectors, source URLs, artifact paths, and
+capture names are readable and searchable. Quoted selector text and ordinary URL
+query parameters are test-source metadata, not simulated end-user input.
+Free-text payloads such as `input.value`, uploaded file contents, cookies, state,
+and script bodies are not recorded. URL credentials and credential-bearing
+parameters are redacted; control characters are neutralized and each source
+identity is limited to 2048 UTF-8 bytes. Review source metadata before publishing
+a report. Provider detail stays in local deployment history.
+
+Older captures can retain `sha256:` source identities. They remain supported,
+but neither opening their logs nor regenerating a snapshot reverses those hashes;
+new captures are needed for readable source metadata. Image, archive, and asset
+integrity hashes remain unchanged. See [desktop Capture Log](desktop.md#reviewing-results),
 [web log contracts](../frontend/README.md#data-and-hosting),
 [verification](logging-verification.md), and [performance evidence](logging-benchmark.md).
 

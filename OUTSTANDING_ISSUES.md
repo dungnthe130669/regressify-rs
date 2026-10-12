@@ -2,6 +2,18 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Capture Log Source Traceability (2026-10-12)
+
+- Resolved in source: capture logs obscured suite/scenario/viewport identities,
+  selectors, URLs, artifact paths, and capture names with SHA-256 fingerprints.
+  New captures retain readable, bounded source metadata in native and web logs;
+  simulated free text such as `input.value` remains omitted and URL credentials
+  remain redacted. Historical hashes cannot be reversed and remain unchanged.
+- The [real CLI logging fixture](tests/desktop_worker.rs) verifies archived and
+  published metadata, free-text/credential exclusion, quiet mode, and complete
+  log linkage. Native reader tests and desktop/mobile web checks cover searching,
+  legacy logs, downloads, safe text rendering, and layout.
+
 ## Browser Ready Hooks After Navigation (2026-10-12)
 
 - Resolved in source: 0.88 could report `CSS override or browser ready script

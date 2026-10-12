@@ -193,9 +193,7 @@ async fn prepare_browser_in(
         Severity::Debug,
         [(
             Field::Artifact,
-            FieldValue::Identity(SafeIdentity::fingerprint(
-                cache_dir.to_string_lossy().as_bytes(),
-            )),
+            FieldValue::Identity(SafeIdentity::source(cache_dir.to_string_lossy())),
         )],
     );
     if fetch_browser == Some(false) && !cached_executable.is_file() {
@@ -239,9 +237,7 @@ async fn prepare_browser_in(
                 Severity::Debug,
                 [(
                     Field::Artifact,
-                    FieldValue::Identity(SafeIdentity::fingerprint(
-                        exe.to_string_lossy().as_bytes(),
-                    )),
+                    FieldValue::Identity(SafeIdentity::source(exe.to_string_lossy())),
                 )],
             );
             std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(perms.mode() | 0o755))?;

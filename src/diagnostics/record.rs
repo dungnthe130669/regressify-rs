@@ -88,6 +88,10 @@ impl From<CaptureRunId> for String {
 pub struct SafeIdentity(String);
 
 impl SafeIdentity {
+    pub fn source(value: impl AsRef<str>) -> Self {
+        Self(super::redaction::sanitize_source(value.as_ref()))
+    }
+
     pub fn fingerprint(value: impl AsRef<[u8]>) -> Self {
         Self(format!("sha256:{:x}", Sha256::digest(value.as_ref())))
     }
@@ -101,13 +105,8 @@ impl TryFrom<String> for SafeIdentity {
     type Error = &'static str;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.len() != 71
-            || !value.starts_with("sha256:")
-            || !value[7..]
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err("Expected an opaque SHA-256 identity");
+        if value != super::redaction::sanitize_source(&value) {
+            return Err("Expected bounded, sanitized diagnostic source metadata");
         }
         Ok(Self(value))
     }
@@ -894,6 +893,31 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn source_identities_round_trip_without_obfuscating_locations() {
+        for source in [
+            "search-functions",
+            "keyword-search-button",
+            "desktop",
+            "#hero-search",
+            "common/_search-ready.js",
+            "https://example.test/search-results/",
+        ] {
+            let identity = SafeIdentity::try_from(source.to_owned()).unwrap();
+            assert_eq!(identity.as_str(), source);
+            let encoded = serde_json::to_string(&identity).unwrap();
+            assert_eq!(
+                serde_json::from_str::<SafeIdentity>(&encoded).unwrap(),
+                identity
+            );
+        }
+        let legacy = SafeIdentity::fingerprint("search-functions");
+        assert_eq!(
+            SafeIdentity::try_from(legacy.as_str().to_owned()).unwrap(),
+            legacy
+        );
+    }
 
     #[test]
     fn diagnostic_record_v1_round_trips_through_json() {

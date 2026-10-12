@@ -48,6 +48,11 @@ server's version; do not assume newer fields work in an older installed CLI.
 - Interactive actions wait for a visible, stable, enabled, uncovered target.
   After navigation or client-side updates, wait for a URL and a visible element
   instead of sleeping.
+- Hooks are classic browser JavaScript, not CommonJS modules or Playwright
+  callbacks. Do not generate `module.exports`, `exports`, `require(...)`, or
+  `page.locator()` hooks. A `.cjs` extension does not enable Node or a module
+  loader. Use suite actions for navigation and interactions, and read
+  `get_authoring_guide(topic="hooks")` before creating or converting a hook.
 - Action values, URLs, and cookies are literal; only `basicAuth` expands
   environment variables. Keep secrets out of suites.
 - A test image whose dimensions differ from its reference always fails, so

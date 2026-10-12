@@ -401,11 +401,27 @@ target.onclick = async () => {
         assert_eq!(log.state, ArchiveState::Complete);
         let archive = log.archive.unwrap();
         let reader = JournalReader::open(&output_dir, &archive.operation_id)?;
-        let menu_target = FieldValue::Identity(SafeIdentity::fingerprint("#menu-toggle"));
+        let menu_target = FieldValue::Identity(SafeIdentity::source("#menu-toggle"));
         let mut menu_dispatched = false;
+        let mut execution_seen = false;
         reader.visit(|record| {
+            if let Some(execution) = &record.execution {
+                execution_seen = true;
+                assert_eq!(execution.suite_id.as_str(), "responsive");
+                assert_eq!(execution.scenario_id.as_str(), "products-submenu");
+                assert_eq!(execution.viewport.name.as_str(), label);
+            }
+            for value in record.fields.values() {
+                if let FieldValue::Identity(source) = value {
+                    assert!(!source.as_str().starts_with("sha256:"));
+                }
+            }
             menu_dispatched |= record.fields.get(&Field::Target) == Some(&menu_target);
         })?;
+        assert!(
+            execution_seen,
+            "capture records must retain readable execution names"
+        );
         assert_eq!(
             menu_dispatched,
             label == "mobile",

@@ -6,13 +6,24 @@ import { PNG } from "pngjs";
 import { getAssetVersion } from "../scripts/version-assets";
 
 async function mockCaptureLogs(page: Page, state = "complete", timestampUtcMs = 1790812800000) {
-  const records = (operationId: string, message: string) => [
+  const records = (operationId: string, message: string, legacy: boolean) => [
     {
       schemaVersion: 1,
       operationId,
       operationKind: "capture",
       captureRunId: "run",
-      execution: null,
+      execution: {
+        executionId: "44444444-4444-4444-8444-444444444444",
+        suiteId: legacy ? `sha256:${"a".repeat(64)}` : "log-suite",
+        scenarioId: legacy ? `sha256:${"b".repeat(64)}` : "keyword-search-button",
+        viewport: {
+          name: legacy ? `sha256:${"c".repeat(64)}` : "desktop",
+          width: 1920,
+          height: 1080,
+        },
+        captureRole: "test",
+        attempt: 1,
+      },
       sequence: 0,
       timestampUtcMs,
       elapsedMs: 12,
@@ -20,7 +31,13 @@ async function mockCaptureLogs(page: Page, state = "complete", timestampUtcMs = 
       stage: "navigation",
       eventName: "decision",
       message,
-      fields: {},
+      fields: {
+        target: { type: "identity", value: legacy ? `sha256:${"d".repeat(64)}` : "#hero-search" },
+        artifact: {
+          type: "identity",
+          value: legacy ? `sha256:${"e".repeat(64)}` : "common/_search-ready.js",
+        },
+      },
       spanId: "22222222-2222-4222-8222-222222222222",
       parentSpan: null,
       durationMs: 12,
@@ -40,6 +57,7 @@ async function mockCaptureLogs(page: Page, state = "complete", timestampUtcMs = 
       records: records(
         operationId,
         `Capture ${index + 1} <script>private markup</script> ${"long-word-".repeat(50)}`,
+        index === 1,
       ),
     });
     const path = `_snapshot/data/logs/${operationId}/chunk-000000.json?v=${getAssetVersion(bytes)}`;
@@ -126,6 +144,10 @@ test("capture log is lazy, deep linked, refreshable and usable on desktop and mo
   await expect(page.locator(".log-records")).toContainText(
     "Capture 1 <script>private markup</script>",
   );
+  await expect(page.locator(".log-records")).toContainText("suite=log-suite");
+  await expect(page.locator(".log-records")).toContainText("scenario=keyword-search-button");
+  await expect(page.locator(".log-records")).toContainText("#hero-search");
+  await expect(page.locator(".log-records")).not.toContainText("sha256:");
   expect(fixture.requests()).toBe(1);
   await expect(page.locator("[data-log-state]")).toHaveAttribute("data-log-state", "complete");
   expect(await page.locator(".log-records script").count()).toBe(0);
@@ -133,6 +155,10 @@ test("capture log is lazy, deep linked, refreshable and usable on desktop and mo
   await expect(page.locator(".log-records li")).toHaveCount(0);
   await page.getByRole("combobox", { name: "Log severity" }).selectOption("info");
   await page.getByRole("combobox", { name: "Log stage" }).selectOption("navigation");
+  for (const query of ["keyword-search-button", "#hero-search", "common/_search-ready.js"]) {
+    await page.getByRole("searchbox", { name: "Search capture log" }).fill(query);
+    await expect(page.locator(".log-records li")).toHaveCount(1);
+  }
   await page.getByRole("searchbox", { name: "Search capture log" }).fill("Capture 1");
   await expect(page.locator(".log-records li")).toHaveCount(1);
   const downloading = page.waitForEvent("download");
@@ -142,6 +168,7 @@ test("capture log is lazy, deep linked, refreshable and usable on desktop and mo
   await page.goto("/suites/log-suite/images/capture-1.png?view=log&logRole=reference&status=fail");
   await expect(page.locator(".log-records")).toContainText("Capture 2");
   await expect(page.locator(".log-records")).not.toContainText("Capture 1");
+  await expect(page.locator(".log-records")).toContainText("sha256:");
   await page.reload();
   await expect(page.locator(".log-records")).toContainText("Capture 2");
   await expect(page.getByRole("button", { name: "Reference", exact: true })).toHaveAttribute(

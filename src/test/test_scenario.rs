@@ -707,7 +707,7 @@ async fn run_scenario_capture_inner(
                 (Field::State, FieldValue::Kind(SafeValue::Ready)),
                 (
                     Field::Target,
-                    FieldValue::Identity(SafeIdentity::fingerprint(selector)),
+                    FieldValue::Identity(SafeIdentity::source(selector)),
                 ),
                 (Field::TimeoutMs, FieldValue::Number(timeout)),
             ],
@@ -887,7 +887,7 @@ async fn load_cookie_path(
             (Field::ActionType, FieldValue::Kind(SafeValue::Restore)),
             (
                 Field::Artifact,
-                FieldValue::Identity(SafeIdentity::fingerprint(cookie_path)),
+                FieldValue::Identity(SafeIdentity::source(cookie_path)),
             ),
         ],
         load_cookie_path_inner(page, cookie_path),

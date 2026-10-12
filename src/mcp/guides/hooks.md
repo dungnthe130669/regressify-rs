@@ -47,8 +47,16 @@ switching back to an already processed document does not rerun them.
 
 ## Browser Script Contract
 
-Use plain `.js` files, not module exports or Playwright callbacks. For example,
-an `onReadyScript` file can remove an approved cookie banner before interaction:
+Use plain `.js` files containing classic browser JavaScript. Do not generate
+`module.exports = async function (...) { ... }`, `exports`, `require(...)`,
+ES module `import`/`export`, or Node/Playwright callbacks for any hook setting.
+No CommonJS or ES module loader runs, even if the filename ends in `.cjs` or
+`.mjs`. In a normal browser document, `module.exports` fails with
+`ReferenceError: module is not defined`. Renaming `.cjs` to `.js` does not convert
+the contents.
+
+For example, an `onReadyScript` file can remove an approved cookie banner before
+interaction:
 
 ```javascript
 document.querySelector("#cookie-banner")?.remove();
@@ -57,10 +65,18 @@ document.querySelector("#cookie-banner")?.remove();
 Return a promise for asynchronous work, for example with an async immediately
 invoked function. The runner awaits that promise, but does not automatically
 call a function that the script only declares. Scripts run in the selected
-page's main document, not as modules; `import`, `export`, `module.exports`,
-`require`, `process.env`, and Node filesystem APIs are unavailable. Rewrite old
-Node/Playwright hooks as DOM statements and use browser context below instead
-of callback arguments. A file extension does not enable Node or module loading.
+page's main document; `process.env` and Node filesystem APIs are unavailable.
+Regressify does not invoke an exported callback or supply `page`, `scenario`,
+`viewport`, `isReference`, `context`, or `config` callback arguments. Use the
+`window.regressify` browser context below for metadata.
+
+Playwright APIs such as `page.locator()`, `page.waitForURL()`, and
+`page.setDefaultTimeout()` are not browser APIs. When migrating an old hook,
+move typing, clicks, navigation, and waits into suite actions: `input`, `press`,
+`click`, `goto`, and `wait` with `url`. Keep only browser-side DOM setup in the
+hook. Ready hooks run before actions, so they cannot inspect input that a later
+action has not entered yet. Do not add Node/Playwright dependencies or fake
+`module`/`page` globals as a capture workaround.
 
 Use Regressify's `switchTab` action when subsequent actions/captures need a
 different tab. Ready hooks apply to that selected document. Other scenarios have

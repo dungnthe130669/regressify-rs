@@ -76,7 +76,7 @@ async fn install_with_client(
             (Field::State, FieldValue::Kind(SafeValue::Download)),
             (
                 Field::Destination,
-                FieldValue::Identity(SafeIdentity::fingerprint(&browser.url)),
+                FieldValue::Identity(SafeIdentity::source(&browser.url)),
             ),
             (
                 Field::TimeoutMs,

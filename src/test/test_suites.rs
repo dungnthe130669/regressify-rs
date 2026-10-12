@@ -270,12 +270,10 @@ fn spawn_capture_jobs(
                 let scenario = &suite.scenarios[scenario_idx];
                 let identity = ExecutionIdentity {
                     execution_id: ExecutionId::new(),
-                    suite_id: SafeIdentity::fingerprint(suite.id.as_deref().unwrap_or_default()),
-                    scenario_id: SafeIdentity::fingerprint(
-                        scenario.id.as_deref().unwrap_or_default(),
-                    ),
+                    suite_id: SafeIdentity::source(suite.id.as_deref().unwrap_or_default()),
+                    scenario_id: SafeIdentity::source(scenario.id.as_deref().unwrap_or_default()),
                     viewport: ViewportIdentity {
-                        name: SafeIdentity::fingerprint(
+                        name: SafeIdentity::source(
                             viewport
                                 .as_ref()
                                 .map(|viewport| viewport.label.as_str())

@@ -474,6 +474,31 @@ mod tests {
                 "Missing hook contract: {contract}"
             );
         }
+        for topic in ["overview", "hooks"] {
+            let guide = catalog["guides"][topic]["content"].as_str().unwrap();
+            for contract in [
+                "Do not generate",
+                "module.exports",
+                ".cjs",
+                "page.locator()",
+            ] {
+                assert!(
+                    guide.contains(contract),
+                    "Missing browser-only authoring rule in {topic}: {contract}"
+                );
+            }
+        }
+        for contract in [
+            "ReferenceError: module is not defined",
+            "Renaming `.cjs` to `.js` does not convert",
+            "`wait` with `url`",
+            "does not invoke an exported callback",
+        ] {
+            assert!(
+                hooks.contains(contract),
+                "Missing hook migration rule: {contract}"
+            );
+        }
         let troubleshooting = catalog["guides"]["troubleshooting"]["content"]
             .as_str()
             .unwrap();
@@ -491,6 +516,9 @@ mod tests {
             "ActionIndex",
             "Unobscured",
             "sha256:",
+            "readable source metadata",
+            "input.value",
+            "Older capture logs",
             "lexicographically greatest",
             "data did not match any variant of untagged enum TestAction",
             "Local detail",
