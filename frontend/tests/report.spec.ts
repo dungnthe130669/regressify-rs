@@ -1004,6 +1004,10 @@ test("suite previews avoid full-resolution downloads until opening image review"
   const capture = page.locator(".capture-card").first();
   const images = capture.locator("img");
   await expect(images).toHaveCount(3);
+  for (const image of await images.all()) {
+    await expect(image).toHaveAttribute("width", "640");
+    await expect(image).toHaveAttribute("height", "480");
+  }
   await expect
     .poll(() =>
       images.evaluateAll((elements) =>
@@ -1024,6 +1028,8 @@ test("suite previews avoid full-resolution downloads until opening image review"
   expect(originals.some((url) => requested.has(url))).toBe(false);
   await page.getByRole("button", { name: "Grid view" }).click();
   await expect(images).toHaveCount(1);
+  await expect(images).toHaveAttribute("width", "640");
+  await expect(images).toHaveAttribute("height", "400");
   await expect
     .poll(() => images.evaluate((element: HTMLImageElement) => element.naturalWidth))
     .toBeGreaterThan(0);
@@ -1061,7 +1067,10 @@ test("legacy suite reports without previews remain readable", async ({ page }) =
   await page.route("**/_snapshot/data/suites/**", async (route) => {
     const response = await route.fetch();
     const suite = await response.json();
-    for (const capture of suite.tests) delete capture.previews;
+    for (const capture of suite.tests) {
+      delete capture.previews;
+      delete capture.imageSizes;
+    }
     original = `/${suite.tests[0].test}`;
     await route.fulfill({ response, json: suite });
   });
@@ -1072,6 +1081,23 @@ test("legacy suite reports without previews remain readable", async ({ page }) =
   await expect
     .poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth))
     .toBeGreaterThan(0);
+  await page.locator(".capture-card").first().click();
+  await expect
+    .poll(() =>
+      page.locator(".image-world img").evaluateAll(
+        (images) =>
+          images.length > 0 &&
+          images.every((element) => {
+            const image = element as HTMLImageElement;
+            return (
+              image.naturalWidth > 0 &&
+              Number(image.getAttribute("width")) === image.naturalWidth &&
+              Number(image.getAttribute("height")) === image.naturalHeight
+            );
+          }),
+      ),
+    )
+    .toBe(true);
 });
 
 test("suite list compares reference, test, and available diff captures side by side", async ({
@@ -1626,6 +1652,103 @@ test("capture information opens on hover or tap and remains selectable", async (
   await expect(bubble).toHaveCount(0);
 });
 
+for (const [mode, unavailable] of [
+  ["side", false],
+  ["wipe", false],
+  ["overlay", false],
+  ["diff", false],
+  ["reference", false],
+  ["test", false],
+  ["side", true],
+] as const) {
+  test(`comparison images reserve dimensions before delayed loads (${mode}${unavailable ? ", unavailable" : ""})`, async ({
+    page,
+  }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const imageSizes = {
+      reference: { width: 320, height: 180 },
+      test: { width: 200, height: 720 },
+      diff: { width: 320, height: 720 },
+    };
+    const roles = ["reference", "test", "diff"] as const;
+    const visibleRoles =
+      mode === "side" ? roles : mode === "wipe" || mode === "overlay" ? roles.slice(0, 2) : [mode];
+    const size = {
+      width: mode === "side" ? 1008 : mode === "test" ? 200 : 320,
+      height: mode === "reference" ? 180 : 720,
+    };
+    const paths = Object.fromEntries(
+      roles.map((role) => [role, `_snapshot/images/layout-${role}.png?v=${"a".repeat(20)}`]),
+    );
+    await page.route("**/_snapshot/data/suites/workspace-overview.json?*", async (route) => {
+      const response = await route.fetch();
+      const report = await response.json();
+      report.tests = report.tests.map((capture: { id: string }) =>
+        capture.id === "overview__desktop.png" ? { ...capture, ...paths, imageSizes } : capture,
+      );
+      await route.fulfill({ response, json: report });
+    });
+    let releaseImages = () => {};
+    const imagesReady = new Promise<void>((resolve) => {
+      releaseImages = resolve;
+    });
+    await page.route("**/_snapshot/images/layout-*.png?*", async (route) => {
+      const role = roles.find((role) => route.request().url().includes(`layout-${role}.png`));
+      if (!role) throw new Error("Unexpected layout fixture image");
+      const image = new PNG(imageSizes[role]);
+      image.data.fill(255);
+      await imagesReady;
+      await route.fulfill(
+        unavailable && role === "test"
+          ? { status: 404 }
+          : { contentType: "image/png", body: PNG.sync.write(image) },
+      );
+    });
+    try {
+      await page.goto(`/suites/workspace-overview/images/overview__desktop.png?mode=${mode}`, {
+        waitUntil: "domcontentloaded",
+      });
+      const images = page.locator(".image-world img");
+      await expect(images).toHaveCount(visibleRoles.length);
+      for (const [index, role] of visibleRoles.entries()) {
+        await expect(images.nth(index)).toHaveAttribute("width", String(imageSizes[role].width));
+        await expect(images.nth(index)).toHaveAttribute("height", String(imageSizes[role].height));
+      }
+      expect(
+        await images.evaluateAll((elements) =>
+          elements.every((element) => (element as HTMLImageElement).naturalWidth === 0),
+        ),
+      ).toBe(true);
+      await expect(page.locator(".image-world")).toHaveCSS("width", `${size.width}px`);
+      await expect(page.locator(".image-world")).toHaveCSS("height", `${size.height}px`);
+      await page.evaluate(() => document.fonts.ready);
+      const canvas = page.locator(".zoom-canvas");
+      const before = await canvas.boundingBox();
+      const zoom = await page.getByLabel("Zoom level").textContent();
+      releaseImages();
+      if (unavailable) {
+        await expect(page.locator(".image-world .image-unavailable")).toBeVisible();
+        await expect(images).toHaveCount(visibleRoles.length - 1);
+      }
+      await expect
+        .poll(() =>
+          images.evaluateAll((elements) =>
+            elements.every((element) => (element as HTMLImageElement).naturalWidth > 0),
+          ),
+        )
+        .toBe(true);
+      await expect(page.getByLabel("Zoom level")).toHaveText(zoom || "");
+      const after = await canvas.boundingBox();
+      if (!before || !after) throw new Error("Comparison canvas is not visible");
+      for (const coordinate of ["x", "y", "width", "height"] as const) {
+        expect(after[coordinate]).toBeCloseTo(before[coordinate], 0);
+      }
+    } finally {
+      releaseImages();
+    }
+  });
+}
+
 test("image modes, zoom, downloads, and previous/next work", async ({ page, isMobile }, info) => {
   await page.goto("/suites/workspace-overview/images/overview__desktop.png");
   await expect(
@@ -1679,6 +1802,7 @@ test("image modes, zoom, downloads, and previous/next work", async ({ page, isMo
   await expect(page).toHaveURL(/overview__desktop.png/);
   await page.reload();
   await expect(page.locator(".mode-test")).toBeVisible();
+  await expect(page.locator(".page")).toHaveCSS("opacity", "1");
   expect((await new AxeBuilder({ page }).analyze()).violations).toEqual([]);
 });
 

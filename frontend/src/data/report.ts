@@ -109,6 +109,11 @@ export const executionLogSchema = z.object({
 export type ExecutionLog = z.infer<typeof executionLogSchema>;
 export type ArchiveState = z.infer<typeof archiveStateSchema>;
 
+const imageSizeSchema = z.object({
+  width: z.number().int().positive().max(0xffffffff),
+  height: z.number().int().positive().max(0xffffffff),
+});
+
 export const captureSchema = z
   .object({
     id: segment,
@@ -123,6 +128,13 @@ export const captureSchema = z
     reference: artifact("images").nullable(),
     test: artifact("images").nullable(),
     diff: artifact("images").nullable(),
+    imageSizes: z
+      .object({
+        reference: imageSizeSchema.nullable(),
+        test: imageSizeSchema.nullable(),
+        diff: imageSizeSchema.nullable(),
+      })
+      .optional(),
     previews: z
       .object({
         reference: artifact("images").nullable(),

@@ -112,11 +112,15 @@ function observePreview(element: HTMLImageElement, update: (visible: boolean) =>
 export function ReportImage({
   path,
   alt,
+  width,
+  height,
   className,
   eager = false,
 }: {
   path: string | null;
   alt: string;
+  width: number;
+  height: number;
   className?: string;
   eager?: boolean;
 }) {
@@ -134,6 +138,8 @@ export function ReportImage({
       className={className}
       src={active ? `/${path}` : undefined}
       alt={alt}
+      width={width}
+      height={height}
       style={active ? undefined : { visibility: "hidden" }}
       loading={eager ? "eager" : "lazy"}
       decoding="async"

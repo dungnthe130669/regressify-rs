@@ -1,6 +1,6 @@
 # Snapshot Frontend
 
-Verified: 2026-10-12
+Verified: 2026-10-13
 
 - Suite `displayName` is optional in version-2 summaries/reports. `suiteLabel`
   supplies all visible suite labels while IDs remain route/asset keys. The
@@ -80,9 +80,9 @@ Verified: 2026-10-12
   the overview page heading is `Snapshot Overview`.
   `bun run test:e2e --grep footer` covers short/filtered/missing pages and long
   document/review scrolling on desktop and mobile.
-- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) has no wheel/pan
-  engine. Scaled images reserve their full height in the right page; native wheel
-  scrolling leaves the zoom value unchanged. Only explicit controls change scale.
+- [Image viewer](../../frontend/src/components/ComparisonViewer.tsx) reserves full height in the right page; only explicit zoom controls change scale, not native scrolling.
+  Optional `imageSizes` provides pre-load sizing; `dimensions` holds deltas. Legacy reports discover sizes on load.
+  Delayed-load tests emulate reduced motion to exclude the page entrance animation.
 - Side-by-side crosshairs share image-pixel coordinates, excluding unavailable or
   out-of-bounds pixels. Their inverse-scaled overlays keep strokes one screen pixel
   wide. The `side by side crosshairs|scrolling over images` browser checks cover

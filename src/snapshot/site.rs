@@ -115,6 +115,8 @@ pub(super) struct Capture {
     pub test: Option<String>,
     pub diff: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_sizes: Option<ImageSizes>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previews: Option<CapturePreviews>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logs: Option<CaptureLogs>,
@@ -139,6 +141,19 @@ pub(super) struct ExecutionLog {
     pub records: u64,
     pub missing_records: Option<u64>,
     pub build: Option<crate::diagnostics::journal::BuildIdentity>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub(super) struct ImageSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub(super) struct ImageSizes {
+    pub reference: Option<ImageSize>,
+    pub test: Option<ImageSize>,
+    pub diff: Option<ImageSize>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

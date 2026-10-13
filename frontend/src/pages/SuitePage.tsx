@@ -140,6 +140,8 @@ export function SuitePage() {
                       (capture.previews?.grid || capture.test || capture.reference)
                     }
                     alt={`${capture.label} preview`}
+                    width={640}
+                    height={400}
                   />
                   <span className="open-capture">
                     <ArrowUpRight size={18} />
@@ -185,6 +187,8 @@ export function SuitePage() {
                         <ReportImage
                           path={path ? preview || path : null}
                           alt={`${capture.label} ${label.toLowerCase()}`}
+                          width={640}
+                          height={480}
                         />
                       </div>
                     </figure>

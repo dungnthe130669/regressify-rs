@@ -2,6 +2,18 @@
 
 Issues identified during adversarial review that remain after the September 2026 hardening pass.
 
+## Snapshot Image Layout Stability (2026-10-13)
+
+- Resolved in source: report images omitted width/height attributes and comparison
+  layout used placeholder dimensions until originals loaded. Images now have
+  explicit dimensions, and [snapshot conversion](src/snapshot/capture_report.rs)
+  publishes decoded per-source sizes before loading without another image decode.
+- The delayed-load [browser regression](frontend/tests/report.spec.ts) failed before
+  the fix and covers all comparison modes, unequal sizes, failed loads, and legacy
+  reports on desktop and mobile. Preview bounds and lazy source loading are preserved.
+- Existing hosted reports require regeneration and redeployment; no recapture is
+  needed. Older payloads without size metadata retain runtime size discovery.
+
 ## Capture Log Source Traceability (2026-10-12)
 
 - Resolved in source: capture logs obscured suite/scenario/viewport identities,

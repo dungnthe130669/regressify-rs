@@ -87,6 +87,9 @@ logo/favicon bytes, suite-aware titles, and list preview alignment, missing imag
 conditional diff lanes, and long labels.
 Side-by-side crosshair checks cover synchronized image pixels, unequal dimensions,
 zoom-independent strokes, missing/broken images, pointer cleanup, and native scrolling.
+Delayed-image checks verify explicit dimensions, unchanged fit zoom, and stable
+comparison geometry in every mode, including failed loads. They disable entrance
+animations so measurements isolate image loading.
 Screenshots are saved under `.fixtures/screenshots`.
 
 Footer checks cover short, filtered, and not-found pages, plus long content in
@@ -232,11 +235,19 @@ or expensive optimization passes. Identical inputs produce byte-identical output
 tests compare complete encoded bytes across repeated generations. Only the grid's
 source image needs a cropped thumbnail. Source captures are never resized or rewritten.
 
+Optional capture `imageSizes` fields record the decoded original `width` and `height`
+for `reference`, `test`, and `diff`, with null values for absent images. These positive
+pixel sizes are separate from the signed comparison deltas in `dimensions`.
+The comparison viewer reserves its layout and fit zoom from these sizes before
+images load. Reports without `imageSizes` still discover sizes when originals load;
+regenerate and redeploy them to get stable pre-load sizing. Existing captures are reused.
+
 [ReportImage](src/components/ui.tsx) uses one IntersectionObserver per scroll root,
 activating preview sources within 600 pixels and removing distant sources so the
 browser can reclaim image resources. Card labels and links remain available for
 search, keyboard navigation, and failure jumps. Missing and failed images retain
-their lanes. Full-resolution comparison images remain eager; downloads always
+their lanes. Every image has explicit width/height attributes; suite previews use
+their fixed thumbnail/list bounds with responsive CSS. Full-resolution comparison images remain eager; downloads always
 use original URLs. Reports without `previews` fall back to their original images.
 Regenerate and redeploy existing reports to obtain the reduced-size assets.
 

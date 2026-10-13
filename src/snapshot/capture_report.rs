@@ -10,8 +10,8 @@ use serde::Deserialize;
 use crate::helpers::{ScenarioName, scenario_names};
 
 use super::site::{
-    Capture, CapturePreviews, Dimensions, MAX_IMAGE_BYTES, MAX_REPORT_BYTES, SuiteReport,
-    checked_file, read_bounded, store_asset, valid_segment,
+    Capture, CapturePreviews, Dimensions, ImageSize, ImageSizes, MAX_IMAGE_BYTES, MAX_REPORT_BYTES,
+    SuiteReport, checked_file, read_bounded, store_asset, valid_segment,
 };
 
 #[derive(Clone)]
@@ -19,6 +19,7 @@ pub(super) struct ImageAsset {
     full: String,
     preview: String,
     grid: Option<String>,
+    size: ImageSize,
 }
 
 fn encode_preview(preview: image::DynamicImage) -> Result<Vec<u8>> {
@@ -31,7 +32,10 @@ fn encode_preview(preview: image::DynamicImage) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn preview_images(bytes: &[u8], include_grid: bool) -> Result<(Vec<u8>, Option<Vec<u8>>)> {
+fn preview_images(
+    bytes: &[u8],
+    include_grid: bool,
+) -> Result<(Vec<u8>, Option<Vec<u8>>, ImageSize)> {
     let decoded = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png)
         .decode()
         .context("Failed to decode PNG capture")?;
@@ -48,7 +52,7 @@ fn preview_images(bytes: &[u8], include_grid: bool) -> Result<(Vec<u8>, Option<V
             )
         })
         .transpose()?;
-    Ok((preview, grid))
+    Ok((preview, grid, ImageSize { width, height }))
 }
 
 #[derive(Deserialize)]
@@ -218,8 +222,8 @@ fn image_asset(
         "Snapshot capture is not a PNG image: {}",
         source.display()
     );
-    let (preview, grid) =
-        preview_images(&bytes, grid_paths.contains(&normalized)).with_context(|| {
+    let (preview, grid, size) = preview_images(&bytes, grid_paths.contains(&normalized))
+        .with_context(|| {
             format!(
                 "Failed to create snapshot previews for '{}'",
                 source.display()
@@ -234,6 +238,7 @@ fn image_asset(
             .1
     };
     let asset = ImageAsset {
+        size,
         full: store_asset(
             output,
             &format!("_snapshot/images/{suite}/{role}/{name}"),
@@ -446,6 +451,11 @@ pub(super) fn load_suite(
             reference: reference.as_ref().map(|asset| asset.full.clone()),
             test: current.as_ref().map(|asset| asset.full.clone()),
             diff: diff.as_ref().map(|asset| asset.full.clone()),
+            image_sizes: Some(ImageSizes {
+                reference: reference.as_ref().map(|asset| asset.size),
+                test: current.as_ref().map(|asset| asset.size),
+                diff: diff.as_ref().map(|asset| asset.size),
+            }),
             previews: Some(CapturePreviews {
                 reference: reference.as_ref().map(|asset| asset.preview.clone()),
                 test: current.as_ref().map(|asset| asset.preview.clone()),
@@ -681,6 +691,54 @@ mod tests {
     }
 
     #[test]
+    fn source_image_sizes_preserve_unequal_images_missing_references_and_legacy_reports() {
+        let (temp, mut report) = fixture();
+        for (path, width, height) in [
+            ("bitmaps_reference/home.png", 32, 24),
+            ("bitmaps_test/current/home.png", 24, 48),
+            ("bitmaps_test/current/home_diff.png", 32, 48),
+        ] {
+            let pixels = vec![rgb::RGBA8::new(30, 60, 90, 255); width * height];
+            fs::write(
+                temp.path().join("suite").join(path),
+                lodepng::encode32(&pixels, width, height).unwrap(),
+            )
+            .unwrap();
+        }
+        report["tests"][0]["pair"]["diffImage"] = json!("../bitmaps_test/current/home_diff.png");
+        write_fixture(temp.path(), &report);
+        let loaded = load(temp.path()).unwrap().unwrap();
+        let mut capture = serde_json::to_value(&loaded.tests[0]).unwrap();
+        assert_eq!(
+            capture["imageSizes"],
+            json!({
+                "reference": { "width": 32, "height": 24 },
+                "test": { "width": 24, "height": 48 },
+                "diff": { "width": 32, "height": 48 }
+            })
+        );
+        capture.as_object_mut().unwrap().remove("imageSizes");
+        assert!(
+            serde_json::from_value::<Capture>(capture)
+                .unwrap()
+                .image_sizes
+                .is_none()
+        );
+        fs::remove_file(temp.path().join("suite/bitmaps_reference/home.png")).unwrap();
+        let missing = load(temp.path()).unwrap().unwrap();
+        assert!(missing.tests[0].reference.is_none());
+        let sizes = missing.tests[0].image_sizes.as_ref().unwrap();
+        assert!(sizes.reference.is_none());
+        assert_eq!(
+            sizes.test,
+            Some(ImageSize {
+                width: 24,
+                height: 48
+            })
+        );
+    }
+
+    #[test]
     fn preview_images_are_byte_identical_for_repeated_inputs() {
         let mut pixels = vec![0u8; 800 * 1600 * 4];
         for (index, pixel) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
@@ -696,9 +754,16 @@ mod tests {
         for _ in 0..3 {
             assert_eq!(preview_images(&source, true).unwrap(), expected);
         }
-        let (list_only, grid) = preview_images(&source, false).unwrap();
+        let (list_only, grid, size) = preview_images(&source, false).unwrap();
         assert_eq!(list_only, expected.0);
         assert!(grid.is_none());
+        assert_eq!(
+            size,
+            ImageSize {
+                width: 800,
+                height: 1600
+            }
+        );
     }
 
     #[test]
@@ -706,7 +771,8 @@ mod tests {
         for (width, height) in [(1, 1), (2048, 4), (4, 2048), (800, 800)] {
             let pixels = vec![rgb::RGBA8::new(30, 60, 90, 64); width * height];
             let source = lodepng::encode32(&pixels, width, height).unwrap();
-            let (preview, grid) = preview_images(&source, true).unwrap();
+            let (preview, grid, size) = preview_images(&source, true).unwrap();
+            assert_eq!((size.width as usize, size.height as usize), (width, height));
             for bytes in [preview, grid.unwrap()] {
                 let image = lodepng::decode32(&bytes).unwrap();
                 assert!(image.width <= width.min(640));
@@ -784,6 +850,14 @@ mod tests {
         )
         .unwrap();
         let capture = &report["tests"][0];
+        assert_eq!(
+            capture["imageSizes"],
+            json!({
+                "reference": { "width": 320, "height": 6000 },
+                "test": { "width": 320, "height": 6000 },
+                "diff": null
+            })
+        );
         let inventory = super::super::site::artifact_paths(&root, &["suite".into()]).unwrap();
         let read_asset = |url: &str| {
             let (path, version) = url.split_once("?v=").unwrap();

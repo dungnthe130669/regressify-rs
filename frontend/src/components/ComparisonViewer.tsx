@@ -46,7 +46,18 @@ function useImageSizes(capture: Capture) {
       for (const image of images) image.onload = null;
     };
   }, [capture.reference, capture.test, capture.diff]);
-  return (path: string | null) => (path ? sizes[path] : undefined);
+  return {
+    getSize: (path: string | null) =>
+      path
+        ? sizes[path] ||
+          (path === capture.reference
+            ? capture.imageSizes?.reference
+            : path === capture.test
+              ? capture.imageSizes?.test
+              : capture.imageSizes?.diff)
+        : undefined,
+    isLoaded: (path: string | null) => !!path && !!sizes[path],
+  };
 }
 
 export function ComparisonViewer({
@@ -64,7 +75,7 @@ export function ComparisonViewer({
   suiteName: string;
   runId: string;
 }) {
-  const getSize = useImageSizes(capture);
+  const { getSize, isLoaded } = useImageSizes(capture);
   const [blend, setBlend] = useState(50);
   const [zoom, setZoom] = useState<{ mode: Mode; scale: number } | null>(null);
   const [crosshair, setCrosshair] = useState<{
@@ -303,9 +314,15 @@ export function ComparisonViewer({
                   onPointerCancel={() => setCrosshair(null)}
                   onPointerDown={() => setCrosshair(null)}
                 >
-                  <ReportImage path={lane.path} alt={`${lane.label}: ${capture.label}`} eager />
+                  <ReportImage
+                    path={lane.path}
+                    alt={`${lane.label}: ${capture.label}`}
+                    width={lane.size.width}
+                    height={lane.size.height}
+                    eager
+                  />
                   {capture.diff &&
-                    getSize(lane.path) &&
+                    isLoaded(lane.path) &&
                     crosshair &&
                     crosshair.capture === capture &&
                     crosshair.scale === scale &&
@@ -336,7 +353,13 @@ export function ComparisonViewer({
           ) : mode === "wipe" || mode === "overlay" ? (
             <>
               <div className="image-layer" style={referenceSize}>
-                <ReportImage path={capture.reference} alt={`Reference: ${capture.label}`} eager />
+                <ReportImage
+                  path={capture.reference}
+                  alt={`Reference: ${capture.label}`}
+                  width={referenceSize.width}
+                  height={referenceSize.height}
+                  eager
+                />
               </div>
               <div
                 className="image-layer"
@@ -347,13 +370,25 @@ export function ComparisonViewer({
                 }}
               >
                 <div style={testSize}>
-                  <ReportImage path={capture.test} alt={`Test: ${capture.label}`} eager />
+                  <ReportImage
+                    path={capture.test}
+                    alt={`Test: ${capture.label}`}
+                    width={testSize.width}
+                    height={testSize.height}
+                    eager
+                  />
                 </div>
               </div>
               {mode === "wipe" && <div className="wipe-divider" style={{ left: `${blend}%` }} />}
             </>
           ) : (
-            <ReportImage path={single} alt={`${mode}: ${capture.label}`} eager />
+            <ReportImage
+              path={single}
+              alt={`${mode}: ${capture.label}`}
+              width={size.width}
+              height={size.height}
+              eager
+            />
           )}
         </div>
       </section>

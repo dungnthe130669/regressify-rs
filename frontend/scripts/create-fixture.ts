@@ -44,6 +44,7 @@ export async function createFixture() {
     diff: string;
     mismatch: number;
     bytes: Buffer[];
+    imageSizes: NonNullable<Capture["imageSizes"]>;
     previews: {
       reference: string;
       test: string;
@@ -137,6 +138,11 @@ export async function createFixture() {
         diff: await artifact(`_snapshot/images/preview/diff-${width}.png`, diff),
         mismatch: (pixels / (before.width * before.height)) * 100,
         bytes: [reference, changed, diff],
+        imageSizes: {
+          reference: { width: before.width, height: before.height },
+          test: { width: after.width, height: after.height },
+          diff: { width: difference.width, height: difference.height },
+        },
         previews: {
           reference: referencePreview.preview,
           test: testPreview.preview,
@@ -213,6 +219,11 @@ export async function createFixture() {
         reference: error ? null : images.reference,
         test: failed ? images.test : images.reference,
         diff: failed && !error ? images.diff : null,
+        imageSizes: {
+          reference: error ? null : images.imageSizes.reference,
+          test: failed ? images.imageSizes.test : images.imageSizes.reference,
+          diff: failed && !error ? images.imageSizes.diff : null,
+        },
         previews: {
           reference: error ? null : images.previews.reference,
           test: failed ? images.previews.test : images.previews.reference,

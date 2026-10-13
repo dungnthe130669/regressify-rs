@@ -161,6 +161,37 @@ describe("snapshot contract", () => {
       captureSchema.safeParse({ ...capture, logs: { reference: null, test: log } }).success,
     ).toBe(false);
   });
+  test("source image sizes are optional and distinct from signed comparison deltas", () => {
+    expect(capture.imageSizes).toBeUndefined();
+    const imageSizes = {
+      reference: { width: 1, height: 0xffffffff },
+      test: { width: 320, height: 6000 },
+      diff: null,
+    };
+    const parsed = captureSchema.parse({ ...capture, imageSizes });
+    expect(parsed.imageSizes).toEqual(imageSizes);
+    expect(parsed.dimensions).toEqual(capture.dimensions);
+    expect(captureSchema.parse(JSON.parse(JSON.stringify(parsed)))).toEqual(parsed);
+    for (const role of ["reference", "test", "diff"] as const) {
+      for (const axis of ["width", "height"] as const) {
+        for (const value of [0, -1, 1.5, Number.NaN, Infinity, 0x100000000, "320", null]) {
+          expect(
+            captureSchema.safeParse({
+              ...capture,
+              imageSizes: { ...imageSizes, [role]: { width: 320, height: 480, [axis]: value } },
+            }).success,
+          ).toBe(false);
+        }
+      }
+      expect(
+        captureSchema.safeParse({ ...capture, imageSizes: { ...imageSizes, [role]: null } })
+          .success,
+      ).toBe(true);
+    }
+    for (const imageSizes of [null, {}, { test: { width: 320 } }]) {
+      expect(captureSchema.safeParse({ ...capture, imageSizes }).success).toBe(false);
+    }
+  });
   test("previews are optional and every preview URL uses the validated image contract", () => {
     expect(capture.previews).toBeUndefined();
     const previews = { reference: image, test: image, diff: null, grid: image };
